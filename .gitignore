@@ -1,0 +1,12 @@
+# Output results
+experiment/*/results/
+
+# Dataset cache
+data/
+
+# Python
+__pycache__/
+*.pyc
+
+# IDE
+.idea/
