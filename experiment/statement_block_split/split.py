@@ -61,3 +61,96 @@ def _extract_recursive(
             block["children_ids"] = list(
                 range(child_count_before, len(blocks))
             )
+
+
+def process_sample(sample: dict) -> dict:
+    """Process a single MBPP sample, returning structured block data."""
+    code = sample["code"]
+    blocks = extract_blocks(code)
+
+    simple_count = sum(1 for b in blocks if b["type"] == "simple")
+    compound_count = sum(1 for b in blocks if b["type"] == "compound")
+    max_depth = max((b["depth"] for b in blocks), default=0)
+
+    return {
+        "task_id": sample["task_id"],
+        "prompt": sample["text"],
+        "original_code": code,
+        "blocks": blocks,
+        "stats": {
+            "total_blocks": len(blocks),
+            "simple_blocks": simple_count,
+            "compound_blocks": compound_count,
+            "max_depth": max_depth,
+        },
+    }
+
+
+def main(limit: int | None = None) -> None:
+    """Load MBPP dataset, process all samples, write JSON output.
+
+    Args:
+        limit: If set, only process first N samples (for validation).
+    """
+    from datasets import load_dataset
+
+    from config import (
+        DATA_CACHE_DIR,
+        DATASET_CONFIG,
+        DATASET_NAME,
+        OUTPUT_FILE,
+        RESULTS_DIR,
+    )
+
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    print(f"Loading dataset {DATASET_NAME} ({DATASET_CONFIG})...")
+    ds = load_dataset(DATASET_NAME, DATASET_CONFIG, cache_dir=str(DATA_CACHE_DIR))
+
+    all_samples = []
+    for split_name in ds:
+        all_samples.extend(ds[split_name])
+
+    if limit is not None:
+        all_samples = all_samples[:limit]
+
+    print(f"Processing {len(all_samples)} samples...")
+    results = []
+    failed = 0
+    for i, sample in enumerate(all_samples):
+        try:
+            result = process_sample(sample)
+            results.append(result)
+        except Exception as e:
+            print(f"  FAILED task_id={sample.get('task_id', '?')}: {e}")
+            failed += 1
+
+        if (i + 1) % 100 == 0:
+            print(f"  Processed {i + 1}/{len(all_samples)}")
+
+    output = {
+        "metadata": {
+            "dataset": "mbpp",
+            "split": "full (all splits combined)",
+            "total_samples": len(all_samples),
+            "processed": len(results),
+            "failed": failed,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+        "samples": results,
+    }
+
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+        json.dump(output, f, ensure_ascii=False, indent=2)
+
+    print(f"Done. Output: {OUTPUT_FILE}")
+    print(f"  Processed: {len(results)}, Failed: {failed}")
+
+
+if __name__ == "__main__":
+    import argparse
+
+    ap = argparse.ArgumentParser(description="Split MBPP code into statement blocks")
+    ap.add_argument("--limit", type=int, default=None, help="Process only first N samples")
+    args = ap.parse_args()
+    main(limit=args.limit)
