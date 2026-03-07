@@ -1,0 +1,91 @@
+"""Tests for wfcllm.watermark.generator."""
+
+import pytest
+import torch
+from unittest.mock import MagicMock, patch
+from wfcllm.watermark.generator import WatermarkGenerator, GenerateResult
+from wfcllm.watermark.config import WatermarkConfig
+
+
+class TestGenerateResult:
+    def test_result_fields(self):
+        r = GenerateResult(
+            code="x = 1",
+            total_blocks=1,
+            embedded_blocks=1,
+            failed_blocks=0,
+            fallback_blocks=0,
+        )
+        assert r.code == "x = 1"
+        assert r.total_blocks == 1
+
+
+class TestWatermarkGeneratorUnit:
+    """Unit tests with mock model — no GPU required."""
+
+    @pytest.fixture
+    def config(self):
+        return WatermarkConfig(
+            secret_key="test-key",
+            max_new_tokens=50,
+            encoder_device="cpu",
+        )
+
+    @pytest.fixture
+    def mock_components(self):
+        """Create mock model, tokenizer, encoder."""
+        model = MagicMock()
+        tokenizer = MagicMock()
+        encoder = MagicMock()
+        encoder_tokenizer = MagicMock()
+
+        # Mock tokenizer encode
+        tokenizer.encode = MagicMock(return_value=[1, 2, 3])
+        tokenizer.decode = MagicMock(side_effect=lambda ids, **kw: "x = 1\n")
+        tokenizer.eos_token_id = 2
+
+        return model, tokenizer, encoder, encoder_tokenizer
+
+    def test_generator_init(self, config, mock_components):
+        model, tokenizer, encoder, enc_tok = mock_components
+        gen = WatermarkGenerator(
+            model=model,
+            tokenizer=tokenizer,
+            encoder=encoder,
+            encoder_tokenizer=enc_tok,
+            config=config,
+        )
+        assert gen._config == config
+
+    def test_generate_result_type(self, config, mock_components):
+        """generate() should return GenerateResult."""
+        model, tokenizer, encoder, enc_tok = mock_components
+
+        # Mock model.forward to return logits and kv-cache, then EOS
+        vocab_size = 100
+        logits = torch.zeros(1, 1, vocab_size)
+        logits[0, 0, tokenizer.eos_token_id] = 10.0  # Force EOS
+        past_kv = tuple(
+            (torch.randn(1, 4, 3, 32), torch.randn(1, 4, 3, 32))
+            for _ in range(2)
+        )
+        mock_output = MagicMock()
+        mock_output.logits = logits
+        mock_output.past_key_values = past_kv
+        model.return_value = mock_output
+        # Make model.parameters() return a real tensor so .device resolves
+        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+
+        tokenizer.encode = MagicMock(return_value=[1, 2, 3])
+        tokenizer.decode = MagicMock(return_value="")
+
+        gen = WatermarkGenerator(
+            model=model,
+            tokenizer=tokenizer,
+            encoder=encoder,
+            encoder_tokenizer=enc_tok,
+            config=config,
+        )
+        result = gen.generate("Write a function")
+        assert isinstance(result, GenerateResult)
+        assert isinstance(result.code, str)
