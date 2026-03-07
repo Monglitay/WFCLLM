@@ -56,7 +56,7 @@ class VariableRename(Rule):
         def walk(node):
             if node.type == "identifier":
                 text = node.text.decode("utf-8")
-                if text not in _BUILTINS and text not in seen:
+                if text not in _BUILTINS and text not in seen and not text.startswith("__"):
                     if _is_snake_case(text):
                         seen.add(text)
                         new_name = _snake_to_camel(text)
