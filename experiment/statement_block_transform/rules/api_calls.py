@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from rules.base import Match, Rule
 
 
@@ -178,3 +180,82 @@ class ExplicitDefaultJsonDump(_ExplicitDefaultArgRule):
     func_names = {"json.dump", "json.dumps"}
     kwarg_name = "indent"
     kwarg_value = "None"
+
+
+class LibraryAliasReplace(Rule):
+    """Swap library aliases: np <-> numpy, tf <-> tensorflow, etc."""
+    name = "library_alias_replace"
+    category = "API与函数调用"
+    description = "库别名替换"
+
+    _alias_map = {
+        "np": "numpy",
+        "numpy": "np",
+        "tf": "tensorflow",
+        "tensorflow": "tf",
+        "pd": "pandas",
+        "pandas": "pd",
+        "plt": "matplotlib.pyplot",
+        "sns": "seaborn",
+    }
+
+    def detect(self, source, tree):
+        matches = []
+        def walk(node):
+            if node.type == "attribute":
+                obj = node.child_by_field_name("object")
+                if obj and obj.type == "identifier":
+                    obj_name = obj.text.decode("utf-8")
+                    if obj_name in self._alias_map:
+                        new_name = self._alias_map[obj_name]
+                        full_text = source[node.start_byte:node.end_byte]
+                        replacement = new_name + full_text[len(obj_name):]
+                        matches.append(Match("attribute", node.start_byte, node.end_byte,
+                                             full_text, replacement))
+            for child in node.children:
+                walk(child)
+        walk(tree.root_node)
+        return matches
+
+    def apply(self, source, matches):
+        result = source
+        for m in sorted(matches, key=lambda m: m.start_byte, reverse=True):
+            result = result[:m.start_byte] + m.replacement_text + result[m.end_byte:]
+        return result
+
+
+class ThirdPartyFuncReplace(Rule):
+    """Replace builtin functions with numpy equivalents: max() -> np.max()."""
+    name = "third_party_func_replace"
+    category = "API与函数调用"
+    description = "内置函数替换为第三方库等价函数"
+
+    _func_map = {
+        "max": "np.max",
+        "min": "np.min",
+        "sum": "np.sum",
+        "abs": "np.abs",
+        "round": "np.round",
+    }
+
+    def detect(self, source, tree):
+        matches = []
+        def walk(node):
+            if node.type == "call":
+                func = node.child_by_field_name("function")
+                if func and func.type == "identifier":
+                    func_name = func.text.decode("utf-8")
+                    if func_name in self._func_map:
+                        new_name = self._func_map[func_name]
+                        matches.append(Match("call", func.start_byte, func.end_byte,
+                                             func_name, new_name))
+            for child in node.children:
+                walk(child)
+        walk(tree.root_node)
+        return matches
+
+    def apply(self, source, matches):
+        result = source
+        for m in sorted(matches, key=lambda m: m.start_byte, reverse=True):
+            result = result[:m.start_byte] + m.replacement_text + result[m.end_byte:]
+        return result
