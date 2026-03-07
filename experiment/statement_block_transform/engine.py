@@ -15,10 +15,12 @@ class TransformEngine:
         rules: list[Rule],
         max_perm_len: int = 5,
         max_variants: int = 1000,
+        mode: str = "positive",
     ):
         self.rules = rules
         self.max_perm_len = max_perm_len
         self.max_variants = max_variants
+        self.mode = mode
 
     def get_applicable_rules(self, source: str) -> list[Rule]:
         """Return rules that can be applied to the given source."""
@@ -51,6 +53,7 @@ class TransformEngine:
                         "variant_id": len(variants),
                         "rules_applied": [r.name for r in perm],
                         "transformed_source": result,
+                        "sample_type": self.mode,
                     })
 
         return variants
