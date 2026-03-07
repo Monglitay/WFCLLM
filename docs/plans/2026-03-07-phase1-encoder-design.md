@@ -12,6 +12,8 @@
 | 训练数据 | MBPP + HumanEval | 覆盖更多代码样本，前期实验已验证 MBPP pipeline |
 | 损失函数 | Triplet Margin Loss (cosine) | 与方案文档一致的边界损失 |
 | 负样本比例 | 简单:困难 = 1:1 | 平衡区分能力 |
+| 微调策略 | LoRA (可选，默认开启) | 8-12GB 显存即可训练，冻结主体只训练 adapter + projection |
+| 精度 | BF16 (可选，默认开启) | 进一步降低显存占用和加速训练 |
 
 ## 实现方案
 
@@ -81,22 +83,28 @@ class TripletCodeDataset(torch.utils.data.Dataset):
 
 ### 4. `wfcllm/encoder/model.py` — CodeT5 编码器封装
 
-架构：CodeT5 Encoder → [CLS] pooling → Linear(hidden_size, 128) → L2 normalize → 语义向量 u
+架构：CodeT5 Encoder → (可选 LoRA adapter) → [CLS] pooling → Linear(hidden_size, 128) → L2 normalize → 语义向量 u
 
 ```python
 class SemanticEncoder(nn.Module):
-    def __init__(self, model_name="Salesforce/codet5-base", embed_dim=128):
-        self.encoder = T5EncoderModel.from_pretrained(model_name)
-        self.projection = nn.Linear(hidden_size, embed_dim)
+    def __init__(self, config: EncoderConfig):
+        self.encoder = T5EncoderModel.from_pretrained(config.model_name, ...)
+        # 可选 LoRA：冻结主体，注入 adapter 到 q, v 层
+        if config.use_lora:
+            self.encoder = get_peft_model(self.encoder, lora_config)
+        # 可选 BF16：encoder 权重以 bfloat16 加载
+        self.projection = nn.Linear(hidden_size, config.embed_dim)
 
     def forward(self, input_ids, attention_mask) -> torch.Tensor:
-        """返回 L2 归一化的语义向量 (batch_size, embed_dim)"""
+        """返回 L2 归一化的 float32 语义向量 (batch_size, embed_dim)"""
 ```
 
 设计决策：
 - 使用 T5EncoderModel（只需 encoder）
 - 投影到 128 维（加速余弦计算，保留表达能力）
 - L2 归一化使余弦距离 = 点积
+- LoRA（默认开启）：只训练 adapter + projection，显存降至 4-6GB
+- BF16（默认开启）：encoder 权重以 bfloat16 加载，projection 保持 float32
 
 ### 5. `wfcllm/encoder/trainer.py` — 对比学习训练
 
@@ -121,6 +129,10 @@ class ContrastiveTrainer:
 | max_seq_length | 256 |
 | warmup_ratio | 0.1 |
 | early_stopping_patience | 3 |
+| use_lora | True |
+| lora_r | 8 |
+| lora_alpha | 16 |
+| use_bf16 | True |
 
 Checkpoint 保存到 `data/checkpoints/encoder/`。
 
@@ -140,9 +152,19 @@ Checkpoint 保存到 `data/checkpoints/encoder/`。
 class EncoderConfig:
     model_name: str = "Salesforce/codet5-base"
     embed_dim: int = 128
+    # LoRA (可选，默认开启)
+    use_lora: bool = True
+    lora_r: int = 8
+    lora_alpha: int = 16
+    lora_dropout: float = 0.1
+    lora_target_modules: list[str] = field(default_factory=lambda: ["q", "v"])
+    # 精度 (可选，默认 BF16)
+    use_bf16: bool = True
+    # 数据
     data_sources: list[str] = field(default_factory=lambda: ["mbpp", "humaneval"])
     max_seq_length: int = 256
     negative_ratio: float = 0.5
+    # 训练
     lr: float = 2e-5
     batch_size: int = 32
     epochs: int = 10

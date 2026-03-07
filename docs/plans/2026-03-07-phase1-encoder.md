@@ -961,6 +961,25 @@ class TestEncoderConfig:
         assert cfg.early_stopping_patience == 3
         assert cfg.negative_ratio == 0.5
 
+    def test_lora_defaults(self):
+        cfg = EncoderConfig()
+        assert cfg.use_lora is True
+        assert cfg.lora_r == 8
+        assert cfg.lora_alpha == 16
+        assert cfg.lora_dropout == 0.1
+
+    def test_bf16_default(self):
+        cfg = EncoderConfig()
+        assert cfg.use_bf16 is True
+
+    def test_disable_lora(self):
+        cfg = EncoderConfig(use_lora=False)
+        assert cfg.use_lora is False
+
+    def test_disable_bf16(self):
+        cfg = EncoderConfig(use_bf16=False)
+        assert cfg.use_bf16 is False
+
     def test_data_sources(self):
         cfg = EncoderConfig()
         assert "mbpp" in cfg.data_sources
@@ -1001,6 +1020,16 @@ class EncoderConfig:
     model_name: str = "Salesforce/codet5-base"
     embed_dim: int = 128
 
+    # LoRA (optional, default on)
+    use_lora: bool = True
+    lora_r: int = 8
+    lora_alpha: int = 16
+    lora_dropout: float = 0.1
+    lora_target_modules: list[str] = field(default_factory=lambda: ["q", "v"])
+
+    # Precision (optional, default BF16)
+    use_bf16: bool = True
+
     # Data
     data_sources: list[str] = field(default_factory=lambda: ["mbpp", "humaneval"])
     max_seq_length: int = 256
@@ -1022,7 +1051,7 @@ class EncoderConfig:
 **Step 4: Run tests to verify they pass**
 
 Run: `conda run -n WFCLLM pytest tests/encoder/test_config.py -v`
-Expected: All 4 tests PASS
+Expected: All 7 tests PASS
 
 **Step 5: Commit**
 
@@ -1039,12 +1068,12 @@ git commit -m "feat: add encoder configuration dataclass"
 - Create: `wfcllm/encoder/model.py`
 - Create: `tests/encoder/test_model.py`
 
-**Prerequisite:** `torch` and `transformers` must be installed in the WFCLLM conda env.
+**Prerequisite:** `torch`, `transformers`, and `peft` must be installed in the WFCLLM conda env.
 
 **Step 0: Install dependencies**
 
 ```bash
-conda run -n WFCLLM pip install torch transformers
+conda run -n WFCLLM pip install torch transformers peft
 ```
 
 **Step 1: Write the failing tests**
@@ -1058,12 +1087,7 @@ import torch
 from transformers import AutoTokenizer
 
 from wfcllm.encoder.model import SemanticEncoder
-
-
-@pytest.fixture
-def model():
-    """Create a small encoder for testing."""
-    return SemanticEncoder(model_name="Salesforce/codet5-base", embed_dim=128)
+from wfcllm.encoder.config import EncoderConfig
 
 
 @pytest.fixture
@@ -1071,7 +1095,14 @@ def tokenizer():
     return AutoTokenizer.from_pretrained("Salesforce/codet5-base")
 
 
-class TestSemanticEncoder:
+class TestSemanticEncoderFullFinetune:
+    """Tests with LoRA disabled (full finetune, FP32)."""
+
+    @pytest.fixture
+    def model(self):
+        config = EncoderConfig(use_lora=False, use_bf16=False, embed_dim=128)
+        return SemanticEncoder(config=config)
+
     def test_output_shape(self, model, tokenizer):
         inputs = tokenizer("x = 1", return_tensors="pt", padding=True, truncation=True, max_length=256)
         with torch.no_grad():
@@ -1092,12 +1123,40 @@ class TestSemanticEncoder:
             output = model(inputs["input_ids"], inputs["attention_mask"])
         assert output.shape == (3, 128)
 
-    def test_different_embed_dim(self, tokenizer):
-        model = SemanticEncoder(model_name="Salesforce/codet5-base", embed_dim=64)
+    def test_all_params_trainable(self, model):
+        total = sum(p.numel() for p in model.parameters())
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        assert trainable == total
+
+
+class TestSemanticEncoderLoRA:
+    """Tests with LoRA enabled (default config)."""
+
+    @pytest.fixture
+    def model(self):
+        config = EncoderConfig(use_lora=True, use_bf16=False, embed_dim=128)
+        return SemanticEncoder(config=config)
+
+    def test_output_shape(self, model, tokenizer):
         inputs = tokenizer("x = 1", return_tensors="pt", padding=True, truncation=True, max_length=256)
         with torch.no_grad():
             output = model(inputs["input_ids"], inputs["attention_mask"])
-        assert output.shape == (1, 64)
+        assert output.shape == (1, 128)
+
+    def test_output_normalized(self, model, tokenizer):
+        inputs = tokenizer("x = 1", return_tensors="pt", padding=True, truncation=True, max_length=256)
+        with torch.no_grad():
+            output = model(inputs["input_ids"], inputs["attention_mask"])
+        norms = torch.norm(output, dim=1)
+        assert torch.allclose(norms, torch.ones_like(norms), atol=1e-5)
+
+    def test_fewer_trainable_params(self, model):
+        total = sum(p.numel() for p in model.parameters())
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        assert trainable < total, "LoRA should freeze most parameters"
+        # LoRA typically trains <5% of params
+        ratio = trainable / total
+        assert ratio < 0.10, f"Expected <10% trainable params, got {ratio:.2%}"
 
     def test_deterministic(self, model, tokenizer):
         inputs = tokenizer("x = 1", return_tensors="pt", padding=True, truncation=True, max_length=256)
@@ -1106,6 +1165,35 @@ class TestSemanticEncoder:
             out1 = model(inputs["input_ids"], inputs["attention_mask"])
             out2 = model(inputs["input_ids"], inputs["attention_mask"])
         assert torch.allclose(out1, out2)
+
+
+class TestSemanticEncoderBF16:
+    """Tests with BF16 enabled."""
+
+    @pytest.fixture
+    def model(self):
+        config = EncoderConfig(use_lora=False, use_bf16=True, embed_dim=64)
+        return SemanticEncoder(config=config)
+
+    def test_encoder_dtype(self, model):
+        # Encoder weights should be BF16
+        param = next(model.encoder.parameters())
+        assert param.dtype == torch.bfloat16
+
+    def test_output_is_float32(self, model, tokenizer):
+        inputs = tokenizer("x = 1", return_tensors="pt", padding=True, truncation=True, max_length=256)
+        with torch.no_grad():
+            output = model(inputs["input_ids"], inputs["attention_mask"])
+        # Output should be cast back to float32 for downstream use
+        assert output.dtype == torch.float32
+
+    def test_different_embed_dim(self, tokenizer):
+        config = EncoderConfig(use_lora=False, use_bf16=False, embed_dim=64)
+        model = SemanticEncoder(config=config)
+        inputs = tokenizer("x = 1", return_tensors="pt", padding=True, truncation=True, max_length=256)
+        with torch.no_grad():
+            output = model(inputs["input_ids"], inputs["attention_mask"])
+        assert output.shape == (1, 64)
 ```
 
 **Step 2: Run tests to verify they fail**
@@ -1126,22 +1214,49 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import T5EncoderModel
 
+from wfcllm.encoder.config import EncoderConfig
+
 
 class SemanticEncoder(nn.Module):
     """CodeT5 encoder with projection head for contrastive learning.
 
     Architecture: CodeT5 Encoder → [CLS] pooling → Linear → L2 normalize
+
+    Supports optional LoRA (via peft) and BF16 precision, both configurable
+    via EncoderConfig and enabled by default.
     """
 
-    def __init__(
-        self,
-        model_name: str = "Salesforce/codet5-base",
-        embed_dim: int = 128,
-    ):
+    def __init__(self, config: EncoderConfig | None = None):
         super().__init__()
-        self.encoder = T5EncoderModel.from_pretrained(model_name)
+        if config is None:
+            config = EncoderConfig()
+        self.config = config
+
+        # Load encoder with optional BF16
+        load_kwargs = {}
+        if config.use_bf16:
+            load_kwargs["torch_dtype"] = torch.bfloat16
+
+        self.encoder = T5EncoderModel.from_pretrained(
+            config.model_name, **load_kwargs
+        )
         hidden_size = self.encoder.config.d_model
-        self.projection = nn.Linear(hidden_size, embed_dim)
+
+        # Apply LoRA if enabled
+        if config.use_lora:
+            from peft import LoraConfig, get_peft_model
+
+            lora_config = LoraConfig(
+                r=config.lora_r,
+                lora_alpha=config.lora_alpha,
+                lora_dropout=config.lora_dropout,
+                target_modules=config.lora_target_modules,
+                bias="none",
+            )
+            self.encoder = get_peft_model(self.encoder, lora_config)
+
+        # Projection head (always float32 for stable cosine similarity)
+        self.projection = nn.Linear(hidden_size, config.embed_dim)
 
     def forward(
         self, input_ids: torch.Tensor, attention_mask: torch.Tensor
@@ -1153,13 +1268,15 @@ class SemanticEncoder(nn.Module):
             attention_mask: (batch_size, seq_len)
 
         Returns:
-            (batch_size, embed_dim) L2-normalized vectors.
+            (batch_size, embed_dim) L2-normalized float32 vectors.
         """
         encoder_output = self.encoder(
             input_ids=input_ids, attention_mask=attention_mask
         )
         # Use first token ([CLS] equivalent) as sequence representation
         cls_hidden = encoder_output.last_hidden_state[:, 0, :]
+        # Cast to float32 before projection for numerical stability
+        cls_hidden = cls_hidden.float()
         projected = self.projection(cls_hidden)
         return F.normalize(projected, p=2, dim=1)
 ```
@@ -1167,13 +1284,13 @@ class SemanticEncoder(nn.Module):
 **Step 4: Run tests to verify they pass**
 
 Run: `conda run -n WFCLLM pytest tests/encoder/test_model.py -v`
-Expected: All 5 tests PASS (first run will download model weights ~900MB)
+Expected: All 11 tests PASS (first run will download model weights ~900MB)
 
 **Step 5: Commit**
 
 ```bash
 git add wfcllm/encoder/model.py tests/encoder/test_model.py
-git commit -m "feat: add SemanticEncoder model with CodeT5 backbone"
+git commit -m "feat: add SemanticEncoder model with CodeT5 backbone, optional LoRA and BF16"
 ```
 
 ---
@@ -1453,12 +1570,13 @@ class TestContrastiveTrainer:
     def dummy_setup(self):
         """Create minimal trainer with dummy data for smoke testing."""
         from wfcllm.encoder.model import SemanticEncoder
-        model = SemanticEncoder(model_name="Salesforce/codet5-base", embed_dim=32)
         config = EncoderConfig(
             embed_dim=32, epochs=1, batch_size=2, lr=1e-4,
+            use_lora=False, use_bf16=False,
             checkpoint_dir="/tmp/wfcllm_test_ckpt",
             results_dir="/tmp/wfcllm_test_results",
         )
+        model = SemanticEncoder(config=config)
 
         # Create tiny synthetic dataset
         seq_len = 32
@@ -1513,6 +1631,7 @@ Expected: FAIL — ImportError
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from pathlib import Path
 
 import torch
@@ -1542,7 +1661,10 @@ def triplet_cosine_loss(
 
 
 class ContrastiveTrainer:
-    """Training loop for contrastive encoder pretraining."""
+    """Training loop for contrastive encoder pretraining.
+
+    Supports optional BF16 mixed precision via config.use_bf16.
+    """
 
     def __init__(
         self,
@@ -1558,9 +1680,18 @@ class ContrastiveTrainer:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(self.device)
 
-        self.optimizer = AdamW(model.parameters(), lr=config.lr)
+        # Only optimize parameters that require grad (respects LoRA frozen params)
+        trainable_params = [p for p in model.parameters() if p.requires_grad]
+        self.optimizer = AdamW(trainable_params, lr=config.lr)
         total_steps = len(train_loader) * config.epochs
         self.scheduler = CosineAnnealingLR(self.optimizer, T_max=total_steps)
+
+        # BF16 autocast context
+        self._autocast_ctx = (
+            torch.autocast(device_type=self.device.type, dtype=torch.bfloat16)
+            if config.use_bf16 and self.device.type == "cuda"
+            else nullcontext()
+        )
 
     def _encode_batch(self, batch: dict, prefix: str) -> torch.Tensor:
         input_ids = batch[f"{prefix}_input_ids"].to(self.device)
@@ -1574,13 +1705,14 @@ class ContrastiveTrainer:
         n_batches = 0
 
         for batch in self.train_loader:
-            anchor_emb = self._encode_batch(batch, "anchor")
-            positive_emb = self._encode_batch(batch, "positive")
-            negative_emb = self._encode_batch(batch, "negative")
+            with self._autocast_ctx:
+                anchor_emb = self._encode_batch(batch, "anchor")
+                positive_emb = self._encode_batch(batch, "positive")
+                negative_emb = self._encode_batch(batch, "negative")
 
-            loss = triplet_cosine_loss(
-                anchor_emb, positive_emb, negative_emb, margin=self.config.margin
-            )
+                loss = triplet_cosine_loss(
+                    anchor_emb, positive_emb, negative_emb, margin=self.config.margin
+                )
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -1600,13 +1732,14 @@ class ContrastiveTrainer:
         n_batches = 0
 
         for batch in self.val_loader:
-            anchor_emb = self._encode_batch(batch, "anchor")
-            positive_emb = self._encode_batch(batch, "positive")
-            negative_emb = self._encode_batch(batch, "negative")
+            with self._autocast_ctx:
+                anchor_emb = self._encode_batch(batch, "anchor")
+                positive_emb = self._encode_batch(batch, "positive")
+                negative_emb = self._encode_batch(batch, "negative")
 
-            loss = triplet_cosine_loss(
-                anchor_emb, positive_emb, negative_emb, margin=self.config.margin
-            )
+                loss = triplet_cosine_loss(
+                    anchor_emb, positive_emb, negative_emb, margin=self.config.margin
+                )
             total_loss += loss.item()
             n_batches += 1
 
@@ -1665,7 +1798,7 @@ Expected: All tests PASS
 
 ```bash
 git add wfcllm/encoder/trainer.py tests/encoder/test_trainer.py
-git commit -m "feat: add contrastive learning trainer with early stopping"
+git commit -m "feat: add contrastive learning trainer with early stopping and BF16 autocast"
 ```
 
 ---
@@ -2035,9 +2168,7 @@ def main(config: EncoderConfig | None = None) -> None:
     print(f"  Train: {len(train_ds)}, Val: {len(val_ds)}, Test: {len(test_ds)}")
 
     # 5. Train
-    model = SemanticEncoder(
-        model_name=config.model_name, embed_dim=config.embed_dim
-    )
+    model = SemanticEncoder(config=config)
     trainer = ContrastiveTrainer(model, train_loader, val_loader, config)
 
     print("Starting training...")
@@ -2104,6 +2235,8 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--margin", type=float, default=0.3)
     parser.add_argument("--max-seq-length", type=int, default=256)
+    parser.add_argument("--no-lora", action="store_true", help="Disable LoRA (full finetune)")
+    parser.add_argument("--no-bf16", action="store_true", help="Disable BF16 (use FP32)")
     args = parser.parse_args()
 
     config = EncoderConfig(
@@ -2114,6 +2247,8 @@ if __name__ == "__main__":
         epochs=args.epochs,
         margin=args.margin,
         max_seq_length=args.max_seq_length,
+        use_lora=not args.no_lora,
+        use_bf16=not args.no_bf16,
     )
     main(config)
 ```
@@ -2154,12 +2289,13 @@ git commit -m "feat: add training entry point with full data pipeline"
 
 **Step 1: Update requirements.txt**
 
-Uncomment torch and transformers:
+Uncomment torch and transformers, add peft:
 
 ```
 # 深度学习（不锁版本，视目标服务器适配）
 torch
 transformers
+peft
 ```
 
 **Step 2: Update encoder __init__.py**
