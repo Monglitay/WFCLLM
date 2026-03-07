@@ -15,15 +15,24 @@ def process_blocks(
     output_path: Path,
     max_perm_len: int = 5,
     max_variants: int = 1000,
+    mode: str = "positive",
 ) -> None:
     """Load blocks JSON, transform each block, write output JSON."""
     with open(input_path, encoding="utf-8") as f:
         data = json.load(f)
 
+    from rules.negative import get_all_negative_rules
+
+    if mode == "negative":
+        rules = get_all_negative_rules()
+    else:
+        rules = get_all_rules()
+
     engine = TransformEngine(
-        rules=get_all_rules(),
+        rules=rules,
         max_perm_len=max_perm_len,
         max_variants=max_variants,
+        mode=mode,
     )
 
     total_blocks = 0
@@ -66,6 +75,7 @@ def process_blocks(
     output = {
         "metadata": {
             "source_file": str(input_path.name),
+            "mode": mode,
             "total_blocks": total_blocks,
             "transformed_blocks": transformed_blocks,
             "total_variants": total_variants,
@@ -86,9 +96,11 @@ def process_blocks(
     print(f"  Total variants: {total_variants}")
 
 
-def main(limit: int | None = None, max_perm_len: int = 5, max_variants: int = 1000) -> None:
+def main(limit: int | None = None, max_perm_len: int = 5, max_variants: int = 1000, mode: str = "positive") -> None:
     """Entry point with CLI args."""
-    from config import INPUT_FILE, OUTPUT_FILE
+    from config import INPUT_FILE, OUTPUT_FILE, OUTPUT_FILE_NEGATIVE
+
+    output = OUTPUT_FILE_NEGATIVE if mode == "negative" else OUTPUT_FILE
 
     if limit is not None:
         # Load, truncate, save to temp, process
@@ -100,10 +112,10 @@ def main(limit: int | None = None, max_perm_len: int = 5, max_variants: int = 10
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
             json.dump(data, tmp, ensure_ascii=False)
             tmp_path = Path(tmp.name)
-        process_blocks(tmp_path, OUTPUT_FILE, max_perm_len, max_variants)
+        process_blocks(tmp_path, output, max_perm_len, max_variants, mode)
         tmp_path.unlink()
     else:
-        process_blocks(INPUT_FILE, OUTPUT_FILE, max_perm_len, max_variants)
+        process_blocks(INPUT_FILE, output, max_perm_len, max_variants, mode)
 
 
 if __name__ == "__main__":
@@ -113,5 +125,7 @@ if __name__ == "__main__":
     ap.add_argument("--limit", type=int, default=None, help="Process only first N samples")
     ap.add_argument("--max-perm-len", type=int, default=5, help="Max permutation length")
     ap.add_argument("--max-variants", type=int, default=1000, help="Max variants per block")
+    ap.add_argument("--mode", choices=["positive", "negative"], default="positive",
+                    help="Transform mode: positive (semantic-equivalent) or negative (semantic-breaking)")
     args = ap.parse_args()
-    main(limit=args.limit, max_perm_len=args.max_perm_len, max_variants=args.max_variants)
+    main(limit=args.limit, max_perm_len=args.max_perm_len, max_variants=args.max_variants, mode=args.mode)
