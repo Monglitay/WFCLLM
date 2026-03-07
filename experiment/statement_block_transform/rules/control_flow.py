@@ -222,9 +222,28 @@ class BranchFlip(Rule):
             if node.type == "if_statement":
                 alt = node.child_by_field_name("alternative")
                 if alt and alt.type == "else_clause":
+                    condition = node.child_by_field_name("condition")
+                    consequence = node.child_by_field_name("consequence")
+
+                    if not condition or not consequence:
+                        for child in node.children:
+                            walk(child)
+                        return
+
+                    else_body_node = alt.child_by_field_name("body")
+                    if not else_body_node:
+                        for child in node.children:
+                            walk(child)
+                        return
+
+                    cond_text = condition.text.decode("utf-8")
+                    if_body = source[consequence.start_byte:consequence.end_byte]
+                    else_body = source[else_body_node.start_byte:else_body_node.end_byte]
+
+                    replacement = f"if not {cond_text}:\n{else_body}\nelse:\n{if_body}"
                     matches.append(Match(
                         "if_statement", node.start_byte, node.end_byte,
-                        source[node.start_byte:node.end_byte], ""))
+                        source[node.start_byte:node.end_byte], replacement))
             for child in node.children:
                 walk(child)
         walk(tree.root_node)
@@ -233,29 +252,5 @@ class BranchFlip(Rule):
     def apply(self, source, matches):
         result = source
         for m in sorted(matches, key=lambda m: m.start_byte, reverse=True):
-            tree = parse_code(result)
-            node = self._find_node(tree.root_node, "if_statement", m.start_byte)
-            if not node:
-                continue
-
-            condition = node.child_by_field_name("condition")
-            consequence = node.child_by_field_name("consequence")
-            alternative = node.child_by_field_name("alternative")
-
-            cond_text = condition.text.decode("utf-8")
-            if_body = result[consequence.start_byte:consequence.end_byte]
-            else_body_node = alternative.child_by_field_name("body")
-            else_body = result[else_body_node.start_byte:else_body_node.end_byte]
-
-            replacement = f"if not {cond_text}:\n{else_body}\nelse:\n{if_body}"
-            result = result[:node.start_byte] + replacement + result[node.end_byte:]
+            result = result[:m.start_byte] + m.replacement_text + result[m.end_byte:]
         return result
-
-    def _find_node(self, root, node_type, start_byte):
-        if root.type == node_type and root.start_byte == start_byte:
-            return root
-        for child in root.children:
-            found = self._find_node(child, node_type, start_byte)
-            if found:
-                return found
-        return None
