@@ -48,3 +48,20 @@ class TestDetectionResult:
         assert dr.z_score == 3.5
         assert dr.independent_blocks == 6
         assert dr.hit_blocks == 5
+
+
+class TestPublicAPI:
+    def test_high_level_imports(self):
+        from wfcllm.extract import (
+            DetectionResult,
+            ExtractConfig,
+            WatermarkDetector,
+        )
+
+    def test_low_level_imports(self):
+        from wfcllm.extract import (
+            BlockScore,
+            BlockScorer,
+            DPSelector,
+            HypothesisTester,
+        )
