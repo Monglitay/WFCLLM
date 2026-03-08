@@ -31,18 +31,30 @@ from wfcllm.encoder.evaluate import (
 )
 
 
-def load_code_samples(data_sources: list[str]) -> list[dict]:
-    """Load code samples from HuggingFace datasets."""
+def load_code_samples(
+    data_sources: list[str],
+    local_dataset_dir: str | None = None,
+) -> list[dict]:
+    """Load code samples from HuggingFace datasets.
+
+    Args:
+        data_sources: Dataset names ("mbpp", "humaneval").
+        local_dataset_dir: Optional local cache root, e.g. "data/datasets".
+            Each dataset lives at <local_dataset_dir>/<name>/.
+            If None, uses HF default global cache.
+    """
     samples: list[dict] = []
 
     for source in data_sources:
         if source == "mbpp":
-            ds = load_dataset("google-research-datasets/mbpp", "full")
+            cache_dir = str(Path(local_dataset_dir) / "mbpp") if local_dataset_dir else None
+            ds = load_dataset("google-research-datasets/mbpp", "full", cache_dir=cache_dir)
             for split in ds:
                 for item in ds[split]:
                     samples.append({"code": item["code"], "source": "mbpp"})
         elif source == "humaneval":
-            ds = load_dataset("openai/openai_humaneval")
+            cache_dir = str(Path(local_dataset_dir) / "humaneval") if local_dataset_dir else None
+            ds = load_dataset("openai/openai_humaneval", cache_dir=cache_dir)
             for split in ds:
                 for item in ds[split]:
                     canonical = item.get("canonical_solution", "")
@@ -101,9 +113,18 @@ def main(config: EncoderConfig | None = None) -> None:
 
     print("=== Phase 1: Semantic Encoder Pretraining ===")
 
+    # Resolve model path: prefer local if available
+    local_codet5 = Path(config.local_model_dir) / "codet5-base"
+    if local_codet5.exists() and (local_codet5 / "config.json").exists():
+        effective_model = str(local_codet5)
+        print(f"  Using local model: {effective_model}")
+    else:
+        effective_model = config.model_name
+        print(f"  Using HF Hub model: {effective_model}")
+
     # 1. Load data
     print(f"Loading data from {config.data_sources}...")
-    code_samples = load_code_samples(config.data_sources)
+    code_samples = load_code_samples(config.data_sources, local_dataset_dir=config.local_dataset_dir)
     print(f"  Loaded {len(code_samples)} code samples")
 
     # 2. Prepare blocks with variants
@@ -119,7 +140,7 @@ def main(config: EncoderConfig | None = None) -> None:
     print(f"  Built {len(triplets)} triplets")
 
     # 4. Create datasets
-    tokenizer = AutoTokenizer.from_pretrained(config.model_name)
+    tokenizer = AutoTokenizer.from_pretrained(effective_model)
     dataset = TripletCodeDataset(triplets, tokenizer, max_length=config.max_seq_length)
 
     # Split: 80% train, 10% val, 10% test
@@ -136,8 +157,10 @@ def main(config: EncoderConfig | None = None) -> None:
     print(f"  Train: {len(train_ds)}, Val: {len(val_ds)}, Test: {len(test_ds)}")
 
     # 5. Train
-    model = SemanticEncoder(config=config)
-    trainer = ContrastiveTrainer(model, train_loader, val_loader, config)
+    from dataclasses import replace
+    config_for_model = replace(config, model_name=effective_model)
+    model = SemanticEncoder(config=config_for_model)
+    trainer = ContrastiveTrainer(model, train_loader, val_loader, config_for_model)
 
     print("Starting training...")
     best_metrics = trainer.train()
