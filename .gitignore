@@ -1,8 +1,19 @@
 # Output results
 experiment/*/results/
 
-# Dataset cache
-data/
+# 离线资源（模型权重、数据集）— 大二进制文件不入库
+data/models/
+data/datasets/
+data/checkpoints/
+data/results/
+data/run_state.json
+data/mbpp/
+
+# 保留目录占位文件
+!data/models/.gitkeep
+!data/datasets/.gitkeep
+!data/checkpoints/.gitkeep
+!data/results/.gitkeep
 
 # Python
 __pycache__/
