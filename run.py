@@ -151,7 +151,7 @@ def main() -> int:
     phases_to_run = [args.phase] if args.phase else PHASES
 
     for phase in phases_to_run:
-        if state.is_done(phase) and not args.force:
+        if state.is_done(phase) and not args.force and not args.eval_only:
             print(f"[跳过] {phase}（已完成，使用 --force 强制重跑）")
             continue
         rc = run_phase(phase, args, state)
