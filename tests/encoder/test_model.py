@@ -7,10 +7,13 @@ from transformers import AutoTokenizer
 from wfcllm.encoder.model import SemanticEncoder
 from wfcllm.encoder.config import EncoderConfig
 
+# 使用本地离线模型，避免 HF Hub 访问
+LOCAL_MODEL = "data/models/codet5-base"
+
 
 @pytest.fixture
 def tokenizer():
-    return AutoTokenizer.from_pretrained("Salesforce/codet5-base")
+    return AutoTokenizer.from_pretrained(LOCAL_MODEL)
 
 
 class TestSemanticEncoderFullFinetune:
@@ -18,7 +21,7 @@ class TestSemanticEncoderFullFinetune:
 
     @pytest.fixture
     def model(self):
-        config = EncoderConfig(use_lora=False, use_bf16=False, embed_dim=128)
+        config = EncoderConfig(model_name=LOCAL_MODEL, use_lora=False, use_bf16=False, embed_dim=128)
         return SemanticEncoder(config=config)
 
     def test_output_shape(self, model, tokenizer):
@@ -52,7 +55,7 @@ class TestSemanticEncoderLoRA:
 
     @pytest.fixture
     def model(self):
-        config = EncoderConfig(use_lora=True, use_bf16=False, embed_dim=128)
+        config = EncoderConfig(model_name=LOCAL_MODEL, use_lora=True, use_bf16=False, embed_dim=128)
         return SemanticEncoder(config=config)
 
     def test_output_shape(self, model, tokenizer):
@@ -72,7 +75,6 @@ class TestSemanticEncoderLoRA:
         total = sum(p.numel() for p in model.parameters())
         trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
         assert trainable < total, "LoRA should freeze most parameters"
-        # LoRA typically trains <5% of params
         ratio = trainable / total
         assert ratio < 0.10, f"Expected <10% trainable params, got {ratio:.2%}"
 
@@ -90,11 +92,10 @@ class TestSemanticEncoderBF16:
 
     @pytest.fixture
     def model(self):
-        config = EncoderConfig(use_lora=False, use_bf16=True, embed_dim=64)
+        config = EncoderConfig(model_name=LOCAL_MODEL, use_lora=False, use_bf16=True, embed_dim=64)
         return SemanticEncoder(config=config)
 
     def test_encoder_dtype(self, model):
-        # Encoder weights should be BF16
         param = next(model.encoder.parameters())
         assert param.dtype == torch.bfloat16
 
@@ -102,11 +103,10 @@ class TestSemanticEncoderBF16:
         inputs = tokenizer("x = 1", return_tensors="pt", padding=True, truncation=True, max_length=256)
         with torch.no_grad():
             output = model(inputs["input_ids"], inputs["attention_mask"])
-        # Output should be cast back to float32 for downstream use
         assert output.dtype == torch.float32
 
     def test_different_embed_dim(self, tokenizer):
-        config = EncoderConfig(use_lora=False, use_bf16=False, embed_dim=64)
+        config = EncoderConfig(model_name=LOCAL_MODEL, use_lora=False, use_bf16=False, embed_dim=64)
         model = SemanticEncoder(config=config)
         inputs = tokenizer("x = 1", return_tensors="pt", padding=True, truncation=True, max_length=256)
         with torch.no_grad():
