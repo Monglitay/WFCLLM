@@ -13,7 +13,7 @@ class WatermarkConfig:
     secret_key: str
 
     # Encoder
-    encoder_model_path: str = "Salesforce/codet5-base"
+    encoder_model_path: str = "data/models/codet5-base"  # 本地路径优先；可传 HF Hub ID 作回退
     encoder_embed_dim: int = 128
     encoder_device: str = "cuda"
 

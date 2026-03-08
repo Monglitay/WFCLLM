@@ -234,6 +234,12 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
 
     # 加载编码器
     enc_config = EncoderConfig(embed_dim=embed_dim)
+    local_codet5 = Path(enc_config.local_model_dir) / "codet5-base"
+    if local_codet5.exists() and (local_codet5 / "config.json").exists():
+        enc_config.model_name = str(local_codet5)
+        print(f"[自动] 编码器使用本地模型: {enc_config.model_name}")
+    else:
+        print(f"[回退] 编码器使用 HF Hub: {enc_config.model_name}")
     encoder = SemanticEncoder(config=enc_config)
     if encoder_checkpoint and Path(encoder_checkpoint).exists():
         ckpt = torch.load(encoder_checkpoint, map_location="cpu")
@@ -307,6 +313,12 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
 
     # 加载编码器
     enc_config = EncoderConfig(embed_dim=embed_dim)
+    local_codet5 = Path(enc_config.local_model_dir) / "codet5-base"
+    if local_codet5.exists() and (local_codet5 / "config.json").exists():
+        enc_config.model_name = str(local_codet5)
+        print(f"[自动] 编码器使用本地模型: {enc_config.model_name}")
+    else:
+        print(f"[回退] 编码器使用 HF Hub: {enc_config.model_name}")
     encoder = SemanticEncoder(config=enc_config)
     if encoder_checkpoint and Path(encoder_checkpoint).exists():
         ckpt = torch.load(encoder_checkpoint, map_location="cpu")
