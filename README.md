@@ -1,4 +1,4 @@
-1# WFCLLM：基于语句块语义特征的生成时代码水印
+# WFCLLM：基于语句块语义特征的生成时代码水印
 
 **WFCLLM (WaterMark for Code LLM)** 是一套针对代码大语言模型（Code LLM）的**生成时水印**系统。
 
@@ -41,7 +41,141 @@ pip install -r requirements.txt
 ```
 
 > **离线环境：** 提前下载 `Salesforce/codet5-base` 模型权重与 Tokenizer 至本地，
-> 并通过 `--model-name /path/to/local/codet5` 指定本地路径。
+> 详见下方「离线资源准备」章节。
+
+---
+
+## 离线资源准备（离线/内网环境必读）
+
+> 目标服务器处于内网，无法访问 HuggingFace Hub。需在联网环境预先下载所有资源，再打包传至目标服务器。
+
+### 资源清单
+
+| 资源 | HuggingFace ID | 用途 | 默认本地路径 | 大小 |
+|------|---------------|------|-------------|------|
+| CodeT5-base 模型 + Tokenizer | `Salesforce/codet5-base` | 语义编码器底座（阶段一/二/三） | `data/models/codet5-base/` | ~850 MB |
+| MBPP 数据集 | `google-research-datasets/mbpp` | 编码器训练数据（阶段一） | `data/datasets/mbpp/` | ~1 MB |
+| HumanEval 数据集 | `openai/openai_humaneval` | 编码器训练数据（阶段一） | `data/datasets/humaneval/` | ~0.2 MB |
+| 代码生成 LLM | 用户自备（推荐见下方） | 生成含水印代码（阶段二） | 任意路径，`--lm-model-path` 指定 | ≥13 GB |
+
+---
+
+### 1. 下载 CodeT5-base 模型 + Tokenizer
+
+```bash
+conda activate WFCLLM
+
+# 方式一：脚本下载（推荐，确保 tokenizer 文件完整）
+python - <<'EOF'
+from huggingface_hub import snapshot_download
+snapshot_download(
+    repo_id="Salesforce/codet5-base",
+    local_dir="data/models/codet5-base",
+    local_dir_use_symlinks=False,
+)
+print("Done: data/models/codet5-base/")
+EOF
+
+# 方式二：huggingface-cli
+huggingface-cli download Salesforce/codet5-base \
+    --local-dir data/models/codet5-base \
+    --local-dir-use-symlinks False
+```
+
+下载后目录包含：`config.json`、`pytorch_model.bin`（~850 MB）、`tokenizer_config.json`、`vocab.json`、`merges.txt`、`special_tokens_map.json`、`added_tokens.json`。
+
+**验证：**
+```bash
+conda run -n WFCLLM python -c "
+from transformers import AutoTokenizer, T5EncoderModel
+tok = AutoTokenizer.from_pretrained('data/models/codet5-base')
+m = T5EncoderModel.from_pretrained('data/models/codet5-base')
+print('OK:', sum(p.numel() for p in m.parameters())//1_000_000, 'M params, vocab:', tok.vocab_size)
+"
+```
+
+---
+
+### 2. 下载训练数据集
+
+```bash
+conda activate WFCLLM
+
+# MBPP（~1 MB）
+python - <<'EOF'
+from datasets import load_dataset
+ds = load_dataset("google-research-datasets/mbpp", "full", cache_dir="data/datasets/mbpp")
+print("MBPP:", {k: len(v) for k, v in ds.items()})
+EOF
+
+# HumanEval（~0.2 MB）
+python - <<'EOF'
+from datasets import load_dataset
+ds = load_dataset("openai/openai_humaneval", cache_dir="data/datasets/humaneval")
+print("HumanEval:", {k: len(v) for k, v in ds.items()})
+EOF
+```
+
+---
+
+### 3. 代码生成 LLM（阶段二）
+
+阶段二需要一个代码生成 LLM，**不随本仓库分发**，需用户自行下载并通过 `--lm-model-path` 指定路径。
+
+推荐模型：
+
+| 模型 | HuggingFace ID | 显存需求 |
+|------|---------------|---------|
+| CodeLlama-7b-hf | `codellama/CodeLlama-7b-hf` | ~14 GB (FP16) |
+| DeepSeek-Coder-6.7b-base | `deepseek-ai/deepseek-coder-6.7b-base` | ~13 GB (FP16) |
+| StarCoder2-7b | `bigcode/starcoder2-7b` | ~14 GB (FP16) |
+| CodeLlama-13b-hf | `codellama/CodeLlama-13b-hf` | ~26 GB (FP16) |
+
+**下载（以 CodeLlama-7b 为例）：**
+```bash
+# 方式一
+huggingface-cli download codellama/CodeLlama-7b-hf \
+    --local-dir data/models/codellama-7b \
+    --local-dir-use-symlinks False
+
+# 方式二
+python - <<'EOF'
+from huggingface_hub import snapshot_download
+snapshot_download(
+    repo_id="codellama/CodeLlama-7b-hf",
+    local_dir="data/models/codellama-7b",
+    local_dir_use_symlinks=False,
+)
+EOF
+```
+
+**使用：**
+```bash
+python run.py --phase watermark \
+    --lm-model-path data/models/codellama-7b \
+    --secret-key mysecret \
+    --prompt "def fibonacci(n):"
+```
+
+---
+
+### 4. 打包传输到目标服务器
+
+```bash
+# 打包（约 850 MB+，LLM 模型单独处理）
+tar -czf wfcllm_resources.tar.gz \
+    data/models/codet5-base \
+    data/datasets/mbpp \
+    data/datasets/humaneval
+
+# 传输
+scp wfcllm_resources.tar.gz user@server:/path/to/WFCLLM/
+
+# 目标服务器解压
+ssh user@server "cd /path/to/WFCLLM && tar -xzf wfcllm_resources.tar.gz"
+```
+
+解压后运行 `python run.py` 会**自动检测** `data/models/codet5-base/` 和 `data/datasets/` 下的本地资源，无需额外配置。
 
 ---
 
