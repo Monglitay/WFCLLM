@@ -1,0 +1,39 @@
+"类别 (Category)","规则名称 (Rule Name)","描述 (Description)","原始模式 / 代码 A","转换模式 / 代码 B"
+"API与函数调用","显式默认参数 (Print)","为 print 补充默认 flush 参数","print(x)","print(x, flush=False)"
+"API与函数调用","显式默认参数 (Range)","为 range 补充起始值 0","range(x)","range(0, x)"
+"API与函数调用","显式默认参数 (Open)","为 open 补充默认参数","open(f)","open(f, closefd=True)"
+"API与函数调用","显式默认参数 (Sorted)","为 sorted 补充 reverse 参数","sorted(x)","sorted(x, reverse=False)"
+"API与函数调用","显式默认参数 (Min/Max)","补充 key 参数","min(x) / max(x)","min(x, key=None)"
+"API与函数调用","显式默认参数 (Zip)","补充 strict 参数","zip(x, y)","zip(x, y, strict=False)"
+"API与函数调用","显式版本参数 (Random)","补充 version 参数","random.seed(x)","random.seed(x, version=2)"
+"API与函数调用","显式引号参数 (Html)","补充 quote 参数","html.escape(x)","html.escape(x, quote=True)"
+"API与函数调用","显式精度参数 (Round)","补充 ndigits 参数","round(x)","round(x, ndigits=None)"
+"API与函数调用","显式缩进参数 (Json)","补充 indent 参数","json.dump(x)","json.dump(x, indent=None)"
+"API与函数调用","库别名替换 (LNA)","使用库的全名或常见别名替换","np.sum / tf.keras / re.match / sys.argv","numpy.sum / tensorflow.keras / regex.match / system.argv"
+"API与函数调用","第三方函数替换 (TPF)","使用内置函数或第三方库对应的函数","max() / sum() / abs()","np.max() / torch.sum() 等"
+"语法与初始化","列表初始化","符号与内置函数的相互转换","x = []","x = list()"
+"语法与初始化","字典初始化","符号与内置函数的相互转换","x = {}","x = dict()"
+"语法与初始化","字符串格式化","% 格式化与 .format() 互换","'%d' % x","'{:d}'.format(x)"
+"语法与初始化","类型检查","isinstance 与 type() 判断互换","isinstance(x, int)","type(x) == int"
+"控制流","循环结构转换","for 循环与 while 循环相互转换","for i in range(n):","i = 0
+while i < n:"
+"控制流","迭代模式转换","直接迭代元素与通过索引迭代的互换","for x in lst:","for i in range(len(lst)):
+    x = lst[i]"
+"控制流","推导式转换","列表推导式与高阶函数(map/lambda)互换","[x for x in lst]","list(map(lambda x: x, lst))"
+"控制流","分支翻转 (D3)","反转 if-else 条件并对调代码块","if condition:
+    x = 1
+else:
+    x = 2","if not condition:
+    x = 2
+else:
+    x = 1"
+"表达式与逻辑","算术结合律 (Arithmetic)","提取公因式与展开表达式","x = a * (b + c)","x = a * b + a * c"
+"表达式与逻辑","操作数交换 (D1)","交换加法等满足交换律的操作数顺序","a + b","b + a"
+"表达式与逻辑","比较运算符翻转 (D2)","翻转大小比较运算符及其操作数","n <= right","right >= n"
+"表达式与逻辑","布尔逻辑等价 (De Morgan)","利用德·摩根定律转换逻辑表达式","if x and y:","if not (not x or not y):"
+"表达式与逻辑","一元操作简化","简化或添加冗余的一元操作符","not not x","x"
+"标识符操作","变量重命名","风格转换 (如蛇形命名到驼峰命名)","total_sum","totalSum"
+"标识符操作","名称混淆/语义等价","改变标识符但不影响作用域和逻辑","calculate_total()","computeSum()"
+"代码格式化","修复缩进 (F1)","去除或调整不规范的多余缩进","    print(""Hello"")","print(""Hello"")"
+"代码格式化","修复空格 (F2)","在运算符、关键字周围添加/删除空格","result=a+b-c*d","result = a + b - c * d"
+"代码格式化","修复注释符号 (F3)","清理过度重复的注释符号","##### Hello","# Hello"

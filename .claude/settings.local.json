@@ -2,7 +2,16 @@
   "permissions": {
     "allow": [
       "Bash(conda run:*)",
-      "Bash(git:*)"
+      "Bash(git:*)",
+      "Bash(du:*)",
+      "Bash(python:*)",
+      "Bash(pip install:*)",
+      "Bash(python3:*)",
+      "Bash(mkdir:*)",
+      "WebSearch",
+      "Bash(sed:*)",
+      "Bash(gh auth:*)",
+      "Bash(ssh:*)"
     ]
   }
 }

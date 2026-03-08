@@ -76,12 +76,10 @@ def _collect_token_groups_for_block(
         if not original_nodes:
             continue
 
-        # Get token seqs from original nodes
         original_token_seqs = [
             get_node_tokens(original_source, n) for n in original_nodes
         ]
 
-        # Get token seqs from each variant
         variant_token_seq_lists: list[list[list[str]]] = []
         for variant in variants:
             vsrc = variant.get("transformed_source", "")
@@ -92,7 +90,6 @@ def _collect_token_groups_for_block(
                 [get_node_tokens(vsrc, n) for n in vnodes]
             )
 
-        # Align by position
         groups = align_nodes_by_type(original_token_seqs, variant_token_seq_lists)
         result[node_type] = groups
 
@@ -127,15 +124,21 @@ def run(input_file: Path, output_file: Path) -> None:
     all_entropies: dict[str, list[float]] = {}
 
     for sample_idx, sample in enumerate(samples):
-        for block in sample.get("blocks", []):
+        blocks = sample.get("blocks", [])
+        block_count = len(blocks)
+        for block_idx, block in enumerate(blocks):
+            variants = block.get("variants", [])
             token_groups = _collect_token_groups_for_block(block)
+            node_instance_count = sum(len(g) for g in token_groups.values())
+            print(
+                f"  [{sample_idx + 1}/{len(samples)}] block {block_idx + 1}/{block_count}: "
+                f"{len(variants)} variants, {len(token_groups)} node types, {node_instance_count} instances",
+                flush=True,
+            )
             for node_type, groups in token_groups.items():
                 for token_seqs in groups:
                     h = node_entropy(token_seqs)
                     all_entropies.setdefault(node_type, []).append(h)
-
-        if (sample_idx + 1) % 100 == 0:
-            print(f"  {sample_idx + 1}/{len(samples)}")
 
     node_type_stats = aggregate_by_node_type(all_entropies)
 

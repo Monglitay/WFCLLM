@@ -1,0 +1,37 @@
+"类别 (Category)","规则名称 (Rule Name)","描述 (Description)","原始模式 / 代码 A","转换模式 / 代码 B","破坏效果分析"
+"API与函数调用","函数语义翻转 (Min/Max)","替换为功能相反的内置函数","res = min(x)","res = max(x)","极值逻辑完全相反"
+"API与函数调用","逻辑量词替换 (Any/All)","存在性与普遍性判定互换","if any(lst):","if all(lst):","只要有一个为真 vs 必须全部为真，逻辑彻底改变"
+"API与函数调用","关键参数篡改 (Sorted)","修改决定行为走向的排序方向参数","sorted(x, reverse=False)","sorted(x, reverse=True)","排序结果完全逆序"
+"API与函数调用","文件模式破坏 (Open)","更改文件读写权限模式","open(f, 'r')","open(f, 'w')","将读取操作变成覆盖写入，极具破坏性"
+"API与函数调用","列表追加模式破坏 (Extend/Append)","混淆迭代展开添加与整体对象添加","lst.extend(items)","lst.append(items)","把扁平列表变成了嵌套列表，破坏下游遍历逻辑"
+"API与函数调用","字符串边界颠倒 (Start/End)","翻转前后缀匹配逻辑","if s.startswith(prefix):","if s.endswith(prefix):","匹配位置颠倒，导致扩展名或路由校验失效"
+"API与函数调用","舍入方向翻转 (Rounding)","颠倒向上取整与向下取整","math.ceil(total / size)","math.floor(total / size)","导致少分配一块空间或少一页数据"
+"语法与初始化","初始状态污染 (Empty Init)","改变空容器或基础类型的初始状态","x = []","x = [None]","破坏了累加或收集逻辑的基础，常导致越界"
+"语法与初始化","布尔常量翻转 (Boolean)","状态初始化错误","is_active = True","is_active = False","默认状态彻底反转，可能导致服务不可用"
+"语法与初始化","类型断言错误 (Isinstance)","将类型检查替换为兄弟类型","isinstance(x, int)","isinstance(x, float)","导致后续类型特有的操作报错或被跳过"
+"语法与初始化","引用与拷贝混淆 (Copy vs Ref)","移除浅拷贝，造成内存引用共享","new_lst = lst.copy()","new_lst = lst","导致对新列表的修改会污染原列表数据，产生隐蔽副作用"
+"控制流","边界条件偏移 (Off-by-one)","针对循环边界进行微调","for i in range(n):","for i in range(n - 1):","引发经典的差一错误，少遍历一个元素"
+"控制流","循环控制中断 (Break/Continue)","互换循环内部的中断逻辑","break","continue","应该提前终止的循环变成了跳过本次继续执行"
+"控制流","恶意分支对调 (If-Else)","不反转条件，但对调代码块","if cond:
+    x = 1
+else:
+    x = 2","if cond:
+    x = 2
+else:
+    x = 1","条件没变但执行结果全错，伪装成等价变换欺骗模型"
+"控制流","包含关系取反 (Membership)","翻转元素是否存在于集合中的判断","if item in valid_set:","if item not in valid_set:","白名单模式彻底反转为黑名单模式"
+"控制流","生成器状态截断 (Yield/Return)","将持续产出数据的生成器强行终止","yield data","return data","破坏了迭代协议，导致函数提前结束"
+"表达式与逻辑","关系运算符反转 (Eq/Neq)","完全反转等于/不等于的条件分支走向","if a == b:","if a != b:","逻辑走向完全相反"
+"表达式与逻辑","算术运算符替换 (Arithmetics)","互换加减乘除运算符","total = price + tax","total = price - tax","核心计算逻辑破坏，数值结果完全错误"
+"表达式与逻辑","逻辑运算符替换 (And/Or)","破坏布尔逻辑的短路与组合","if x and y:","if x or y:","条件大幅放宽或收紧，产生逻辑穿透漏洞"
+"表达式与逻辑","比较界限收缩 (Bounds)","将包含边界改为不包含边界","if n <= right:","if n < right:","去掉了等号，改变了临界值的命中规则"
+"表达式与逻辑","赋值降级 (Assignment)","将复合赋值替换为普通赋值","count += 1","count = 1","将累加逻辑破坏成了常量赋值"
+"表达式与逻辑","移位运算反转 (Bitwise Shift)","颠倒左移与右移","val = x << 1","val = x >> 1","底层数值计算发生极大偏离(乘2变除2)"
+"标识符操作","非对称参数交换 (Asymmetric Args)","交换具有强顺序要求的变量位置","dict.get(key, default)","dict.get(default, key)","参数乱序，导致查不到数据或引发错误"
+"标识符操作","作用域变量混淆 (Scope)","用外层同名或相似变量替换局部变量","return lst[i]","return lst[j]","访问了错误的索引或数据，逻辑错位"
+"数据结构操作","切片方向反转 (Slice Step)","改变序列截取的方向或步长","rev = lst[::-1]","rev = lst[::1]","本需要逆序处理的数据变成了原序拷贝"
+"数据结构操作","字典视图错位 (Dict View)","混淆字典的键与值遍历","for item in d.keys():","for item in d.values():","提取的对象维度完全错误，引发类型异常"
+"异常处理","异常吞噬 (Exception Swallowing)","隐藏本该向上传递的异常","except Exception:
+    raise","except Exception:
+    pass","导致系统内部错误被静默忽略，后续状态不可控"
+"系统交互","退出状态码反转 (Sys Exit)","向操作系统返回错误的执行状态","sys.exit(0)","sys.exit(1)","正常退出被标记为异常退出，破坏CI/CD流水线"

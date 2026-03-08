@@ -48,6 +48,15 @@ def _collect_leaves(node: Node, source_bytes: bytes, tokens: list[str]) -> None:
         _collect_leaves(child, source_bytes, tokens)
 
 
+def get_source_tokens(source: str) -> list[str]:
+    """Extract all leaf tokens from the entire source string."""
+    source_bytes = source.encode("utf-8")
+    tree = _parse(source)
+    tokens: list[str] = []
+    _collect_leaves(tree.root_node, source_bytes, tokens)
+    return tokens
+
+
 def get_all_node_types(source: str) -> set[str]:
     """Return all unique node types present in the AST."""
     tree = _parse(source)
