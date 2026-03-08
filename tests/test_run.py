@@ -46,3 +46,34 @@ class TestRunState:
         assert status["encoder"]["done"] is True
         assert status["watermark"]["done"] is False
         assert status["extract"]["done"] is False
+
+
+import subprocess
+
+
+class TestCLI:
+    def test_status_exits_zero(self):
+        result = subprocess.run(
+            ["conda", "run", "-n", "WFCLLM", "python", "run.py", "--status"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        assert "encoder" in result.stdout
+
+    def test_reset_exits_zero(self, tmp_path, monkeypatch):
+        # 使用临时状态文件以免影响真实 data/
+        monkeypatch.chdir(tmp_path)
+        result = subprocess.run(
+            ["conda", "run", "-n", "WFCLLM", "python",
+             str(Path(__file__).parent.parent / "run.py"), "--reset"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        assert "重置" in result.stdout or "reset" in result.stdout.lower()
+
+    def test_unknown_phase_exits_nonzero(self):
+        result = subprocess.run(
+            ["conda", "run", "-n", "WFCLLM", "python", "run.py", "--phase", "invalid"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode != 0
