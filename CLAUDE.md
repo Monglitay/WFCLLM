@@ -35,7 +35,10 @@ type 取值：feat / fix / refactor / test / docs / chore
 - 目录：`tests/`，子包测试放 `tests/<subpackage>/`
 - 命名：`test_<module>.py`，测试函数 `test_<行为描述>()`
 - 要求：每个公共函数/类必须有对应测试
-- 运行：`conda run -n WFCLLM pytest tests/ -v`
+- 运行：`HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/ -v`
+- **必须加 `HF_HUB_OFFLINE=1`**：测试使用本地离线模型/数据集，禁止访问 HF Hub
+- 本地模型路径：`data/models/codet5-base/`；本地数据集路径：`data/datasets/`
+- 涉及 `SemanticEncoder` 的测试须在 `EncoderConfig` 中传入 `model_name="data/models/codet5-base"`
 
 ## 代码迁移规范
 
