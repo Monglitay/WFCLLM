@@ -6,6 +6,7 @@ from contextlib import nullcontext
 from pathlib import Path
 
 import torch
+from tqdm import tqdm
 import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -69,13 +70,19 @@ class ContrastiveTrainer:
         attention_mask = batch[f"{prefix}_attention_mask"].to(self.device)
         return self.model(input_ids, attention_mask)
 
-    def train_epoch(self) -> dict:
+    def train_epoch(self, epoch: int) -> dict:
         """Run one training epoch. Returns {"loss": float}."""
         self.model.train()
         total_loss = 0.0
         n_batches = 0
 
-        for batch in self.train_loader:
+        pbar = tqdm(
+            self.train_loader,
+            desc=f"Epoch {epoch}/{self.config.epochs} [train]",
+            leave=True,
+            dynamic_ncols=True,
+        )
+        for batch in pbar:
             with self._autocast_ctx:
                 anchor_emb = self._encode_batch(batch, "anchor")
                 positive_emb = self._encode_batch(batch, "positive")
@@ -92,17 +99,24 @@ class ContrastiveTrainer:
 
             total_loss += loss.item()
             n_batches += 1
+            pbar.set_postfix(loss=f"{total_loss / n_batches:.4f}")
 
         return {"loss": total_loss / max(n_batches, 1)}
 
     @torch.no_grad()
-    def validate(self) -> dict:
+    def validate(self, epoch: int) -> dict:
         """Run validation. Returns {"val_loss": float}."""
         self.model.eval()
         total_loss = 0.0
         n_batches = 0
 
-        for batch in self.val_loader:
+        pbar = tqdm(
+            self.val_loader,
+            desc=f"Epoch {epoch}/{self.config.epochs} [val]  ",
+            leave=False,
+            dynamic_ncols=True,
+        )
+        for batch in pbar:
             with self._autocast_ctx:
                 anchor_emb = self._encode_batch(batch, "anchor")
                 positive_emb = self._encode_batch(batch, "positive")
@@ -113,6 +127,7 @@ class ContrastiveTrainer:
                 )
             total_loss += loss.item()
             n_batches += 1
+            pbar.set_postfix(val_loss=f"{total_loss / n_batches:.4f}")
 
         return {"val_loss": total_loss / max(n_batches, 1)}
 
@@ -136,8 +151,8 @@ class ContrastiveTrainer:
         best_metrics: dict = {}
 
         for epoch in range(1, self.config.epochs + 1):
-            train_metrics = self.train_epoch()
-            val_metrics = self.validate()
+            train_metrics = self.train_epoch(epoch)
+            val_metrics = self.validate(epoch)
             metrics = {**train_metrics, **val_metrics, "epoch": epoch}
 
             print(
