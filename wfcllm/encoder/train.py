@@ -159,7 +159,8 @@ def main(config: EncoderConfig | None = None) -> None:
     n_train = int(0.8 * n)
     n_val = int(0.1 * n)
     n_test = n - n_train - n_val
-    train_ds, val_ds, test_ds = random_split(dataset, [n_train, n_val, n_test])
+    _split_gen = torch.Generator().manual_seed(42)
+    train_ds, val_ds, test_ds = random_split(dataset, [n_train, n_val, n_test], generator=_split_gen)
 
     train_loader = DataLoader(
         train_ds, batch_size=config.batch_size, shuffle=True,
