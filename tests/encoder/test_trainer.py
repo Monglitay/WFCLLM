@@ -8,6 +8,8 @@ from unittest.mock import MagicMock
 from wfcllm.encoder.trainer import ContrastiveTrainer, triplet_cosine_loss
 from wfcllm.encoder.config import EncoderConfig
 
+LOCAL_MODEL = "data/models/codet5-base"
+
 
 class TestTripletCosineLoss:
     def test_zero_loss_when_perfect(self):
@@ -40,6 +42,7 @@ class TestContrastiveTrainer:
         """Create minimal trainer with dummy data for smoke testing."""
         from wfcllm.encoder.model import SemanticEncoder
         config = EncoderConfig(
+            model_name=LOCAL_MODEL,
             embed_dim=32, epochs=1, batch_size=2, lr=1e-4,
             use_lora=False, use_bf16=False,
             checkpoint_dir="/tmp/wfcllm_test_ckpt",
@@ -64,14 +67,14 @@ class TestContrastiveTrainer:
     def test_train_epoch_returns_loss(self, dummy_setup):
         model, config, train_loader, val_loader = dummy_setup
         trainer = ContrastiveTrainer(model, train_loader, val_loader, config)
-        metrics = trainer.train_epoch()
+        metrics = trainer.train_epoch(epoch=0)
         assert "loss" in metrics
         assert metrics["loss"] > 0
 
     def test_validate_returns_metrics(self, dummy_setup):
         model, config, train_loader, val_loader = dummy_setup
         trainer = ContrastiveTrainer(model, train_loader, val_loader, config)
-        metrics = trainer.validate()
+        metrics = trainer.validate(epoch=0)
         assert "val_loss" in metrics
 
 
