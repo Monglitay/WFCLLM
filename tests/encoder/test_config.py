@@ -9,7 +9,7 @@ class TestEncoderConfig:
         assert cfg.model_name == "Salesforce/codet5-base"
         assert cfg.embed_dim == 128
         assert cfg.lr == 2e-5
-        assert cfg.batch_size == 32
+        assert cfg.batch_size == 64
         assert cfg.epochs == 10
         assert cfg.margin == 0.3
         assert cfg.max_seq_length == 256
@@ -20,8 +20,8 @@ class TestEncoderConfig:
     def test_lora_defaults(self):
         cfg = EncoderConfig()
         assert cfg.use_lora is True
-        assert cfg.lora_r == 8
-        assert cfg.lora_alpha == 16
+        assert cfg.lora_r == 16
+        assert cfg.lora_alpha == 32
         assert cfg.lora_dropout == 0.1
 
     def test_bf16_default(self):
