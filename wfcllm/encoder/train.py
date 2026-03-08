@@ -48,13 +48,21 @@ def load_code_samples(
     for source in data_sources:
         if source == "mbpp":
             cache_dir = str(Path(local_dataset_dir) / "mbpp") if local_dataset_dir else None
-            ds = load_dataset("google-research-datasets/mbpp", "full", cache_dir=cache_dir)
+            ds = load_dataset(
+                "google-research-datasets/mbpp", "full",
+                cache_dir=cache_dir,
+                download_mode="reuse_cache_if_exists",
+            )
             for split in ds:
                 for item in ds[split]:
                     samples.append({"code": item["code"], "source": "mbpp"})
         elif source == "humaneval":
             cache_dir = str(Path(local_dataset_dir) / "humaneval") if local_dataset_dir else None
-            ds = load_dataset("openai/openai_humaneval", cache_dir=cache_dir)
+            ds = load_dataset(
+                "openai/openai_humaneval",
+                cache_dir=cache_dir,
+                download_mode="reuse_cache_if_exists",
+            )
             for split in ds:
                 for item in ds[split]:
                     canonical = item.get("canonical_solution", "")
