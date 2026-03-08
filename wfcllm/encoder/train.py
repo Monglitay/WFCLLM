@@ -26,7 +26,10 @@ from wfcllm.encoder.trainer import ContrastiveTrainer
 from wfcllm.encoder.evaluate import (
     cosine_separation,
     recall_at_k,
-    projection_sign_accuracy,
+    watermark_sign_consistency,
+    mean_reciprocal_rank,
+    mean_average_precision,
+    pair_f1_metrics,
     save_evaluation_report,
 )
 
@@ -206,20 +209,24 @@ def main(config: EncoderConfig | None = None) -> None:
     r1 = recall_at_k(anchor_embs, pos_embs, k=1)
     r5 = recall_at_k(anchor_embs, pos_embs, k=5)
     r10 = recall_at_k(anchor_embs, pos_embs, k=10)
+    mrr = mean_reciprocal_rank(anchor_embs, pos_embs)
+    map_score = mean_average_precision(anchor_embs, pos_embs)
+    wsc = watermark_sign_consistency(anchor_embs, pos_embs, num_directions=64, seed=42)
 
-    # Projection sign accuracy with random directions
-    torch.manual_seed(42)
-    directions = torch.randn_like(anchor_embs)
-    directions = torch.nn.functional.normalize(directions, dim=1)
-    target_bits = torch.randint(0, 2, (len(anchor_embs),))
-    sign_acc = projection_sign_accuracy(anchor_embs, directions, target_bits)
+    # pair_f1: positive pairs vs negative pairs
+    pos_cos = torch.nn.functional.cosine_similarity(anchor_embs, pos_embs, dim=1)
+    neg_cos = torch.nn.functional.cosine_similarity(anchor_embs, neg_embs, dim=1)
+    f1_metrics = pair_f1_metrics(pos_cos, neg_cos)
 
     eval_metrics = {
         **sep_metrics,
         "recall@1": r1,
         "recall@5": r5,
         "recall@10": r10,
-        "projection_sign_accuracy": sign_acc,
+        "mrr": mrr,
+        "map": map_score,
+        "watermark_sign_consistency": wsc,
+        **f1_metrics,
         **best_metrics,
     }
 
