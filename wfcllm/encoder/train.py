@@ -242,6 +242,108 @@ def main(config: EncoderConfig | None = None) -> None:
     print(f"\nReport saved to {report_path}")
 
 
+def evaluate_only(checkpoint_path: str, config: EncoderConfig | None = None) -> None:
+    """Load a saved checkpoint and run evaluation only (no training).
+
+    Uses the same fixed seed as main() so the test split is identical.
+    """
+    from dataclasses import replace
+
+    if config is None:
+        config = EncoderConfig()
+
+    print("=== Encoder Evaluation (eval-only) ===")
+
+    local_codet5 = Path(config.local_model_dir) / "codet5-base"
+    if local_codet5.exists() and (local_codet5 / "config.json").exists():
+        effective_model = str(local_codet5)
+        print(f"  Using local model: {effective_model}")
+    else:
+        effective_model = config.model_name
+        print(f"  Using HF Hub model: {effective_model}")
+
+    config_for_model = replace(config, model_name=effective_model)
+
+    # Rebuild dataset with same pipeline + same seed as main()
+    print("Loading data...")
+    code_samples = load_code_samples(config.data_sources, local_dataset_dir=config.local_dataset_dir)
+    blocks = prepare_blocks_with_variants(code_samples)
+    triplets = build_triplets_from_blocks(blocks, negative_ratio=config.negative_ratio, seed=42)
+
+    tokenizer = AutoTokenizer.from_pretrained(effective_model)
+    dataset = TripletCodeDataset(triplets, tokenizer, max_length=config.max_seq_length)
+
+    n = len(dataset)
+    n_train = int(0.8 * n)
+    n_val = int(0.1 * n)
+    n_test = n - n_train - n_val
+    _split_gen = torch.Generator().manual_seed(42)
+    _, _, test_ds = random_split(dataset, [n_train, n_val, n_test], generator=_split_gen)
+
+    test_loader = DataLoader(
+        test_ds, batch_size=config.batch_size,
+        num_workers=config.num_workers, pin_memory=config.pin_memory,
+    )
+    print(f"  Test set size: {len(test_ds)}")
+
+    # Load model
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = SemanticEncoder(config=config_for_model)
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    model.load_state_dict(ckpt["model_state_dict"])
+    model = model.to(device)
+    model.eval()
+    print(f"  Loaded checkpoint: {checkpoint_path}")
+
+    # Collect embeddings
+    all_anchor, all_positive, all_negative = [], [], []
+    with torch.no_grad():
+        for batch in test_loader:
+            a = model(batch["anchor_input_ids"].to(device), batch["anchor_attention_mask"].to(device))
+            p = model(batch["positive_input_ids"].to(device), batch["positive_attention_mask"].to(device))
+            neg = model(batch["negative_input_ids"].to(device), batch["negative_attention_mask"].to(device))
+            all_anchor.append(a.cpu())
+            all_positive.append(p.cpu())
+            all_negative.append(neg.cpu())
+
+    anchor_embs = torch.cat(all_anchor)
+    pos_embs = torch.cat(all_positive)
+    neg_embs = torch.cat(all_negative)
+
+    sep_metrics = cosine_separation(anchor_embs, pos_embs, neg_embs)
+    r1 = recall_at_k(anchor_embs, pos_embs, k=1)
+    r5 = recall_at_k(anchor_embs, pos_embs, k=5)
+    r10 = recall_at_k(anchor_embs, pos_embs, k=10)
+    mrr = mean_reciprocal_rank(anchor_embs, pos_embs)
+    map_score = mean_average_precision(anchor_embs, pos_embs)
+    wsc = watermark_sign_consistency(anchor_embs, pos_embs, num_directions=64, seed=42)
+
+    pos_cos = torch.nn.functional.cosine_similarity(anchor_embs, pos_embs, dim=1)
+    neg_cos = torch.nn.functional.cosine_similarity(anchor_embs, neg_embs, dim=1)
+    f1_metrics = pair_f1_metrics(pos_cos, neg_cos)
+
+    eval_metrics = {
+        **sep_metrics,
+        "recall@1": r1,
+        "recall@5": r5,
+        "recall@10": r10,
+        "mrr": mrr,
+        "map": map_score,
+        "watermark_sign_consistency": wsc,
+        **f1_metrics,
+    }
+
+    print("\n=== Evaluation Results ===")
+    for k, v in eval_metrics.items():
+        if isinstance(v, float):
+            print(f"  {k}: {v:.4f}")
+        else:
+            print(f"  {k}: {v}")
+
+    report_path = save_evaluation_report(eval_metrics, config.results_dir)
+    print(f"\nReport saved to {report_path}")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train the semantic encoder")
     parser.add_argument("--model-name", default="Salesforce/codet5-base")
