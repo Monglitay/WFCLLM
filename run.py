@@ -163,21 +163,182 @@ def run_phase(phase: str, args: argparse.Namespace, state: RunState) -> int:
 
 
 def run_encoder(args: argparse.Namespace, state: RunState) -> int:
-    """占位：阶段一实现在 Task 4。"""
-    print("[encoder] 未实现")
-    return 1
+    """阶段一：训练语义编码器。"""
+    import glob
+
+    from wfcllm.encoder.config import EncoderConfig
+    from wfcllm.encoder.train import main as encoder_main
+
+    print("=== 阶段一：语义编码器预训练 ===")
+
+    config = EncoderConfig()
+    if args.model_name:
+        config.model_name = args.model_name
+    if args.embed_dim:
+        config.embed_dim = args.embed_dim
+    if args.lr:
+        config.lr = args.lr
+    if args.batch_size:
+        config.batch_size = args.batch_size
+    if args.epochs:
+        config.epochs = args.epochs
+    if args.margin:
+        config.margin = args.margin
+    if args.no_lora:
+        config.use_lora = False
+    if args.no_bf16:
+        config.use_bf16 = False
+
+    try:
+        encoder_main(config)
+    except Exception as e:
+        print(f"[错误] 编码器训练失败：{e}", file=sys.stderr)
+        return 1
+
+    # 找到最新的 checkpoint 文件
+    ckpt_pattern = str(Path(config.checkpoint_dir) / "encoder_epoch*.pt")
+    checkpoints = sorted(glob.glob(ckpt_pattern))
+    checkpoint_path = checkpoints[-1] if checkpoints else config.checkpoint_dir
+
+    state.mark_done("encoder", checkpoint=checkpoint_path)
+    print(f"[完成] 编码器训练完毕，checkpoint: {checkpoint_path}")
+    return 0
 
 
 def run_watermark(args: argparse.Namespace, state: RunState) -> int:
-    """占位：阶段二实现在 Task 5。"""
-    print("[watermark] 未实现")
-    return 1
+    """阶段二：生成含水印代码。"""
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    from wfcllm.encoder.config import EncoderConfig
+    from wfcllm.encoder.model import SemanticEncoder
+    from wfcllm.watermark.config import WatermarkConfig
+    from wfcllm.watermark.generator import WatermarkGenerator
+
+    print("=== 阶段二：生成时水印嵌入 ===")
+
+    # 前置检查
+    if not state.is_done("encoder"):
+        print("[错误] 请先完成阶段一（encoder）", file=sys.stderr)
+        return 1
+    if not args.secret_key:
+        print("[错误] --secret-key 为必填参数", file=sys.stderr)
+        return 1
+    if not args.lm_model_path:
+        print("[错误] --lm-model-path 为必填参数", file=sys.stderr)
+        return 1
+    prompt = args.prompt or "def solution():"
+
+    encoder_checkpoint = state.get("encoder", "checkpoint")
+    embed_dim = args.embed_dim or 128
+
+    # 加载编码器
+    enc_config = EncoderConfig(embed_dim=embed_dim)
+    encoder = SemanticEncoder(config=enc_config)
+    if encoder_checkpoint and Path(encoder_checkpoint).exists():
+        ckpt = torch.load(encoder_checkpoint, map_location="cpu")
+        encoder.load_state_dict(ckpt["model_state_dict"])
+    encoder_tokenizer = AutoTokenizer.from_pretrained(enc_config.model_name)
+
+    # 加载代码生成 LLM
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    lm_tokenizer = AutoTokenizer.from_pretrained(args.lm_model_path)
+    lm_model = AutoModelForCausalLM.from_pretrained(args.lm_model_path).to(device)
+
+    config = WatermarkConfig(
+        secret_key=args.secret_key,
+        encoder_embed_dim=embed_dim,
+        encoder_device=device,
+    )
+    generator = WatermarkGenerator(lm_model, lm_tokenizer, encoder, encoder_tokenizer, config)
+
+    try:
+        result = generator.generate(prompt)
+    except Exception as e:
+        print(f"[错误] 水印生成失败：{e}", file=sys.stderr)
+        return 1
+
+    # 保存结果
+    output_file = args.output_file or "data/results/watermarked.py"
+    Path(output_file).parent.mkdir(parents=True, exist_ok=True)
+    Path(output_file).write_text(result.code, encoding="utf-8")
+
+    state.mark_done(
+        "watermark",
+        output_file=output_file,
+        embedded_blocks=result.embedded_blocks,
+        total_blocks=result.total_blocks,
+    )
+    print(f"[完成] 生成代码已保存至 {output_file}")
+    print(f"       嵌入块: {result.embedded_blocks}/{result.total_blocks}")
+    return 0
 
 
 def run_extract(args: argparse.Namespace, state: RunState) -> int:
-    """占位：阶段三实现在 Task 6。"""
-    print("[extract] 未实现")
-    return 1
+    """阶段三：检测代码水印。"""
+    import torch
+    from transformers import AutoTokenizer
+
+    from wfcllm.encoder.config import EncoderConfig
+    from wfcllm.encoder.model import SemanticEncoder
+    from wfcllm.extract.config import ExtractConfig
+    from wfcllm.extract.detector import WatermarkDetector
+
+    print("=== 阶段三：水印提取与验证 ===")
+
+    # 前置检查
+    if not state.is_done("encoder"):
+        print("[错误] 请先完成阶段一（encoder）", file=sys.stderr)
+        return 1
+    if not args.secret_key:
+        print("[错误] --secret-key 为必填参数", file=sys.stderr)
+        return 1
+    if not args.code_file:
+        print("[错误] --code-file 为必填参数", file=sys.stderr)
+        return 1
+    code_path = Path(args.code_file)
+    if not code_path.exists():
+        print(f"[错误] 文件不存在：{args.code_file}", file=sys.stderr)
+        return 1
+
+    encoder_checkpoint = state.get("encoder", "checkpoint")
+    embed_dim = args.embed_dim or 128
+    z_threshold = args.z_threshold or 3.0
+
+    # 加载编码器
+    enc_config = EncoderConfig(embed_dim=embed_dim)
+    encoder = SemanticEncoder(config=enc_config)
+    if encoder_checkpoint and Path(encoder_checkpoint).exists():
+        ckpt = torch.load(encoder_checkpoint, map_location="cpu")
+        encoder.load_state_dict(ckpt["model_state_dict"])
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    encoder = encoder.to(device)
+    tokenizer = AutoTokenizer.from_pretrained(enc_config.model_name)
+
+    config = ExtractConfig(secret_key=args.secret_key, embed_dim=embed_dim, z_threshold=z_threshold)
+    detector = WatermarkDetector(config, encoder, tokenizer, device=device)
+
+    code = code_path.read_text(encoding="utf-8")
+    try:
+        result = detector.detect(code)
+    except Exception as e:
+        print(f"[错误] 检测失败：{e}", file=sys.stderr)
+        return 1
+
+    verdict = "【含水印】" if result.is_watermarked else "【无水印】"
+    print(f"\n{verdict}")
+    print(f"  Z 分数:   {result.z_score:.4f}（阈值 {z_threshold}）")
+    print(f"  p 值:     {result.p_value:.6f}")
+    print(f"  独立块:   {result.independent_blocks}/{result.total_blocks}")
+    print(f"  命中块:   {result.hit_blocks}")
+
+    state.mark_done(
+        "extract",
+        code_file=args.code_file,
+        is_watermarked=result.is_watermarked,
+        z_score=result.z_score,
+    )
+    return 0
 
 
 if __name__ == "__main__":
