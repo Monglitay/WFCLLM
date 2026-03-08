@@ -39,3 +39,5 @@ class EncoderConfig:
     # Paths
     checkpoint_dir: str = "data/checkpoints/encoder"
     results_dir: str = "data/results"
+    local_model_dir: str = "data/models"      # 本地模型根目录（离线部署）
+    local_dataset_dir: str = "data/datasets"  # 本地数据集根目录（离线部署）

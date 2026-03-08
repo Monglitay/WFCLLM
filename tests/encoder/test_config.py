@@ -50,3 +50,8 @@ class TestEncoderConfig:
         cfg = EncoderConfig()
         assert "checkpoints" in cfg.checkpoint_dir
         assert "results" in cfg.results_dir
+
+    def test_encoder_config_has_local_paths(self):
+        cfg = EncoderConfig()
+        assert cfg.local_model_dir == "data/models"
+        assert cfg.local_dataset_dir == "data/datasets"
