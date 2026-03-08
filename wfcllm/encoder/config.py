@@ -15,8 +15,8 @@ class EncoderConfig:
 
     # LoRA (optional, default on)
     use_lora: bool = True
-    lora_r: int = 8
-    lora_alpha: int = 16
+    lora_r: int = 16
+    lora_alpha: int = 32
     lora_dropout: float = 0.1
     lora_target_modules: list[str] = field(default_factory=lambda: ["q", "v"])
 
@@ -29,12 +29,16 @@ class EncoderConfig:
     negative_ratio: float = 0.5  # fraction of hard negatives vs random negatives
 
     # Training
-    lr: float = 2e-5
-    batch_size: int = 32
+    lr: float = 8e-5
+    batch_size: int = 256
     epochs: int = 10
     margin: float = 0.3
     warmup_ratio: float = 0.1
     early_stopping_patience: int = 3
+
+    # DataLoader
+    num_workers: int = 8
+    pin_memory: bool = True
 
     # Paths
     checkpoint_dir: str = "data/checkpoints/encoder"

@@ -158,9 +158,18 @@ def main(config: EncoderConfig | None = None) -> None:
     n_test = n - n_train - n_val
     train_ds, val_ds, test_ds = random_split(dataset, [n_train, n_val, n_test])
 
-    train_loader = DataLoader(train_ds, batch_size=config.batch_size, shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=config.batch_size)
-    test_loader = DataLoader(test_ds, batch_size=config.batch_size)
+    train_loader = DataLoader(
+        train_ds, batch_size=config.batch_size, shuffle=True,
+        num_workers=config.num_workers, pin_memory=config.pin_memory,
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=config.batch_size,
+        num_workers=config.num_workers, pin_memory=config.pin_memory,
+    )
+    test_loader = DataLoader(
+        test_ds, batch_size=config.batch_size,
+        num_workers=config.num_workers, pin_memory=config.pin_memory,
+    )
 
     print(f"  Train: {len(train_ds)}, Val: {len(val_ds)}, Test: {len(test_ds)}")
 
