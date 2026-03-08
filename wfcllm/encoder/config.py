@@ -29,8 +29,8 @@ class EncoderConfig:
     negative_ratio: float = 0.5  # fraction of hard negatives vs random negatives
 
     # Training
-    lr: float = 4e-5
-    batch_size: int = 128
+    lr: float = 2e-5
+    batch_size: int = 64
     epochs: int = 10
     margin: float = 0.3
     warmup_ratio: float = 0.1
