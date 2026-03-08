@@ -297,14 +297,18 @@ def evaluate_only(checkpoint_path: str, config: EncoderConfig | None = None) -> 
 
     # Collect embeddings
     all_anchor, all_positive, all_negative = [], [], []
+    total_batches = len(test_loader)
+    log_interval = max(1, total_batches // 10)  # log ~10 times
     with torch.no_grad():
-        for batch in test_loader:
+        for i, batch in enumerate(test_loader):
             a = model(batch["anchor_input_ids"].to(device), batch["anchor_attention_mask"].to(device))
             p = model(batch["positive_input_ids"].to(device), batch["positive_attention_mask"].to(device))
             neg = model(batch["negative_input_ids"].to(device), batch["negative_attention_mask"].to(device))
             all_anchor.append(a.cpu())
             all_positive.append(p.cpu())
             all_negative.append(neg.cpu())
+            if (i + 1) % log_interval == 0 or (i + 1) == total_batches:
+                print(f"  Evaluating batch {i + 1}/{total_batches}", flush=True)
 
     anchor_embs = torch.cat(all_anchor)
     pos_embs = torch.cat(all_positive)
