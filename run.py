@@ -90,6 +90,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="强制重跑指定阶段（忽略已完成标记）",
     )
+    parser.add_argument(
+        "--eval-only",
+        action="store_true",
+        help="只跑评测，不训练（需配合 --phase encoder）",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        default=None,
+        help="评测用的 checkpoint 路径（不传则从 run_state.json 读取）",
+    )
     # Encoder 参数
     parser.add_argument("--model-name", default=None, help="CodeT5 模型名称或本地路径")
     parser.add_argument("--embed-dim", type=int, default=None)
@@ -170,6 +180,35 @@ def run_encoder(args: argparse.Namespace, state: RunState) -> int:
     from wfcllm.encoder.train import main as encoder_main
 
     print("=== 阶段一：语义编码器预训练 ===")
+
+    # eval-only 分支
+    if args.eval_only:
+        from wfcllm.encoder.train import evaluate_only
+
+        checkpoint = args.checkpoint or state.get("encoder", "checkpoint")
+        if not checkpoint:
+            print("[错误] 未找到 checkpoint，请用 --checkpoint 指定路径", file=sys.stderr)
+            return 1
+        if not Path(checkpoint).exists():
+            print(f"[错误] checkpoint 不存在：{checkpoint}", file=sys.stderr)
+            return 1
+
+        config = EncoderConfig()
+        if args.model_name:
+            config.model_name = args.model_name
+        if args.embed_dim:
+            config.embed_dim = args.embed_dim
+        if args.no_lora:
+            config.use_lora = False
+        if args.no_bf16:
+            config.use_bf16 = False
+
+        try:
+            evaluate_only(checkpoint, config)
+        except Exception as e:
+            print(f"[错误] 评测失败：{e}", file=sys.stderr)
+            return 1
+        return 0
 
     config = EncoderConfig()
     if args.model_name:
