@@ -10,7 +10,7 @@ class TestWatermarkConfig:
 
     def test_default_encoder_path(self):
         cfg = WatermarkConfig(secret_key="k")
-        assert cfg.encoder_model_path == "Salesforce/codet5-base"
+        assert cfg.encoder_model_path == "data/models/codet5-base"
 
     def test_default_embed_dim(self):
         cfg = WatermarkConfig(secret_key="k")
