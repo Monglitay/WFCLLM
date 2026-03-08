@@ -189,6 +189,15 @@ def run_encoder(args: argparse.Namespace, state: RunState) -> int:
     if args.no_bf16:
         config.use_bf16 = False
 
+    # 若用户未指定 --model-name，自动检测本地
+    if args.model_name is None:
+        local_codet5 = Path(config.local_model_dir) / "codet5-base"
+        if local_codet5.exists() and (local_codet5 / "config.json").exists():
+            config.model_name = str(local_codet5)
+            print(f"[自动] 使用本地模型: {config.model_name}")
+        else:
+            print(f"[回退] 使用 HF Hub 模型: {config.model_name}")
+
     try:
         encoder_main(config)
     except Exception as e:
