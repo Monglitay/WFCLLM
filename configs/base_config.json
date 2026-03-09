@@ -1,0 +1,51 @@
+{
+  "encoder": {
+    "model_name": "Salesforce/codet5-base",
+    "embed_dim": 128,
+    "use_lora": true,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0.1,
+    "lora_target_modules": ["q", "v"],
+    "use_bf16": true,
+    "data_sources": ["mbpp", "humaneval"],
+    "max_seq_length": 256,
+    "negative_ratio": 0.5,
+    "lr": 0.00002,
+    "batch_size": 64,
+    "epochs": 10,
+    "margin": 0.3,
+    "warmup_ratio": 0.1,
+    "early_stopping_patience": 3,
+    "num_workers": 8,
+    "pin_memory": true,
+    "checkpoint_dir": "data/checkpoints/encoder",
+    "results_dir": "data/results",
+    "local_model_dir": "data/models",
+    "local_dataset_dir": "data/datasets"
+  },
+  "watermark": {
+    "secret_key": "",
+    "lm_model_path": "",
+    "prompt": "def solution():",
+    "output_file": "data/results/watermarked.py",
+    "encoder_model_path": "data/models/codet5-base",
+    "encoder_embed_dim": 128,
+    "encoder_device": "cuda",
+    "margin_base": 0.1,
+    "margin_alpha": 0.05,
+    "max_retries": 5,
+    "temperature": 0.8,
+    "top_p": 0.95,
+    "top_k": 50,
+    "max_new_tokens": 512,
+    "eos_token_id": null,
+    "enable_fallback": true
+  },
+  "extract": {
+    "secret_key": "",
+    "code_file": "",
+    "embed_dim": 128,
+    "z_threshold": 3.0
+  }
+}
