@@ -85,6 +85,12 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
+        "--config",
+        type=Path,
+        default=DEFAULT_CONFIG_FILE,
+        help=f"配置文件路径（默认: {DEFAULT_CONFIG_FILE}）",
+    )
+    parser.add_argument(
         "--phase",
         choices=PHASES,
         help="运行指定阶段（不指定则运行全流程）",

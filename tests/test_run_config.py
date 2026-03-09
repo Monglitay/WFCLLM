@@ -37,3 +37,18 @@ def test_load_config_invalid_json(tmp_path):
     f.write_text("{ not valid json }")
     with pytest.raises(SystemExit):
         load_config(f)
+
+
+from run import build_parser
+
+
+def test_parser_default_config():
+    parser = build_parser()
+    args = parser.parse_args([])
+    assert args.config == Path("configs/base_config.json")
+
+
+def test_parser_custom_config():
+    parser = build_parser()
+    args = parser.parse_args(["--config", "configs/my.json"])
+    assert args.config == Path("configs/my.json")
