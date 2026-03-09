@@ -1,5 +1,7 @@
 """Tests for wfcllm.encoder.trainer."""
 
+import tempfile
+from pathlib import Path
 import pytest
 import torch
 from torch.utils.data import DataLoader, TensorDataset
@@ -88,3 +90,46 @@ class _DictDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         return {k: v[idx] for k, v in self.data.items()}
+
+
+def _make_dummy_batches():
+    """3 batches, each with anchor/positive/negative input_ids + attention_mask."""
+    B, L = 4, 16
+    return [
+        {
+            "anchor_input_ids": torch.ones(B, L, dtype=torch.long),
+            "anchor_attention_mask": torch.ones(B, L, dtype=torch.long),
+            "positive_input_ids": torch.ones(B, L, dtype=torch.long),
+            "positive_attention_mask": torch.ones(B, L, dtype=torch.long),
+            "negative_input_ids": torch.ones(B, L, dtype=torch.long),
+            "negative_attention_mask": torch.ones(B, L, dtype=torch.long),
+        }
+        for _ in range(3)
+    ]
+
+
+def test_export_best_model_creates_file():
+    """ContrastiveTrainer should export best_model.pt to output_model_dir."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = EncoderConfig(
+            model_name=LOCAL_MODEL,
+            epochs=1,
+            use_lora=False,
+            use_bf16=False,
+            checkpoint_dir=str(Path(tmpdir) / "checkpoints"),
+            output_model_dir=str(Path(tmpdir) / "output"),
+        )
+        from wfcllm.encoder.model import SemanticEncoder
+        model = SemanticEncoder(config=config)
+
+        batches = _make_dummy_batches()
+        trainer = ContrastiveTrainer(model, batches, batches, config)
+        trainer.train()
+
+        best_model_path = Path(tmpdir) / "output" / "best_model.pt"
+        assert best_model_path.exists(), "best_model.pt should be created"
+        ckpt = torch.load(best_model_path, map_location="cpu")
+        assert "model_state_dict" in ckpt
+        assert "config" in ckpt
+        assert "best_metric" in ckpt
+        assert "epoch" in ckpt

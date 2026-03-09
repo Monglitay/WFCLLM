@@ -144,6 +144,23 @@ class ContrastiveTrainer:
         }, path)
         return path
 
+    def _export_best_model(self, epoch: int, best_val_loss: float) -> Path:
+        """Export best model weights to output_model_dir/best_model.pt."""
+        import dataclasses
+        output_dir = Path(self.config.output_model_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path = output_dir / "best_model.pt"
+        torch.save(
+            {
+                "model_state_dict": self.model.state_dict(),
+                "config": dataclasses.asdict(self.config),
+                "best_metric": best_val_loss,
+                "epoch": epoch,
+            },
+            path,
+        )
+        return path
+
     def train(self) -> dict:
         """Full training loop with early stopping and checkpointing."""
         best_val_loss = float("inf")
@@ -166,6 +183,8 @@ class ContrastiveTrainer:
                 patience_counter = 0
                 best_metrics = metrics
                 self.save_checkpoint(epoch, metrics)
+                export_path = self._export_best_model(epoch, best_val_loss)
+                print(f"[导出] 最优模型已保存至 {export_path}")
             else:
                 patience_counter += 1
                 if patience_counter >= self.config.early_stopping_patience:
