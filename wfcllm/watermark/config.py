@@ -33,3 +33,6 @@ class WatermarkConfig:
 
     # Fallback
     enable_fallback: bool = True
+
+    # Repetition penalty for retry sub-loop
+    repetition_penalty: float = 1.3  # 1.0 = disabled; applied to previous retry's tokens

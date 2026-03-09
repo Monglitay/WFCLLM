@@ -44,3 +44,13 @@ class TestWatermarkConfig:
         assert cfg.margin_base == 0.2
         assert cfg.max_retries == 3
         assert cfg.temperature == 0.6
+
+
+def test_repetition_penalty_default():
+    cfg = WatermarkConfig(secret_key="k")
+    assert cfg.repetition_penalty == 1.3
+
+
+def test_repetition_penalty_custom():
+    cfg = WatermarkConfig(secret_key="k", repetition_penalty=1.5)
+    assert cfg.repetition_penalty == 1.5
