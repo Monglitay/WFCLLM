@@ -345,6 +345,7 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
         return 1
 
     # 加载编码器：优先 best_model.pt，回退 checkpoint
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     enc_config = EncoderConfig(embed_dim=embed_dim)
     local_codet5 = Path(enc_config.local_model_dir) / "codet5-base"
     if local_codet5.exists() and (local_codet5 / "config.json").exists():
@@ -372,7 +373,6 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
     encoder_tokenizer = AutoTokenizer.from_pretrained(enc_config.model_name)
 
     # 加载代码生成 LLM
-    device = "cuda" if torch.cuda.is_available() else "cpu"
     lm_tokenizer = AutoTokenizer.from_pretrained(lm_model_path)
     lm_dtype = torch.float32 if args.no_bf16 else torch.bfloat16
     lm_model = AutoModelForCausalLM.from_pretrained(
