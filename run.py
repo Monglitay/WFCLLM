@@ -326,12 +326,6 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
     if not state.is_done("encoder"):
         print("[错误] 请先完成阶段一（encoder）", file=sys.stderr)
         return 1
-    if not args.secret_key:
-        print("[错误] --secret-key 为必填参数", file=sys.stderr)
-        return 1
-    if not args.lm_model_path:
-        print("[错误] --lm-model-path 为必填参数", file=sys.stderr)
-        return 1
 
     # Config 读取（优先 CLI，回退 config 文件）
     cfg = load_config(args.config)
@@ -340,6 +334,15 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
     dataset_path = args.dataset_path or wm_cfg.get("dataset_path", "data/datasets")
     output_dir = args.output_dir or wm_cfg.get("output_dir", "data/watermarked")
     embed_dim = args.embed_dim or wm_cfg.get("encoder_embed_dim", 128)
+    secret_key = args.secret_key or wm_cfg.get("secret_key", "")
+    lm_model_path = args.lm_model_path or wm_cfg.get("lm_model_path", "")
+
+    if not secret_key:
+        print("[错误] --secret-key 为必填参数", file=sys.stderr)
+        return 1
+    if not lm_model_path:
+        print("[错误] --lm-model-path 为必填参数", file=sys.stderr)
+        return 1
 
     # 加载编码器：优先 best_model.pt，回退 checkpoint
     enc_config = EncoderConfig(embed_dim=embed_dim)
@@ -365,15 +368,19 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
         print(f"[加载] 编码器权重来自 checkpoint（fallback）: {encoder_checkpoint}")
     else:
         print("[警告] 未找到微调权重，使用预训练模型")
+    encoder = encoder.to(device)
     encoder_tokenizer = AutoTokenizer.from_pretrained(enc_config.model_name)
 
     # 加载代码生成 LLM
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    lm_tokenizer = AutoTokenizer.from_pretrained(args.lm_model_path)
-    lm_model = AutoModelForCausalLM.from_pretrained(args.lm_model_path).to(device)
+    lm_tokenizer = AutoTokenizer.from_pretrained(lm_model_path)
+    lm_dtype = torch.float32 if args.no_bf16 else torch.bfloat16
+    lm_model = AutoModelForCausalLM.from_pretrained(
+        lm_model_path, torch_dtype=lm_dtype
+    ).to(device)
 
     wm_config = WatermarkConfig(
-        secret_key=args.secret_key,
+        secret_key=secret_key,
         encoder_embed_dim=embed_dim,
         encoder_device=device,
     )
@@ -422,13 +429,14 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
     if not state.is_done("encoder"):
         print("[错误] 请先完成阶段一（encoder）", file=sys.stderr)
         return 1
-    if not args.secret_key:
-        print("[错误] --secret-key 为必填参数", file=sys.stderr)
-        return 1
 
     # Config 读取（优先 CLI，回退 config 文件；input_file 也可从 run_state 中取）
     cfg = load_config(args.config)
     ext_cfg = cfg.get("extract", {})
+    secret_key = args.secret_key or ext_cfg.get("secret_key", "")
+    if not secret_key:
+        print("[错误] --secret-key 为必填参数", file=sys.stderr)
+        return 1
     input_file = args.input_file or ext_cfg.get("input_file") or state.get("watermark", "output_file")
     if not input_file:
         print("[错误] --input-file 为必填参数（或先完成阶段二）", file=sys.stderr)
@@ -471,7 +479,7 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
     tokenizer = AutoTokenizer.from_pretrained(enc_config.model_name)
 
     extract_config = ExtractConfig(
-        secret_key=args.secret_key,
+        secret_key=secret_key,
         embed_dim=embed_dim,
         z_threshold=z_threshold,
     )
