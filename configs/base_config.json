@@ -27,8 +27,9 @@
   "watermark": {
     "secret_key": "",
     "lm_model_path": "",
-    "prompt": "def solution():",
-    "output_file": "data/results/watermarked.py",
+    "dataset": "humaneval",
+    "dataset_path": "data/datasets",
+    "output_dir": "data/watermarked",
     "encoder_model_path": "data/models/codet5-base",
     "encoder_embed_dim": 128,
     "encoder_device": "cuda",
@@ -44,8 +45,9 @@
   },
   "extract": {
     "secret_key": "",
-    "code_file": "",
     "embed_dim": 128,
-    "z_threshold": 3.0
+    "z_threshold": 3.0,
+    "input_file": "",
+    "output_dir": "data/results"
   }
 }
