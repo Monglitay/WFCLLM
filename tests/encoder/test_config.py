@@ -55,3 +55,11 @@ class TestEncoderConfig:
         cfg = EncoderConfig()
         assert cfg.local_model_dir == "data/models"
         assert cfg.local_dataset_dir == "data/datasets"
+
+    def test_output_model_dir_default(self):
+        config = EncoderConfig()
+        assert config.output_model_dir == "data/models/encoder"
+
+    def test_output_model_dir_custom(self):
+        config = EncoderConfig(output_model_dir="custom/path")
+        assert config.output_model_dir == "custom/path"
