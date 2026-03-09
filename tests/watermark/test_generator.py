@@ -89,3 +89,21 @@ class TestWatermarkGeneratorUnit:
         result = gen.generate("Write a function")
         assert isinstance(result, GenerateResult)
         assert isinstance(result.code, str)
+
+
+class TestWatermarkGeneratorRetrySubloop:
+    """验证 retry 使用子主循环语义（不调用 _regenerate_block）。"""
+
+    def test_regenerate_block_does_not_exist(self):
+        """新实现不应有 _regenerate_block 方法。"""
+        from wfcllm.watermark.generator import WatermarkGenerator
+        assert not hasattr(WatermarkGenerator, "_regenerate_block"), (
+            "_regenerate_block 应已删除，retry 逻辑已移入子主循环"
+        )
+
+    def test_interceptor_has_save_restore(self):
+        """WatermarkGenerator 使用的 interceptor 支持 save_state/restore_state。"""
+        from wfcllm.watermark.interceptor import StatementInterceptor
+        ic = StatementInterceptor()
+        assert hasattr(ic, "save_state")
+        assert hasattr(ic, "restore_state")

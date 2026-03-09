@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
+
+logger = logging.getLogger(__name__)
 
 from wfcllm.watermark.config import WatermarkConfig
 from wfcllm.watermark.entropy import NodeEntropyEstimator
@@ -49,6 +52,7 @@ class WatermarkGenerator:
         )
         self._cache_mgr = KVCacheManager()
 
+    @torch.no_grad()
     def generate(self, prompt: str) -> GenerateResult:
         """Generate code with watermark embedding.
 
@@ -115,34 +119,126 @@ class WatermarkGenerator:
 
                 result = self._verifier.verify(event.block_text, v, t, margin)
 
+                logger.debug(
+                    "[simple block #%d] node=%s parent=%s entropy=%.4f margin=%.4f "
+                    "target=%+d proj=%.4f passed=%s | text=%r",
+                    total_blocks, event.node_type, event.parent_node_type,
+                    block_entropy, margin, result.target_sign,
+                    result.projection, result.passed,
+                    event.block_text[:80],
+                )
+
                 if result.passed:
                     embedded_blocks += 1
                 else:
-                    snapshot = self._cache_mgr.snapshot(past_kv)
+                    # -------------------------------------------------------
+                    # 回滚点：语句块被检测到之前的完整状态
+                    # -------------------------------------------------------
+                    # 计算语句块在 generated_ids 中占用的 token 数
+                    block_token_count = len(
+                        self._tokenizer.encode(
+                            event.block_text, add_special_tokens=False
+                        )
+                    )
+                    # 截断位置（语句块开始前）
+                    rollback_idx = max(0, len(generated_ids) - block_token_count)
+
+                    # 保存回滚点
+                    rollback_generated_ids = generated_ids[:rollback_idx]
+                    rollback_generated_text = self._tokenizer.decode(
+                        rollback_generated_ids, skip_special_tokens=True
+                    )
+                    rollback_kv_snapshot = self._cache_mgr.snapshot_at(
+                        past_kv,
+                        rollback_idx=rollback_idx,
+                        current_generated_count=len(generated_ids),
+                    )
+                    rollback_interceptor_state = self._interceptor.save_state()
+                    # 回滚点的最后一个 token（用于子循环第一次 forward 的 input_ids）
+                    if rollback_generated_ids:
+                        rollback_last_token_id = rollback_generated_ids[-1]
+                    else:
+                        # prompt 结束后立即触发块，用 prompt 最后一个 token
+                        rollback_last_token_id = (
+                            self._tokenizer.encode(prompt, add_special_tokens=False)[-1]
+                        )
+
                     success = False
 
-                    for _ in range(self._config.max_retries):
-                        past_kv = self._cache_mgr.rollback(past_kv, snapshot)
-                        rollback_count = event.token_count
-                        if rollback_count > 0 and rollback_count <= len(generated_ids):
-                            generated_ids = generated_ids[:-rollback_count]
-                            generated_text = self._tokenizer.decode(
-                                generated_ids, skip_special_tokens=True
+                    for retry_i in range(self._config.max_retries):
+                        # 恢复完整回滚点状态
+                        past_kv = self._cache_mgr.rollback(
+                            past_kv, rollback_kv_snapshot
+                        )
+                        generated_ids = list(rollback_generated_ids)
+                        generated_text = rollback_generated_text
+                        self._interceptor.restore_state(rollback_interceptor_state)
+
+                        # 子主循环：自由生成，直到 interceptor 触发新语句块
+                        sub_input_ids = torch.tensor(
+                            [[rollback_last_token_id]], dtype=torch.long, device=device
+                        )
+                        sub_event = None
+
+                        for _ in range(self._config.max_new_tokens):
+                            sub_output = self._model(
+                                input_ids=sub_input_ids,
+                                past_key_values=past_kv,
+                                use_cache=True,
+                            )
+                            sub_logits = sub_output.logits[:, -1, :]
+                            past_kv = sub_output.past_key_values
+
+                            sub_next_id = self._sample_token(sub_logits)
+
+                            if sub_next_id == eos_id:
+                                break
+
+                            generated_ids.append(sub_next_id)
+                            sub_token_text = self._tokenizer.decode(
+                                [sub_next_id], skip_special_tokens=True
+                            )
+                            generated_text += sub_token_text
+                            sub_input_ids = torch.tensor(
+                                [[sub_next_id]], dtype=torch.long, device=device
                             )
 
-                        regen_ids, regen_text, past_kv = self._regenerate_block(
-                            past_kv, device, rollback_count
-                        )
-                        generated_ids.extend(regen_ids)
-                        generated_text += regen_text
+                            sub_event = self._interceptor.feed_token(sub_token_text)
+                            if sub_event is not None and sub_event.block_type == "simple":
+                                break
 
-                        result = self._verifier.verify(regen_text, v, t, margin)
+                        if sub_event is None or sub_event.block_type != "simple":
+                            # 子循环未触发语句块（遇到 EOS 等），放弃 retry
+                            logger.debug(
+                                "  [retry %d/%d] sub-loop ended without block",
+                                retry_i + 1, self._config.max_retries,
+                            )
+                            break
+
+                        result = self._verifier.verify(
+                            sub_event.block_text, v, t, margin
+                        )
+                        logger.debug(
+                            "  [retry %d/%d] proj=%.4f target=%+d margin=%.4f "
+                            "passed=%s | text=%r",
+                            retry_i + 1, self._config.max_retries,
+                            result.projection, result.target_sign, margin,
+                            result.passed, sub_event.block_text[:80],
+                        )
+
                         if result.passed:
                             embedded_blocks += 1
                             success = True
+                            # 子循环已更新 past_kv / generated_ids / generated_text
+                            # 主循环下一步从这里继续，next_id 使用子循环最后采样的 token
+                            next_id = generated_ids[-1]
                             break
 
                     if not success:
+                        logger.debug(
+                            "  [FAILED] block #%d exhausted %d retries",
+                            total_blocks, self._config.max_retries,
+                        )
                         failed_blocks += 1
                         pending_fallbacks.append(event.block_text)
 
@@ -157,6 +253,13 @@ class WatermarkGenerator:
                         event.parent_node_type or "module", event.node_type
                     )
                     result = self._verifier.verify(event.block_text, v, t, margin)
+                    logger.debug(
+                        "[compound fallback] node=%s parent=%s entropy=%.4f margin=%.4f "
+                        "target=%+d proj=%.4f passed=%s",
+                        event.node_type, event.parent_node_type,
+                        block_entropy, margin, result.target_sign,
+                        result.projection, result.passed,
+                    )
                     if result.passed:
                         fallback_blocks += 1
                         pending_fallbacks.clear()
@@ -196,27 +299,3 @@ class WatermarkGenerator:
 
         probs = F.softmax(logits, dim=-1)
         return torch.multinomial(probs, num_samples=1).item()
-
-    def _regenerate_block(
-        self, past_kv, device, num_tokens: int
-    ) -> tuple[list[int], str, tuple]:
-        """Re-generate a fixed number of tokens from the rollback point."""
-        regen_ids: list[int] = []
-        input_ids = torch.tensor(
-            [[self._tokenizer.eos_token_id or 0]], dtype=torch.long, device=device
-        )
-
-        for _ in range(num_tokens):
-            output = self._model(
-                input_ids=input_ids,
-                past_key_values=past_kv,
-                use_cache=True,
-            )
-            logits = output.logits[:, -1, :]
-            past_kv = output.past_key_values
-            next_id = self._sample_token(logits)
-            regen_ids.append(next_id)
-            input_ids = torch.tensor([[next_id]], dtype=torch.long, device=device)
-
-        regen_text = self._tokenizer.decode(regen_ids, skip_special_tokens=True)
-        return regen_ids, regen_text, past_kv

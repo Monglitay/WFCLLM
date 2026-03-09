@@ -77,3 +77,24 @@ class TestKVCacheManager:
         snap100 = manager.snapshot(kv100)
         assert snap10.seq_len == 10
         assert snap100.seq_len == 100
+
+    def test_snapshot_at_computes_correct_seq_len(self, manager):
+        """snapshot_at 应计算出语句块开始前的 seq_len。"""
+        # 模拟：prompt=10 tokens，生成了 20 个 token，共 seq_len=30
+        kv = self._make_kv_cache(num_layers=2, seq_len=30)
+        # 语句块占最后 5 个生成 token；rollback_idx = 20 - 5 = 15
+        snap = manager.snapshot_at(past_key_values=kv, rollback_idx=15, current_generated_count=20)
+        # 期望 seq_len = 30 - (20 - 15) = 25
+        assert snap.seq_len == 25
+
+    def test_snapshot_at_zero_block_tokens(self, manager):
+        """rollback_idx == current_generated_count 时，seq_len 不变。"""
+        kv = self._make_kv_cache(num_layers=2, seq_len=30)
+        snap = manager.snapshot_at(past_key_values=kv, rollback_idx=20, current_generated_count=20)
+        assert snap.seq_len == 30
+
+    def test_snapshot_at_clamps_to_zero(self, manager):
+        """block_token_count 超过 current_seq_len 时，seq_len 不小于 0。"""
+        kv = self._make_kv_cache(num_layers=2, seq_len=5)
+        snap = manager.snapshot_at(past_key_values=kv, rollback_idx=0, current_generated_count=100)
+        assert snap.seq_len == 0
