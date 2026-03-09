@@ -164,6 +164,7 @@ class WatermarkGenerator:
                         )
 
                     success = False
+                    prev_retry_ids: list[int] | None = None
 
                     for retry_i in range(self._config.max_retries):
                         # 恢复完整回滚点状态
@@ -189,7 +190,9 @@ class WatermarkGenerator:
                             sub_logits = sub_output.logits[:, -1, :]
                             past_kv = sub_output.past_key_values
 
-                            sub_next_id = self._sample_token(sub_logits)
+                            sub_next_id = self._sample_token(
+                                sub_logits, penalty_ids=prev_retry_ids
+                            )
 
                             if sub_next_id == eos_id:
                                 break
@@ -233,6 +236,11 @@ class WatermarkGenerator:
                             # 主循环下一步从这里继续，next_id 使用子循环最后采样的 token
                             next_id = generated_ids[-1]
                             break
+
+                        # 记录本次子循环生成的 token IDs，下次 retry 时作为惩罚目标
+                        retry_block_count = len(generated_ids) - rollback_idx
+                        if retry_block_count > 0:
+                            prev_retry_ids = list(generated_ids[rollback_idx:])
 
                     if not success:
                         logger.debug(
