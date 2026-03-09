@@ -11,7 +11,19 @@
       "WebSearch",
       "Bash(sed:*)",
       "Bash(gh auth:*)",
-      "Bash(ssh:*)"
+      "Bash(ssh:*)",
+      "Bash(kill 35819 2>/dev/null; echo \"killed\")",
+      "Bash(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader 2>/dev/null)",
+      "Bash(HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/ --tb=short -q 2>&1 | tail -20)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(json.dumps\\({k:v for k,v in d.items\\(\\) if ''''plugin'''' in k.lower\\(\\) or ''''extension'''' in k.lower\\(\\)}, indent=2\\)\\)\")",
+      "Bash(cat ~/.claude.json | python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); projects=d.get\\('projects',{}\\); [print\\(k, list\\(v.keys\\(\\)\\)\\) for k,v in projects.items\\(\\) if 'plugin' in str\\(v\\).lower\\(\\) or 'extension' in str\\(v\\).lower\\(\\)]\" 2>/dev/null || echo \"none\")",
+      "Bash(find ~/.claude -name \"*.json\" 2>/dev/null | head -20)",
+      "Bash(mkdir -p /root/.claude/plugins/marketplaces/claude-plugins-official && unzip -o /root/autodl-tmp/WFCLLM/claude-plugins-official-main.zip -d /tmp/claude-plugins-tmp 2>&1 | tail -3)",
+      "Bash(cp -r /tmp/claude-plugins-tmp/claude-plugins-official-main/. /root/.claude/plugins/marketplaces/claude-plugins-official/ && echo \"done\")",
+      "Bash(HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/encoder/test_train.py::test_evaluate_only_prints_progress -v 2>&1 | tail -30)",
+      "Bash(HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/encoder/test_train.py::test_evaluate_only_prints_progress -v 2>&1 | tail -20)",
+      "Bash(HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/ -v 2>&1 | tail -30)",
+      "Bash(HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/ -v 2>&1 | tail -5)"
     ]
   }
 }
