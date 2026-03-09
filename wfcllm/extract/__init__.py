@@ -15,3 +15,5 @@ __all__ = [
     "DPSelector",
     "HypothesisTester",
 ]
+
+from wfcllm.extract.pipeline import ExtractPipeline, ExtractPipelineConfig
