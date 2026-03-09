@@ -434,9 +434,7 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
     embed_dim = args.embed_dim or ext_cfg.get("embed_dim", 128)
     z_threshold = args.z_threshold or ext_cfg.get("z_threshold", 3.0)
 
-    encoder_checkpoint = state.get("encoder", "checkpoint")
-
-    # 加载编码器
+    # 加载编码器：优先 best_model.pt，回退 checkpoint
     enc_config = EncoderConfig(embed_dim=embed_dim)
     local_codet5 = Path(enc_config.local_model_dir) / "codet5-base"
     if local_codet5.exists() and (local_codet5 / "config.json").exists():
@@ -445,9 +443,22 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
     else:
         print(f"[回退] 编码器使用 HF Hub: {enc_config.model_name}")
     encoder = SemanticEncoder(config=enc_config)
-    if encoder_checkpoint and Path(encoder_checkpoint).exists():
+
+    best_model_path = state.get("encoder", "best_model_path") or str(
+        Path(enc_config.output_model_dir) / "best_model.pt"
+    )
+    encoder_checkpoint = state.get("encoder", "checkpoint")
+    if Path(best_model_path).exists():
+        ckpt = torch.load(best_model_path, map_location="cpu")
+        encoder.load_state_dict(ckpt["model_state_dict"])
+        print(f"[加载] 编码器权重来自: {best_model_path}")
+    elif encoder_checkpoint and Path(encoder_checkpoint).exists():
         ckpt = torch.load(encoder_checkpoint, map_location="cpu")
         encoder.load_state_dict(ckpt["model_state_dict"])
+        print(f"[加载] 编码器权重来自 checkpoint（fallback）: {encoder_checkpoint}")
+    else:
+        print("[警告] 未找到微调权重，使用预训练模型")
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     encoder = encoder.to(device)
     tokenizer = AutoTokenizer.from_pretrained(enc_config.model_name)
