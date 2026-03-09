@@ -283,13 +283,16 @@ def run_encoder(args: argparse.Namespace, state: RunState) -> int:
         print(f"[错误] 编码器训练失败：{e}", file=sys.stderr)
         return 1
 
-    # 找到最新的 checkpoint 文件
+    # best_model.pt 固定路径
+    best_model_path = str(Path(config.output_model_dir) / "best_model.pt")
+
+    # 找到最新的 checkpoint 文件（向后兼容）
     ckpt_pattern = str(Path(config.checkpoint_dir) / "encoder_epoch*.pt")
     checkpoints = sorted(glob.glob(ckpt_pattern))
     checkpoint_path = checkpoints[-1] if checkpoints else config.checkpoint_dir
 
-    state.mark_done("encoder", checkpoint=checkpoint_path)
-    print(f"[完成] 编码器训练完毕，checkpoint: {checkpoint_path}")
+    state.mark_done("encoder", checkpoint=checkpoint_path, best_model_path=best_model_path)
+    print(f"[完成] 编码器训练完毕，最优模型: {best_model_path}")
     return 0
 
 
