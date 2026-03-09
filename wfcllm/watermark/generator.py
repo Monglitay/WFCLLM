@@ -274,9 +274,23 @@ class WatermarkGenerator:
             fallback_blocks=fallback_blocks,
         )
 
-    def _sample_token(self, logits: torch.Tensor) -> int:
-        """Sample a token from logits with temperature, top-k, top-p."""
+    def _sample_token(
+        self,
+        logits: torch.Tensor,
+        penalty_ids: list[int] | None = None,
+    ) -> int:
+        """Sample a token from logits with temperature, top-k, top-p, and optional repetition penalty."""
         logits = logits.squeeze(0).float()
+
+        # Repetition penalty: applied before temperature scaling
+        if penalty_ids and self._config.repetition_penalty != 1.0:
+            penalty = self._config.repetition_penalty
+            for tid in penalty_ids:
+                if 0 <= tid < logits.size(0):
+                    if logits[tid] > 0:
+                        logits[tid] /= penalty
+                    else:
+                        logits[tid] *= penalty
 
         if self._config.temperature > 0:
             logits = logits / self._config.temperature

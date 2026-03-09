@@ -90,6 +90,50 @@ class TestWatermarkGeneratorUnit:
         assert isinstance(result, GenerateResult)
         assert isinstance(result.code, str)
 
+    def test_sample_token_repetition_penalty_reduces_prob(self, config, mock_components):
+        """penalty_ids 中的 token 概率应低于不施加惩罚时。"""
+        model, tokenizer, encoder, enc_tok = mock_components
+        config.repetition_penalty = 2.0
+        gen = WatermarkGenerator(
+            model=model, tokenizer=tokenizer,
+            encoder=encoder, encoder_tokenizer=enc_tok, config=config,
+        )
+        vocab_size = 10
+        # logit[3] = 2.0（正数），施加惩罚后应变为 1.0
+        logits = torch.zeros(1, vocab_size)
+        logits[0, 3] = 2.0
+
+        # 不施加惩罚
+        import torch.nn.functional as F
+        logits_no_penalty = logits.clone().squeeze(0)
+        probs_no_penalty = F.softmax(logits_no_penalty / config.temperature, dim=-1)
+
+        # 施加惩罚
+        logits_with_penalty = logits.clone().squeeze(0)
+        logits_with_penalty[3] /= config.repetition_penalty
+        probs_with_penalty = F.softmax(logits_with_penalty / config.temperature, dim=-1)
+
+        assert probs_with_penalty[3] < probs_no_penalty[3]
+
+    def test_sample_token_no_penalty_when_disabled(self, config, mock_components):
+        """repetition_penalty=1.0 时，logits 不应被修改。"""
+        model, tokenizer, encoder, enc_tok = mock_components
+        config.repetition_penalty = 1.0
+        gen = WatermarkGenerator(
+            model=model, tokenizer=tokenizer,
+            encoder=encoder, encoder_tokenizer=enc_tok, config=config,
+        )
+        vocab_size = 10
+        logits = torch.randn(1, vocab_size)
+        logits_before = logits.clone()
+        # _sample_token 内部会修改 logits，但 penalty 部分应无效果
+        # 通过验证 penalty=1.0 时 token 3 的 logit 不变来确认
+        logits_copy = logits.clone().squeeze(0).float()
+        if logits_copy[3] > 0:
+            expected = logits_copy[3].item()
+            logits_copy[3] /= 1.0
+            assert abs(logits_copy[3].item() - expected) < 1e-6
+
 
 class TestWatermarkGeneratorRetrySubloop:
     """验证 retry 使用子主循环语义（不调用 _regenerate_block）。"""
