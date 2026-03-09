@@ -26,23 +26,24 @@
     "output_model_dir": "data/models/encoder"
   },
   "watermark": {
-    "secret_key": "",
-    "lm_model_path": "",
+    "secret_key": "1010",
+    "lm_model_path": "data/models/deepseek-coder-7b-base",
     "dataset": "humaneval",
     "dataset_path": "data/datasets",
     "output_dir": "data/watermarked",
-    "encoder_model_path": "data/models/codet5-base",
+    "encoder_model_path": "data/models/encoder",
     "encoder_embed_dim": 128,
     "encoder_device": "cuda",
-    "margin_base": 0.1,
-    "margin_alpha": 0.05,
-    "max_retries": 5,
+    "margin_base": 0.005,
+    "margin_alpha": 0.0036,
+    "max_retries": 50,
     "temperature": 0.8,
     "top_p": 0.95,
     "top_k": 50,
     "max_new_tokens": 512,
     "eos_token_id": null,
-    "enable_fallback": true
+    "enable_fallback": true,
+    "repetition_penalty": 1.3
   },
   "extract": {
     "secret_key": "",
