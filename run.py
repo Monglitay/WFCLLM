@@ -17,6 +17,20 @@ from pathlib import Path
 
 PHASES = ["encoder", "watermark", "extract"]
 DEFAULT_STATE_FILE = Path("data/run_state.json")
+DEFAULT_CONFIG_FILE = Path("configs/base_config.json")
+
+
+def load_config(config_path: Path) -> dict:
+    """读取 JSON 配置文件，返回按阶段分组的 dict。"""
+    if not config_path.exists():
+        print(f"[错误] 配置文件不存在：{config_path}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        print(f"[错误] 配置文件解析失败：{e}", file=sys.stderr)
+        sys.exit(1)
 
 
 class RunState:
