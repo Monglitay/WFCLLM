@@ -154,7 +154,7 @@ EOF
 python run.py --phase watermark \
     --lm-model-path data/models/codellama-7b \
     --secret-key mysecret \
-    --prompt "def fibonacci(n):"
+    --dataset humaneval
 ```
 
 ---
@@ -199,20 +199,31 @@ python run.py
 # 阶段一：训练语义编码器
 python run.py --phase encoder
 
-# 阶段一（自定义参数）
+# 阶段一（自定义超参数）
 python run.py --phase encoder --epochs 5 --lr 1e-4 --batch-size 16
 
-# 阶段二：生成含水印代码
+# 阶段二：对 humaneval 数据集批量嵌入水印，输出 JSONL
 python run.py --phase watermark \
-    --lm-model-path /path/to/codellama \
+    --lm-model-path data/models/deepseek-coder-7b \
     --secret-key mysecret \
-    --prompt "def fibonacci(n):" \
-    --output-file data/results/watermarked.py
+    --dataset humaneval \
+    --output-dir data/watermarked
 
-# 阶段三：检测代码是否含水印
+# 阶段二（MBPP 数据集）
+python run.py --phase watermark \
+    --lm-model-path data/models/deepseek-coder-7b \
+    --secret-key mysecret \
+    --dataset mbpp
+
+# 阶段三：检测水印 JSONL，输出统计报告（自动读取阶段二输出路径）
 python run.py --phase extract \
-    --code-file data/results/watermarked.py \
     --secret-key mysecret
+
+# 阶段三（指定 JSONL 文件）
+python run.py --phase extract \
+    --secret-key mysecret \
+    --input-file data/watermarked/humaneval_20260309_120000.jsonl \
+    --extract-output-dir data/results
 
 # 强制重跑某阶段（忽略已完成标记）
 python run.py --phase encoder --force
@@ -242,31 +253,56 @@ config = EncoderConfig(model_name="Salesforce/codet5-base", epochs=10)
 
 ```python
 from wfcllm.watermark import WatermarkConfig, WatermarkGenerator
+from wfcllm.watermark import WatermarkPipeline, WatermarkPipelineConfig
 
+# 单条生成（底层 API）
 config = WatermarkConfig(secret_key="mysecret")
 generator = WatermarkGenerator(lm_model, lm_tokenizer, encoder, encoder_tokenizer, config)
 result = generator.generate("def fibonacci(n):")
 print(result.code)
+
+# 批量 pipeline（推荐）
+pipeline_config = WatermarkPipelineConfig(
+    dataset="humaneval",          # "humaneval" 或 "mbpp"
+    output_dir="data/watermarked",
+    dataset_path="data/datasets",
+)
+pipeline = WatermarkPipeline(generator=generator, config=pipeline_config)
+output_path = pipeline.run()     # 返回 JSONL 文件路径
 ```
 
 关键 API：
-- `WatermarkConfig` — 水印嵌入参数
+- `WatermarkConfig` — 水印嵌入参数（secret_key, embed_dim, margin 等）
 - `WatermarkGenerator.generate(prompt)` → `GenerateResult`
+- `WatermarkPipelineConfig` — pipeline 配置（dataset, output_dir, dataset_path）
+- `WatermarkPipeline.run()` → JSONL 路径（每行含 id/prompt/generated_code/embed_rate 等字段）
 
 ### Phase 3 — `wfcllm.extract`
 
 ```python
 from wfcllm.extract import ExtractConfig, WatermarkDetector
+from wfcllm.extract import ExtractPipeline, ExtractPipelineConfig
 
+# 单条检测（底层 API）
 config = ExtractConfig(secret_key="mysecret")
 detector = WatermarkDetector(config, encoder, tokenizer)
 result = detector.detect(code_str)
 print(result.is_watermarked, result.z_score)
+
+# 批量 pipeline（推荐）
+pipeline_config = ExtractPipelineConfig(
+    input_file="data/watermarked/humaneval_20260309_120000.jsonl",
+    output_dir="data/results",
+)
+pipeline = ExtractPipeline(detector=detector, config=pipeline_config)
+report_path = pipeline.run()     # 返回 JSON 报告路径
 ```
 
 关键 API：
-- `ExtractConfig` — 提取参数（secret_key, z_threshold）
+- `ExtractConfig` — 提取参数（secret_key, z_threshold, embed_dim）
 - `WatermarkDetector.detect(code)` → `DetectionResult`
+- `ExtractPipelineConfig` — pipeline 配置（input_file, output_dir）
+- `ExtractPipeline.run()` → JSON 报告路径（含 summary/per_sample 统计字段）
 
 ---
 
@@ -289,7 +325,8 @@ WFCLLM/
 │   └── experiment/         # 实验记录
 └── data/                   # 数据、模型检查点、运行结果
     ├── checkpoints/encoder/
-    ├── results/
+    ├── watermarked/        # 水印 JSONL 数据集（阶段二输出）
+    ├── results/            # 检测报告 JSON（阶段三输出）
     └── run_state.json      # 断点状态（自动生成，已 gitignore）
 ```
 

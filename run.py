@@ -1,11 +1,27 @@
 """统一运行入口：支持全流程、单阶段运行与断点续跑。
 
-用法：
-    python run.py                          # 全流程
+流程概述：
+    阶段一（encoder）  — 对比学习预训练鲁棒语义编码器
+    阶段二（watermark）— 遍历 HumanEval/MBPP 数据集，批量生成含水印代码并输出 JSONL
+    阶段三（extract）  — 读取水印 JSONL，批量检测并输出研究级统计报告 JSON
+
+用法示例：
+    python run.py                          # 全流程（自动跳过已完成阶段）
     python run.py --phase encoder          # 只跑阶段一
-    python run.py --status                 # 查看状态
-    python run.py --reset                  # 清除断点
-    python run.py --phase encoder --force  # 强制重跑
+    python run.py --status                 # 查看各阶段完成情况
+    python run.py --reset                  # 清除断点状态，重头开始
+    python run.py --phase encoder --force  # 强制重跑（忽略已完成标记）
+
+    # 阶段二：对 humaneval 数据集批量嵌入水印
+    python run.py --phase watermark \\
+        --lm-model-path data/models/deepseek-coder-7b \\
+        --secret-key mysecret \\
+        --dataset humaneval
+
+    # 阶段三：检测水印 JSONL，输出统计报告
+    python run.py --phase extract \\
+        --secret-key mysecret \\
+        --input-file data/watermarked/humaneval_20260309_120000.jsonl
 """
 from __future__ import annotations
 
@@ -132,11 +148,15 @@ def build_parser() -> argparse.ArgumentParser:
     # Watermark 参数
     parser.add_argument("--secret-key", default=None, help="水印密钥")
     parser.add_argument("--lm-model-path", default=None, help="代码生成 LLM 路径")
-    parser.add_argument("--prompt", default=None, help="生成代码的输入提示")
-    parser.add_argument("--output-file", default=None, help="保存生成代码的路径")
+    parser.add_argument("--dataset", default=None, choices=["humaneval", "mbpp"],
+                        help="水印嵌入数据集（humaneval 或 mbpp，默认: humaneval）")
+    parser.add_argument("--dataset-path", default=None, help="本地数据集根目录（默认: data/datasets）")
+    parser.add_argument("--output-dir", default=None, help="水印 JSONL 输出目录（默认: data/watermarked）")
     # Extract 参数
-    parser.add_argument("--code-file", default=None, help="待检测代码文件路径")
-    parser.add_argument("--z-threshold", type=float, default=None, help="Z 分数阈值")
+    parser.add_argument("--input-file", default=None,
+                        help="待检测的水印 JSONL 文件路径（不传则从 run_state 读取阶段二输出）")
+    parser.add_argument("--extract-output-dir", default=None, help="检测报告输出目录（默认: data/results）")
+    parser.add_argument("--z-threshold", type=float, default=None, help="Z 分数阈值（默认: 3.0）")
     return parser
 
 
@@ -274,7 +294,13 @@ def run_encoder(args: argparse.Namespace, state: RunState) -> int:
 
 
 def run_watermark(args: argparse.Namespace, state: RunState) -> int:
-    """阶段二：生成含水印代码。"""
+    """阶段二：批量生成含水印代码（基于数据集）。
+
+    从本地 HumanEval 或 MBPP 数据集逐条加载 prompt，调用 WatermarkGenerator
+    生成含水印代码，将结果写入 JSONL 文件（每行一条 JSON 记录），记录字段：
+        id, dataset, prompt, generated_code,
+        total_blocks, embedded_blocks, failed_blocks, fallback_blocks, embed_rate
+    """
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -282,6 +308,7 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
     from wfcllm.encoder.model import SemanticEncoder
     from wfcllm.watermark.config import WatermarkConfig
     from wfcllm.watermark.generator import WatermarkGenerator
+    from wfcllm.watermark.pipeline import WatermarkPipeline, WatermarkPipelineConfig
 
     print("=== 阶段二：生成时水印嵌入 ===")
 
@@ -295,10 +322,16 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
     if not args.lm_model_path:
         print("[错误] --lm-model-path 为必填参数", file=sys.stderr)
         return 1
-    prompt = args.prompt or "def solution():"
+
+    # Config 读取（优先 CLI，回退 config 文件）
+    cfg = load_config(args.config)
+    wm_cfg = cfg.get("watermark", {})
+    dataset = args.dataset or wm_cfg.get("dataset", "humaneval")
+    dataset_path = args.dataset_path or wm_cfg.get("dataset_path", "data/datasets")
+    output_dir = args.output_dir or wm_cfg.get("output_dir", "data/watermarked")
+    embed_dim = args.embed_dim or wm_cfg.get("encoder_embed_dim", 128)
 
     encoder_checkpoint = state.get("encoder", "checkpoint")
-    embed_dim = args.embed_dim or 128
 
     # 加载编码器
     enc_config = EncoderConfig(embed_dim=embed_dim)
@@ -319,37 +352,41 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
     lm_tokenizer = AutoTokenizer.from_pretrained(args.lm_model_path)
     lm_model = AutoModelForCausalLM.from_pretrained(args.lm_model_path).to(device)
 
-    config = WatermarkConfig(
+    wm_config = WatermarkConfig(
         secret_key=args.secret_key,
         encoder_embed_dim=embed_dim,
         encoder_device=device,
     )
-    generator = WatermarkGenerator(lm_model, lm_tokenizer, encoder, encoder_tokenizer, config)
+    generator = WatermarkGenerator(lm_model, lm_tokenizer, encoder, encoder_tokenizer, wm_config)
+
+    pipeline_config = WatermarkPipelineConfig(
+        dataset=dataset,
+        output_dir=output_dir,
+        dataset_path=dataset_path,
+    )
+    pipeline = WatermarkPipeline(generator=generator, config=pipeline_config)
 
     try:
-        result = generator.generate(prompt)
+        output_path = pipeline.run()
     except Exception as e:
         print(f"[错误] 水印生成失败：{e}", file=sys.stderr)
         return 1
 
-    # 保存结果
-    output_file = args.output_file or "data/results/watermarked.py"
-    Path(output_file).parent.mkdir(parents=True, exist_ok=True)
-    Path(output_file).write_text(result.code, encoding="utf-8")
-
-    state.mark_done(
-        "watermark",
-        output_file=output_file,
-        embedded_blocks=result.embedded_blocks,
-        total_blocks=result.total_blocks,
-    )
-    print(f"[完成] 生成代码已保存至 {output_file}")
-    print(f"       嵌入块: {result.embedded_blocks}/{result.total_blocks}")
+    state.mark_done("watermark", output_file=output_path, dataset=dataset)
+    print(f"[完成] 水印数据集已保存至 {output_path}")
     return 0
 
 
 def run_extract(args: argparse.Namespace, state: RunState) -> int:
-    """阶段三：检测代码水印。"""
+    """阶段三：批量检测水印（基于 JSONL 水印数据集）。
+
+    读取阶段二输出的 JSONL 文件，对每条记录调用 WatermarkDetector.detect()，
+    汇总统计指标并输出 JSON 报告，字段包括：
+        meta:       total_samples, input_file
+        summary:    watermark_rate, watermark_rate_ci_95, mean_z_score,
+                    std_z_score, mean_p_value, mean_blocks, embed_rate_distribution
+        per_sample: id, is_watermarked, z_score, p_value, independent_blocks, hits
+    """
     import torch
     from transformers import AutoTokenizer
 
@@ -357,6 +394,7 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
     from wfcllm.encoder.model import SemanticEncoder
     from wfcllm.extract.config import ExtractConfig
     from wfcllm.extract.detector import WatermarkDetector
+    from wfcllm.extract.pipeline import ExtractPipeline, ExtractPipelineConfig
 
     print("=== 阶段三：水印提取与验证 ===")
 
@@ -367,17 +405,23 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
     if not args.secret_key:
         print("[错误] --secret-key 为必填参数", file=sys.stderr)
         return 1
-    if not args.code_file:
-        print("[错误] --code-file 为必填参数", file=sys.stderr)
+
+    # Config 读取（优先 CLI，回退 config 文件；input_file 也可从 run_state 中取）
+    cfg = load_config(args.config)
+    ext_cfg = cfg.get("extract", {})
+    input_file = args.input_file or ext_cfg.get("input_file") or state.get("watermark", "output_file")
+    if not input_file:
+        print("[错误] --input-file 为必填参数（或先完成阶段二）", file=sys.stderr)
         return 1
-    code_path = Path(args.code_file)
-    if not code_path.exists():
-        print(f"[错误] 文件不存在：{args.code_file}", file=sys.stderr)
+    if not Path(input_file).exists():
+        print(f"[错误] 文件不存在：{input_file}", file=sys.stderr)
         return 1
 
+    output_dir = args.extract_output_dir or ext_cfg.get("output_dir", "data/results")
+    embed_dim = args.embed_dim or ext_cfg.get("embed_dim", 128)
+    z_threshold = args.z_threshold or ext_cfg.get("z_threshold", 3.0)
+
     encoder_checkpoint = state.get("encoder", "checkpoint")
-    embed_dim = args.embed_dim or 128
-    z_threshold = args.z_threshold or 3.0
 
     # 加载编码器
     enc_config = EncoderConfig(embed_dim=embed_dim)
@@ -395,28 +439,40 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
     encoder = encoder.to(device)
     tokenizer = AutoTokenizer.from_pretrained(enc_config.model_name)
 
-    config = ExtractConfig(secret_key=args.secret_key, embed_dim=embed_dim, z_threshold=z_threshold)
-    detector = WatermarkDetector(config, encoder, tokenizer, device=device)
+    extract_config = ExtractConfig(
+        secret_key=args.secret_key,
+        embed_dim=embed_dim,
+        z_threshold=z_threshold,
+    )
+    detector = WatermarkDetector(extract_config, encoder, tokenizer, device=device)
 
-    code = code_path.read_text(encoding="utf-8")
+    pipeline_config = ExtractPipelineConfig(
+        input_file=input_file,
+        output_dir=output_dir,
+    )
+    pipeline = ExtractPipeline(detector=detector, config=pipeline_config)
+
     try:
-        result = detector.detect(code)
+        report_path = pipeline.run()
     except Exception as e:
         print(f"[错误] 检测失败：{e}", file=sys.stderr)
         return 1
 
-    verdict = "【含水印】" if result.is_watermarked else "【无水印】"
-    print(f"\n{verdict}")
-    print(f"  Z 分数:   {result.z_score:.4f}（阈值 {z_threshold}）")
-    print(f"  p 值:     {result.p_value:.6f}")
-    print(f"  独立块:   {result.independent_blocks}/{result.total_blocks}")
-    print(f"  命中块:   {result.hit_blocks}")
+    import json as _json
+    report = _json.loads(Path(report_path).read_text(encoding="utf-8"))
+    summary = report["summary"]
+    print(f"\n=== 检测结果摘要 ===")
+    print(f"  样本总数:     {report['meta']['total_samples']}")
+    print(f"  水印检测率:   {summary['watermark_rate']:.1%}  "
+          f"95% CI [{summary['watermark_rate_ci_95'][0]:.3f}, {summary['watermark_rate_ci_95'][1]:.3f}]")
+    print(f"  平均 Z 分数:  {summary['mean_z_score']:.4f} ± {summary['std_z_score']:.4f}")
+    print(f"  平均 p 值:    {summary['mean_p_value']:.6f}")
+    print(f"  报告已保存至: {report_path}")
 
     state.mark_done(
         "extract",
-        code_file=args.code_file,
-        is_watermarked=result.is_watermarked,
-        z_score=result.z_score,
+        report_file=report_path,
+        watermark_rate=summary["watermark_rate"],
     )
     return 0
 
