@@ -22,7 +22,8 @@
     "checkpoint_dir": "data/checkpoints/encoder",
     "results_dir": "data/results",
     "local_model_dir": "data/models",
-    "local_dataset_dir": "data/datasets"
+    "local_dataset_dir": "data/datasets",
+    "output_model_dir": "data/models/encoder"
   },
   "watermark": {
     "secret_key": "",
