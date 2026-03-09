@@ -23,7 +23,21 @@
       "Bash(HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/encoder/test_train.py::test_evaluate_only_prints_progress -v 2>&1 | tail -30)",
       "Bash(HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/encoder/test_train.py::test_evaluate_only_prints_progress -v 2>&1 | tail -20)",
       "Bash(HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/ -v 2>&1 | tail -30)",
-      "Bash(HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/ -v 2>&1 | tail -5)"
+      "Bash(HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/ -v 2>&1 | tail -5)",
+      "Bash(ssh-keygen -t ed25519 -C \"WFCLLM-server\" -f ~/.ssh/github_ed25519 -N \"\" && cat ~/.ssh/github_ed25519.pub)",
+      "Bash(HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/test_run_config.py -v 2>&1 | tail -20)",
+      "Bash(HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/test_run_config.py -v 2>&1 | tail -15)",
+      "Bash(HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/test_run_config.py::test_parser_default_config tests/test_run_config.py::test_parser_custom_config -v 2>&1 | tail -15)",
+      "Bash(wc -l /root/autodl-tmp/WFCLLM/wfcllm/watermark/*.py /root/autodl-tmp/WFCLLM/wfcllm/extract/*.py)",
+      "Bash(HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/watermark/test_pipeline.py -v 2>&1 | tail -15)",
+      "Bash(HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/watermark/test_pipeline.py::TestWatermarkPipelineLoadPrompts -v 2>&1 | tail -15)",
+      "Bash(HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/watermark/test_pipeline.py::TestWatermarkPipelineRun -v 2>&1 | tail -20)",
+      "Bash(HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/extract/test_pipeline.py -v 2>&1 | tail -10)",
+      "Bash(HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/extract/test_pipeline.py -v 2>&1 | tail -15)",
+      "Bash(HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/extract/test_pipeline.py::TestExtractPipelineStatistics::test_run_creates_report_json -v 2>&1 | grep -A 20 \"FAILED\\\\|AssertionError\\\\|assert\")",
+      "Bash(HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/extract/test_pipeline.py::TestExtractPipelineStatistics::test_run_creates_report_json -v --tb=long 2>&1 | grep -A 40 \"AssertionError\")",
+      "Bash(HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/extract/test_pipeline.py::TestExtractPipelineStatistics::test_run_creates_report_json -v --tb=short 2>&1 | grep -A 30 \"FAILURES\")",
+      "Bash(HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/ -v --tb=short 2>&1 | tail -40)"
     ]
   }
 }
