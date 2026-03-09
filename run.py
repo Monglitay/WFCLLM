@@ -225,13 +225,20 @@ def run_encoder(args: argparse.Namespace, state: RunState) -> int:
     if args.eval_only:
         from wfcllm.encoder.train import evaluate_only
 
-        checkpoint = args.checkpoint or state.get("encoder", "checkpoint")
+        # 优先顺序：CLI --checkpoint > best_model.pt > run_state checkpoint
+        default_best = str(Path(EncoderConfig().output_model_dir) / "best_model.pt")
+        checkpoint = (
+            args.checkpoint
+            or (default_best if Path(default_best).exists() else None)
+            or state.get("encoder", "checkpoint")
+        )
         if not checkpoint:
             print("[错误] 未找到 checkpoint，请用 --checkpoint 指定路径", file=sys.stderr)
             return 1
         if not Path(checkpoint).exists():
             print(f"[错误] checkpoint 不存在：{checkpoint}", file=sys.stderr)
             return 1
+        print(f"[评测] 使用模型: {checkpoint}")
 
         config = EncoderConfig()
         if args.model_name:
