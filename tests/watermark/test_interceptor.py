@@ -102,3 +102,55 @@ class TestStatementInterceptor:
                 events.append(event)
         if events:
             assert events[0].token_count > 0
+
+
+class TestStatementInterceptorStateSnapshot:
+    """save_state / restore_state 语义测试。"""
+
+    def test_restore_returns_to_saved_state(self):
+        """restore 之后 accumulated 和 emitted_keys 回到 save 时的值。"""
+        interceptor = StatementInterceptor()
+        # 喂入部分 token，让 interceptor 有非空状态
+        for ch in "x = 1\n":
+            interceptor.feed_token(ch)
+        state = interceptor.save_state()
+
+        # 继续喂更多 token
+        for ch in "y = 2\n":
+            interceptor.feed_token(ch)
+        assert "y" in interceptor._accumulated
+
+        # 恢复
+        interceptor.restore_state(state)
+        assert interceptor._accumulated == state["accumulated"]
+        assert interceptor._emitted_keys == state["emitted_keys"]
+        assert interceptor._prev_all_keys == state["prev_all_keys"]
+        assert interceptor._pending_simple == state["pending_simple"]
+        assert interceptor._token_idx == state["token_idx"]
+
+    def test_restore_makes_feed_token_deterministic(self):
+        """restore 后重新喂同样的 token 序列，结果应该与原始一致。"""
+        interceptor = StatementInterceptor()
+        for ch in "x = 1\n":
+            interceptor.feed_token(ch)
+        state = interceptor.save_state()
+
+        # 第一次：继续喂 'y = 2\n'，记录事件
+        events_first = []
+        for ch in "y = 2\n":
+            e = interceptor.feed_token(ch)
+            if e is not None:
+                events_first.append(e)
+
+        # restore 后再喂同样序列
+        interceptor.restore_state(state)
+        events_second = []
+        for ch in "y = 2\n":
+            e = interceptor.feed_token(ch)
+            if e is not None:
+                events_second.append(e)
+
+        assert len(events_first) == len(events_second)
+        for e1, e2 in zip(events_first, events_second):
+            assert e1.block_text == e2.block_text
+            assert e1.block_type == e2.block_type

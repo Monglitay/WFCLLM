@@ -101,6 +101,24 @@ class StatementInterceptor:
         self._pending_simple = {}
         self._emitted_keys = set()
 
+    def save_state(self) -> dict:
+        """保存当前内部状态的深拷贝，用于 retry 回滚。"""
+        return {
+            "accumulated": self._accumulated,
+            "token_idx": self._token_idx,
+            "prev_all_keys": set(self._prev_all_keys),
+            "pending_simple": dict(self._pending_simple),
+            "emitted_keys": set(self._emitted_keys),
+        }
+
+    def restore_state(self, state: dict) -> None:
+        """恢复到 save_state 保存时的状态。"""
+        self._accumulated = state["accumulated"]
+        self._token_idx = state["token_idx"]
+        self._prev_all_keys = set(state["prev_all_keys"])
+        self._pending_simple = dict(state["pending_simple"])
+        self._emitted_keys = set(state["emitted_keys"])
+
     def _make_event(self, block: _BlockInfo) -> InterceptEvent:
         return InterceptEvent(
             block_text=block.text,
