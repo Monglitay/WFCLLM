@@ -23,6 +23,7 @@ typer==0.24.1
 torch
 transformers==4.46.3
 peft==0.13.2
+bitsandbytes
 protobuf
 
 # 测试

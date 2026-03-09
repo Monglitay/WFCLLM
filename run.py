@@ -372,12 +372,18 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
     encoder = encoder.to(device)
     encoder_tokenizer = AutoTokenizer.from_pretrained(enc_config.model_name)
 
-    # 加载代码生成 LLM
+    # 加载代码生成 LLM（4-bit 量化以节省显存）
+    from transformers import BitsAndBytesConfig
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4",
+    )
     lm_tokenizer = AutoTokenizer.from_pretrained(lm_model_path)
-    lm_dtype = torch.float32 if args.no_bf16 else torch.bfloat16
     lm_model = AutoModelForCausalLM.from_pretrained(
-        lm_model_path, torch_dtype=lm_dtype
-    ).to(device)
+        lm_model_path, quantization_config=bnb_config, device_map="auto"
+    )
 
     wm_config = WatermarkConfig(
         secret_key=secret_key,
