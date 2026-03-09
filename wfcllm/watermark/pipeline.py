@@ -13,6 +13,7 @@ try:
 except ImportError:
     tqdm = None  # type: ignore[assignment]
 
+import torch
 from datasets import load_dataset
 
 from wfcllm.watermark.generator import WatermarkGenerator
@@ -112,6 +113,9 @@ class WatermarkPipeline:
                     "embed_rate": embed_rate,
                 }
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
                 summary = (
                     f"  ✓ {item['id']} | "

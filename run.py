@@ -369,10 +369,13 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
         print(f"[加载] 编码器权重来自 checkpoint（fallback）: {encoder_checkpoint}")
     else:
         print("[警告] 未找到微调权重，使用预训练模型")
-    encoder = encoder.to(device)
+    # encoder 放 CPU，为 LLM 留出全部 GPU 显存
+    encoder = encoder.to("cpu")
     encoder_tokenizer = AutoTokenizer.from_pretrained(enc_config.model_name)
 
     # 加载代码生成 LLM（4-bit 量化以节省显存）
+    import os
+    os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
     from transformers import BitsAndBytesConfig
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
@@ -388,7 +391,7 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
     wm_config = WatermarkConfig(
         secret_key=secret_key,
         encoder_embed_dim=embed_dim,
-        encoder_device=device,
+        encoder_device="cpu",
     )
     generator = WatermarkGenerator(lm_model, lm_tokenizer, encoder, encoder_tokenizer, wm_config)
 
