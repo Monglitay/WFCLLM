@@ -21,3 +21,5 @@ __all__ = [
     "ProjectionVerifier",
     "VerifyResult",
 ]
+
+from wfcllm.watermark.pipeline import WatermarkPipeline, WatermarkPipelineConfig
