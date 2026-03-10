@@ -210,9 +210,13 @@ class WatermarkGenerator:
         result = self._verifier.verify(event.block_text, valid_set, margin)
 
         logger.debug(
-            "[compound fallback] node=%s parent=%s sig=%s passed=%s",
+            "[compound fallback] node=%s parent=%s entropy=%.4f margin_thresh=%.4f\n"
+            "  sig=%s in_valid=%s valid_set_size=%d min_margin=%.4f passed=%s",
             event.node_type, event.parent_node_type,
-            result.lsh_signature, result.passed,
+            block_entropy, margin,
+            result.lsh_signature,
+            result.lsh_signature in valid_set,
+            len(valid_set), result.min_margin, result.passed,
         )
         if result.passed:
             stats.fallback_blocks += 1

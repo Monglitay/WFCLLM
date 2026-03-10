@@ -132,9 +132,13 @@ class RetryLoop:
             texts_seen.add(event.block_text)
 
             logger.debug(
-                "  [retry %d/%d] min_margin=%.4f margin_thresh=%.4f passed=%s\n  text=%r",
+                "  [retry %d/%d] entropy=%.4f margin_thresh=%.4f"
+                " sig=%s in_valid=%s min_margin=%.4f passed=%s\n  text=%r",
                 attempt_i + 1, self._config.max_retries,
-                result.min_margin, margin, result.passed,
+                block_entropy, margin,
+                result.lsh_signature,
+                result.lsh_signature in valid_set,
+                result.min_margin, result.passed,
                 event.block_text[:80],
             )
 
