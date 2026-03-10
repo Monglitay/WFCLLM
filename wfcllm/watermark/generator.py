@@ -52,6 +52,20 @@ class WatermarkGenerator:
         )
         self._cache_mgr = KVCacheManager()
 
+        # Fix 4: keywords whose token ids must never receive repetition penalty
+        _STRUCTURAL_KEYWORDS = [
+            "import", "return", "def", "class", "if", "else", "elif",
+            "for", "while", "with", "try", "except", "finally", "pass",
+            "break", "continue", "raise", "yield", "lambda",
+            "and", "or", "not", "in", "is", "from", "as", "assert",
+            "del", "global", "nonlocal", "\n", " ", "\t",
+        ]
+        self._structural_token_ids: set[int] = {
+            tid
+            for kw in _STRUCTURAL_KEYWORDS
+            for tid in self._tokenizer.encode(kw, add_special_tokens=False)
+        }
+
     @torch.no_grad()
     def generate(self, prompt: str) -> GenerateResult:
         """Generate code with watermark embedding.
@@ -236,7 +250,10 @@ class WatermarkGenerator:
                         # 记录本次子循环生成的 token IDs，下次 retry 时作为惩罚目标
                         retry_block_count = len(generated_ids) - rollback_idx
                         if retry_block_count > 0:
-                            prev_retry_ids = list(generated_ids[rollback_idx:])
+                            prev_retry_ids = [
+                            tid for tid in generated_ids[rollback_idx:]
+                            if tid not in self._structural_token_ids
+                        ]
 
                     if not success:
                         logger.debug(
