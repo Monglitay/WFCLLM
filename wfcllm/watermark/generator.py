@@ -212,7 +212,7 @@ class WatermarkGenerator:
                                 "  [retry %d/%d] sub-loop ended without block",
                                 retry_i + 1, self._config.max_retries,
                             )
-                            break
+                            continue
 
                         result = self._verifier.verify(
                             sub_event.block_text, v, t, margin
