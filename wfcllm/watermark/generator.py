@@ -149,7 +149,7 @@ class WatermarkGenerator:
                         rollback_idx=rollback_idx,
                         current_generated_count=len(generated_ids),
                     )
-                    rollback_interceptor_state = self._interceptor.save_state()
+                    rollback_interceptor_state = self._interceptor.get_pre_event_state()
                     # 回滚点的最后一个 token（用于子循环第一次 forward 的 input_ids）
                     if rollback_generated_ids:
                         rollback_last_token_id = rollback_generated_ids[-1]
