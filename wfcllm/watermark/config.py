@@ -40,3 +40,13 @@ class WatermarkConfig:
     # LSH parameters
     lsh_d: int = 3
     lsh_gamma: float = 0.5
+
+    # Cascade fallback (compound block re-generation)
+    enable_cascade: bool = False
+    cascade_max_depth: int = 1
+
+    # Memory management
+    cuda_empty_cache_interval: int = 10  # call empty_cache() every N rollbacks
+
+    # Retry budget
+    retry_token_budget: int | None = None  # max tokens per retry attempt; None = max_new_tokens // 2

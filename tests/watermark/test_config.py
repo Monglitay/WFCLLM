@@ -60,3 +60,27 @@ def test_lsh_defaults():
     cfg = WatermarkConfig(secret_key="k")
     assert cfg.lsh_d == 3
     assert cfg.lsh_gamma == 0.5
+
+
+def test_cascade_config_defaults():
+    """New cascade fields have correct defaults."""
+    cfg = WatermarkConfig(secret_key="k")
+    assert cfg.enable_cascade is False
+    assert cfg.cascade_max_depth == 1
+    assert cfg.cuda_empty_cache_interval == 10
+    assert cfg.retry_token_budget is None
+
+
+def test_cascade_config_custom():
+    """Cascade fields can be overridden."""
+    cfg = WatermarkConfig(
+        secret_key="k",
+        enable_cascade=True,
+        cascade_max_depth=3,
+        cuda_empty_cache_interval=5,
+        retry_token_budget=128,
+    )
+    assert cfg.enable_cascade is True
+    assert cfg.cascade_max_depth == 3
+    assert cfg.cuda_empty_cache_interval == 5
+    assert cfg.retry_token_budget == 128
