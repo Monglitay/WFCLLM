@@ -1,7 +1,8 @@
 """Tests for wfcllm.watermark.interceptor."""
 
 import pytest
-from wfcllm.watermark.interceptor import StatementInterceptor, InterceptEvent
+import warnings
+from wfcllm.watermark.interceptor import StatementInterceptor, InterceptEvent, InterceptorState
 
 
 class TestInterceptEvent:
@@ -228,7 +229,9 @@ class TestPreEventState:
             if e is not None:
                 event = e
         assert event is not None, "Expected an event"
-        state = ic.get_pre_event_state()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            state = ic.get_pre_event_state()
         assert isinstance(state, dict)
         assert "accumulated" in state
         assert "emitted_keys" in state
@@ -243,7 +246,9 @@ class TestPreEventState:
             if e is not None:
                 event = e
         assert event is not None
-        state = ic.get_pre_event_state()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            state = ic.get_pre_event_state()
         # The key is (node_type, start_byte, end_byte) — reconstruct from event
         # The pre-event state's emitted_keys should NOT contain ANY key related to this event
         # We verify by restoring and re-feeding the same tokens — another event must fire
@@ -264,7 +269,9 @@ class TestPreEventState:
             e = ic.feed_token(ch)
         # save_state() now includes the block's key
         post_state = ic.save_state()
-        pre_state = ic.get_pre_event_state()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            pre_state = ic.get_pre_event_state()
         # pre_state emitted_keys is a strict subset of post_state emitted_keys
         assert pre_state["emitted_keys"] < post_state["emitted_keys"] or (
             # or same length means the key was already there before (shouldn't happen here)
@@ -274,5 +281,115 @@ class TestPreEventState:
     def test_pre_event_state_none_before_any_event(self):
         """Before any event fires, get_pre_event_state() raises AssertionError."""
         ic = StatementInterceptor()
-        with pytest.raises((AssertionError, TypeError)):
-            ic.get_pre_event_state()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            with pytest.raises((AssertionError, TypeError)):
+                ic.get_pre_event_state()
+
+
+class TestInterceptorCheckpointRollback:
+    """New typed checkpoint/rollback API."""
+
+    def test_checkpoint_returns_typed_state(self):
+        ic = StatementInterceptor()
+        for ch in "x = 1\n":
+            ic.feed_token(ch)
+        state = ic.checkpoint()
+        assert isinstance(state, InterceptorState)
+        assert isinstance(state.accumulated, str)
+        assert isinstance(state.token_idx, int)
+        assert isinstance(state.prev_all_keys, set)
+        assert isinstance(state.pending_simple, dict)
+        assert isinstance(state.emitted_keys, set)
+        assert isinstance(state.token_boundaries, list)
+
+    def test_rollback_with_typed_state(self):
+        ic = StatementInterceptor()
+        for ch in "x = 1\n":
+            ic.feed_token(ch)
+        state = ic.checkpoint()
+        for ch in "y = 2\n":
+            ic.feed_token(ch)
+        ic.rollback(state)
+        assert ic._accumulated == state.accumulated
+        assert ic._token_idx == state.token_idx
+        assert ic._emitted_keys == state.emitted_keys
+
+    def test_checkpoint_rollback_equivalence(self):
+        """checkpoint → feed tokens → rollback → state equals checkpoint."""
+        ic = StatementInterceptor()
+        for ch in "x = 1\n":
+            ic.feed_token(ch)
+        cp = ic.checkpoint()
+        # Feed more tokens
+        for ch in "y = 2\nz = 3\n":
+            ic.feed_token(ch)
+        ic.rollback(cp)
+        # Re-feed same tokens → same events
+        events1 = []
+        for ch in "y = 2\n":
+            e = ic.feed_token(ch)
+            if e:
+                events1.append(e)
+        assert len(events1) >= 1
+        assert events1[0].block_text.strip() == "y = 2"
+
+    def test_rollback_accumulated_text_clean(self):
+        """After rollback, accumulated does not contain rolled-back tokens."""
+        ic = StatementInterceptor()
+        for ch in "x = 1\n":
+            ic.feed_token(ch)
+        cp = ic.checkpoint()
+        for ch in "return the\n":
+            ic.feed_token(ch)
+        ic.rollback(cp)
+        assert "return" not in ic._accumulated or ic._accumulated == cp.accumulated
+
+    def test_rollback_then_regenerate_detects_new_block(self):
+        """After rollback, feeding different content triggers new block."""
+        ic = StatementInterceptor()
+        for ch in "x = 1\n":
+            ic.feed_token(ch)
+        cp = ic.checkpoint()
+        # First attempt
+        for ch in "y = 2\n":
+            ic.feed_token(ch)
+        # Rollback
+        ic.rollback(cp)
+        # Second attempt with different content
+        events = []
+        for ch in "z = 3\n":
+            e = ic.feed_token(ch)
+            if e:
+                events.append(e)
+        assert len(events) >= 1
+        assert "z" in events[0].block_text
+
+    def test_deep_copy_pending_simple(self):
+        """checkpoint() deep-copies _BlockInfo in pending_simple."""
+        ic = StatementInterceptor()
+        # Feed partial statement (no newline yet) to create pending_simple entry
+        for ch in "x = 1":
+            ic.feed_token(ch)
+        cp = ic.checkpoint()
+        # Verify pending_simple values are independent copies
+        if cp.pending_simple:
+            for key in cp.pending_simple:
+                # Modifying original should not affect checkpoint
+                if key in ic._pending_simple:
+                    original_text = ic._pending_simple[key].text
+                    ic._pending_simple[key].text = "MODIFIED"
+                    assert cp.pending_simple[key].text == original_text
+
+    def test_get_pre_event_state_removed(self):
+        """get_pre_event_state should raise DeprecationWarning or not exist."""
+        ic = StatementInterceptor()
+        for ch in "x = 1\n":
+            ic.feed_token(ch)
+        # Either removed entirely or raises deprecation
+        if hasattr(ic, "get_pre_event_state"):
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", DeprecationWarning)
+                with pytest.raises(DeprecationWarning):
+                    ic.get_pre_event_state()
+

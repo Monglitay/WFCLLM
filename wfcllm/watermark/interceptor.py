@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import warnings
 from dataclasses import dataclass
 from typing import Literal
 
@@ -22,6 +24,18 @@ class InterceptEvent:
     parent_node_type: str | None
     token_start_idx: int
     token_count: int
+
+
+@dataclass
+class InterceptorState:
+    """Typed snapshot of interceptor internal state for checkpoint/rollback."""
+
+    accumulated: str
+    token_idx: int
+    prev_all_keys: set[tuple]
+    pending_simple: dict  # key → deep-copied _BlockInfo
+    emitted_keys: set[tuple]
+    token_boundaries: list[int]
 
 
 class StatementInterceptor:
@@ -112,24 +126,47 @@ class StatementInterceptor:
         self._pre_event_state = None
 
     def save_state(self) -> dict:
-        """保存当前内部状态的深拷贝，用于 retry 回滚。"""
+        """Deprecated: use checkpoint() instead. Kept for backward compatibility."""
+        state = self.checkpoint()
         return {
-            "accumulated": self._accumulated,
-            "token_idx": self._token_idx,
-            "prev_all_keys": set(self._prev_all_keys),
-            "pending_simple": dict(self._pending_simple),
-            "emitted_keys": set(self._emitted_keys),
-            "token_boundaries": list(self._token_boundaries),
+            "accumulated": state.accumulated,
+            "token_idx": state.token_idx,
+            "prev_all_keys": state.prev_all_keys,
+            "pending_simple": state.pending_simple,
+            "emitted_keys": state.emitted_keys,
+            "token_boundaries": state.token_boundaries,
         }
 
     def restore_state(self, state: dict) -> None:
-        """恢复到 save_state 保存时的状态。"""
-        self._accumulated = state["accumulated"]
-        self._token_idx = state["token_idx"]
-        self._prev_all_keys = set(state["prev_all_keys"])
-        self._pending_simple = dict(state["pending_simple"])
-        self._emitted_keys = set(state["emitted_keys"])
-        self._token_boundaries = list(state["token_boundaries"])
+        """Deprecated: use rollback() instead. Kept for backward compatibility."""
+        self.rollback(InterceptorState(
+            accumulated=state["accumulated"],
+            token_idx=state["token_idx"],
+            prev_all_keys=set(state["prev_all_keys"]),
+            pending_simple={k: copy.deepcopy(v) for k, v in state["pending_simple"].items()},
+            emitted_keys=set(state["emitted_keys"]),
+            token_boundaries=list(state["token_boundaries"]),
+        ))
+
+    def checkpoint(self) -> InterceptorState:
+        """Save current state as a typed, deep-copied snapshot."""
+        return InterceptorState(
+            accumulated=self._accumulated,
+            token_idx=self._token_idx,
+            prev_all_keys=set(self._prev_all_keys),
+            pending_simple={k: copy.deepcopy(v) for k, v in self._pending_simple.items()},
+            emitted_keys=set(self._emitted_keys),
+            token_boundaries=list(self._token_boundaries),
+        )
+
+    def rollback(self, state: InterceptorState) -> None:
+        """Restore to a previously checkpointed state."""
+        self._accumulated = state.accumulated
+        self._token_idx = state.token_idx
+        self._prev_all_keys = set(state.prev_all_keys)
+        self._pending_simple = {k: copy.deepcopy(v) for k, v in state.pending_simple.items()}
+        self._emitted_keys = set(state.emitted_keys)
+        self._token_boundaries = list(state.token_boundaries)
 
     def _make_snapshot(self) -> dict:
         """Internal snapshot identical in structure to save_state output."""
@@ -143,12 +180,18 @@ class StatementInterceptor:
         }
 
     def get_pre_event_state(self) -> dict:
-        """Return snapshot taken just before the most recent event was emitted.
+        """Deprecated: use checkpoint() before feed_token() instead.
 
+        Return snapshot taken just before the most recent event was emitted.
         The snapshot's emitted_keys does NOT contain the emitted block's key,
         so restore_state(get_pre_event_state()) allows the sub-loop to re-detect
         the same statement block without the _emitted_keys filter blocking it.
         """
+        warnings.warn(
+            "get_pre_event_state() is deprecated, use checkpoint()/rollback() instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         assert self._pre_event_state is not None, (
             "get_pre_event_state() called before any event was emitted"
         )
