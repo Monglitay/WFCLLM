@@ -15,6 +15,7 @@ from wfcllm.watermark.entropy import NodeEntropyEstimator
 from wfcllm.watermark.interceptor import StatementInterceptor
 from wfcllm.watermark.keying import WatermarkKeying
 from wfcllm.watermark.kv_cache import KVCacheManager
+from wfcllm.watermark.lsh_space import LSHSpace
 from wfcllm.watermark.verifier import ProjectionVerifier
 
 
@@ -46,9 +47,16 @@ class WatermarkGenerator:
 
         self._interceptor = StatementInterceptor()
         self._entropy_est = NodeEntropyEstimator()
-        self._keying = WatermarkKeying(config.secret_key, config.encoder_embed_dim)
+        self._lsh_space = LSHSpace(
+            config.secret_key, config.encoder_embed_dim, config.lsh_d
+        )
+        self._keying = WatermarkKeying(
+            config.secret_key, config.lsh_d, config.lsh_gamma
+        )
         self._verifier = ProjectionVerifier(
-            encoder, encoder_tokenizer, device=config.encoder_device
+            encoder, encoder_tokenizer,
+            lsh_space=self._lsh_space,
+            device=config.encoder_device,
         )
         self._cache_mgr = KVCacheManager()
 
@@ -127,18 +135,14 @@ class WatermarkGenerator:
                 )
                 margin = self._entropy_est.compute_margin(block_entropy, self._config)
 
-                v, t = self._keying.derive(
-                    event.parent_node_type or "module", event.node_type
-                )
-
-                result = self._verifier.verify(event.block_text, v, t, margin)
+                valid_set = self._keying.derive(event.parent_node_type or "module")
+                result = self._verifier.verify(event.block_text, valid_set, margin)
 
                 logger.debug(
                     "[simple block #%d] node=%s parent=%s entropy=%.4f margin=%.4f "
-                    "target=%+d proj=%.4f passed=%s | text=%r",
+                    "passed=%s | text=%r",
                     total_blocks, event.node_type, event.parent_node_type,
-                    block_entropy, margin, result.target_sign,
-                    result.projection, result.passed,
+                    block_entropy, margin, result.passed,
                     event.block_text[:80],
                 )
 
@@ -229,13 +233,13 @@ class WatermarkGenerator:
                             continue
 
                         result = self._verifier.verify(
-                            sub_event.block_text, v, t, margin
+                            sub_event.block_text, valid_set, margin
                         )
                         logger.debug(
-                            "  [retry %d/%d] proj=%.4f target=%+d margin=%.4f "
+                            "  [retry %d/%d] min_margin=%.4f margin=%.4f "
                             "passed=%s | text=%r",
                             retry_i + 1, self._config.max_retries,
-                            result.projection, result.target_sign, margin,
+                            result.min_margin, margin,
                             result.passed, sub_event.block_text[:80],
                         )
 
@@ -270,16 +274,13 @@ class WatermarkGenerator:
                         event.block_text
                     )
                     margin = self._entropy_est.compute_margin(block_entropy, self._config)
-                    v, t = self._keying.derive(
-                        event.parent_node_type or "module", event.node_type
-                    )
-                    result = self._verifier.verify(event.block_text, v, t, margin)
+                    valid_set = self._keying.derive(event.parent_node_type or "module")
+                    result = self._verifier.verify(event.block_text, valid_set, margin)
                     logger.debug(
                         "[compound fallback] node=%s parent=%s entropy=%.4f margin=%.4f "
-                        "target=%+d proj=%.4f passed=%s",
+                        "passed=%s",
                         event.node_type, event.parent_node_type,
-                        block_entropy, margin, result.target_sign,
-                        result.projection, result.passed,
+                        block_entropy, margin, result.passed,
                     )
                     if result.passed:
                         fallback_blocks += 1
