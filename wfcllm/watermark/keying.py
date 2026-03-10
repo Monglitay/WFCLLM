@@ -1,45 +1,49 @@
-"""Watermark key derivation from secret key and AST topology."""
+"""Watermark key derivation: valid LSH region set from AST topology."""
 
 from __future__ import annotations
 
 import hashlib
 import hmac
 
-import torch
-
 
 class WatermarkKeying:
-    """Derive deterministic (direction vector, target bit) from key + topology."""
+    """Derive the valid LSH signature set G from secret key and parent node type.
 
-    def __init__(self, secret_key: str, embed_dim: int):
+    The seed uses ONLY parent_node_type (not the current node's type) so that
+    semantically equivalent transformations of a block do not change its target region.
+    """
+
+    def __init__(self, secret_key: str, d: int, gamma: float):
         self._key = secret_key.encode("utf-8")
-        self._embed_dim = embed_dim
+        self._d = d
+        self._gamma = gamma
 
-    def derive(self, parent_node_type: str, node_type: str) -> tuple[torch.Tensor, int]:
-        """Derive (v, t) from local AST topology.
+    def derive(self, parent_node_type: str) -> frozenset[tuple[int, ...]]:
+        """Return valid LSH signature set G for a block with given parent node type.
 
         Args:
-            parent_node_type: AST type of the parent node.
-            node_type: AST type of the current statement block node.
+            parent_node_type: AST type of the parent node (e.g. "module", "for_statement").
 
         Returns:
-            v: Unit vector in R^embed_dim (float32).
-            t: Target bit in {0, 1}.
+            frozenset of d-bit tuples that constitute the valid region set G.
+            A block passes the watermark check iff its LSH signature is in G.
         """
-        # 1. HMAC-SHA256 of topology feature
-        message = f"{parent_node_type}|{node_type}".encode("utf-8")
+        message = parent_node_type.encode("utf-8")
         digest = hmac.new(self._key, message, hashlib.sha256).digest()
 
-        # 2. Seed PRNG with hash
         seed = int.from_bytes(digest[:8], "big")
-        gen = torch.Generator()
-        gen.manual_seed(seed)
 
-        # 3. Generate direction vector from standard normal, then normalize
-        v = torch.randn(self._embed_dim, generator=gen)
-        v = v / v.norm()
+        # Enumerate all 2^d possible signatures
+        all_sigs = [
+            tuple(int(b) for b in format(i, f"0{self._d}b"))
+            for i in range(2 ** self._d)
+        ]
 
-        # 4. Target bit from last byte LSB
-        t = digest[-1] & 1
+        # Deterministic Fisher-Yates shuffle using seed
+        import random
+        rng = random.Random(seed)
+        shuffled = list(all_sigs)
+        rng.shuffle(shuffled)
 
-        return v, t
+        k = round(self._gamma * len(all_sigs))
+        return frozenset(shuffled[:k])

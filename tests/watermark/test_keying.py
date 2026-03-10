@@ -1,6 +1,7 @@
-"""Tests for wfcllm.watermark.keying."""
+"""Tests for wfcllm.watermark.keying (LSH version)."""
 
-import torch
+from __future__ import annotations
+
 import pytest
 from wfcllm.watermark.keying import WatermarkKeying
 
@@ -8,48 +9,52 @@ from wfcllm.watermark.keying import WatermarkKeying
 class TestWatermarkKeying:
     @pytest.fixture
     def keying(self):
-        return WatermarkKeying(secret_key="test-secret", embed_dim=128)
+        return WatermarkKeying(secret_key="test-secret", d=3, gamma=0.5)
 
-    def test_derive_returns_vector_and_bit(self, keying):
-        v, t = keying.derive("module", "expression_statement")
-        assert isinstance(v, torch.Tensor)
-        assert v.shape == (128,)
-        assert t in (0, 1)
+    def test_derive_returns_frozenset(self, keying):
+        G = keying.derive("module")
+        assert isinstance(G, frozenset)
 
-    def test_vector_is_unit_normalized(self, keying):
-        v, _ = keying.derive("module", "assignment")
-        norm = torch.norm(v).item()
-        assert abs(norm - 1.0) < 1e-5
+    def test_derive_set_size_matches_gamma(self, keying):
+        """With d=3 and gamma=0.5, G should have round(0.5 * 8) = 4 elements."""
+        G = keying.derive("module")
+        assert len(G) == 4
 
-    def test_deterministic(self, keying):
-        v1, t1 = keying.derive("if_statement", "return_statement")
-        v2, t2 = keying.derive("if_statement", "return_statement")
-        assert torch.allclose(v1, v2)
-        assert t1 == t2
+    def test_derive_elements_are_d_tuples(self, keying):
+        G = keying.derive("module")
+        for sig in G:
+            assert isinstance(sig, tuple)
+            assert len(sig) == 3
+            assert all(b in (0, 1) for b in sig)
 
-    def test_different_topology_different_output(self, keying):
-        v1, _ = keying.derive("module", "expression_statement")
-        v2, _ = keying.derive("for_statement", "expression_statement")
-        assert not torch.allclose(v1, v2)
+    def test_derive_deterministic(self, keying):
+        G1 = keying.derive("module")
+        G2 = keying.derive("module")
+        assert G1 == G2
 
-    def test_different_key_different_output(self):
-        k1 = WatermarkKeying(secret_key="key-a", embed_dim=128)
-        k2 = WatermarkKeying(secret_key="key-b", embed_dim=128)
-        v1, _ = k1.derive("module", "assignment")
-        v2, _ = k2.derive("module", "assignment")
-        assert not torch.allclose(v1, v2)
+    def test_different_parent_different_G(self, keying):
+        G1 = keying.derive("module")
+        G2 = keying.derive("for_statement")
+        assert G1 != G2
 
-    def test_different_embed_dim(self):
-        k64 = WatermarkKeying(secret_key="k", embed_dim=64)
-        v, _ = k64.derive("module", "assignment")
-        assert v.shape == (64,)
+    def test_different_key_different_G(self):
+        k1 = WatermarkKeying(secret_key="key-a", d=3, gamma=0.5)
+        k2 = WatermarkKeying(secret_key="key-b", d=3, gamma=0.5)
+        G1 = k1.derive("module")
+        G2 = k2.derive("module")
+        assert G1 != G2
 
-    def test_target_bit_distribution(self, keying):
-        """Over many different inputs, t should be roughly 50/50."""
-        bits = []
-        for i in range(100):
-            _, t = keying.derive(f"type_{i}", "expression_statement")
-            bits.append(t)
-        ratio = sum(bits) / len(bits)
-        # Should be roughly balanced — allow 30-70% range
-        assert 0.3 < ratio < 0.7
+    def test_gamma_controls_set_size(self):
+        k_25 = WatermarkKeying(secret_key="k", d=3, gamma=0.25)
+        k_75 = WatermarkKeying(secret_key="k", d=3, gamma=0.75)
+        assert len(k_25.derive("module")) == 2  # round(0.25 * 8)
+        assert len(k_75.derive("module")) == 6  # round(0.75 * 8)
+
+    def test_G_is_subset_of_all_signatures(self, keying):
+        """G must only contain valid d-bit signatures."""
+        all_sigs = {
+            tuple(int(b) for b in format(i, f"0{3}b"))
+            for i in range(2 ** 3)
+        }
+        G = keying.derive("module")
+        assert G.issubset(all_sigs)
