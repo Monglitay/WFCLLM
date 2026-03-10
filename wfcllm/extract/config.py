@@ -12,6 +12,8 @@ class ExtractConfig:
     secret_key: str
     embed_dim: int = 128
     z_threshold: float = 3.0
+    lsh_d: int = 3
+    lsh_gamma: float = 0.5
 
 
 @dataclass
