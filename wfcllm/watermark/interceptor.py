@@ -39,6 +39,8 @@ class StatementInterceptor:
         self._emitted_keys: set[tuple] = set()
         # Precise token→byte boundary tracking for accurate token_count in events
         self._token_boundaries: list[int] = [0]  # boundaries[i] = UTF-8 byte offset after i tokens
+        # Snapshot taken just before each emit (Fix 2: enables clean rollback)
+        self._pre_event_state: dict | None = None
 
     def feed_token(self, token_text: str) -> InterceptEvent | None:
         """Feed a new token; return event if a new block completed."""
@@ -60,6 +62,7 @@ class StatementInterceptor:
         for key, block in list(self._pending_simple.items()):
             if encoded[block.end_byte : block.end_byte + 1] == b"\n":
                 del self._pending_simple[key]
+                self._pre_event_state = self._make_snapshot()
                 self._emitted_keys.add(key)
                 self._prev_all_keys = current_keys
                 return self._make_event(block)
@@ -78,6 +81,7 @@ class StatementInterceptor:
                 continue
             key = (block.node_type, block.start_byte, block.end_byte)
             if encoded[block.end_byte : block.end_byte + 1] == b"\n":
+                self._pre_event_state = self._make_snapshot()
                 self._emitted_keys.add(key)
                 self._prev_all_keys = current_keys
                 return self._make_event(block)
@@ -89,6 +93,7 @@ class StatementInterceptor:
             if not block.is_compound:
                 continue
             key = (block.node_type, block.start_byte, block.end_byte)
+            self._pre_event_state = self._make_snapshot()
             self._emitted_keys.add(key)
             self._prev_all_keys = current_keys
             return self._make_event(block)
@@ -104,6 +109,7 @@ class StatementInterceptor:
         self._pending_simple = {}
         self._emitted_keys = set()
         self._token_boundaries = [0]
+        self._pre_event_state = None
 
     def save_state(self) -> dict:
         """保存当前内部状态的深拷贝，用于 retry 回滚。"""
@@ -124,6 +130,29 @@ class StatementInterceptor:
         self._pending_simple = dict(state["pending_simple"])
         self._emitted_keys = set(state["emitted_keys"])
         self._token_boundaries = list(state["token_boundaries"])
+
+    def _make_snapshot(self) -> dict:
+        """Internal snapshot identical in structure to save_state output."""
+        return {
+            "accumulated": self._accumulated,
+            "token_idx": self._token_idx,
+            "prev_all_keys": set(self._prev_all_keys),
+            "pending_simple": dict(self._pending_simple),
+            "emitted_keys": set(self._emitted_keys),
+            "token_boundaries": list(self._token_boundaries),
+        }
+
+    def get_pre_event_state(self) -> dict:
+        """Return snapshot taken just before the most recent event was emitted.
+
+        The snapshot's emitted_keys does NOT contain the emitted block's key,
+        so restore_state(get_pre_event_state()) allows the sub-loop to re-detect
+        the same statement block without the _emitted_keys filter blocking it.
+        """
+        assert self._pre_event_state is not None, (
+            "get_pre_event_state() called before any event was emitted"
+        )
+        return self._pre_event_state
 
     def _make_event(self, block: _BlockInfo) -> InterceptEvent:
         import bisect
