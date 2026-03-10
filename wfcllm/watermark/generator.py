@@ -135,11 +135,7 @@ class WatermarkGenerator:
                     # 回滚点：语句块被检测到之前的完整状态
                     # -------------------------------------------------------
                     # 计算语句块在 generated_ids 中占用的 token 数
-                    block_token_count = len(
-                        self._tokenizer.encode(
-                            event.block_text, add_special_tokens=False
-                        )
-                    )
+                    block_token_count = event.token_count
                     # 截断位置（语句块开始前）
                     rollback_idx = max(0, len(generated_ids) - block_token_count)
 
