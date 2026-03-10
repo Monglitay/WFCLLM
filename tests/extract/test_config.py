@@ -22,15 +22,26 @@ class TestBlockScore:
         bs = BlockScore(
             block_id="0",
             score=1,
-            projection=0.42,
-            target_sign=1,
+            min_margin=0.42,
             selected=False,
         )
         assert bs.block_id == "0"
         assert bs.score == 1
-        assert bs.projection == 0.42
-        assert bs.target_sign == 1
+        assert bs.min_margin == 0.42
         assert bs.selected is False
+
+
+def test_block_score_has_min_margin():
+    from wfcllm.extract.config import BlockScore
+    s = BlockScore(block_id="0", score=1, min_margin=0.3)
+    assert s.min_margin == 0.3
+
+def test_block_score_no_projection_field():
+    import dataclasses
+    from wfcllm.extract.config import BlockScore
+    fields = {f.name for f in dataclasses.fields(BlockScore)}
+    assert "projection" not in fields
+    assert "target_sign" not in fields
 
 
 class TestDetectionResult:
