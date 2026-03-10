@@ -54,3 +54,9 @@ def test_repetition_penalty_default():
 def test_repetition_penalty_custom():
     cfg = WatermarkConfig(secret_key="k", repetition_penalty=1.5)
     assert cfg.repetition_penalty == 1.5
+
+
+def test_lsh_defaults():
+    cfg = WatermarkConfig(secret_key="k")
+    assert cfg.lsh_d == 3
+    assert cfg.lsh_gamma == 0.5

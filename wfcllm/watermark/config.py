@@ -36,3 +36,7 @@ class WatermarkConfig:
 
     # Repetition penalty for retry sub-loop
     repetition_penalty: float = 1.3  # 1.0 = disabled; applied to previous retry's tokens
+
+    # LSH parameters
+    lsh_d: int = 3
+    lsh_gamma: float = 0.5
