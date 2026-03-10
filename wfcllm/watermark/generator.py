@@ -139,10 +139,16 @@ class WatermarkGenerator:
                 result = self._verifier.verify(event.block_text, valid_set, margin)
 
                 logger.debug(
-                    "[simple block #%d] node=%s parent=%s entropy=%.4f margin=%.4f "
-                    "passed=%s | text=%r",
+                    "[simple block #%d] node=%s parent=%s entropy=%.4f margin_thresh=%.4f\n"
+                    "  sig=%s in_valid=%s valid_set_size=%d min_margin=%.4f passed=%s\n"
+                    "  text=%r",
                     total_blocks, event.node_type, event.parent_node_type,
-                    block_entropy, margin, result.passed,
+                    block_entropy, margin,
+                    result.lsh_signature,
+                    result.lsh_signature in valid_set,
+                    len(valid_set),
+                    result.min_margin,
+                    result.passed,
                     event.block_text[:80],
                 )
 
@@ -236,11 +242,15 @@ class WatermarkGenerator:
                             sub_event.block_text, valid_set, margin
                         )
                         logger.debug(
-                            "  [retry %d/%d] min_margin=%.4f margin=%.4f "
-                            "passed=%s | text=%r",
+                            "  [retry %d/%d] sig=%s in_valid=%s min_margin=%.4f margin_thresh=%.4f passed=%s\n"
+                            "  text=%r",
                             retry_i + 1, self._config.max_retries,
-                            result.min_margin, margin,
-                            result.passed, sub_event.block_text[:80],
+                            result.lsh_signature,
+                            result.lsh_signature in valid_set,
+                            result.min_margin,
+                            margin,
+                            result.passed,
+                            sub_event.block_text[:80],
                         )
 
                         if result.passed:
@@ -277,10 +287,15 @@ class WatermarkGenerator:
                     valid_set = self._keying.derive(event.parent_node_type or "module")
                     result = self._verifier.verify(event.block_text, valid_set, margin)
                     logger.debug(
-                        "[compound fallback] node=%s parent=%s entropy=%.4f margin=%.4f "
-                        "passed=%s",
+                        "[compound fallback] node=%s parent=%s entropy=%.4f margin_thresh=%.4f\n"
+                        "  sig=%s in_valid=%s valid_set_size=%d min_margin=%.4f passed=%s",
                         event.node_type, event.parent_node_type,
-                        block_entropy, margin, result.passed,
+                        block_entropy, margin,
+                        result.lsh_signature,
+                        result.lsh_signature in valid_set,
+                        len(valid_set),
+                        result.min_margin,
+                        result.passed,
                     )
                     if result.passed:
                         fallback_blocks += 1
