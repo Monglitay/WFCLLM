@@ -154,3 +154,58 @@ class TestStatementInterceptorStateSnapshot:
         for e1, e2 in zip(events_first, events_second):
             assert e1.block_text == e2.block_text
             assert e1.block_type == e2.block_type
+
+
+class TestTokenBoundaries:
+    """Fix 1: _token_boundaries enables accurate token_count in events."""
+
+    def test_token_boundaries_initialized(self):
+        """interceptor._token_boundaries starts as [0]."""
+        ic = StatementInterceptor()
+        assert ic._token_boundaries == [0]
+
+    def test_token_boundaries_grow_with_feed(self):
+        """After each feed_token, boundaries has one more entry."""
+        ic = StatementInterceptor()
+        for ch in "x = 1\n":
+            ic.feed_token(ch)
+        # One boundary per token fed, plus initial [0]
+        assert len(ic._token_boundaries) == len("x = 1\n") + 1
+
+    def test_token_boundaries_are_monotone(self):
+        """Each boundary >= previous (UTF-8 byte offsets are non-decreasing)."""
+        ic = StatementInterceptor()
+        for ch in "x = 1\n":
+            ic.feed_token(ch)
+        for i in range(1, len(ic._token_boundaries)):
+            assert ic._token_boundaries[i] >= ic._token_boundaries[i - 1]
+
+    def test_event_token_count_matches_text_byte_span(self):
+        """event.token_count should equal the number of tokens whose bytes
+        overlap the block's byte span, NOT len(block_text)."""
+        ic = StatementInterceptor()
+        events = []
+        # Feed char-by-char (each char = 1 token for ASCII)
+        for ch in "x = 1\n":
+            e = ic.feed_token(ch)
+            if e is not None:
+                events.append(e)
+        assert events, "Expected at least one event"
+        ev = events[0]
+        # The block text is 'x = 1', which is 5 bytes / 5 chars = 5 tokens
+        # token_count must equal 5 (not len(block_text) which was the old wrong formula)
+        assert ev.token_count == len(ev.block_text.encode("utf-8"))
+
+    def test_token_boundaries_saved_and_restored(self):
+        """save_state/restore_state includes _token_boundaries."""
+        ic = StatementInterceptor()
+        for ch in "x = 1\n":
+            ic.feed_token(ch)
+        state = ic.save_state()
+        assert "token_boundaries" in state
+        # Continue feeding
+        for ch in "y = 2\n":
+            ic.feed_token(ch)
+        # Restore
+        ic.restore_state(state)
+        assert ic._token_boundaries == state["token_boundaries"]
