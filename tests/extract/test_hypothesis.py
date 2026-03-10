@@ -14,8 +14,7 @@ def _make_score(block_id: str, score: int) -> BlockScore:
     return BlockScore(
         block_id=block_id,
         score=score,
-        projection=0.5 if score == 1 else -0.3,
-        target_sign=1,
+        min_margin=0.5 if score == 1 else 0.1,
         selected=True,
     )
 
@@ -83,3 +82,24 @@ class TestHypothesisTester:
         result = tester.test(selected_scores=scores, total_blocks=5)
         assert len(result.block_details) == 2
         assert result.block_details[0].block_id == "0"
+
+
+class TestHypothesisTesterGamma:
+    def test_custom_gamma_z_score(self):
+        """With gamma=0.25 and all hits, Z-score uses correct formula."""
+        import math
+        tester = HypothesisTester(z_threshold=3.0, gamma=0.25)
+        scores = [_make_score(str(i), 1) for i in range(20)]
+        result = tester.test(selected_scores=scores, total_blocks=20)
+        # Z = (20 - 20*0.25) / sqrt(20 * 0.25 * 0.75) = 15 / sqrt(3.75)
+        expected_z = 15 / math.sqrt(3.75)
+        assert result.z_score == pytest.approx(expected_z, rel=1e-6)
+
+    def test_default_gamma_is_half(self):
+        """Default gamma=0.5 produces same result as original formula."""
+        import math
+        tester = HypothesisTester(z_threshold=3.0)
+        scores = [_make_score(str(i), 1) for i in range(20)]
+        result = tester.test(selected_scores=scores, total_blocks=20)
+        expected_z = (20 - 10) / math.sqrt(5)
+        assert result.z_score == pytest.approx(expected_z, rel=1e-6)

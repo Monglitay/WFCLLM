@@ -12,8 +12,9 @@ from wfcllm.extract.config import BlockScore, DetectionResult
 class HypothesisTester:
     """One-sided Z-test for watermark presence."""
 
-    def __init__(self, z_threshold: float = 3.0):
+    def __init__(self, z_threshold: float = 3.0, gamma: float = 0.5):
         self._z_threshold = z_threshold
+        self._gamma = gamma
 
     def test(
         self,
@@ -42,7 +43,8 @@ class HypothesisTester:
             )
 
         x = sum(1 for s in selected_scores if s.score == 1)
-        z_score = (x - m / 2) / math.sqrt(m / 4)
+        gamma = self._gamma
+        z_score = (x - m * gamma) / math.sqrt(m * gamma * (1 - gamma))
         p_value = float(norm.sf(z_score))
 
         return DetectionResult(
