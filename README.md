@@ -17,11 +17,11 @@
   → 对比学习微调 CodeT5 → 鲁棒语义编码器 E
          ↓
 阶段二：生成时水印嵌入
-  LLM + 编码器 E → 实时 AST 拦截 → 节点熵 → 方向向量派生
-  → 余弦投影检验 → 拒绝采样回滚 → 含水印代码
+  LLM + 编码器 E → 实时 AST 拦截 → 节点熵 → LSH 超平面派生有效区域集 G
+  → LSH 签名检验（sign ∈ G 且 min_margin > γ）→ 拒绝采样回滚 → 含水印代码
          ↓
 阶段三：提取与验证
-  待测代码 → AST 解析 → 语义打分 → DP 去重 → Z 分数检验 → 有/无水印判决
+  待测代码 → AST 解析 → LSH 语义打分 → DP 去重 → Z 分数检验（参数化 γ）→ 有/无水印判决
 ```
 
 ---
@@ -272,7 +272,7 @@ output_path = pipeline.run()     # 返回 JSONL 文件路径
 ```
 
 关键 API：
-- `WatermarkConfig` — 水印嵌入参数（secret_key, embed_dim, margin 等）
+- `WatermarkConfig` — 水印嵌入参数（secret_key, embed_dim, margin, lsh_d, lsh_gamma 等）
 - `WatermarkGenerator.generate(prompt)` → `GenerateResult`
 - `WatermarkPipelineConfig` — pipeline 配置（dataset, output_dir, dataset_path）
 - `WatermarkPipeline.run()` → JSONL 路径（每行含 id/prompt/generated_code/embed_rate 等字段）
@@ -299,7 +299,7 @@ report_path = pipeline.run()     # 返回 JSON 报告路径
 ```
 
 关键 API：
-- `ExtractConfig` — 提取参数（secret_key, z_threshold, embed_dim）
+- `ExtractConfig` — 提取参数（secret_key, z_threshold, embed_dim, lsh_d, lsh_gamma）
 - `WatermarkDetector.detect(code)` → `DetectionResult`
 - `ExtractPipelineConfig` — pipeline 配置（input_file, output_dir）
 - `ExtractPipeline.run()` → JSON 报告路径（含 summary/per_sample 统计字段）
