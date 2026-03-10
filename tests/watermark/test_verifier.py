@@ -32,11 +32,11 @@ def _make_tokenizer():
 
 class TestVerifyResult:
     def test_passed_true(self):
-        r = VerifyResult(passed=True, min_margin=0.5)
+        r = VerifyResult(passed=True, min_margin=0.5, lsh_signature=(1, 0, 1))
         assert r.passed is True
 
     def test_passed_false(self):
-        r = VerifyResult(passed=False, min_margin=0.05)
+        r = VerifyResult(passed=False, min_margin=0.05, lsh_signature=(0, 1, 0))
         assert r.passed is False
 
 
@@ -97,3 +97,22 @@ class TestProjectionVerifier:
         result = verifier.verify("x = 1", valid_set, margin=0.0)
         assert isinstance(result.min_margin, float)
         assert 0.0 <= result.min_margin <= 1.0
+
+
+def test_verify_result_contains_lsh_signature():
+    """VerifyResult should expose the LSH signature used in the decision."""
+    lsh = _make_lsh_space(d=3)
+    u = torch.randn(128)
+    sig = lsh.sign(u)
+    valid_set = frozenset([sig])
+
+    verifier = ProjectionVerifier(
+        _make_encoder_returning(u), _make_tokenizer(), lsh_space=lsh, device="cpu"
+    )
+    result = verifier.verify("x = 1", valid_set, margin=0.0)
+
+    assert hasattr(result, "lsh_signature")
+    assert isinstance(result.lsh_signature, tuple)
+    assert len(result.lsh_signature) == lsh._d  # same d used in construction
+    assert all(b in (0, 1) for b in result.lsh_signature)
+    assert result.lsh_signature == sig  # must match what lsh.sign(u) returns
