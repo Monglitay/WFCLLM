@@ -34,8 +34,7 @@ def _make_score(block_id: str, score: int) -> BlockScore:
     return BlockScore(
         block_id=block_id,
         score=score,
-        projection=0.5 if score == 1 else -0.3,
-        target_sign=1,
+        min_margin=0.5 if score == 1 else 0.1,
         selected=False,
     )
 
