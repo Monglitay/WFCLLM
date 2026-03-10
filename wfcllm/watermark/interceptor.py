@@ -37,11 +37,14 @@ class StatementInterceptor:
         self._pending_simple: dict[tuple, _BlockInfo] = {}
         # Keys of blocks already emitted as events
         self._emitted_keys: set[tuple] = set()
+        # Precise token→byte boundary tracking for accurate token_count in events
+        self._token_boundaries: list[int] = [0]  # boundaries[i] = UTF-8 byte offset after i tokens
 
     def feed_token(self, token_text: str) -> InterceptEvent | None:
         """Feed a new token; return event if a new block completed."""
         self._accumulated += token_text
         self._token_idx += 1
+        self._token_boundaries.append(len(self._accumulated.encode("utf-8")))
 
         encoded = self._accumulated.encode("utf-8")
         tree = self._parser.parse(self._accumulated)
@@ -100,6 +103,7 @@ class StatementInterceptor:
         self._prev_all_keys = set()
         self._pending_simple = {}
         self._emitted_keys = set()
+        self._token_boundaries = [0]
 
     def save_state(self) -> dict:
         """保存当前内部状态的深拷贝，用于 retry 回滚。"""
@@ -109,6 +113,7 @@ class StatementInterceptor:
             "prev_all_keys": set(self._prev_all_keys),
             "pending_simple": dict(self._pending_simple),
             "emitted_keys": set(self._emitted_keys),
+            "token_boundaries": list(self._token_boundaries),
         }
 
     def restore_state(self, state: dict) -> None:
@@ -118,15 +123,20 @@ class StatementInterceptor:
         self._prev_all_keys = set(state["prev_all_keys"])
         self._pending_simple = dict(state["pending_simple"])
         self._emitted_keys = set(state["emitted_keys"])
+        self._token_boundaries = list(state["token_boundaries"])
 
     def _make_event(self, block: _BlockInfo) -> InterceptEvent:
+        import bisect
+        start_tok = bisect.bisect_right(self._token_boundaries, block.start_byte) - 1
+        end_tok = bisect.bisect_left(self._token_boundaries, block.end_byte)
+        token_count = end_tok - start_tok
         return InterceptEvent(
             block_text=block.text,
             block_type="compound" if block.is_compound else "simple",
             node_type=block.node_type,
             parent_node_type=block.parent_type,
-            token_start_idx=max(0, self._token_idx - len(block.text)),
-            token_count=len(block.text),
+            token_start_idx=start_tok,
+            token_count=token_count,
         )
 
     def _extract_blocks(self, root) -> list[_BlockInfo]:
