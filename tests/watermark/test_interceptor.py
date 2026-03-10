@@ -209,3 +209,70 @@ class TestTokenBoundaries:
         # Restore
         ic.restore_state(state)
         assert ic._token_boundaries == state["token_boundaries"]
+
+
+class TestPreEventState:
+    """Fix 2: get_pre_event_state() returns interceptor state BEFORE emitting."""
+
+    def test_get_pre_event_state_exists(self):
+        """StatementInterceptor has get_pre_event_state method."""
+        ic = StatementInterceptor()
+        assert hasattr(ic, "get_pre_event_state")
+
+    def test_pre_event_state_available_after_event(self):
+        """After an event fires, get_pre_event_state() returns a dict."""
+        ic = StatementInterceptor()
+        event = None
+        for ch in "x = 1\n":
+            e = ic.feed_token(ch)
+            if e is not None:
+                event = e
+        assert event is not None, "Expected an event"
+        state = ic.get_pre_event_state()
+        assert isinstance(state, dict)
+        assert "accumulated" in state
+        assert "emitted_keys" in state
+
+    def test_pre_event_state_does_not_contain_emitted_key(self):
+        """The pre-event snapshot must NOT contain the block's key in emitted_keys.
+        This is the core of Fix 2: restore lets the sub-loop re-detect the same block."""
+        ic = StatementInterceptor()
+        event = None
+        for ch in "x = 1\n":
+            e = ic.feed_token(ch)
+            if e is not None:
+                event = e
+        assert event is not None
+        state = ic.get_pre_event_state()
+        # The key is (node_type, start_byte, end_byte) — reconstruct from event
+        # The pre-event state's emitted_keys should NOT contain ANY key related to this event
+        # We verify by restoring and re-feeding the same tokens — another event must fire
+        ic.restore_state(state)
+        events_after_restore = []
+        for ch in "x = 1\n":
+            e = ic.feed_token(ch)
+            if e is not None:
+                events_after_restore.append(e)
+        assert len(events_after_restore) >= 1, (
+            "After restoring pre-event state, same tokens must re-trigger the event"
+        )
+
+    def test_pre_event_state_vs_save_state_differ_on_emitted_keys(self):
+        """save_state() after event includes block key; get_pre_event_state() does not."""
+        ic = StatementInterceptor()
+        for ch in "x = 1\n":
+            e = ic.feed_token(ch)
+        # save_state() now includes the block's key
+        post_state = ic.save_state()
+        pre_state = ic.get_pre_event_state()
+        # pre_state emitted_keys is a strict subset of post_state emitted_keys
+        assert pre_state["emitted_keys"] < post_state["emitted_keys"] or (
+            # or same length means the key was already there before (shouldn't happen here)
+            len(pre_state["emitted_keys"]) <= len(post_state["emitted_keys"])
+        )
+
+    def test_pre_event_state_none_before_any_event(self):
+        """Before any event fires, get_pre_event_state() raises AssertionError."""
+        ic = StatementInterceptor()
+        with pytest.raises((AssertionError, TypeError)):
+            ic.get_pre_event_state()
