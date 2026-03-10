@@ -76,7 +76,7 @@ class TestWatermarkPipelineLoadPrompts:
 import json
 import tempfile
 from pathlib import Path
-from wfcllm.watermark.generator import GenerateResult
+from wfcllm.watermark.generator import GenerateResult, EmbedStats
 
 
 class TestWatermarkPipelineRun:
@@ -86,10 +86,12 @@ class TestWatermarkPipelineRun:
     def mock_result(self):
         return GenerateResult(
             code="def foo():\n    return 1\n",
-            total_blocks=3,
-            embedded_blocks=2,
-            failed_blocks=1,
-            fallback_blocks=0,
+            stats=EmbedStats(
+                total_blocks=3,
+                embedded_blocks=2,
+                failed_blocks=1,
+                fallback_blocks=0,
+            ),
         )
 
     def test_run_creates_jsonl(self, mock_result):
@@ -157,8 +159,8 @@ class TestWatermarkPipelineRun:
             )
             generator = MagicMock()
             generator.generate.return_value = GenerateResult(
-                code="", total_blocks=0, embedded_blocks=0,
-                failed_blocks=0, fallback_blocks=0,
+                code="", stats=EmbedStats(total_blocks=0, embedded_blocks=0,
+                    failed_blocks=0, fallback_blocks=0),
             )
             pipeline = WatermarkPipeline(generator=generator, config=cfg)
             with patch.object(pipeline, "_load_prompts", return_value=[
