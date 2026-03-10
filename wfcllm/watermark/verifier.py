@@ -1,47 +1,48 @@
-"""Semantic projection verification for watermark embedding."""
+"""LSH-based semantic verification for watermark embedding."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 import torch
-import torch.nn.functional as F
+
+from wfcllm.watermark.lsh_space import LSHSpace
 
 
 @dataclass
 class VerifyResult:
-    """Result of a watermark projection verification."""
+    """Result of a watermark LSH verification."""
 
     passed: bool
-    projection: float
-    target_sign: int
-    margin: float
+    min_margin: float
 
 
 class ProjectionVerifier:
-    """Verify if a code block's semantic projection matches the watermark target."""
+    """Verify if a code block's LSH signature falls in the valid set G."""
 
-    def __init__(self, encoder, tokenizer, device: str = "cuda"):
+    def __init__(self, encoder, tokenizer, lsh_space: LSHSpace, device: str = "cuda"):
         self._encoder = encoder
         self._tokenizer = tokenizer
+        self._lsh_space = lsh_space
         self._device = device
 
     @torch.no_grad()
     def verify(
-        self, code_text: str, v: torch.Tensor, t: int, margin: float
+        self,
+        code_text: str,
+        valid_set: frozenset[tuple[int, ...]],
+        margin: float,
     ) -> VerifyResult:
-        """Check semantic projection of code against target direction.
+        """Check if the block's LSH signature is in valid_set with sufficient margin.
 
         Args:
             code_text: Source code of the statement block.
-            v: Direction vector (embed_dim,).
-            t: Target bit in {0, 1}.
-            margin: Minimum absolute projection required.
+            valid_set: Set of valid LSH signatures G for this block's position.
+            margin: Minimum min_margin required (0.0 at extraction time).
 
         Returns:
-            VerifyResult with pass/fail and diagnostic values.
+            VerifyResult with passed=True iff sign ∈ valid_set AND min_margin > margin.
         """
-        # Encode
         inputs = self._tokenizer(
             code_text,
             return_tensors="pt",
@@ -53,21 +54,8 @@ class ProjectionVerifier:
         attention_mask = inputs["attention_mask"].to(self._device)
         u = self._encoder(input_ids, attention_mask).squeeze(0).cpu()
 
-        # Cosine projection
-        v = v.float()
-        u = u.float()
-        p = F.cosine_similarity(u.unsqueeze(0), v.unsqueeze(0)).item()
+        sig = self._lsh_space.sign(u)
+        mm = self._lsh_space.min_margin(u)
 
-        # Target sign: {0,1} -> {-1,+1}
-        target_sign = 2 * t - 1
-
-        # Check: sign matches AND absolute value exceeds margin
-        sign_match = (p > 0 and target_sign == 1) or (p < 0 and target_sign == -1)
-        passed = sign_match and abs(p) > margin
-
-        return VerifyResult(
-            passed=passed,
-            projection=p,
-            target_sign=target_sign,
-            margin=margin,
-        )
+        passed = (sig in valid_set) and (mm > margin)
+        return VerifyResult(passed=passed, min_margin=mm)

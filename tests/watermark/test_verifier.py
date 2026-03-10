@@ -1,86 +1,99 @@
-"""Tests for wfcllm.watermark.verifier."""
+"""Tests for wfcllm.watermark.verifier (LSH version)."""
+
+from __future__ import annotations
 
 import torch
 import pytest
 from unittest.mock import MagicMock
+
+from wfcllm.watermark.lsh_space import LSHSpace
 from wfcllm.watermark.verifier import ProjectionVerifier, VerifyResult
+
+
+def _make_lsh_space(d: int = 3, embed_dim: int = 128) -> LSHSpace:
+    return LSHSpace(secret_key="test-secret", embed_dim=embed_dim, d=d)
+
+
+def _make_encoder_returning(vec: torch.Tensor):
+    """Return mock encoder that always outputs vec (shape (1, embed_dim))."""
+    encoder = MagicMock()
+    encoder.return_value = vec.unsqueeze(0)
+    return encoder
+
+
+def _make_tokenizer():
+    tokenizer = MagicMock()
+    tokenizer.return_value = {
+        "input_ids": torch.zeros(1, 10, dtype=torch.long),
+        "attention_mask": torch.ones(1, 10, dtype=torch.long),
+    }
+    return tokenizer
 
 
 class TestVerifyResult:
     def test_passed_true(self):
-        r = VerifyResult(passed=True, projection=0.5, target_sign=1, margin=0.1)
+        r = VerifyResult(passed=True, min_margin=0.5)
         assert r.passed is True
 
     def test_passed_false(self):
-        r = VerifyResult(passed=False, projection=-0.05, target_sign=1, margin=0.1)
+        r = VerifyResult(passed=False, min_margin=0.05)
         assert r.passed is False
 
 
 class TestProjectionVerifier:
-    @pytest.fixture
-    def mock_encoder(self):
-        """Mock encoder that returns a fixed vector."""
-        encoder = MagicMock()
-        # Return a normalized vector pointing in positive direction
-        fixed_vec = torch.randn(1, 128)
-        fixed_vec = fixed_vec / fixed_vec.norm()
-        encoder.return_value = fixed_vec
-        encoder.eval = MagicMock(return_value=encoder)
-        encoder.config = MagicMock()
-        encoder.config.model_name = "Salesforce/codet5-base"
-        return encoder, fixed_vec.squeeze(0)
+    def test_verify_pass_when_sign_in_valid_set_and_margin_ok(self):
+        """verify passes when sign ∈ valid_set and min_margin > margin."""
+        lsh = _make_lsh_space(d=3)
+        # Build a vector u, find its sign, put that sign in valid_set
+        u = torch.randn(128)
+        sig = lsh.sign(u)
+        valid_set = frozenset([sig])
 
-    @pytest.fixture
-    def mock_tokenizer(self):
-        tokenizer = MagicMock()
-        tokenizer.return_value = {
-            "input_ids": torch.zeros(1, 10, dtype=torch.long),
-            "attention_mask": torch.ones(1, 10, dtype=torch.long),
-        }
-        return tokenizer
-
-    def test_verify_pass_positive_projection(self, mock_encoder, mock_tokenizer):
-        encoder, fixed_vec = mock_encoder
-        verifier = ProjectionVerifier(encoder, mock_tokenizer, device="cpu")
-        # Direction = same as encoder output -> cos ~ 1.0
-        v = fixed_vec.clone()
-        result = verifier.verify("x = 1", v, t=1, margin=0.1)
-        assert result.passed is True
-        assert result.projection > 0
-
-    def test_verify_pass_negative_projection(self, mock_encoder, mock_tokenizer):
-        encoder, fixed_vec = mock_encoder
-        verifier = ProjectionVerifier(encoder, mock_tokenizer, device="cpu")
-        # Direction = negated -> cos ~ -1.0, target t=0 -> t*=-1
-        v = -fixed_vec.clone()
-        result = verifier.verify("x = 1", v, t=0, margin=0.1)
-        # cos(u, -u) = -1.0, sign = -1, t* = -1 -> match
+        verifier = ProjectionVerifier(
+            _make_encoder_returning(u), _make_tokenizer(), lsh_space=lsh, device="cpu"
+        )
+        # margin=0.0 to always pass the margin check
+        result = verifier.verify("x = 1", valid_set, margin=0.0)
         assert result.passed is True
 
-    def test_verify_fail_wrong_sign(self, mock_encoder, mock_tokenizer):
-        encoder, fixed_vec = mock_encoder
-        verifier = ProjectionVerifier(encoder, mock_tokenizer, device="cpu")
-        # Direction same as output -> cos > 0, but target t=0 -> t*=-1
-        v = fixed_vec.clone()
-        result = verifier.verify("x = 1", v, t=0, margin=0.1)
+    def test_verify_fail_when_sign_not_in_valid_set(self):
+        """verify fails when sign ∉ valid_set."""
+        lsh = _make_lsh_space(d=3)
+        u = torch.randn(128)
+        sig = lsh.sign(u)
+        # Flip one bit to get a different signature
+        wrong_sig = tuple(1 - b for b in sig)
+        valid_set = frozenset([wrong_sig])
+
+        verifier = ProjectionVerifier(
+            _make_encoder_returning(u), _make_tokenizer(), lsh_space=lsh, device="cpu"
+        )
+        result = verifier.verify("x = 1", valid_set, margin=0.0)
         assert result.passed is False
 
-    def test_verify_fail_below_margin(self, mock_encoder, mock_tokenizer):
-        encoder, fixed_vec = mock_encoder
-        verifier = ProjectionVerifier(encoder, mock_tokenizer, device="cpu")
-        # Use nearly orthogonal direction -> small |cos|
-        v = torch.zeros(128)
-        v[0] = 1.0  # Arbitrary direction likely not aligned
-        # With random encoder output, projection could be small
-        result = verifier.verify("x = 1", v, t=1, margin=0.99)
-        # Margin 0.99 is very strict — almost certainly fails
+    def test_verify_fail_when_margin_not_satisfied(self):
+        """verify fails when min_margin <= margin threshold."""
+        lsh = _make_lsh_space(d=3)
+        u = torch.randn(128)
+        sig = lsh.sign(u)
+        valid_set = frozenset([sig])
+
+        verifier = ProjectionVerifier(
+            _make_encoder_returning(u), _make_tokenizer(), lsh_space=lsh, device="cpu"
+        )
+        # margin=1.0 is impossible to satisfy
+        result = verifier.verify("x = 1", valid_set, margin=1.0)
         assert result.passed is False
 
-    def test_verify_result_contains_values(self, mock_encoder, mock_tokenizer):
-        encoder, fixed_vec = mock_encoder
-        verifier = ProjectionVerifier(encoder, mock_tokenizer, device="cpu")
-        v = fixed_vec.clone()
-        result = verifier.verify("x = 1", v, t=1, margin=0.1)
-        assert isinstance(result.projection, float)
-        assert result.target_sign in (-1, 1)
-        assert isinstance(result.margin, float)
+    def test_verify_result_has_min_margin_field(self):
+        lsh = _make_lsh_space(d=3)
+        u = torch.randn(128)
+        sig = lsh.sign(u)
+        valid_set = frozenset([sig])
+
+        verifier = ProjectionVerifier(
+            _make_encoder_returning(u), _make_tokenizer(), lsh_space=lsh, device="cpu"
+        )
+        result = verifier.verify("x = 1", valid_set, margin=0.0)
+        assert isinstance(result.min_margin, float)
+        assert 0.0 <= result.min_margin <= 1.0
