@@ -21,7 +21,7 @@
   → LSH 签名检验（sign ∈ G 且 min_margin > γ）→ 拒绝采样回滚 → 含水印代码
          ↓
 阶段三：提取与验证
-  待测代码 → AST 解析 → LSH 语义打分 → DP 去重 → Z 分数检验（参数化 γ）→ 有/无水印判决
+  待测代码 → AST 解析 → LSH 语义打分（{0,1} 计分）→ DP 去重 → Z 分数检验（参数化 γ，阈值 M_r）→ 有/无水印判决
 ```
 
 ---
@@ -225,6 +225,13 @@ python run.py --phase extract \
     --input-file data/watermarked/humaneval_20260309_120000.jsonl \
     --extract-output-dir data/results
 
+# 阶段三（先用负样本语料自动校准 FPR 阈值 M_r，再检测）
+# 负样本语料：同一 LLM 直接生成（未经水印注入）的代码 JSONL，字段同阶段二输出
+python run.py --phase extract \
+    --secret-key mysecret \
+    --calibration-corpus data/negative_corpus.jsonl \
+    --fpr 0.01
+
 # 强制重跑某阶段（忽略已完成标记）
 python run.py --phase encoder --force
 
@@ -280,7 +287,7 @@ output_path = pipeline.run()     # 返回 JSONL 文件路径
 ### Phase 3 — `wfcllm.extract`
 
 ```python
-from wfcllm.extract import ExtractConfig, WatermarkDetector
+from wfcllm.extract import ExtractConfig, WatermarkDetector, ThresholdCalibrator
 from wfcllm.extract import ExtractPipeline, ExtractPipelineConfig
 
 # 单条检测（底层 API）
@@ -296,13 +303,19 @@ pipeline_config = ExtractPipelineConfig(
 )
 pipeline = ExtractPipeline(detector=detector, config=pipeline_config)
 report_path = pipeline.run()     # 返回 JSON 报告路径
+
+# 离线校准 FPR 阈值（负样本语料）
+# calibrator = ThresholdCalibrator(scorer, gamma=0.5)
+# result = calibrator.calibrate(corpus, fpr=0.01)
+# config = ExtractConfig(secret_key="mysecret", fpr_threshold=result["fpr_threshold"])
 ```
 
 关键 API：
-- `ExtractConfig` — 提取参数（secret_key, z_threshold, embed_dim, lsh_d, lsh_gamma）
+- `ExtractConfig` — 提取参数（secret_key, fpr_threshold, embed_dim, lsh_d, lsh_gamma）
 - `WatermarkDetector.detect(code)` → `DetectionResult`
 - `ExtractPipelineConfig` — pipeline 配置（input_file, output_dir）
 - `ExtractPipeline.run()` → JSON 报告路径（含 summary/per_sample 统计字段）
+- `ThresholdCalibrator.calibrate(corpus, fpr)` → 离线校准 FPR 阈值 M_r
 
 ---
 

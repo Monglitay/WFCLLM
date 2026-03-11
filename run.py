@@ -22,6 +22,12 @@
     python run.py --phase extract \\
         --secret-key mysecret \\
         --input-file data/watermarked/humaneval_20260309_120000.jsonl
+
+    # 阶段三（先用负样本语料自动校准 FPR 阈值，再检测）
+    python run.py --phase extract \\
+        --secret-key mysecret \\
+        --calibration-corpus data/negative_corpus.jsonl \\
+        --fpr 0.01
 """
 from __future__ import annotations
 
@@ -158,7 +164,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input-file", default=None,
                         help="待检测的水印 JSONL 文件路径（不传则从 run_state 读取阶段二输出）")
     parser.add_argument("--extract-output-dir", default=None, help="检测报告输出目录（默认: data/results）")
-    parser.add_argument("--z-threshold", type=float, default=None, help="Z 分数阈值（默认: 3.0）")
+    parser.add_argument("--fpr-threshold", type=float, default=None, help="FPR 阈值 M_r（默认: 3.0，需通过校准脚本生成）")
+    parser.add_argument("--calibration-corpus", default=None,
+                        help="负样本校准语料 JSONL 路径（提供则自动运行 ThresholdCalibrator）")
+    parser.add_argument("--fpr", type=float, default=0.01,
+                        help="校准目标 FPR（默认: 0.01，仅在 --calibration-corpus 指定时生效）")
     return parser
 
 
@@ -473,7 +483,7 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
 
     output_dir = args.extract_output_dir or ext_cfg.get("output_dir", "data/results")
     embed_dim = args.embed_dim or ext_cfg.get("embed_dim", 128)
-    z_threshold = args.z_threshold or ext_cfg.get("z_threshold", 3.0)
+    fpr_threshold = args.fpr_threshold or ext_cfg.get("fpr_threshold", 3.0)
 
     # 加载编码器：优先 best_model.pt，回退 checkpoint
     enc_config = EncoderConfig(embed_dim=embed_dim)
@@ -504,10 +514,48 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
     encoder = encoder.to(device)
     tokenizer = AutoTokenizer.from_pretrained(enc_config.model_name)
 
+    # 自动校准：若指定了负样本语料，先运行 ThresholdCalibrator
+    calibration_corpus_path = (
+        getattr(args, "calibration_corpus", None)
+        or ext_cfg.get("calibration_corpus")
+    )
+    if calibration_corpus_path:
+        if not Path(calibration_corpus_path).exists():
+            print(f"[错误] 校准语料文件不存在：{calibration_corpus_path}", file=sys.stderr)
+            return 1
+        from wfcllm.extract.calibrator import ThresholdCalibrator
+        from wfcllm.extract.scorer import BlockScorer
+        from wfcllm.watermark.keying import WatermarkKeying
+        from wfcllm.watermark.lsh_space import LSHSpace
+        from wfcllm.watermark.verifier import ProjectionVerifier
+
+        lsh_d = ext_cfg.get("lsh_d", 3)
+        lsh_gamma = ext_cfg.get("lsh_gamma", 0.5)
+        fpr_target = getattr(args, "fpr", None) or ext_cfg.get("fpr", 0.01)
+
+        lsh_space = LSHSpace(secret_key, embed_dim, lsh_d)
+        keying = WatermarkKeying(secret_key, lsh_d, lsh_gamma)
+        verifier = ProjectionVerifier(encoder, tokenizer, lsh_space=lsh_space, device=device)
+        scorer = BlockScorer(keying, verifier)
+
+        import json as _calib_json
+        corpus = []
+        with open(calibration_corpus_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    corpus.append(_calib_json.loads(line))
+        print(f"[校准] 加载负样本语料 {len(corpus)} 条，FPR 目标={fpr_target}")
+
+        calibrator = ThresholdCalibrator(scorer, gamma=lsh_gamma)
+        calib_result = calibrator.calibrate(corpus, fpr=fpr_target)
+        fpr_threshold = calib_result["fpr_threshold"]
+        print(f"[校准] 完成：M_r = {fpr_threshold:.4f}（FPR={fpr_target}，样本数={calib_result['n_samples']}）")
+
     extract_config = ExtractConfig(
         secret_key=secret_key,
         embed_dim=embed_dim,
-        z_threshold=z_threshold,
+        fpr_threshold=fpr_threshold,
     )
     detector = WatermarkDetector(extract_config, encoder, tokenizer, device=device)
 

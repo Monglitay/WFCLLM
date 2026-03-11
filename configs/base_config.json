@@ -50,7 +50,11 @@
   "extract": {
     "secret_key": "1010",
     "embed_dim": 128,
-    "z_threshold": 3.0,
+    "fpr_threshold": 3.0,
+    "lsh_d": 3,
+    "lsh_gamma": 0.5,
+    "calibration_corpus": null,
+    "fpr": 0.01,
     "input_file": "data/watermarked/humaneval_20260310_223459.jsonl",
     "output_dir": "data/results"
   }
