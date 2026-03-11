@@ -21,7 +21,7 @@ class BlockScore:
     """Score result for a single statement block."""
 
     block_id: str
-    score: int        # +1 (hit) or -1 (miss)
+    score: int        # 1 (hit) or 0 (miss)
     min_margin: float
     selected: bool = False
 

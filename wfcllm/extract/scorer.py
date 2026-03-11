@@ -22,7 +22,7 @@ class BlockScorer:
         valid_set = self._keying.derive(parent_node_type)
         result = self._verifier.verify(block.source, valid_set, 0.0)
 
-        score = 1 if result.passed else -1
+        score = 1 if result.passed else 0
         return BlockScore(
             block_id=block.block_id,
             score=score,

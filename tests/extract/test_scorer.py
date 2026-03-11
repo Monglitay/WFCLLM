@@ -56,13 +56,13 @@ class TestBlockScorer:
         assert result.min_margin == 0.4
 
     def test_score_single_block_miss(self, keying, mock_verifier):
-        """passed=False from verifier -> score = -1."""
+        """passed=False from verifier -> score = 0."""
         mock_verifier.verify.return_value = VerifyResult(passed=False, min_margin=0.05)
         scorer = BlockScorer(keying, mock_verifier)
         block = _make_block("0")
         result = scorer.score_block(block, blocks=[block])
 
-        assert result.score == -1
+        assert result.score == 0
         assert result.min_margin == 0.05
 
     def test_verify_called_with_margin_zero(self, keying, mock_verifier):
