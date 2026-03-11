@@ -39,9 +39,11 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-PHASES = ["encoder", "watermark", "extract"]
+PHASES = ["encoder", "watermark", "extract", "generate-negative"]
 DEFAULT_STATE_FILE = Path("data/run_state.json")
 DEFAULT_CONFIG_FILE = Path("configs/base_config.json")
+
+from wfcllm.extract.negative_corpus import NegativeCorpusConfig, NegativeCorpusGenerator
 
 
 def load_config(config_path: Path) -> dict:
@@ -169,6 +171,15 @@ def build_parser() -> argparse.ArgumentParser:
                         help="负样本校准语料 JSONL 路径（提供则自动运行 ThresholdCalibrator）")
     parser.add_argument("--fpr", type=float, default=0.01,
                         help="校准目标 FPR（默认: 0.01，仅在 --calibration-corpus 指定时生效）")
+    # generate-negative 参数
+    parser.add_argument(
+        "--negative-output", default=None,
+        help="负样本语料输出 JSONL 路径（默认从配置文件读取，或 data/negative_corpus.jsonl）",
+    )
+    parser.add_argument(
+        "--negative-limit", type=int, default=None,
+        help="只处理前 N 条 prompt（调试用，默认: 全量）",
+    )
     return parser
 
 
@@ -223,6 +234,7 @@ def run_phase(phase: str, args: argparse.Namespace, state: RunState) -> int:
         "encoder": run_encoder,
         "watermark": run_watermark,
         "extract": run_extract,
+        "generate-negative": run_generate_negative,
     }
     return runners[phase](args, state)
 
@@ -587,6 +599,55 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
         report_file=report_path,
         watermark_rate=summary["watermark_rate"],
     )
+    return 0
+
+
+def run_generate_negative(args: argparse.Namespace, state: RunState) -> int:
+    """生成负样本语料：用 LLM 直接生成代码（不加水印）。
+
+    输出 JSONL 格式与阶段二水印数据集相同（含 generated_code 字段），
+    可直接作为 --calibration-corpus 传给 run.py --phase extract。
+    """
+    print("=== 生成负样本语料 ===")
+
+    cfg = load_config(args.config)
+    neg_cfg = cfg.get("generate_negative", {})
+
+    lm_model_path = args.lm_model_path or neg_cfg.get("lm_model_path", "")
+    if not lm_model_path:
+        print("[错误] --lm-model-path 为必填参数", file=sys.stderr)
+        return 1
+
+    dataset = args.dataset or neg_cfg.get("dataset", "humaneval")
+    dataset_path = args.dataset_path or neg_cfg.get("dataset_path", "data/datasets")
+    output_path = (
+        getattr(args, "negative_output", None)
+        or neg_cfg.get("output_path", "data/negative_corpus.jsonl")
+    )
+    limit = getattr(args, "negative_limit", None) or neg_cfg.get("limit", None)
+
+    config = NegativeCorpusConfig(
+        lm_model_path=lm_model_path,
+        output_path=output_path,
+        dataset=dataset,
+        dataset_path=dataset_path,
+        max_new_tokens=neg_cfg.get("max_new_tokens", 512),
+        temperature=neg_cfg.get("temperature", 0.8),
+        top_p=neg_cfg.get("top_p", 0.95),
+        top_k=neg_cfg.get("top_k", 50),
+        device=neg_cfg.get("device", "cuda"),
+        limit=limit,
+    )
+
+    try:
+        generator = NegativeCorpusGenerator(config)
+        out_path = generator.run()
+    except Exception as e:
+        print(f"[错误] 负样本生成失败：{e}", file=sys.stderr)
+        return 1
+
+    state.mark_done("generate-negative", output_file=out_path, dataset=dataset)
+    print(f"[完成] 负样本语料已保存至 {out_path}")
     return 0
 
 
