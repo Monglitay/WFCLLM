@@ -39,7 +39,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-PHASES = ["encoder", "watermark", "extract", "generate-negative"]
+PHASES = ["encoder", "watermark", "extract"]
+OPTIONAL_PHASES = ["generate-negative"]
+ALL_PHASES = PHASES + OPTIONAL_PHASES
 DEFAULT_STATE_FILE = Path("data/run_state.json")
 DEFAULT_CONFIG_FILE = Path("configs/base_config.json")
 
@@ -67,7 +69,7 @@ class RunState:
         if self._path.exists():
             with open(self._path, encoding="utf-8") as f:
                 return json.load(f)
-        return {phase: {"done": False} for phase in PHASES}
+        return {phase: {"done": False} for phase in ALL_PHASES}
 
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -89,7 +91,7 @@ class RunState:
         self._save()
 
     def reset(self) -> None:
-        self._data = {phase: {"done": False} for phase in PHASES}
+        self._data = {phase: {"done": False} for phase in ALL_PHASES}
         self._save()
 
     def status(self) -> dict:
@@ -98,7 +100,7 @@ class RunState:
                 "done": self._data.get(phase, {}).get("done", False),
                 **{k: v for k, v in self._data.get(phase, {}).items() if k != "done"},
             }
-            for phase in PHASES
+            for phase in ALL_PHASES
         }
 
 
@@ -115,8 +117,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--phase",
-        choices=PHASES,
-        help="运行指定阶段（不指定则运行全流程）",
+        choices=ALL_PHASES,
+        help="运行指定阶段（不指定则运行主流程三阶段）",
     )
     parser.add_argument(
         "--status",
@@ -182,7 +184,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def cmd_status(state: RunState) -> None:
     print("=== WFCLLM 阶段状态 ===")
-    for phase in PHASES:
+    for phase in ALL_PHASES:
         info = state.status()[phase]
         done_str = "✓ 完成" if info["done"] else "○ 未完成"
         extras = {k: v for k, v in info.items() if k not in ("done", "completed_at")}

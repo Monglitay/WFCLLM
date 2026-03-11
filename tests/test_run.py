@@ -9,12 +9,13 @@ import pytest
 # ── 将项目根目录加入 sys.path（如果需要）
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from run import RunState, PHASES
+from run import RunState, PHASES, ALL_PHASES
 
 
 class TestRunState:
     def test_phases_order(self):
-        assert PHASES == ["encoder", "watermark", "extract", "generate-negative"]
+        assert PHASES == ["encoder", "watermark", "extract"]
+        assert ALL_PHASES == ["encoder", "watermark", "extract", "generate-negative"]
 
     def test_initial_state_all_pending(self, tmp_path):
         state_file = tmp_path / "run_state.json"

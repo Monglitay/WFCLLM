@@ -5,6 +5,8 @@ from wfcllm.extract.config import BlockScore, DetectionResult, ExtractConfig
 from wfcllm.extract.detector import WatermarkDetector
 from wfcllm.extract.dp_selector import DPSelector
 from wfcllm.extract.hypothesis import HypothesisTester
+from wfcllm.extract.negative_corpus import NegativeCorpusConfig, NegativeCorpusGenerator
+from wfcllm.extract.pipeline import ExtractPipeline, ExtractPipelineConfig
 from wfcllm.extract.scorer import BlockScorer
 
 __all__ = [
@@ -18,7 +20,6 @@ __all__ = [
     "ThresholdCalibrator",
     "NegativeCorpusConfig",
     "NegativeCorpusGenerator",
+    "ExtractPipeline",
+    "ExtractPipelineConfig",
 ]
-
-from wfcllm.extract.pipeline import ExtractPipeline, ExtractPipelineConfig
-from wfcllm.extract.negative_corpus import NegativeCorpusConfig, NegativeCorpusGenerator
