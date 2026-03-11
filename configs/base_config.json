@@ -57,5 +57,17 @@
     "fpr": 0.01,
     "input_file": "data/watermarked/humaneval_20260310_223459.jsonl",
     "output_dir": "data/results"
+  },
+  "generate_negative": {
+    "lm_model_path": "data/models/deepseek-coder-7b-base",
+    "dataset": "humaneval",
+    "dataset_path": "data/datasets",
+    "output_path": "data/negative_corpus.jsonl",
+    "max_new_tokens": 512,
+    "temperature": 0.8,
+    "top_p": 0.95,
+    "top_k": 50,
+    "device": "cuda",
+    "limit": null
   }
 }
