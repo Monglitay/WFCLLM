@@ -27,7 +27,7 @@ class WatermarkDetector:
         verifier = ProjectionVerifier(encoder, tokenizer, lsh_space=lsh_space, device=device)
         self._scorer = BlockScorer(keying, verifier)
         self._dp = DPSelector()
-        self._tester = HypothesisTester(config.z_threshold, gamma=config.lsh_gamma)
+        self._tester = HypothesisTester(config.fpr_threshold, gamma=config.lsh_gamma)
 
     def detect(self, code: str) -> DetectionResult:
         blocks = extract_statement_blocks(code)

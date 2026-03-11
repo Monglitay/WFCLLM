@@ -14,7 +14,7 @@ from wfcllm.extract.detector import WatermarkDetector
 class TestWatermarkDetector:
     @pytest.fixture
     def config(self):
-        return ExtractConfig(secret_key="test-key", embed_dim=128, z_threshold=3.0)
+        return ExtractConfig(secret_key="test-key", embed_dim=128, fpr_threshold=3.0)
 
     @pytest.fixture
     def mock_encoder(self):

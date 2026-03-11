@@ -22,7 +22,7 @@ def _make_score(block_id: str, score: int) -> BlockScore:
 class TestHypothesisTester:
     @pytest.fixture
     def tester(self):
-        return HypothesisTester(z_threshold=3.0)
+        return HypothesisTester(fpr_threshold=3.0)
 
     def test_empty_blocks(self, tester):
         """No blocks -> not watermarked."""
@@ -56,7 +56,7 @@ class TestHypothesisTester:
 
     def test_custom_threshold(self):
         """Lower threshold makes detection easier."""
-        tester = HypothesisTester(z_threshold=1.0)
+        tester = HypothesisTester(fpr_threshold=1.0)
         # 15 hits out of 20: Z = (15 - 10)/sqrt(5) ≈ 2.24
         scores = [_make_score(str(i), 1) for i in range(15)]
         scores += [_make_score(str(i + 15), 0) for i in range(5)]
@@ -88,7 +88,7 @@ class TestHypothesisTesterGamma:
     def test_custom_gamma_z_score(self):
         """With gamma=0.25 and all hits, Z-score uses correct formula."""
         import math
-        tester = HypothesisTester(z_threshold=3.0, gamma=0.25)
+        tester = HypothesisTester(fpr_threshold=3.0, gamma=0.25)
         scores = [_make_score(str(i), 1) for i in range(20)]
         result = tester.test(selected_scores=scores, total_blocks=20)
         # Z = (20 - 20*0.25) / sqrt(20 * 0.25 * 0.75) = 15 / sqrt(3.75)
@@ -98,7 +98,7 @@ class TestHypothesisTesterGamma:
     def test_default_gamma_is_half(self):
         """Default gamma=0.5 produces same result as original formula."""
         import math
-        tester = HypothesisTester(z_threshold=3.0)
+        tester = HypothesisTester(fpr_threshold=3.0)
         scores = [_make_score(str(i), 1) for i in range(20)]
         result = tester.test(selected_scores=scores, total_blocks=20)
         expected_z = (20 - 10) / math.sqrt(5)

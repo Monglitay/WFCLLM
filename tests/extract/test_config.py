@@ -10,11 +10,11 @@ class TestExtractConfig:
         cfg = ExtractConfig(secret_key="test-key")
         assert cfg.secret_key == "test-key"
         assert cfg.embed_dim == 128
-        assert cfg.z_threshold == 3.0
+        assert cfg.fpr_threshold == 3.0
 
     def test_custom_threshold(self):
-        cfg = ExtractConfig(secret_key="k", z_threshold=2.5)
-        assert cfg.z_threshold == 2.5
+        cfg = ExtractConfig(secret_key="k", fpr_threshold=2.5)
+        assert cfg.fpr_threshold == 2.5
 
 
 class TestBlockScore:
