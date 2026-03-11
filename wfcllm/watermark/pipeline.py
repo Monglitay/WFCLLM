@@ -14,11 +14,9 @@ except ImportError:
     tqdm = None  # type: ignore[assignment]
 
 import torch
-from datasets import load_dataset
 
 from wfcllm.watermark.generator import WatermarkGenerator
-
-SUPPORTED_DATASETS = ("humaneval", "mbpp")
+from wfcllm.common.dataset_loader import SUPPORTED_DATASETS, load_prompts
 
 
 @dataclass
@@ -45,38 +43,7 @@ class WatermarkPipeline:
 
     def _load_prompts(self) -> list[dict]:
         """Load prompts from local dataset. Returns list of {"id", "prompt"}."""
-        dataset_path = str(Path(self._config.dataset_path) / self._config.dataset)
-
-        if self._config.dataset == "humaneval":
-            ds = load_dataset(
-                "openai/openai_humaneval",
-                cache_dir=dataset_path,
-                download_mode="reuse_cache_if_exists",
-            )
-            prompts = []
-            for split in ds:
-                for item in ds[split]:
-                    prompts.append({
-                        "id": item["task_id"],
-                        "prompt": item["prompt"],
-                    })
-            return prompts
-
-        # mbpp
-        ds = load_dataset(
-            "google-research-datasets/mbpp",
-            "full",
-            cache_dir=dataset_path,
-            download_mode="reuse_cache_if_exists",
-        )
-        prompts = []
-        for split in ds:
-            for item in ds[split]:
-                prompts.append({
-                    "id": f"mbpp/{item['task_id']}",
-                    "prompt": item["text"],
-                })
-        return prompts
+        return load_prompts(self._config.dataset, self._config.dataset_path)
 
     def run(self) -> str:
         """Run batch watermarking. Returns path to output JSONL file."""
