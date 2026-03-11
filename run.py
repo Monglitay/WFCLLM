@@ -43,9 +43,6 @@ PHASES = ["encoder", "watermark", "extract", "generate-negative"]
 DEFAULT_STATE_FILE = Path("data/run_state.json")
 DEFAULT_CONFIG_FILE = Path("configs/base_config.json")
 
-from wfcllm.extract.negative_corpus import NegativeCorpusConfig, NegativeCorpusGenerator
-
-
 def load_config(config_path: Path) -> dict:
     """读取 JSON 配置文件，返回按阶段分组的 dict。"""
     if not config_path.exists():
@@ -608,6 +605,7 @@ def run_generate_negative(args: argparse.Namespace, state: RunState) -> int:
     输出 JSONL 格式与阶段二水印数据集相同（含 generated_code 字段），
     可直接作为 --calibration-corpus 传给 run.py --phase extract。
     """
+    from wfcllm.extract.negative_corpus import NegativeCorpusConfig, NegativeCorpusGenerator
     print("=== 生成负样本语料 ===")
 
     cfg = load_config(args.config)
@@ -621,10 +619,10 @@ def run_generate_negative(args: argparse.Namespace, state: RunState) -> int:
     dataset = args.dataset or neg_cfg.get("dataset", "humaneval")
     dataset_path = args.dataset_path or neg_cfg.get("dataset_path", "data/datasets")
     output_path = (
-        getattr(args, "negative_output", None)
+        args.negative_output
         or neg_cfg.get("output_path", "data/negative_corpus.jsonl")
     )
-    limit = getattr(args, "negative_limit", None) or neg_cfg.get("limit", None)
+    limit = args.negative_limit or neg_cfg.get("limit", None)
 
     config = NegativeCorpusConfig(
         lm_model_path=lm_model_path,

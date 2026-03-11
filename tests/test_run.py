@@ -53,15 +53,19 @@ import subprocess
 
 
 class TestRunGenerateNegative:
-    def test_run_generate_negative_missing_lm_model_path(self, tmp_path):
-        """run_generate_negative returns 1 when lm_model_path is missing."""
-        from run import run_generate_negative, RunState
-
-        state = RunState(tmp_path / "state.json")
+    @pytest.fixture
+    def neg_cfg_file(self, tmp_path):
         import json as _json
         cfg_data = {"generate_negative": {"lm_model_path": "", "dataset": "humaneval", "dataset_path": "data/datasets", "output_path": "data/neg.jsonl", "max_new_tokens": 512, "temperature": 0.8, "top_p": 0.95, "top_k": 50, "device": "cuda", "limit": None}}
         cfg_path = tmp_path / "cfg.json"
         cfg_path.write_text(_json.dumps(cfg_data))
+        return cfg_path
+
+    def test_run_generate_negative_missing_lm_model_path(self, tmp_path, neg_cfg_file):
+        """run_generate_negative returns 1 when lm_model_path is missing."""
+        from run import run_generate_negative, RunState
+
+        state = RunState(tmp_path / "state.json")
 
         args = argparse.Namespace(
             lm_model_path=None,
@@ -69,24 +73,19 @@ class TestRunGenerateNegative:
             dataset_path=None,
             negative_output=None,
             negative_limit=None,
-            config=cfg_path,
+            config=neg_cfg_file,
         )
 
         rc = run_generate_negative(args, state)
         assert rc == 1
 
-    def test_run_generate_negative_calls_generator(self, tmp_path):
+    def test_run_generate_negative_calls_generator(self, tmp_path, neg_cfg_file):
         """run_generate_negative calls NegativeCorpusGenerator.run() and marks done."""
         from unittest.mock import patch, MagicMock
         from run import run_generate_negative, RunState
-        import json as _json
 
         state = RunState(tmp_path / "state.json")
         out_jsonl = str(tmp_path / "neg.jsonl")
-
-        cfg_data = {"generate_negative": {"lm_model_path": "", "dataset": "humaneval", "dataset_path": "data/datasets", "output_path": "data/neg.jsonl", "max_new_tokens": 512, "temperature": 0.8, "top_p": 0.95, "top_k": 50, "device": "cuda", "limit": None}}
-        cfg_path = tmp_path / "cfg.json"
-        cfg_path.write_text(_json.dumps(cfg_data))
 
         args = argparse.Namespace(
             lm_model_path="data/models/my-model",
@@ -94,13 +93,13 @@ class TestRunGenerateNegative:
             dataset_path="data/datasets",
             negative_output=out_jsonl,
             negative_limit=None,
-            config=cfg_path,
+            config=neg_cfg_file,
         )
 
         mock_gen = MagicMock()
         mock_gen.run.return_value = out_jsonl
 
-        with patch("run.NegativeCorpusGenerator", return_value=mock_gen):
+        with patch("wfcllm.extract.negative_corpus.NegativeCorpusGenerator", return_value=mock_gen):
             rc = run_generate_negative(args, state)
 
         assert rc == 0
