@@ -69,8 +69,9 @@ class TestNegativeCorpusGeneratorGenerate:
 
         gen._model = mock_model
         gen._tokenizer = mock_tokenizer
+        gen._device = "cpu"
 
-        result = gen._generate("def foo():", device="cpu")
+        result = gen._generate("def foo():")
 
         assert isinstance(result, str)
         assert result == "def foo(): pass"
@@ -96,7 +97,8 @@ class TestNegativeCorpusGeneratorRun:
             {"id": "HumanEval/1", "prompt": "def bar():"},
         ]
 
-        with patch("wfcllm.extract.negative_corpus.load_prompts", return_value=prompts):
+        with patch("wfcllm.extract.negative_corpus.load_prompts", return_value=prompts), \
+             patch("torch.cuda.is_available", return_value=False):
             out_path = gen.run()
 
         assert Path(out_path).exists()
@@ -127,7 +129,8 @@ class TestNegativeCorpusGeneratorRun:
             {"id": "HumanEval/1", "prompt": "def bar():"},
         ]
 
-        with patch("wfcllm.extract.negative_corpus.load_prompts", return_value=prompts):
+        with patch("wfcllm.extract.negative_corpus.load_prompts", return_value=prompts), \
+             patch("torch.cuda.is_available", return_value=False):
             gen.run()
 
         assert gen._generate.call_count == 1

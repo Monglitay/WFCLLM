@@ -85,13 +85,13 @@ class NegativeCorpusGenerator:
             ).to(device)
         self._model.eval()
 
-    def _generate(self, prompt: str, device: str) -> str:
+    def _generate(self, prompt: str) -> str:
         """Generate code for a single prompt without watermarking."""
         import torch
 
         cfg = self._config
         raw = self._tokenizer(prompt, return_tensors="pt")
-        inputs = {k: v.to(device) if hasattr(v, "to") else v for k, v in raw.items()}
+        inputs = {k: v.to(self._device) if hasattr(v, "to") else v for k, v in raw.items()}
         with torch.no_grad():
             output_ids = self._model.generate(
                 **inputs,
@@ -125,7 +125,7 @@ class NegativeCorpusGenerator:
         with open(out_path, "w", encoding="utf-8") as f:
             for i, item in enumerate(prompts):
                 try:
-                    code = self._generate(item["prompt"], self._device)
+                    code = self._generate(item["prompt"])
                 except Exception as e:
                     print(f"[警告] {item['id']} 生成失败：{e}", file=sys.stderr)
                     code = ""
@@ -143,7 +143,7 @@ class NegativeCorpusGenerator:
 
                 print(
                     f"  [{i + 1}/{len(prompts)}] {item['id']} | "
-                    f"tokens: {len(code.split())}",
+                    f"words: {len(code.split())}",
                     file=sys.stderr,
                 )
 
