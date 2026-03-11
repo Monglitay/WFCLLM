@@ -83,3 +83,17 @@ class TestThresholdCalibrator:
         assert result["n_samples"] == 1
         # No Z scores collected -> fallback to 0.0 (accept all, user should know corpus is bad)
         assert result["fpr_threshold"] == 0.0
+
+    def test_calibrate_filters_simple_blocks_only(self, mock_scorer):
+        """Calibrator should only score simple blocks, not compound."""
+        mock_scorer.score_all.return_value = [
+            BlockScore(block_id="1", score=1, min_margin=0.5),
+        ]
+        calibrator = ThresholdCalibrator(mock_scorer)
+        # Code with compound (for) + simple (x = 1) blocks
+        corpus = [{"generated_code": "for i in range(10):\n    x = 1\n"}]
+        result = calibrator.calibrate(corpus, fpr=0.01)
+        # score_all should be called with simple blocks only as first arg
+        call_args = mock_scorer.score_all.call_args
+        target_blocks = call_args[0][0]
+        assert all(b.block_type == "simple" for b in target_blocks)

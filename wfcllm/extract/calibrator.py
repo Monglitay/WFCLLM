@@ -5,23 +5,19 @@ from __future__ import annotations
 import math
 
 from wfcllm.common.ast_parser import extract_statement_blocks
-from wfcllm.extract.dp_selector import DPSelector
 from wfcllm.extract.scorer import BlockScorer
 
 
 class ThresholdCalibrator:
     """Compute FPR-based detection threshold M_r from a negative corpus.
 
-    Uses BlockScorer + DPSelector to compute SEMSTAMP Z scores for each
-    sample, then returns the (1-fpr) percentile as the threshold M_r.
-
-    Does NOT depend on HypothesisTester to avoid circular logic.
+    Uses BlockScorer to compute Z scores for each sample's simple blocks,
+    then returns the (1-fpr) percentile as the threshold M_r.
     """
 
     def __init__(self, scorer: BlockScorer, gamma: float = 0.5):
         self._scorer = scorer
         self._gamma = gamma
-        self._dp = DPSelector()
 
     def calibrate(self, corpus: list[dict], fpr: float) -> dict:
         """Compute M_r from a list of negative-sample records.
@@ -46,15 +42,18 @@ class ThresholdCalibrator:
             if not blocks:
                 continue
 
-            scores = self._scorer.score_all(blocks)
-            selected_ids = set(self._dp.select(blocks, scores))
-            selected = [s for s in scores if s.block_id in selected_ids]
+            # Only simple blocks carry watermark signal
+            simple_blocks = [b for b in blocks if b.block_type == "simple"]
+            if not simple_blocks:
+                continue
 
-            m = len(selected)
+            scores = self._scorer.score_all(simple_blocks, blocks)
+
+            m = len(scores)
             if m == 0:
                 continue
 
-            x = sum(1 for s in selected if s.score == 1)
+            x = sum(1 for s in scores if s.score == 1)
             gamma = self._gamma
             z = (x - m * gamma) / math.sqrt(m * gamma * (1 - gamma))
             z_scores.append(z)
