@@ -107,7 +107,8 @@ class TestBlockScorer:
         mock_verifier.verify.return_value = VerifyResult(passed=True, min_margin=0.3)
         scorer = BlockScorer(keying, mock_verifier)
         blocks = [_make_block("0"), _make_block("1")]
-        results = scorer.score_all(blocks)
+        # New: pass (target_blocks, all_blocks)
+        results = scorer.score_all(blocks, blocks)
 
         assert len(results) == 2
         assert results[0].block_id == "0"

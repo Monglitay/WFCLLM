@@ -29,8 +29,13 @@ class BlockScorer:
             min_margin=result.min_margin,
         )
 
-    def score_all(self, blocks: list[StatementBlock]) -> list[BlockScore]:
-        return [self.score_block(b, blocks) for b in blocks]
+    def score_all(
+        self,
+        target_blocks: list[StatementBlock],
+        all_blocks: list[StatementBlock],
+    ) -> list[BlockScore]:
+        """Score target blocks. all_blocks needed for parent_id → node_type lookup."""
+        return [self.score_block(b, all_blocks) for b in target_blocks]
 
     @staticmethod
     def _resolve_parent_type(block: StatementBlock, blocks: list[StatementBlock]) -> str:
