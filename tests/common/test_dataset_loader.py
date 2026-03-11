@@ -25,6 +25,11 @@ class TestLoadPrompts:
 
         prompts = load_prompts("humaneval", "data/datasets")
 
+        mock_load.assert_called_once_with(
+            "openai/openai_humaneval",
+            cache_dir="data/datasets/humaneval",
+            download_mode="reuse_cache_if_exists",
+        )
         assert len(prompts) == 1
         assert prompts[0]["id"] == "HumanEval/0"
         assert prompts[0]["prompt"] == "def foo():"
@@ -37,6 +42,12 @@ class TestLoadPrompts:
 
         prompts = load_prompts("mbpp", "data/datasets")
 
+        mock_load.assert_called_once_with(
+            "google-research-datasets/mbpp",
+            "full",
+            cache_dir="data/datasets/mbpp",
+            download_mode="reuse_cache_if_exists",
+        )
         assert len(prompts) == 1
         assert prompts[0]["id"] == "mbpp/1"
         assert prompts[0]["prompt"] == "Write a function"
