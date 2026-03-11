@@ -38,12 +38,13 @@ class TestWatermarkDetector:
         self, config, mock_encoder, mock_tokenizer
     ):
         detector = WatermarkDetector(config, mock_encoder, mock_tokenizer, device="cpu")
-        code = "x = 1\ny = 2\n"
+        # Use compound+simple input to verify compound block is excluded
+        code = "for i in range(10):\n    x = i + 1\n    y = i * 2\n"
         result = detector.detect(code)
-
         assert isinstance(result, DetectionResult)
-        assert result.total_blocks >= 2
-        assert result.independent_blocks >= 0
+        # Only simple blocks counted (x = i + 1, y = i * 2), not the for compound block
+        assert result.total_blocks == 2
+        assert result.independent_blocks == result.total_blocks  # all simple blocks selected
         assert isinstance(result.z_score, float)
         assert isinstance(result.p_value, float)
 
@@ -55,23 +56,22 @@ class TestWatermarkDetector:
         assert result.total_blocks == 0
         assert result.independent_blocks == 0
 
-    def test_block_details_include_all_blocks(
+    def test_block_details_include_simple_blocks(
         self, config, mock_encoder, mock_tokenizer
     ):
-        """block_details should contain all blocks, not just selected."""
+        """block_details should contain only simple blocks, not compound blocks."""
         detector = WatermarkDetector(config, mock_encoder, mock_tokenizer, device="cpu")
         code = "for i in range(10):\n    x = i + 1\n    y = i * 2\n"
         result = detector.detect(code)
-
-        # Should have compound (for) + 2 simple children = 3 blocks
-        assert result.total_blocks == len(result.block_details)
-        assert result.total_blocks >= 3
+        assert len(result.block_details) == result.total_blocks
+        # total_blocks should be 2 (only the simple blocks), not 3
+        assert result.total_blocks == 2
 
     def test_selected_flag_set(self, config, mock_encoder, mock_tokenizer):
-        """At least some blocks should have selected=True after DP."""
+        """All simple blocks should have selected=True."""
         detector = WatermarkDetector(config, mock_encoder, mock_tokenizer, device="cpu")
-        code = "x = 1\ny = 2\nz = 3\n"
+        code = "for i in range(10):\n    x = i + 1\n    y = i * 2\n"
         result = detector.detect(code)
-
-        selected_count = sum(1 for b in result.block_details if b.selected)
-        assert selected_count == result.independent_blocks
+        # All simple blocks are selected (no DP filtering)
+        assert all(s.selected for s in result.block_details)
+        assert result.independent_blocks == result.total_blocks
