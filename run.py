@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -176,6 +178,9 @@ def cmd_reset(state: RunState) -> None:
 
 
 def main() -> int:
+    log_level = logging.DEBUG if os.environ.get("WFCLLM_DEBUG") else logging.WARNING
+    logging.basicConfig(level=log_level, format="%(name)s %(levelname)s %(message)s")
+
     parser = build_parser()
     args = parser.parse_args()
     state = RunState()
@@ -369,8 +374,8 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
         print(f"[加载] 编码器权重来自 checkpoint（fallback）: {encoder_checkpoint}")
     else:
         print("[警告] 未找到微调权重，使用预训练模型")
-    # encoder 放 CPU，为 LLM 留出全部 GPU 显存
-    encoder = encoder.to("cpu")
+    encoder_device = wm_cfg.get("encoder_device", "cpu")
+    encoder = encoder.to(encoder_device)
     encoder_tokenizer = AutoTokenizer.from_pretrained(enc_config.model_name)
 
     # 加载代码生成 LLM（4-bit 量化以节省显存）
@@ -391,7 +396,19 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
     wm_config = WatermarkConfig(
         secret_key=secret_key,
         encoder_embed_dim=embed_dim,
-        encoder_device="cpu",
+        encoder_device=wm_cfg.get("encoder_device", "cpu"),
+        margin_base=wm_cfg.get("margin_base", 0.1),
+        margin_alpha=wm_cfg.get("margin_alpha", 0.05),
+        max_retries=wm_cfg.get("max_retries", 5),
+        temperature=wm_cfg.get("temperature", 0.8),
+        top_p=wm_cfg.get("top_p", 0.95),
+        top_k=wm_cfg.get("top_k", 50),
+        max_new_tokens=wm_cfg.get("max_new_tokens", 512),
+        eos_token_id=wm_cfg.get("eos_token_id"),
+        enable_fallback=wm_cfg.get("enable_fallback", True),
+        repetition_penalty=wm_cfg.get("repetition_penalty", 1.3),
+        lsh_d=wm_cfg.get("lsh_d", 3),
+        lsh_gamma=wm_cfg.get("lsh_gamma", 0.5),
     )
     generator = WatermarkGenerator(lm_model, lm_tokenizer, encoder, encoder_tokenizer, wm_config)
 

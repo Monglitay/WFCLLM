@@ -56,6 +56,11 @@ class GenerationContext:
         self.last_event: InterceptEvent | None = None
         self.last_block_checkpoint: Checkpoint | None = None
 
+        # Per-step history for block-start checkpoint reconstruction.
+        # Entry i = state just before the i-th generated token was sampled.
+        # Stored as (generated_ids_snapshot, text, kv_seq_len, interceptor_state).
+        self._step_history: list[tuple[list[int], str, int, InterceptorState]] = []
+
         self._eos_id: int | None = None
 
     @property
@@ -101,6 +106,11 @@ class GenerationContext:
         self.generated_text = cp.generated_text
         self.interceptor.rollback(cp.interceptor_state)
 
+        # Trim step history to match rolled-back length
+        rollback_len = len(cp.generated_ids)
+        if len(self._step_history) > rollback_len:
+            self._step_history = self._step_history[:rollback_len]
+
         # Reset event state
         self.last_event = None
         self.last_block_checkpoint = None
@@ -118,6 +128,15 @@ class GenerationContext:
         pre_forward_kv_seq_len = (
             self.past_kv[0][0].shape[2] if self.past_kv is not None else 0
         )
+        pre_forward_interceptor_state = self.interceptor.checkpoint()
+
+        # Record this step's pre-forward state in history
+        self._step_history.append((
+            list(self.generated_ids),
+            pre_forward_text,
+            pre_forward_kv_seq_len,
+            pre_forward_interceptor_state,
+        ))
 
         # Model forward
         last_id = self.generated_ids[-1] if self.generated_ids else 0
@@ -148,15 +167,26 @@ class GenerationContext:
         # Track events with lazy checkpoint materialization
         self.last_event = event
         if event is not None:
-            # Materialize full checkpoint from pre-feed state
-            # All four components are aligned: they all exclude the current token's
-            # contribution to their respective state
-            self.last_block_checkpoint = Checkpoint(
-                generated_ids=list(self.generated_ids[:pre_forward_ids_len]),
-                generated_text=pre_forward_text,
-                kv_snapshot=CacheSnapshot(seq_len=pre_forward_kv_seq_len),
-                interceptor_state=pre_feed_interceptor_state,
-            )
+            # Build checkpoint at block START (token_start_idx), not at the
+            # trigger token. This ensures retry sub-loops regenerate the entire
+            # block and repetition penalty can actually influence the content.
+            block_start = event.token_start_idx
+            if 0 <= block_start < len(self._step_history):
+                frame = self._step_history[block_start]
+                self.last_block_checkpoint = Checkpoint(
+                    generated_ids=frame[0],
+                    generated_text=frame[1],
+                    kv_snapshot=CacheSnapshot(seq_len=frame[2]),
+                    interceptor_state=frame[3],
+                )
+            else:
+                # Fallback: use pre-forward state (old behaviour)
+                self.last_block_checkpoint = Checkpoint(
+                    generated_ids=list(self.generated_ids[:pre_forward_ids_len]),
+                    generated_text=pre_forward_text,
+                    kv_snapshot=CacheSnapshot(seq_len=pre_forward_kv_seq_len),
+                    interceptor_state=pre_feed_interceptor_state,
+                )
         else:
             self.last_block_checkpoint = None
 
