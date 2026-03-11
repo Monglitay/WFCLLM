@@ -16,6 +16,9 @@ __all__ = [
     "DPSelector",
     "HypothesisTester",
     "ThresholdCalibrator",
+    "NegativeCorpusConfig",
+    "NegativeCorpusGenerator",
 ]
 
 from wfcllm.extract.pipeline import ExtractPipeline, ExtractPipelineConfig
+from wfcllm.extract.negative_corpus import NegativeCorpusConfig, NegativeCorpusGenerator
