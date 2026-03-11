@@ -232,9 +232,15 @@ python run.py --phase extract \
     --calibration-corpus data/negative_corpus.jsonl \
     --fpr 0.01
 
-# 生成负样本语料（用同一 LLM 直接生成，不加水印）
+# 生成负样本语料（方式一：通过 run.py，推荐）
+python run.py --phase generate-negative \
+    --lm-model-path data/models/deepseek-coder-7b-base \
+    --dataset humaneval \
+    --negative-output data/negative_corpus.jsonl
+
+# 生成负样本语料（方式二：直接调用脚本，向后兼容）
 python scripts/generate_negative_corpus.py \
-    --lm-model-path data/models/deepseek-coder-7b \
+    --lm-model-path data/models/deepseek-coder-7b-base \
     --dataset humaneval \
     --dataset-path data/datasets \
     --output data/negative_corpus.jsonl
@@ -323,6 +329,8 @@ report_path = pipeline.run()     # 返回 JSON 报告路径
 - `ExtractPipelineConfig` — pipeline 配置（input_file, output_dir）
 - `ExtractPipeline.run()` → JSON 报告路径（含 summary/per_sample 统计字段）
 - `ThresholdCalibrator.calibrate(corpus, fpr)` → 离线校准 FPR 阈值 M_r
+- `NegativeCorpusConfig` — 负样本生成配置（lm_model_path, output_path, dataset, limit 等）
+- `NegativeCorpusGenerator.run()` → 负样本 JSONL 路径（每行含 id/dataset/prompt/generated_code）
 
 ---
 
