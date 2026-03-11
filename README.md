@@ -232,6 +232,13 @@ python run.py --phase extract \
     --calibration-corpus data/negative_corpus.jsonl \
     --fpr 0.01
 
+# 生成负样本语料（用同一 LLM 直接生成，不加水印）
+python scripts/generate_negative_corpus.py \
+    --lm-model-path data/models/deepseek-coder-7b \
+    --dataset humaneval \
+    --dataset-path data/datasets \
+    --output data/negative_corpus.jsonl
+
 # 强制重跑某阶段（忽略已完成标记）
 python run.py --phase encoder --force
 
