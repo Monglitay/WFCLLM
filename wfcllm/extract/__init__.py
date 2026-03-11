@@ -1,5 +1,6 @@
 """Watermark extraction and verification module."""
 
+from wfcllm.extract.calibrator import ThresholdCalibrator
 from wfcllm.extract.config import BlockScore, DetectionResult, ExtractConfig
 from wfcllm.extract.detector import WatermarkDetector
 from wfcllm.extract.dp_selector import DPSelector
@@ -14,6 +15,7 @@ __all__ = [
     "BlockScorer",
     "DPSelector",
     "HypothesisTester",
+    "ThresholdCalibrator",
 ]
 
 from wfcllm.extract.pipeline import ExtractPipeline, ExtractPipelineConfig
