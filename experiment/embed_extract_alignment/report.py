@@ -9,7 +9,7 @@ from experiment.embed_extract_alignment.models import PromptReport, SummaryRepor
 
 
 def print_prompt_summary(report: PromptReport) -> None:
-    """Print one-line + detail summary for a single prompt."""
+    """Print 3-line summary for a single prompt."""
     print(
         f"[{report.prompt_id}] "
         f"embed={report.embed_total} "
@@ -39,7 +39,7 @@ def print_summary(summary: SummaryReport) -> None:
     print("SUMMARY")
     print("=" * 60)
     print(f"  prompts:           {summary.n_prompts}")
-    print(f"  total_embed_events:{summary.total_embed_events}")
+    print(f"  total_embed_events: {summary.total_embed_events}")
     print(f"  compound_events:   {summary.compound_only_events} ({summary.compound_ratio:.1%})")
     print(f"  text_mismatch:     {summary.text_mismatch_total}")
     print(f"  parent_mismatch:   {summary.parent_mismatch_total}")
