@@ -1,7 +1,7 @@
 """Data structures for embed-extract alignment diagnostics."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
 from wfcllm.common.ast_parser import StatementBlock
