@@ -63,7 +63,6 @@ class DiagnosticGenerator(WatermarkGenerator):
 
             if event.block_type == "compound":
                 cascade_mgr.on_compound_block_start(ctx, event)
-                self._diag_try_passive_fallback(ctx, event, stats, pending_fallbacks)
                 continue
 
             # ── Simple block ──────────────────────────────────────────────
@@ -130,33 +129,6 @@ class DiagnosticGenerator(WatermarkGenerator):
                     self._diag_try_cascade(ctx, cascade_mgr, retry_loop, stats, pending_fallbacks)
 
         return GenerateResult(code=ctx.generated_text, stats=stats)
-
-    def _diag_try_passive_fallback(self, ctx, event, stats, pending_fallbacks) -> None:
-        """Passive fallback with EmbedEvent recording (points 4 & 5)."""
-        if not self._config.enable_fallback or not pending_fallbacks:
-            return
-
-        stats.total_blocks += 1
-        block_entropy = self._entropy_est.estimate_block_entropy(event.block_text)
-        margin = self._entropy_est.compute_margin(block_entropy, self._config)
-        valid_set = self._keying.derive(event.parent_node_type or "module")
-        result = self._verifier.verify(event.block_text, valid_set, margin)
-
-        # Recording point 4 (passed) or 5 (failed)
-        self.embed_events.append(EmbedEvent(
-            path="fallback",
-            block_text=event.block_text,
-            parent_node_type=event.parent_node_type or "module",
-            node_type=event.node_type,
-            passed=result.passed,
-        ))
-
-        if result.passed:
-            stats.fallback_blocks += 1
-            pending_fallbacks.clear()
-            logger.debug("[FALLBACK OK] compound node=%s", event.node_type)
-        else:
-            logger.debug("[FALLBACK MISS] compound node=%s", event.node_type)
 
     def _diag_try_cascade(self, ctx, cascade_mgr, retry_loop, stats, pending_fallbacks) -> None:
         """Cascade regeneration with EmbedEvent recording (point 6).

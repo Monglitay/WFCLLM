@@ -224,3 +224,12 @@ def test_summary_counts_are_consistent():
     assert report.embed_fallback_passed == 1
     assert report.embed_fallback_failed == 1
     assert report.embed_compound_total == 2
+
+
+class TestDiagnosticGeneratorNoFallback:
+    def test_no_diag_try_passive_fallback(self):
+        """DiagnosticGenerator 不应有 _diag_try_passive_fallback 方法。"""
+        from experiment.embed_extract_alignment.diagnostic_generator import DiagnosticGenerator
+        assert not hasattr(DiagnosticGenerator, "_diag_try_passive_fallback"), (
+            "DiagnosticGenerator._diag_try_passive_fallback 应已删除（与主系统对齐）"
+        )
