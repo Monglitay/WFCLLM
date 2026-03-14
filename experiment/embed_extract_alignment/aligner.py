@@ -133,7 +133,7 @@ class Aligner:
         detect_z_score: float,
         detect_is_watermarked: bool,
     ) -> PromptReport:
-        def count(path, passed):
+        def count(path: str, passed: bool) -> int:
             return sum(1 for e in embed_events if e.path == path and e.passed == passed)
 
         compound_total = sum(1 for e in embed_events if e.path in ("fallback", "cascade"))
