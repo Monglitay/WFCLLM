@@ -85,7 +85,7 @@ class DiagnosticGenerator(WatermarkGenerator):
 
             block_cp = ctx.last_block_checkpoint
             if block_cp is None:
-                # Recording point 3: failed, no checkpoint for retry
+                # Recording point 3a: failed, no checkpoint (cascade not possible)
                 stats.failed_blocks += 1
                 pending_fallbacks.append(event.block_text)
                 self.embed_events.append(EmbedEvent(
@@ -113,7 +113,7 @@ class DiagnosticGenerator(WatermarkGenerator):
                 ))
                 logger.debug("[RETRY OK] block #%d", stats.total_blocks)
             else:
-                # Recording point 3: retry exhausted
+                # Recording point 3b: retry exhausted (cascade may follow)
                 stats.failed_blocks += 1
                 pending_fallbacks.append(event.block_text)
                 cascade_mgr.on_simple_block_failed(event.block_text)
