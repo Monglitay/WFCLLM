@@ -14,7 +14,7 @@ import sys
 from datetime import datetime
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, T5EncoderModel
+from transformers import AutoModelForCausalLM, AutoTokenizer, RobertaTokenizer, T5EncoderModel
 
 from wfcllm.common.ast_parser import extract_statement_blocks
 from wfcllm.common.dataset_loader import load_prompts
@@ -45,10 +45,9 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def load_encoder(encoder_path: str, device: str):
+def load_encoder(encoder_path: str, device: str) -> tuple[T5EncoderModel, RobertaTokenizer]:
     """Load T5EncoderModel in eval mode."""
     encoder = T5EncoderModel.from_pretrained(encoder_path).to(device).eval()
-    from transformers import RobertaTokenizer
     tokenizer = RobertaTokenizer.from_pretrained(encoder_path)
     return encoder, tokenizer
 
