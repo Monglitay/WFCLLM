@@ -178,7 +178,7 @@ class TestEmbedExtractTextAlignment:
         from wfcllm.watermark.interceptor import StatementInterceptor
         from wfcllm.common.ast_parser import extract_statement_blocks
 
-        code = "x = 1\ny = x + 2\nreturn y\n"
+        code = "x = 1\ny = x + 2\nz = y + 3\n"
         ic = StatementInterceptor()
         events = []
         for ch in code:
@@ -248,4 +248,8 @@ class TestEmbedExtractTextAlignment:
 
         assert len(events) == len(simple_blocks)
         for ev, blk in zip(events, simple_blocks):
-            assert ev.block_text.strip() == blk.source.strip()
+            assert ev.block_text.strip() == blk.source.strip(), (
+                f"嵌入端与提取端文本不一致！\n"
+                f"interceptor: {ev.block_text!r}\n"
+                f"ast_parser:  {blk.source!r}"
+            )

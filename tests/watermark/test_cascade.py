@@ -243,7 +243,6 @@ class TestCascadeTextConsistency:
         from wfcllm.common.ast_parser import extract_statement_blocks
 
         ic = StatementInterceptor()
-        cp = ic.checkpoint()
 
         # 模拟 _try_cascade 触发：停在第一个 compound event 处
         code = "for i in range(n):\n    x = i\n"
