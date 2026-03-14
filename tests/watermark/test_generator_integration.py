@@ -164,3 +164,88 @@ class TestRegressionOpenCountTruncation:
             assert "_count" != block, f"Got truncated block: {block!r}"
             # The important thing is that a complete statement was detected
             assert "=" in block, f"Expected assignment but got {block!r}"
+
+
+class TestEmbedExtractTextAlignment:
+    """集成测试：嵌入端 interceptor 捕获的文本与提取端 ast_parser 结果一致。
+
+    核心不变量：embed 端和 extract 端对同一段代码的 simple block 文本必须相同，
+    否则 LSH 签名不同，水印无法被检测。
+    """
+
+    def test_simple_block_text_matches_ast_parser(self):
+        """interceptor 捕获的 simple block 文本与 ast_parser 结果一致。"""
+        from wfcllm.watermark.interceptor import StatementInterceptor
+        from wfcllm.common.ast_parser import extract_statement_blocks
+
+        code = "x = 1\ny = x + 2\nreturn y\n"
+        ic = StatementInterceptor()
+        events = []
+        for ch in code:
+            ev = ic.feed_token(ch)
+            if ev is not None and ev.block_type == "simple":
+                events.append(ev)
+
+        all_blocks = extract_statement_blocks(code)
+        simple_blocks = [b for b in all_blocks if b.block_type == "simple"]
+
+        assert len(events) == len(simple_blocks), (
+            f"interceptor: {[e.block_text for e in events]}\n"
+            f"ast_parser:  {[b.source for b in simple_blocks]}"
+        )
+        for ev, blk in zip(events, simple_blocks):
+            assert ev.block_text.strip() == blk.source.strip(), (
+                f"文本不一致!\ninterceptor: {ev.block_text!r}\nast_parser:  {blk.source!r}"
+            )
+
+    def test_simple_block_parent_type_matches_ast_parser(self):
+        """interceptor 推断的 parent_node_type 与 ast_parser 解析 parent 一致。"""
+        from wfcllm.watermark.interceptor import StatementInterceptor
+        from wfcllm.common.ast_parser import extract_statement_blocks
+
+        code = "for i in range(n):\n    x = i\n"
+        ic = StatementInterceptor()
+        events = []
+        for ch in code:
+            ev = ic.feed_token(ch)
+            if ev is not None and ev.block_type == "simple":
+                events.append(ev)
+
+        all_blocks = extract_statement_blocks(code)
+        block_by_id = {b.block_id: b for b in all_blocks}
+        simple_blocks = [b for b in all_blocks if b.block_type == "simple"]
+
+        assert len(events) == len(simple_blocks)
+        for ev, blk in zip(events, simple_blocks):
+            expected = block_by_id[blk.parent_id].node_type if blk.parent_id else "module"
+            assert ev.parent_node_type == expected, (
+                f"parent_node_type 不一致!\n"
+                f"interceptor: {ev.parent_node_type!r}\n"
+                f"ast_parser:  {expected!r}"
+            )
+
+    def test_after_cascade_rollback_simple_blocks_match_ast(self):
+        """cascade rollback 后重新生成，simple block 文本与最终代码 AST 严格一致。"""
+        from wfcllm.watermark.interceptor import StatementInterceptor
+        from wfcllm.common.ast_parser import extract_statement_blocks
+
+        ic = StatementInterceptor()
+        cp = ic.checkpoint()
+
+        for ch in "for i in range(n):\n    x = old\n":
+            ic.feed_token(ch)
+        ic.rollback(cp)
+
+        final_code = "for i in range(n):\n    x = new\n    y = i\n"
+        events = []
+        for ch in final_code:
+            ev = ic.feed_token(ch)
+            if ev is not None and ev.block_type == "simple":
+                events.append(ev)
+
+        all_blocks = extract_statement_blocks(final_code)
+        simple_blocks = [b for b in all_blocks if b.block_type == "simple"]
+
+        assert len(events) == len(simple_blocks)
+        for ev, blk in zip(events, simple_blocks):
+            assert ev.block_text.strip() == blk.source.strip()

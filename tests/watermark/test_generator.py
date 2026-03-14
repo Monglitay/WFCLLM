@@ -115,3 +115,39 @@ class TestStructuralTokenFiltering:
         )
         assert 10 in gen._structural_token_ids
         assert 11 in gen._structural_token_ids
+
+
+class TestFallbackDeprecated:
+    """passive fallback 已废弃：generator 不应再有 _try_passive_fallback。"""
+
+    def test_generator_has_no_try_passive_fallback(self):
+        """废弃后 WatermarkGenerator 实例不应存在 _try_passive_fallback 方法。"""
+        import torch
+        from unittest.mock import MagicMock
+        from wfcllm.watermark.generator import WatermarkGenerator
+        from wfcllm.watermark.config import WatermarkConfig
+        config = WatermarkConfig(secret_key="k", encoder_device="cpu")
+        model = MagicMock()
+        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+        tokenizer = MagicMock()
+        tokenizer.encode = MagicMock(return_value=[1])
+        encoder = MagicMock()
+        enc_tok = MagicMock()
+        gen = WatermarkGenerator(model, tokenizer, encoder, enc_tok, config)
+        assert not hasattr(gen, "_try_passive_fallback"), (
+            "WatermarkGenerator._try_passive_fallback 应已删除"
+        )
+
+    def test_enable_fallback_field_removed_from_config(self):
+        """WatermarkConfig 不再有 enable_fallback 字段。"""
+        from wfcllm.watermark.config import WatermarkConfig
+        cfg = WatermarkConfig(secret_key="k")
+        assert not hasattr(cfg, "enable_fallback"), (
+            "WatermarkConfig.enable_fallback 已废弃，应已删除"
+        )
+
+    def test_enable_cascade_defaults_true(self):
+        """enable_cascade 默认值改为 True。"""
+        from wfcllm.watermark.config import WatermarkConfig
+        cfg = WatermarkConfig(secret_key="k")
+        assert cfg.enable_cascade is True
