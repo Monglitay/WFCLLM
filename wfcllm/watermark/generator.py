@@ -131,9 +131,6 @@ class WatermarkGenerator:
 
             if event.block_type == "compound":
                 cascade_mgr.on_compound_block_start(ctx, event)
-                self._try_passive_fallback(
-                    ctx, event, stats, pending_fallbacks
-                )
                 continue
 
             # Simple block
@@ -198,29 +195,6 @@ class WatermarkGenerator:
             event.block_text[:80],
         )
         return result
-
-    def _try_passive_fallback(self, ctx, event, stats, pending_fallbacks):
-        """Passive compound fallback: check if compound block passes."""
-        if not self._config.enable_fallback or not pending_fallbacks:
-            return
-        stats.total_blocks += 1
-        block_entropy = self._entropy_est.estimate_block_entropy(event.block_text)
-        margin = self._entropy_est.compute_margin(block_entropy, self._config)
-        valid_set = self._keying.derive(event.parent_node_type or "module")
-        result = self._verifier.verify(event.block_text, valid_set, margin)
-
-        logger.debug(
-            "[compound fallback] node=%s parent=%s entropy=%.4f margin_thresh=%.4f\n"
-            "  sig=%s in_valid=%s valid_set_size=%d min_margin=%.4f passed=%s",
-            event.node_type, event.parent_node_type,
-            block_entropy, margin,
-            result.lsh_signature,
-            result.lsh_signature in valid_set,
-            len(valid_set), result.min_margin, result.passed,
-        )
-        if result.passed:
-            stats.fallback_blocks += 1
-            pending_fallbacks.clear()
 
     def _try_cascade(self, ctx, cascade_mgr, retry_loop, stats, pending_fallbacks):
         """Active cascade: rollback to compound block start, re-generate and verify."""

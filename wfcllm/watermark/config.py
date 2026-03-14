@@ -31,9 +31,6 @@ class WatermarkConfig:
     max_new_tokens: int = 512
     eos_token_id: int | None = None
 
-    # Fallback
-    enable_fallback: bool = True
-
     # Repetition penalty for retry sub-loop
     repetition_penalty: float = 1.3  # 1.0 = disabled; applied to previous retry's tokens
 
@@ -42,7 +39,7 @@ class WatermarkConfig:
     lsh_gamma: float = 0.5
 
     # Cascade fallback (compound block re-generation)
-    enable_cascade: bool = False
+    enable_cascade: bool = True
     cascade_max_depth: int = 1
 
     # Memory management

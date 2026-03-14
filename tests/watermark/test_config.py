@@ -32,7 +32,6 @@ class TestWatermarkConfig:
         cfg = WatermarkConfig(secret_key="k")
         assert cfg.max_new_tokens == 512
         assert cfg.eos_token_id is None
-        assert cfg.enable_fallback is True
 
     def test_custom_values(self):
         cfg = WatermarkConfig(
@@ -65,7 +64,7 @@ def test_lsh_defaults():
 def test_cascade_config_defaults():
     """New cascade fields have correct defaults."""
     cfg = WatermarkConfig(secret_key="k")
-    assert cfg.enable_cascade is False
+    assert cfg.enable_cascade is True
     assert cfg.cascade_max_depth == 1
     assert cfg.cuda_empty_cache_interval == 10
     assert cfg.retry_token_budget is None
