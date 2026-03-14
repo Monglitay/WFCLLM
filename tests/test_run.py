@@ -134,3 +134,26 @@ class TestCLI:
             capture_output=True, text=True,
         )
         assert result.returncode != 0
+
+
+class TestRunWatermarkConfigNoFallback:
+    def test_run_watermark_no_enable_fallback(self):
+        """run.py 构建 WatermarkConfig 不传 enable_fallback（已废弃）。"""
+        import ast
+        from pathlib import Path
+        source = Path("run.py").read_text()
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.keyword) and node.arg == "enable_fallback":
+                raise AssertionError("run.py 仍传递了已废弃的 enable_fallback 参数")
+
+    def test_run_watermark_has_enable_cascade(self):
+        """run.py 构建 WatermarkConfig 传递 enable_cascade。"""
+        import ast
+        from pathlib import Path
+        source = Path("run.py").read_text()
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.keyword) and node.arg == "enable_cascade":
+                return
+        raise AssertionError("run.py 应传递 enable_cascade 参数给 WatermarkConfig")

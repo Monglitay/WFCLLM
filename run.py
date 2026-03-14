@@ -426,8 +426,8 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
         top_k=wm_cfg.get("top_k", 50),
         max_new_tokens=wm_cfg.get("max_new_tokens", 512),
         eos_token_id=wm_cfg.get("eos_token_id"),
-        # TODO(task10): replace enable_fallback with enable_cascade/cascade_max_depth
-        enable_fallback=wm_cfg.get("enable_fallback", True),
+        enable_cascade=wm_cfg.get("enable_cascade", True),
+        cascade_max_depth=wm_cfg.get("cascade_max_depth", 1),
         repetition_penalty=wm_cfg.get("repetition_penalty", 1.3),
         lsh_d=wm_cfg.get("lsh_d", 3),
         lsh_gamma=wm_cfg.get("lsh_gamma", 0.5),

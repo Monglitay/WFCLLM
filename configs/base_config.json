@@ -42,7 +42,8 @@
     "top_k": 50,
     "max_new_tokens": 512,
     "eos_token_id": null,
-    "enable_fallback": true,
+    "enable_cascade": true,
+    "cascade_max_depth": 1,
     "repetition_penalty": 1.05,
     "lsh_d": 4,
     "lsh_gamma": 0.75

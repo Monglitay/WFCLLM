@@ -52,3 +52,21 @@ def test_parser_custom_config():
     parser = build_parser()
     args = parser.parse_args(["--config", "configs/my.json"])
     assert args.config == Path("configs/my.json")
+
+
+class TestBaseConfigFallbackCascade:
+    def test_no_enable_fallback_in_watermark_config(self):
+        """base_config.json watermark 节不应有 enable_fallback 字段（已废弃）。"""
+        import json
+        from pathlib import Path
+        cfg = json.loads(Path("configs/base_config.json").read_text())
+        assert "enable_fallback" not in cfg.get("watermark", {}), (
+            "base_config.json 的 watermark 节不应再有 enable_fallback"
+        )
+
+    def test_enable_cascade_true_in_watermark_config(self):
+        """base_config.json watermark 节的 enable_cascade 应为 true。"""
+        import json
+        from pathlib import Path
+        cfg = json.loads(Path("configs/base_config.json").read_text())
+        assert cfg.get("watermark", {}).get("enable_cascade") is True
