@@ -18,6 +18,7 @@ try:
 except ImportError:
     _HAS_STATSMODELS = False
 
+from wfcllm.common.checkpoint import load_processed_ids, resolve_resume_path
 from wfcllm.extract.detector import WatermarkDetector
 
 
@@ -27,6 +28,7 @@ class ExtractPipelineConfig:
 
     input_file: str     # Path to input JSONL produced by WatermarkPipeline
     output_dir: str     # Directory for report JSON output
+    resume: str | None = None
 
 
 class ExtractPipeline:
@@ -36,56 +38,50 @@ class ExtractPipeline:
         self._detector = detector
         self._config = config
 
-    def run(self) -> str:
-        """Run batch extraction. Returns path to output report JSON."""
-        records = self._load_jsonl()
-        total = len(records)
+    @staticmethod
+    def summary_path_for_details(details_path: Path) -> Path:
+        base_stem = details_path.stem
+        if base_stem.endswith("_details"):
+            base_stem = base_stem[: -len("_details")]
+        return details_path.parent / f"{base_stem}_summary.json"
 
-        iterator = (
-            tqdm(records, desc="Extracting", unit="sample")
-            if tqdm is not None
-            else records
-        )
+    @staticmethod
+    def _build_embed_rate_map(records: list[dict]) -> dict[str, float]:
+        return {record["id"]: record.get("embed_rate", 0.0) for record in records}
 
-        per_sample = []
-        z_scores = []
-        p_values = []
-        block_counts = []
-        embed_rates = []
-
-        for item in iterator:
-            result = self._detector.detect(item["generated_code"])
-            per_sample.append({
-                "id": item["id"],
-                "is_watermarked": result.is_watermarked,
-                "z_score": result.z_score,
-                "p_value": result.p_value,
-                "independent_blocks": result.independent_blocks,
-                "hits": result.hit_blocks,
-            })
-            z_scores.append(result.z_score)
-            p_values.append(result.p_value)
-            block_counts.append(result.independent_blocks)
-            embed_rates.append(item.get("embed_rate", 0.0))
-
-            summary_line = (
-                f"  ✓ {item['id']} | "
-                f"z={result.z_score:.2f} | "
-                f"blocks={result.independent_blocks} | "
-                f"watermarked={result.is_watermarked}"
+    def _validate_resume_path(self, resume_path: Path) -> None:
+        expected_name = f"{Path(self._config.input_file).stem}_details.jsonl"
+        if resume_path.name != expected_name:
+            raise ValueError(
+                f"Resume file {resume_path.name} does not match input file {self._config.input_file}"
             )
-            print(summary_line, file=sys.stderr)
 
-        watermarked = sum(1 for s in per_sample if s["is_watermarked"])
-        watermark_rate = watermarked / total if total > 0 else 0.0
+    def _generate_summary(
+        self,
+        details_path: Path,
+        embed_rate_by_id: dict[str, float],
+    ) -> Path:
+        rows: list[dict] = []
+        with open(details_path, encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if line:
+                    rows.append(json.loads(line))
 
-        report = {
+        total = len(rows)
+        watermarked = sum(1 for row in rows if row["is_watermarked"])
+        z_scores = [row["z_score"] for row in rows]
+        p_values = [row["p_value"] for row in rows]
+        block_counts = [row["independent_blocks"] for row in rows]
+        embed_rates = [embed_rate_by_id.get(row["id"], 0.0) for row in rows]
+
+        summary = {
             "meta": {
                 "input_file": self._config.input_file,
                 "total_samples": total,
             },
             "summary": {
-                "watermark_rate": watermark_rate,
+                "watermark_rate": watermarked / total if total > 0 else 0.0,
                 "watermark_rate_ci_95": self._proportion_ci(watermarked, total),
                 "mean_z_score": _mean(z_scores),
                 "std_z_score": _std(z_scores),
@@ -93,17 +89,76 @@ class ExtractPipeline:
                 "mean_blocks": _mean(block_counts),
                 "embed_rate_distribution": _distribution_stats(embed_rates),
             },
-            "per_sample": per_sample,
         }
 
-        out_dir = Path(self._config.output_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        stem = Path(self._config.input_file).stem
-        out_path = out_dir / f"{stem}_report.json"
-        out_path.write_text(
-            json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+        summary_path = self.summary_path_for_details(details_path)
+        summary_path.write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2),
+            encoding="utf-8",
         )
-        return str(out_path)
+        return summary_path
+
+    def run(self) -> str:
+        """Run batch extraction. Returns path to output details JSONL."""
+        input_stem = Path(self._config.input_file).stem
+        out_dir = Path(self._config.output_dir)
+        resume_path, is_resume = resolve_resume_path(
+            self._config.resume,
+            out_dir,
+            default_pattern=f"{input_stem}_details.jsonl",
+        )
+
+        all_records = self._load_jsonl()
+        processed_ids: set[str] = set()
+        if is_resume and resume_path is not None:
+            self._validate_resume_path(resume_path)
+            processed_ids = load_processed_ids(resume_path)
+
+        records = [item for item in all_records if item["id"] not in processed_ids]
+
+        iterator = (
+            tqdm(records, desc="Extracting", unit="sample")
+            if tqdm is not None
+            else records
+        )
+
+        embed_rate_by_id = self._build_embed_rate_map(all_records)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        details_path = (
+            resume_path
+            if is_resume and resume_path is not None
+            else out_dir / f"{input_stem}_details.jsonl"
+        )
+        mode = "a" if is_resume and resume_path is not None else "w"
+
+        if not records:
+            self._generate_summary(details_path, embed_rate_by_id)
+            return str(details_path)
+
+        with open(details_path, mode, encoding="utf-8") as f:
+            for item in iterator:
+                result = self._detector.detect(item["generated_code"])
+                row = {
+                    "id": item["id"],
+                    "is_watermarked": result.is_watermarked,
+                    "z_score": result.z_score,
+                    "p_value": result.p_value,
+                    "independent_blocks": result.independent_blocks,
+                    "hits": result.hit_blocks,
+                }
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+                f.flush()
+
+                summary_line = (
+                    f"  ✓ {item['id']} | "
+                    f"z={result.z_score:.2f} | "
+                    f"blocks={result.independent_blocks} | "
+                    f"watermarked={result.is_watermarked}"
+                )
+                print(summary_line, file=sys.stderr)
+
+        self._generate_summary(details_path, embed_rate_by_id)
+        return str(details_path)
 
     def _load_jsonl(self) -> list[dict]:
         path = Path(self._config.input_file)
