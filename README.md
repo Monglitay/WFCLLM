@@ -217,7 +217,14 @@ python run.py --phase watermark \
     --secret-key mysecret \
     --dataset mbpp
 
-# 阶段三：检测水印 JSONL，输出统计报告（自动读取阶段二输出路径）
+# 阶段二：恢复最新 watermark 输出
+python run.py --phase watermark \
+    --lm-model-path data/models/deepseek-coder-7b \
+    --secret-key mysecret \
+    --dataset humaneval \
+    --resume latest
+
+# 阶段三：检测水印 JSONL，输出 details + summary（自动读取阶段二输出路径）
 python run.py --phase extract \
     --secret-key mysecret
 
@@ -226,6 +233,12 @@ python run.py --phase extract \
     --secret-key mysecret \
     --input-file data/watermarked/humaneval_20260309_120000.jsonl \
     --extract-output-dir data/results
+
+# 阶段三：恢复最新 extract details 文件
+python run.py --phase extract \
+    --secret-key mysecret \
+    --input-file data/watermarked/humaneval_20260318_120000.jsonl \
+    --resume latest
 
 # 阶段三（先用负样本语料自动校准 FPR 阈值 M_r，再检测）
 # 负样本语料：同一 LLM 直接生成（未经水印注入）的代码 JSONL，字段同阶段二输出
@@ -288,6 +301,7 @@ pipeline_config = WatermarkPipelineConfig(
     dataset="humaneval",          # "humaneval" 或 "mbpp"
     output_dir="data/watermarked",
     dataset_path="data/datasets",
+    resume=None,                  # 可选：None / "latest" / 既有 JSONL 路径
 )
 pipeline = WatermarkPipeline(generator=generator, config=pipeline_config)
 output_path = pipeline.run()     # 返回 JSONL 文件路径
@@ -299,7 +313,7 @@ output_path = pipeline.run()     # 返回 JSONL 文件路径
   passive fallback（compound 中间态验证）已废弃，cascade（`enable_cascade=True`，默认启用）
   是唯一的 compound block 兜底路径
 - `WatermarkGenerator.generate(prompt)` → `GenerateResult`
-- `WatermarkPipelineConfig` — pipeline 配置（dataset, output_dir, dataset_path）
+- `WatermarkPipelineConfig` — pipeline 配置（dataset, output_dir, dataset_path, resume）
 - `WatermarkPipeline.run()` → JSONL 路径（每行含 id/prompt/generated_code/embed_rate 等字段）
 
 **水印嵌入机制：**
@@ -328,9 +342,10 @@ print(result.is_watermarked, result.z_score)
 pipeline_config = ExtractPipelineConfig(
     input_file="data/watermarked/humaneval_20260309_120000.jsonl",
     output_dir="data/results",
+    resume=None,                  # 可选：None / "latest" / 既有 details JSONL 路径
 )
 pipeline = ExtractPipeline(detector=detector, config=pipeline_config)
-report_path = pipeline.run()     # 返回 JSON 报告路径
+details_path = pipeline.run()    # 返回 details JSONL 路径
 
 # 离线校准 FPR 阈值（负样本语料）
 # calibrator = ThresholdCalibrator(scorer, gamma=0.5)
@@ -341,8 +356,10 @@ report_path = pipeline.run()     # 返回 JSON 报告路径
 关键 API：
 - `ExtractConfig` — 提取参数（secret_key, fpr_threshold, embed_dim, lsh_d, lsh_gamma）
 - `WatermarkDetector.detect(code)` → `DetectionResult`
-- `ExtractPipelineConfig` — pipeline 配置（input_file, output_dir）
-- `ExtractPipeline.run()` → JSON 报告路径（含 summary/per_sample 统计字段）
+- `ExtractPipelineConfig` — pipeline 配置（input_file, output_dir, resume）
+- `ExtractPipeline.run()` → `*_details.jsonl` 路径
+- `data/results/<stem>_details.jsonl` — 每样本一行，支持断点恢复
+- `data/results/<stem>_summary.json` — 基于 details 全量重建的统计摘要
 - `ThresholdCalibrator.calibrate(corpus, fpr)` → 离线校准 FPR 阈值 M_r
 - `NegativeCorpusConfig` — 负样本生成配置（lm_model_path, output_path, dataset, limit 等）
 - `NegativeCorpusGenerator.run()` → 负样本 JSONL 路径（每行含 id/dataset/prompt/generated_code）

@@ -1,4 +1,5 @@
 import argparse
+import ast
 import json
 import sys
 from pathlib import Path
@@ -109,6 +110,12 @@ class TestRunGenerateNegative:
 
 
 class TestCLI:
+    def test_build_parser_parses_resume_argument(self):
+        from run import build_parser
+
+        args = build_parser().parse_args(["--phase", "extract", "--resume", "latest"])
+        assert args.resume == "latest"
+
     def test_status_exits_zero(self):
         result = subprocess.run(
             ["conda", "run", "-n", "WFCLLM", "python", "run.py", "--status"],
@@ -137,10 +144,16 @@ class TestCLI:
 
 
 class TestRunWatermarkConfigNoFallback:
+    def _find_keyword_call(self, source_path: str, call_name: str, keyword_name: str) -> bool:
+        tree = ast.parse(Path(source_path).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", None) == call_name:
+                if any(keyword.arg == keyword_name for keyword in node.keywords):
+                    return True
+        return False
+
     def test_run_watermark_no_enable_fallback(self):
         """run.py 构建 WatermarkConfig 不传 enable_fallback（已废弃）。"""
-        import ast
-        from pathlib import Path
         source = Path("run.py").read_text()
         tree = ast.parse(source)
         for node in ast.walk(tree):
@@ -149,11 +162,27 @@ class TestRunWatermarkConfigNoFallback:
 
     def test_run_watermark_has_enable_cascade(self):
         """run.py 构建 WatermarkConfig 传递 enable_cascade。"""
-        import ast
-        from pathlib import Path
         source = Path("run.py").read_text()
         tree = ast.parse(source)
         for node in ast.walk(tree):
             if isinstance(node, ast.keyword) and node.arg == "enable_cascade":
                 return
         raise AssertionError("run.py 应传递 enable_cascade 参数给 WatermarkConfig")
+
+    def test_run_watermark_pipeline_config_receives_resume(self):
+        assert self._find_keyword_call("run.py", "WatermarkPipelineConfig", "resume")
+
+    def test_run_extract_pipeline_config_receives_resume(self):
+        assert self._find_keyword_call("run.py", "ExtractPipelineConfig", "resume")
+
+    def test_run_extract_marks_summary_file_in_state(self):
+        tree = ast.parse(Path("run.py").read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "mark_done":
+                if node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == "extract":
+                    keywords = {keyword.arg for keyword in node.keywords}
+                    assert "details_file" in keywords
+                    assert "summary_file" in keywords
+                    assert "report_file" not in keywords
+                    return
+        raise AssertionError("run.py should mark extract state with details_file and summary_file")
