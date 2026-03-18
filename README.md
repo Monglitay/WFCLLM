@@ -19,7 +19,7 @@
 阶段二：生成时水印嵌入
   LLM + 编码器 E → 实时 AST 拦截（simple block）→ 节点熵 → LSH 超平面派生有效区域集 G
   → LSH 签名检验（sign ∈ G 且 min_margin > γ）→ 拒绝采样回滚
-  → 失败超限 → cascade：回滚至 compound block 起始，重生成内部 simple blocks
+  → 失败超限 → cascade：回滚至 compound block 起始并恢复主循环，后续重新生成的内部 simple blocks 再次独立验证
   → 含水印代码（嵌入端与提取端均基于最终代码的 AST simple blocks，文本严格一致）
          ↓
 阶段三：提取与验证
@@ -322,7 +322,7 @@ output_path = pipeline.run()     # 返回 JSONL 文件路径
 - 每个 simple block 完成后，用编码器计算 LSH 签名，检验是否落入有效区域集 G
   （由 `secret_key + parent_node_type` 派生，parent_node_type 由生成时 AST 解析确定）
 - 签名未通过：回滚该 block 的生成起点，重试最多 `max_retries` 次
-- 仍未通过：cascade —— 回滚至外层 compound block 起始，重新生成，内部 simple blocks 再次独立验证
+- 仍未通过：cascade —— 回滚至外层 compound block 起始，恢复主循环；后续重新生成的内部 simple blocks 再次独立验证
 - **关键不变量**：提取端只需代码 + 密钥，节点信息由 AST 解析器独立提取；
   嵌入端和提取端对同一 simple block 使用完全相同的文本，LSH 签名天然对齐
 
