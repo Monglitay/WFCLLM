@@ -3,7 +3,7 @@
 流程概述：
     阶段一（encoder）  — 对比学习预训练鲁棒语义编码器
     阶段二（watermark）— 遍历 HumanEval/MBPP 数据集，批量生成含水印代码并输出 JSONL
-    阶段三（extract）  — 读取水印 JSONL，批量检测并输出研究级统计报告 JSON
+    阶段三（extract）  — 读取水印 JSONL，批量检测并输出 details JSONL + summary JSON
 
 用法示例：
     python run.py                          # 全流程（自动跳过已完成阶段）
@@ -18,10 +18,23 @@
         --secret-key mysecret \\
         --dataset humaneval
 
-    # 阶段三：检测水印 JSONL，输出统计报告
+    # 阶段三：检测水印 JSONL，输出 details JSONL + 统计摘要
     python run.py --phase extract \\
         --secret-key mysecret \\
         --input-file data/watermarked/humaneval_20260309_120000.jsonl
+
+    # 阶段二：恢复最新 watermark 输出
+    python run.py --phase watermark \\
+        --lm-model-path data/models/deepseek-coder-7b \\
+        --secret-key mysecret \\
+        --dataset humaneval \\
+        --resume latest
+
+    # 阶段三：恢复最新 extract details 文件
+    python run.py --phase extract \\
+        --secret-key mysecret \\
+        --input-file data/watermarked/humaneval_20260318_120000.jsonl \\
+        --resume latest
 
     # 阶段三（先用负样本语料自动校准 FPR 阈值，再检测）
     python run.py --phase extract \\
@@ -134,6 +147,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         help="强制重跑指定阶段（忽略已完成标记）",
+    )
+    parser.add_argument(
+        "--resume",
+        default=None,
+        help="样本级断点恢复：latest 或已有 JSONL 文件路径（仅 watermark/extract 阶段有效）",
     )
     parser.add_argument(
         "--eval-only",
@@ -434,10 +452,13 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
     )
     generator = WatermarkGenerator(lm_model, lm_tokenizer, encoder, encoder_tokenizer, wm_config)
 
+    resume = args.resume if args.resume is not None else wm_cfg.get("resume")
+
     pipeline_config = WatermarkPipelineConfig(
         dataset=dataset,
         output_dir=output_dir,
         dataset_path=dataset_path,
+        resume=resume,
     )
     pipeline = WatermarkPipeline(generator=generator, config=pipeline_config)
 
@@ -456,11 +477,7 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
     """阶段三：批量检测水印（基于 JSONL 水印数据集）。
 
     读取阶段二输出的 JSONL 文件，对每条记录调用 WatermarkDetector.detect()，
-    汇总统计指标并输出 JSON 报告，字段包括：
-        meta:       total_samples, input_file
-        summary:    watermark_rate, watermark_rate_ci_95, mean_z_score,
-                    std_z_score, mean_p_value, mean_blocks, embed_rate_distribution
-        per_sample: id, is_watermarked, z_score, p_value, independent_blocks, hits
+    产出 details JSONL，并基于其重建 summary JSON。
     """
     import torch
     from transformers import AutoTokenizer
@@ -496,6 +513,7 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
     output_dir = args.extract_output_dir or ext_cfg.get("output_dir", "data/results")
     embed_dim = args.embed_dim or ext_cfg.get("embed_dim", 128)
     fpr_threshold = args.fpr_threshold or ext_cfg.get("fpr_threshold", 3.0)
+    resume = args.resume if args.resume is not None else ext_cfg.get("resume")
 
     # 加载编码器：优先 best_model.pt，回退 checkpoint
     enc_config = EncoderConfig(embed_dim=embed_dim)
@@ -574,29 +592,32 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
     pipeline_config = ExtractPipelineConfig(
         input_file=input_file,
         output_dir=output_dir,
+        resume=resume,
     )
     pipeline = ExtractPipeline(detector=detector, config=pipeline_config)
 
     try:
-        report_path = pipeline.run()
+        details_path = pipeline.run()
     except Exception as e:
         print(f"[错误] 检测失败：{e}", file=sys.stderr)
         return 1
 
     import json as _json
-    report = _json.loads(Path(report_path).read_text(encoding="utf-8"))
-    summary = report["summary"]
+    summary_path = ExtractPipeline.summary_path_for_details(Path(details_path))
+    summary_doc = _json.loads(summary_path.read_text(encoding="utf-8"))
+    summary = summary_doc["summary"]
     print(f"\n=== 检测结果摘要 ===")
-    print(f"  样本总数:     {report['meta']['total_samples']}")
+    print(f"  样本总数:     {summary_doc['meta']['total_samples']}")
     print(f"  水印检测率:   {summary['watermark_rate']:.1%}  "
           f"95% CI [{summary['watermark_rate_ci_95'][0]:.3f}, {summary['watermark_rate_ci_95'][1]:.3f}]")
     print(f"  平均 Z 分数:  {summary['mean_z_score']:.4f} ± {summary['std_z_score']:.4f}")
     print(f"  平均 p 值:    {summary['mean_p_value']:.6f}")
-    print(f"  报告已保存至: {report_path}")
+    print(f"  报告已保存至: {summary_path}")
 
     state.mark_done(
         "extract",
-        report_file=report_path,
+        details_file=details_path,
+        summary_file=str(summary_path),
         watermark_rate=summary["watermark_rate"],
     )
     return 0

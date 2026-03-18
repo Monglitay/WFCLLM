@@ -31,6 +31,7 @@
     "dataset": "humaneval",
     "dataset_path": "data/datasets",
     "output_dir": "data/watermarked",
+    "resume": null,
     "encoder_model_path": "data/models/encoder",
     "encoder_embed_dim": 128,
     "encoder_device": "cuda",
@@ -57,7 +58,8 @@
     "calibration_corpus":"data/negative_corpus.jsonl",
     "fpr": 0.05,
     "input_file": "data/watermarked/humaneval_20260310_223459.jsonl",
-    "output_dir": "data/results"
+    "output_dir": "data/results",
+    "resume": null
   },
   "generate_negative": {
     "lm_model_path": "data/models/deepseek-coder-7b-base",

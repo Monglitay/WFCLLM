@@ -21,6 +21,7 @@ class TestExtractPipelineConfig:
         )
         assert cfg.input_file == "data/watermarked/humaneval_20260309.jsonl"
         assert cfg.output_dir == "data/results"
+        assert cfg.resume is None
 
 
 def _make_detection_result(is_watermarked: bool, z_score: float) -> DetectionResult:
@@ -57,7 +58,7 @@ class TestExtractPipelineStatistics:
         path.write_text("\n".join(json.dumps(r) for r in records))
         return str(path)
 
-    def test_run_creates_report_json(self):
+    def test_run_creates_details_and_summary_files(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             jsonl_path = self._make_jsonl(tmpdir, n=4)
             cfg = ExtractPipelineConfig(
@@ -74,38 +75,44 @@ class TestExtractPipelineStatistics:
             ]
 
             pipeline = ExtractPipeline(detector=detector, config=cfg)
-            report_path = pipeline.run()
+            details_path = pipeline.run()
+            details = Path(details_path)
+            summary = details.parent / "test_summary.json"
 
-            assert Path(report_path).exists()
-            assert report_path.endswith("_report.json")
+            assert details.exists()
+            assert details.name == "test_details.jsonl"
+            assert summary.exists()
 
-            report = json.loads(Path(report_path).read_text())
+            detail_rows = [
+                json.loads(line)
+                for line in details.read_text(encoding="utf-8").splitlines()
+            ]
+            summary_doc = json.loads(summary.read_text(encoding="utf-8"))
 
             # meta
-            assert report["meta"]["total_samples"] == 4
-            assert report["meta"]["input_file"] == jsonl_path
+            assert summary_doc["meta"]["total_samples"] == 4
+            assert summary_doc["meta"]["input_file"] == jsonl_path
 
             # summary
-            assert abs(report["summary"]["watermark_rate"] - 0.75) < 1e-6
-            assert len(report["summary"]["watermark_rate_ci_95"]) == 2
-            assert report["summary"]["mean_z_score"] == pytest.approx(
+            assert abs(summary_doc["summary"]["watermark_rate"] - 0.75) < 1e-6
+            assert len(summary_doc["summary"]["watermark_rate_ci_95"]) == 2
+            assert summary_doc["summary"]["mean_z_score"] == pytest.approx(
                 (4.5 + 3.8 + 5.1 + 1.2) / 4, abs=1e-4
             )
-            assert "std_z_score" in report["summary"]
-            assert "mean_p_value" in report["summary"]
-            assert "mean_blocks" in report["summary"]
-            assert "embed_rate_distribution" in report["summary"]
+            assert "std_z_score" in summary_doc["summary"]
+            assert "mean_p_value" in summary_doc["summary"]
+            assert "mean_blocks" in summary_doc["summary"]
+            assert "embed_rate_distribution" in summary_doc["summary"]
 
-            dist = report["summary"]["embed_rate_distribution"]
+            dist = summary_doc["summary"]["embed_rate_distribution"]
             assert "mean" in dist
             assert "std" in dist
             assert "p25" in dist
             assert "p50" in dist
             assert "p75" in dist
 
-            # per_sample
-            assert len(report["per_sample"]) == 4
-            first = report["per_sample"][0]
+            assert len(detail_rows) == 4
+            first = detail_rows[0]
             assert first["id"] == "HumanEval/0"
             assert first["is_watermarked"] is True
             assert "z_score" in first
@@ -123,7 +130,8 @@ class TestExtractPipelineStatistics:
                 _make_detection_result(i % 2 == 0, float(i)) for i in range(10)
             ]
             pipeline = ExtractPipeline(detector=detector, config=cfg)
-            report_path = pipeline.run()
-            report = json.loads(Path(report_path).read_text())
-            lo, hi = report["summary"]["watermark_rate_ci_95"]
+            details_path = pipeline.run()
+            summary_path = Path(details_path).parent / "test_summary.json"
+            summary_doc = json.loads(summary_path.read_text())
+            lo, hi = summary_doc["summary"]["watermark_rate_ci_95"]
             assert lo <= hi
