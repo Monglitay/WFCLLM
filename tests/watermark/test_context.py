@@ -2,6 +2,7 @@
 
 import pytest
 import torch
+from unittest.mock import MagicMock
 
 from wfcllm.watermark.context import GenerationContext, Checkpoint
 from wfcllm.watermark.config import WatermarkConfig
@@ -135,6 +136,8 @@ class TestForwardAndSample:
     def test_forward_and_sample_grows_kv_cache(self, ctx):
         kv_before = ctx.past_kv[0][0].shape[2]
         ctx.forward_and_sample()
+        assert ctx.past_kv[0][0].shape[2] == kv_before
+        ctx.forward_and_sample()
         assert ctx.past_kv[0][0].shape[2] == kv_before + 1
 
     def test_forward_and_sample_feeds_interceptor(self, ctx):
@@ -154,6 +157,76 @@ class TestForwardAndSample:
         # This is hard to test without controlling exact token output
         # Just verify the attribute exists and is None initially
         assert ctx.last_block_checkpoint is None
+
+    def test_first_step_uses_prefill_logits(self):
+        """prefill 后首次采样应直接使用 prompt 的末位 logits。"""
+        config = WatermarkConfig(
+            secret_key="test-key",
+            max_new_tokens=50,
+            encoder_device="cpu",
+            temperature=0.0,
+        )
+        model = MagicMock()
+        tokenizer = MagicMock()
+
+        prefill_output = MagicMock()
+        prefill_output.logits = torch.tensor([[[0.0, 0.0, 0.0, 10.0, 0.0]]])
+        prefill_output.past_key_values = (
+            (torch.zeros(1, 1, 3, 2), torch.zeros(1, 1, 3, 2)),
+        )
+        model.return_value = prefill_output
+        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+
+        tokenizer.encode.return_value = torch.tensor([[11, 22, 33]])
+        tokenizer.decode.return_value = "X"
+        tokenizer.eos_token_id = 4
+
+        ctx = GenerationContext(model=model, tokenizer=tokenizer, config=config)
+        ctx.prefill("prompt")
+        next_id = ctx.forward_and_sample()
+
+        assert next_id == 3
+        assert ctx.generated_ids == [3]
+        assert model.call_count == 1, (
+            "首次采样应直接使用 prefill logits，而不是额外再 forward 一次"
+        )
+
+    def test_rollback_to_prefill_state_restores_prefill_logits(self):
+        """rollback 到 prefill 后的空生成状态，首次采样仍应复用 prefill logits。"""
+        config = WatermarkConfig(
+            secret_key="test-key",
+            max_new_tokens=50,
+            encoder_device="cpu",
+            temperature=0.0,
+        )
+        model = MagicMock()
+        tokenizer = MagicMock()
+
+        prefill_output = MagicMock()
+        prefill_output.logits = torch.tensor([[[0.0, 7.0, 0.0, 0.0, 0.0]]])
+        prefill_output.past_key_values = (
+            (torch.zeros(1, 1, 3, 2), torch.zeros(1, 1, 3, 2)),
+        )
+        model.return_value = prefill_output
+        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+
+        tokenizer.encode.return_value = torch.tensor([[11, 22, 33]])
+        tokenizer.decode.return_value = "Y"
+        tokenizer.eos_token_id = 4
+
+        ctx = GenerationContext(model=model, tokenizer=tokenizer, config=config)
+        ctx.prefill("prompt")
+        cp = ctx.checkpoint()
+
+        first_id = ctx.forward_and_sample()
+        ctx.rollback(cp)
+        second_id = ctx.forward_and_sample()
+
+        assert first_id == 1
+        assert second_id == 1
+        assert model.call_count == 1, (
+            "rollback 回到 prefill 状态后，首次采样仍应复用 prefill logits"
+        )
 
 
 class TestMemorySafety:
@@ -182,3 +255,23 @@ class TestMemorySafety:
             ctx.rollback(cp)
         # If we got here without OOM, the test passes
         assert ctx.past_kv[0][0].shape[2] == cp.kv_snapshot.seq_len
+
+
+class TestEosResolution:
+    def test_explicit_zero_eos_token_id_is_preserved(self, mock_model, mock_tokenizer):
+        """显式配置 eos_token_id=0 时，不应回退到 tokenizer.eos_token_id。"""
+        config = WatermarkConfig(
+            secret_key="test-key",
+            encoder_device="cpu",
+            eos_token_id=0,
+        )
+        mock_model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+        mock_tokenizer.eos_token_id = 99
+
+        ctx = GenerationContext(
+            model=mock_model,
+            tokenizer=mock_tokenizer,
+            config=config,
+        )
+
+        assert ctx.eos_id == 0

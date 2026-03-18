@@ -18,6 +18,7 @@ class CascadeCheckpoint:
 
     checkpoint: Checkpoint
     compound_event: InterceptEvent
+    checkpoint_key: tuple
     failed_simple_blocks: list[str] = field(default_factory=list)
 
 
@@ -28,6 +29,28 @@ class CascadeManager:
         self._enabled = config.enable_cascade
         self._max_depth = config.cascade_max_depth
         self._stack: list[CascadeCheckpoint] = []
+        self._retired_keys: set[tuple] = set()
+
+    def _checkpoint_key(self, checkpoint: Checkpoint) -> tuple:
+        """Build a stable key for the compound block start checkpoint.
+
+        Compound blocks are re-emitted multiple times while their body grows,
+        but their block-start checkpoint stays the same. Deduplicating by this
+        checkpoint prevents repeated cascade rollbacks on the same logical block.
+        """
+        generated_ids = getattr(checkpoint, "generated_ids", None)
+        generated_text = getattr(checkpoint, "generated_text", None)
+        if not isinstance(generated_ids, list) or not isinstance(generated_text, str):
+            return ("checkpoint-object", id(checkpoint))
+
+        kv_snapshot = getattr(checkpoint, "kv_snapshot", None)
+        interceptor_state = getattr(checkpoint, "interceptor_state", None)
+        return (
+            tuple(generated_ids),
+            generated_text,
+            getattr(kv_snapshot, "seq_len", None),
+            getattr(interceptor_state, "token_idx", None),
+        )
 
     def on_compound_block_start(
         self, ctx: GenerationContext, event: InterceptEvent
@@ -44,9 +67,15 @@ class CascadeManager:
         block_cp = ctx.last_block_checkpoint
         if block_cp is None:
             return
+        checkpoint_key = self._checkpoint_key(block_cp)
+        if checkpoint_key in self._retired_keys:
+            return
+        if any(item.checkpoint_key == checkpoint_key for item in self._stack):
+            return
         cp = CascadeCheckpoint(
             checkpoint=block_cp,
             compound_event=event,
+            checkpoint_key=checkpoint_key,
         )
         self._stack.append(cp)
         if len(self._stack) > self._max_depth:
@@ -68,6 +97,7 @@ class CascadeManager:
         if not self._stack:
             return None
         cascade_cp = self._stack.pop()
+        self._retired_keys.add(cascade_cp.checkpoint_key)
         ctx.rollback(cascade_cp.checkpoint)
         logger.debug(
             "[CASCADE] rolling back to compound block %s, had %d failed simple blocks",

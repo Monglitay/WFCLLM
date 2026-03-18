@@ -1,11 +1,15 @@
 """Tests for wfcllm.watermark.generator — thin orchestrator."""
 
+from types import SimpleNamespace
 import pytest
 import torch
 from unittest.mock import MagicMock
 
 from wfcllm.watermark.generator import WatermarkGenerator, GenerateResult, EmbedStats
 from wfcllm.watermark.config import WatermarkConfig
+from wfcllm.watermark.interceptor import InterceptEvent
+from wfcllm.watermark.retry_loop import RetryDiagnostics, RetryResult
+from wfcllm.watermark.verifier import VerifyResult
 
 
 class TestEmbedStats:
@@ -151,3 +155,238 @@ class TestFallbackDeprecated:
         from wfcllm.watermark.config import WatermarkConfig
         cfg = WatermarkConfig(secret_key="k")
         assert cfg.enable_cascade is True
+
+
+class TestCascadeRegression:
+    def test_same_compound_cascades_at_most_once(self, monkeypatch):
+        """同一个 compound block 成功 cascade 后，不应再次回滚到同一起点。"""
+        config = WatermarkConfig(
+            secret_key="test-key",
+            max_new_tokens=64,
+            encoder_device="cpu",
+            enable_cascade=True,
+        )
+
+        model = MagicMock()
+        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+        tokenizer = MagicMock()
+        tokenizer.encode = MagicMock(return_value=[1])
+        tokenizer.decode = MagicMock(return_value="")
+        tokenizer.eos_token_id = 2
+        encoder = MagicMock()
+        enc_tok = MagicMock()
+
+        compound_cp = SimpleNamespace(
+            generated_ids=[],
+            generated_text="",
+        )
+        simple_cp = SimpleNamespace(
+            generated_ids=[101],
+            generated_text="for i in range(n):\n",
+        )
+
+        class FakeContext:
+            last_instance = None
+
+            def __init__(self, model, tokenizer, config):
+                self.generated_ids = []
+                self.generated_text = ""
+                self.last_event = None
+                self.last_block_checkpoint = None
+                self._cursor = 0
+                self._steps = 0
+                self.rollback_calls = []
+                self._sequence = self._first_pass_sequence()
+                FakeContext.last_instance = self
+
+            def _first_pass_sequence(self):
+                return [
+                    ("compound", "for i in range(n):"),
+                    ("simple", "my_list.append(4)"),
+                    ("simple", "my_list.append(2)"),
+                    ("simple", "my_list.append(1)"),
+                    ("eos", ""),
+                ]
+
+            def _post_cascade_sequence(self):
+                return [
+                    ("compound", "for i in range(n):"),
+                    ("compound", "for i in range(n):\n    if x > 0:"),
+                    ("simple", "my_list.append(4)"),
+                    ("simple", "my_list.append(2)"),
+                    ("simple", "my_list.append(1)"),
+                    ("eos", ""),
+                ]
+
+            @property
+            def eos_id(self):
+                return -1
+
+            def prefill(self, prompt):
+                return None
+
+            def rollback(self, cp):
+                self.rollback_calls.append(cp)
+                self.generated_ids = list(getattr(cp, "generated_ids", []))
+                self.generated_text = getattr(cp, "generated_text", "")
+                self.last_event = None
+                self.last_block_checkpoint = None
+                self._cursor = 0
+                self._sequence = self._post_cascade_sequence()
+
+            def forward_and_sample(self, penalty_ids=None):
+                self._steps += 1
+                if self._cursor >= len(self._sequence):
+                    self.last_event = None
+                    return self.eos_id
+
+                kind, text = self._sequence[self._cursor]
+                self._cursor += 1
+                self.generated_ids.append(self._steps)
+                self.generated_text += text
+
+                if kind == "eos":
+                    self.last_event = None
+                    return self.eos_id
+
+                if kind == "compound":
+                    self.last_event = InterceptEvent(
+                        block_text=text,
+                        block_type="compound",
+                        node_type="for_statement",
+                        parent_node_type="module",
+                        token_start_idx=0,
+                        token_count=1,
+                    )
+                    self.last_block_checkpoint = compound_cp
+                    return 1
+
+                self.last_event = InterceptEvent(
+                    block_text=text,
+                    block_type="simple",
+                    node_type="expression_statement",
+                    parent_node_type="if_statement",
+                    token_start_idx=0,
+                    token_count=1,
+                )
+                self.last_block_checkpoint = simple_cp
+                return 1
+
+            def is_finished(self):
+                return self._steps >= 14
+
+        class FakeRetryLoop:
+            last_instance = None
+
+            def __init__(self, **kwargs):
+                self.calls = []
+                FakeRetryLoop.last_instance = self
+
+            def run(self, checkpoint, original_event):
+                self.calls.append((checkpoint, original_event.block_text))
+                return RetryResult(
+                    success=False,
+                    attempts=1,
+                    final_event=None,
+                    diagnostics=RetryDiagnostics(),
+                )
+
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.GenerationContext",
+            FakeContext,
+        )
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.RetryLoop",
+            FakeRetryLoop,
+        )
+
+        gen = WatermarkGenerator(
+            model=model,
+            tokenizer=tokenizer,
+            encoder=encoder,
+            encoder_tokenizer=enc_tok,
+            config=config,
+        )
+
+        def fake_verify_block(event):
+            return VerifyResult(
+                passed=event.block_text != "my_list.append(1)",
+                min_margin=0.01,
+                lsh_signature=(0, 0, 0, 0),
+            )
+
+        gen._verify_block = fake_verify_block
+        gen._entropy_est.estimate_block_entropy = MagicMock(return_value=1.0)
+        gen._entropy_est.compute_margin = MagicMock(return_value=0.001)
+        gen._keying.derive = MagicMock(return_value=frozenset({(1, 1, 1, 1)}))
+        gen._verifier.verify = MagicMock(
+            return_value=VerifyResult(
+                passed=True,
+                min_margin=0.5,
+                lsh_signature=(1, 1, 1, 1),
+            )
+        )
+
+        gen.generate("prompt")
+
+        ctx = FakeContext.last_instance
+        assert ctx is not None
+        assert ctx.rollback_calls == [compound_cp], (
+            "同一个 compound block 不应重复 cascade；"
+            f"实际 rollback 次数={len(ctx.rollback_calls)}"
+        )
+
+    def test_try_cascade_resumes_main_loop_without_compound_verification(self):
+        """_try_cascade 不应在内部验证 compound 中间态文本。"""
+        config = WatermarkConfig(
+            secret_key="test-key",
+            max_new_tokens=64,
+            encoder_device="cpu",
+            enable_cascade=True,
+        )
+        model = MagicMock()
+        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+        tokenizer = MagicMock()
+        tokenizer.encode = MagicMock(return_value=[1])
+        tokenizer.decode = MagicMock(return_value="")
+        tokenizer.eos_token_id = 2
+        encoder = MagicMock()
+        enc_tok = MagicMock()
+
+        gen = WatermarkGenerator(
+            model=model,
+            tokenizer=tokenizer,
+            encoder=encoder,
+            encoder_tokenizer=enc_tok,
+            config=config,
+        )
+
+        ctx = MagicMock()
+        retry_loop = MagicMock()
+        stats = EmbedStats()
+        pending_fallbacks = ["my_list.append(1)"]
+        cascade_cp = SimpleNamespace(
+            checkpoint=SimpleNamespace(generated_ids=[], generated_text=""),
+            compound_event=InterceptEvent(
+                block_text="for i in range(n):",
+                block_type="compound",
+                node_type="for_statement",
+                parent_node_type="module",
+                token_start_idx=0,
+                token_count=1,
+            ),
+            checkpoint_key=("k",),
+            failed_simple_blocks=["my_list.append(1)"],
+        )
+        cascade_mgr = MagicMock()
+        cascade_mgr.cascade.return_value = cascade_cp
+
+        gen._verifier.verify = MagicMock()
+        ctx.forward_and_sample = MagicMock()
+
+        gen._try_cascade(ctx, cascade_mgr, retry_loop, stats, pending_fallbacks)
+
+        gen._verifier.verify.assert_not_called()
+        ctx.forward_and_sample.assert_not_called()
+        assert stats.cascade_blocks == 1
+        assert pending_fallbacks == []

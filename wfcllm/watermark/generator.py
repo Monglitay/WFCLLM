@@ -197,42 +197,21 @@ class WatermarkGenerator:
         return result
 
     def _try_cascade(self, ctx, cascade_mgr, retry_loop, stats, pending_fallbacks):
-        """Active cascade: rollback to compound block start, re-generate and verify."""
+        """Active cascade: rollback to compound block start, then resume main loop.
+
+        We intentionally do NOT verify the first regenerated compound event here.
+        Incremental parsing emits compound blocks at header-complete time, so
+        verifying inside this helper would use intermediate text that does not
+        match the final AST seen by extraction. After rollback, the outer
+        generation loop continues normally and verifies the regenerated simple
+        blocks against final-text boundaries.
+        """
         cascade_cp = cascade_mgr.cascade(ctx)
         if cascade_cp is None:
             return
 
-        # After rollback, free-generate until we get a compound block event.
-        # The regenerated compound block may have different content that passes.
-        compound_event = None
-        for _ in range(self._config.max_new_tokens):
-            next_id = ctx.forward_and_sample()
-            if next_id == ctx.eos_id:
-                break
-            event = ctx.last_event
-            if event is not None and event.block_type == "compound":
-                compound_event = event
-                break
-
-        if compound_event is None:
-            logger.debug("[CASCADE FAILED] could not regenerate compound block")
-            return
-
-        # Verify the newly regenerated compound block
-        block_entropy = self._entropy_est.estimate_block_entropy(
-            compound_event.block_text
+        stats.cascade_blocks += 1
+        pending_fallbacks.clear()
+        logger.debug(
+            "[CASCADE OK] rolled back to compound block start; resuming main loop"
         )
-        margin = self._entropy_est.compute_margin(block_entropy, self._config)
-        valid_set = self._keying.derive(
-            compound_event.parent_node_type or "module"
-        )
-        result = self._verifier.verify(
-            compound_event.block_text, valid_set, margin
-        )
-
-        if result.passed:
-            stats.cascade_blocks += 1
-            pending_fallbacks.clear()
-            logger.debug("[CASCADE OK] regenerated compound block passed")
-        else:
-            logger.debug("[CASCADE FAILED] regenerated compound block did not pass")

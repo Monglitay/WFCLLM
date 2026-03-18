@@ -23,6 +23,7 @@ class Checkpoint:
     generated_text: str
     kv_snapshot: CacheSnapshot
     interceptor_state: InterceptorState
+    use_prefill_logits: bool = False
 
 
 class GenerationContext:
@@ -58,15 +59,24 @@ class GenerationContext:
 
         # Per-step history for block-start checkpoint reconstruction.
         # Entry i = state just before the i-th generated token was sampled.
-        # Stored as (generated_ids_snapshot, text, kv_seq_len, interceptor_state).
-        self._step_history: list[tuple[list[int], str, int, InterceptorState]] = []
+        # Stored as (generated_ids_snapshot, text, kv_seq_len,
+        # interceptor_state, use_prefill_logits).
+        self._step_history: list[
+            tuple[list[int], str, int, InterceptorState, bool]
+        ] = []
 
         self._eos_id: int | None = None
+        self._prefill_logits: torch.Tensor | None = None
+        self._next_logits: torch.Tensor | None = None
 
     @property
     def eos_id(self) -> int:
         if self._eos_id is None:
-            self._eos_id = self._config.eos_token_id or self._tokenizer.eos_token_id
+            self._eos_id = (
+                self._config.eos_token_id
+                if self._config.eos_token_id is not None
+                else self._tokenizer.eos_token_id
+            )
         return self._eos_id
 
     def prefill(self, prompt: str) -> None:
@@ -78,6 +88,8 @@ class GenerationContext:
 
         output = self._model(input_ids=input_ids, use_cache=True)
         self.past_kv = output.past_key_values
+        self._prefill_logits = output.logits[:, -1, :].detach().clone()
+        self._next_logits = self._prefill_logits.clone()
 
         self.interceptor.reset()
 
@@ -88,6 +100,7 @@ class GenerationContext:
             generated_text=self.generated_text,
             kv_snapshot=self._cache_mgr.snapshot(self.past_kv),
             interceptor_state=self.interceptor.checkpoint(),
+            use_prefill_logits=self._next_logits is not None,
         )
 
     def rollback(self, cp: Checkpoint) -> None:
@@ -105,6 +118,10 @@ class GenerationContext:
         self.generated_ids = list(cp.generated_ids)
         self.generated_text = cp.generated_text
         self.interceptor.rollback(cp.interceptor_state)
+        if cp.use_prefill_logits and self._prefill_logits is not None:
+            self._next_logits = self._prefill_logits.clone()
+        else:
+            self._next_logits = None
 
         # Trim step history to match rolled-back length
         rollback_len = len(cp.generated_ids)
@@ -129,6 +146,7 @@ class GenerationContext:
             self.past_kv[0][0].shape[2] if self.past_kv is not None else 0
         )
         pre_forward_interceptor_state = self.interceptor.checkpoint()
+        pre_forward_use_prefill_logits = self._next_logits is not None
 
         # Record this step's pre-forward state in history
         self._step_history.append((
@@ -136,18 +154,23 @@ class GenerationContext:
             pre_forward_text,
             pre_forward_kv_seq_len,
             pre_forward_interceptor_state,
+            pre_forward_use_prefill_logits,
         ))
 
         # Model forward
-        last_id = self.generated_ids[-1] if self.generated_ids else 0
-        input_ids = torch.tensor([[last_id]], dtype=torch.long, device=self._device)
-        output = self._model(
-            input_ids=input_ids,
-            past_key_values=self.past_kv,
-            use_cache=True,
-        )
-        logits = output.logits[:, -1, :]
-        self.past_kv = output.past_key_values
+        if self._next_logits is not None:
+            logits = self._next_logits
+            self._next_logits = None
+        else:
+            last_id = self.generated_ids[-1] if self.generated_ids else 0
+            input_ids = torch.tensor([[last_id]], dtype=torch.long, device=self._device)
+            output = self._model(
+                input_ids=input_ids,
+                past_key_values=self.past_kv,
+                use_cache=True,
+            )
+            logits = output.logits[:, -1, :]
+            self.past_kv = output.past_key_values
 
         # Sample
         next_id = self._sample(logits, penalty_ids)
@@ -178,6 +201,7 @@ class GenerationContext:
                     generated_text=frame[1],
                     kv_snapshot=CacheSnapshot(seq_len=frame[2]),
                     interceptor_state=frame[3],
+                    use_prefill_logits=frame[4],
                 )
             else:
                 # Fallback: use pre-forward state (old behaviour)
@@ -186,6 +210,7 @@ class GenerationContext:
                     generated_text=pre_forward_text,
                     kv_snapshot=CacheSnapshot(seq_len=pre_forward_kv_seq_len),
                     interceptor_state=pre_feed_interceptor_state,
+                    use_prefill_logits=pre_forward_use_prefill_logits,
                 )
         else:
             self.last_block_checkpoint = None

@@ -259,31 +259,3 @@ class TestCascadeTextConsistency:
                 f"interceptor: {ev.parent_node_type!r}\n"
                 f"ast_parser:  {expected_parent!r}"
             )
-
-    @pytest.mark.xfail(reason="Known issue: _try_cascade verifies compound header (incomplete text). "
-                               "To be fixed in a separate PR after passive fallback removal.")
-    def test_try_cascade_compound_text_matches_final_ast(self):
-        """已知问题占位：_try_cascade 内部验证 compound event 文本（中间态），
-        与提取端完整文本不一致。本 PR 不修复，记录为 xfail。"""
-        from wfcllm.watermark.interceptor import StatementInterceptor
-        from wfcllm.common.ast_parser import extract_statement_blocks
-
-        ic = StatementInterceptor()
-
-        # 模拟 _try_cascade 触发：停在第一个 compound event 处
-        code = "for i in range(n):\n    x = i\n"
-        compound_ev = None
-        for ch in code:
-            ev = ic.feed_token(ch)
-            if ev is not None and ev.block_type == "compound":
-                compound_ev = ev
-                break  # _try_cascade 也在这里停下来验证
-
-        assert compound_ev is not None
-
-        all_blocks = extract_statement_blocks(code)
-        compound_blocks = [b for b in all_blocks if b.block_type == "compound"]
-        assert len(compound_blocks) >= 1
-
-        # 这个断言在修复 _try_cascade 前会 FAIL（即 xfail）
-        assert compound_ev.block_text.strip() == compound_blocks[0].source.strip()
