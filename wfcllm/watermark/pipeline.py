@@ -14,6 +14,7 @@ except ImportError:
 
 import torch
 
+from wfcllm.common.checkpoint import load_processed_ids, resolve_resume_path
 from wfcllm.watermark.generator import WatermarkGenerator
 from wfcllm.common.dataset_loader import SUPPORTED_DATASETS, load_prompts
 
@@ -25,6 +26,7 @@ class WatermarkPipelineConfig:
     dataset: str            # "humaneval" or "mbpp"
     output_dir: str         # e.g. "data/watermarked"
     dataset_path: str       # local datasets root, e.g. "data/datasets"
+    resume: str | None = None
 
     def __post_init__(self):
         if self.dataset not in SUPPORTED_DATASETS:
@@ -44,14 +46,41 @@ class WatermarkPipeline:
         """Load prompts from local dataset. Returns list of {"id", "prompt"}."""
         return load_prompts(self._config.dataset, self._config.dataset_path)
 
+    def _validate_resume_path(self, resume_path: Path) -> None:
+        expected_prefix = f"{self._config.dataset}_"
+        if not resume_path.name.startswith(expected_prefix):
+            raise ValueError(
+                f"Resume file {resume_path.name} does not match dataset {self._config.dataset}"
+            )
+
     def run(self) -> str:
         """Run batch watermarking. Returns path to output JSONL file."""
-        prompts = self._load_prompts()
-
         out_dir = Path(self._config.output_dir)
+        resume_path, is_resume = resolve_resume_path(
+            self._config.resume,
+            out_dir,
+            default_pattern=f"{self._config.dataset}_*.jsonl",
+        )
+
+        processed_ids: set[str] = set()
+        if is_resume and resume_path is not None:
+            self._validate_resume_path(resume_path)
+            processed_ids = load_processed_ids(resume_path)
+
+        all_prompts = self._load_prompts()
+        prompts = [item for item in all_prompts if item["id"] not in processed_ids]
+        if is_resume and resume_path is not None and not prompts:
+            print("All samples already processed", file=sys.stderr)
+            return str(resume_path)
+
         out_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_path = out_dir / f"{self._config.dataset}_{timestamp}.jsonl"
+        if is_resume and resume_path is not None:
+            out_path = resume_path
+            mode = "a"
+        else:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            out_path = out_dir / f"{self._config.dataset}_{timestamp}.jsonl"
+            mode = "w"
 
         iterator = (
             tqdm(prompts, desc=f"Watermarking {self._config.dataset}", unit="prompt")
@@ -59,7 +88,7 @@ class WatermarkPipeline:
             else prompts
         )
 
-        with open(out_path, "w", encoding="utf-8") as f:
+        with open(out_path, mode, encoding="utf-8") as f:
             for item in iterator:
                 result = self._generator.generate(item["prompt"])
                 embed_rate = (
@@ -79,6 +108,7 @@ class WatermarkPipeline:
                     "embed_rate": embed_rate,
                 }
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                f.flush()
 
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()

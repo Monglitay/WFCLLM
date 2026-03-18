@@ -15,6 +15,7 @@ class TestWatermarkPipelineConfig:
         assert cfg.dataset == "humaneval"
         assert cfg.output_dir == "data/watermarked"
         assert cfg.dataset_path == "data/datasets"
+        assert cfg.resume is None
 
     def test_invalid_dataset_raises(self):
         with pytest.raises(ValueError, match="dataset must be"):
