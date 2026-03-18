@@ -10,14 +10,16 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from datetime import datetime
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, RobertaTokenizer, T5EncoderModel
+from transformers import AutoModelForCausalLM, AutoTokenizer, RobertaTokenizer
 
 from wfcllm.common.ast_parser import extract_statement_blocks
 from wfcllm.common.dataset_loader import load_prompts
+from wfcllm.encoder import EncoderConfig, SemanticEncoder
 from wfcllm.extract.config import ExtractConfig
 from wfcllm.extract.detector import WatermarkDetector
 from wfcllm.watermark.config import WatermarkConfig
@@ -42,18 +44,26 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dataset_path", default="data/datasets", help="Local datasets root")
     p.add_argument("--encoder_path", default="data/models/codet5-base", help="Encoder model path")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument("--verbose", action="store_true", help="Enable DEBUG logging")
     return p.parse_args()
 
 
-def load_encoder(encoder_path: str, device: str) -> tuple[T5EncoderModel, RobertaTokenizer]:
-    """Load T5EncoderModel in eval mode."""
-    encoder = T5EncoderModel.from_pretrained(encoder_path).to(device).eval()
+def load_encoder(encoder_path: str, device: str) -> tuple[SemanticEncoder, RobertaTokenizer]:
+    """Load SemanticEncoder (with projection head) in eval mode."""
+    enc_config = EncoderConfig(model_name=encoder_path, use_lora=False)
+    encoder = SemanticEncoder(config=enc_config).to(device).eval()
     tokenizer = RobertaTokenizer.from_pretrained(encoder_path)
     return encoder, tokenizer
 
 
 def main() -> None:
     args = parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
 
     print(f"Loading LLM from {args.model_path} ...", file=sys.stderr)
     lm = AutoModelForCausalLM.from_pretrained(args.model_path).to(args.device).eval()

@@ -48,14 +48,22 @@ class TestCascadeEnabled:
 
     def test_stores_compound_checkpoint(self, mgr):
         ctx = MagicMock(spec=GenerationContext)
-        ctx.checkpoint.return_value = MagicMock(spec=Checkpoint)
+        ctx.last_block_checkpoint = MagicMock(spec=Checkpoint)
         event = MagicMock(spec=InterceptEvent)
         mgr.on_compound_block_start(ctx, event)
         assert len(mgr._stack) == 1
 
+    def test_skips_when_no_block_checkpoint(self, mgr):
+        """on_compound_block_start does nothing if last_block_checkpoint is None."""
+        ctx = MagicMock(spec=GenerationContext)
+        ctx.last_block_checkpoint = None
+        event = MagicMock(spec=InterceptEvent)
+        mgr.on_compound_block_start(ctx, event)
+        assert len(mgr._stack) == 0
+
     def test_records_failed_simple_block(self, mgr):
         ctx = MagicMock(spec=GenerationContext)
-        ctx.checkpoint.return_value = MagicMock(spec=Checkpoint)
+        ctx.last_block_checkpoint = MagicMock(spec=Checkpoint)
         event = MagicMock(spec=InterceptEvent)
         mgr.on_compound_block_start(ctx, event)
         mgr.on_simple_block_failed("x = 1")
@@ -63,7 +71,7 @@ class TestCascadeEnabled:
 
     def test_should_cascade_true_after_failure(self, mgr):
         ctx = MagicMock(spec=GenerationContext)
-        ctx.checkpoint.return_value = MagicMock(spec=Checkpoint)
+        ctx.last_block_checkpoint = MagicMock(spec=Checkpoint)
         event = MagicMock(spec=InterceptEvent)
         mgr.on_compound_block_start(ctx, event)
         mgr.on_simple_block_failed("x = 1")
@@ -71,7 +79,7 @@ class TestCascadeEnabled:
 
     def test_should_cascade_false_no_failures(self, mgr):
         ctx = MagicMock(spec=GenerationContext)
-        ctx.checkpoint.return_value = MagicMock(spec=Checkpoint)
+        ctx.last_block_checkpoint = MagicMock(spec=Checkpoint)
         event = MagicMock(spec=InterceptEvent)
         mgr.on_compound_block_start(ctx, event)
         assert mgr.should_cascade() is False
@@ -79,7 +87,7 @@ class TestCascadeEnabled:
     def test_cascade_pops_stack_and_rollbacks(self, mgr):
         ctx = MagicMock(spec=GenerationContext)
         cp = MagicMock(spec=Checkpoint)
-        ctx.checkpoint.return_value = cp
+        ctx.last_block_checkpoint = cp
         event = MagicMock(spec=InterceptEvent)
         event.node_type = "if_statement"
         mgr.on_compound_block_start(ctx, event)
@@ -94,11 +102,29 @@ class TestCascadeEnabled:
         """Exceeding max_depth drops the oldest checkpoint."""
         ctx = MagicMock(spec=GenerationContext)
         for i in range(3):
-            ctx.checkpoint.return_value = MagicMock(spec=Checkpoint, name=f"cp{i}")
+            ctx.last_block_checkpoint = MagicMock(spec=Checkpoint, name=f"cp{i}")
             event = MagicMock(spec=InterceptEvent)
             mgr.on_compound_block_start(ctx, event)
         # max_depth=2, so only last 2 should remain
         assert len(mgr._stack) == 2
+
+    def test_uses_block_start_checkpoint_not_current(self, mgr):
+        """cascade checkpoint must be at block START (last_block_checkpoint),
+        not at the current context position. This prevents the stale-snapshot
+        ValueError when the retry loop rolls back ctx to an earlier position."""
+        ctx = MagicMock(spec=GenerationContext)
+        block_start_cp = MagicMock(spec=Checkpoint, name="block_start")
+        current_cp = MagicMock(spec=Checkpoint, name="current_end")
+        ctx.last_block_checkpoint = block_start_cp
+        # ctx.checkpoint() would return a different (later) checkpoint
+        ctx.checkpoint.return_value = current_cp
+        event = MagicMock(spec=InterceptEvent)
+        event.node_type = "for_statement"
+        mgr.on_compound_block_start(ctx, event)
+        assert len(mgr._stack) == 1
+        # The stored checkpoint must be block_start_cp, not current_cp
+        assert mgr._stack[0].checkpoint is block_start_cp
+        ctx.checkpoint.assert_not_called()
 
     def test_cascade_empty_stack(self, mgr):
         ctx = MagicMock(spec=GenerationContext)

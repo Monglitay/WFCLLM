@@ -35,8 +35,17 @@ class CascadeManager:
         """Save a cascade checkpoint when a compound block starts."""
         if not self._enabled:
             return
+        # Use last_block_checkpoint (state BEFORE the compound block's first
+        # token) rather than ctx.checkpoint() (state AFTER the last token).
+        # ctx.checkpoint() captures the compound block END, but the retry loop
+        # may later roll ctx back to an earlier simple-block start — a position
+        # with fewer KV tokens — making the "end" snapshot stale and causing
+        # rollback to raise ValueError.
+        block_cp = ctx.last_block_checkpoint
+        if block_cp is None:
+            return
         cp = CascadeCheckpoint(
-            checkpoint=ctx.checkpoint(),
+            checkpoint=block_cp,
             compound_event=event,
         )
         self._stack.append(cp)
