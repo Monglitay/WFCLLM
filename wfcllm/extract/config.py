@@ -12,6 +12,7 @@ class ExtractConfig:
     secret_key: str
     embed_dim: int = 128
     fpr_threshold: float = 3.0  # M_r，由校准脚本生成；默认值 3.0 仅作占位
+    # Prefer values resolved from watermark JSONL metadata when available.
     lsh_d: int = 3
     lsh_gamma: float = 0.5
 

@@ -1,7 +1,9 @@
 """Integration and regression tests for WatermarkGenerator."""
 
+import ast
 import pytest
 import torch
+from pathlib import Path
 from unittest.mock import MagicMock
 
 from wfcllm.watermark.generator import WatermarkGenerator, GenerateResult, EmbedStats
@@ -253,3 +255,16 @@ class TestEmbedExtractTextAlignment:
                 f"interceptor: {ev.block_text!r}\n"
                 f"ast_parser:  {blk.source!r}"
             )
+
+
+def test_try_cascade_helper_does_not_verify_compound_text_inline():
+    tree = ast.parse(Path("wfcllm/watermark/generator.py").read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == "WatermarkGenerator":
+            for fn in node.body:
+                if isinstance(fn, ast.FunctionDef) and fn.name == "_try_cascade":
+                    for inner in ast.walk(fn):
+                        if isinstance(inner, ast.Attribute) and inner.attr == "verify":
+                            raise AssertionError("_try_cascade should not call verifier.verify()")
+                    return
+    raise AssertionError("WatermarkGenerator._try_cascade must exist")

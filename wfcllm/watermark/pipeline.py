@@ -53,6 +53,20 @@ class WatermarkPipeline:
                 f"Resume file {resume_path.name} does not match dataset {self._config.dataset}"
             )
 
+    @staticmethod
+    def _build_public_watermark_params(generator: WatermarkGenerator) -> dict:
+        generator_config = getattr(generator, "config", None)
+        if generator_config is None:
+            raise ValueError(
+                "Generator must expose watermark config via .config"
+            )
+        return {
+            "lsh_d": generator_config.lsh_d,
+            "lsh_gamma": generator_config.lsh_gamma,
+            "margin_base": generator_config.margin_base,
+            "margin_alpha": generator_config.margin_alpha,
+        }
+
     def run(self) -> str:
         """Run batch watermarking. Returns path to output JSONL file."""
         out_dir = Path(self._config.output_dir)
@@ -107,6 +121,9 @@ class WatermarkPipeline:
                     "fallback_blocks": result.fallback_blocks,
                     "embed_rate": embed_rate,
                 }
+                record["watermark_params"] = self._build_public_watermark_params(
+                    self._generator
+                )
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
                 f.flush()
 

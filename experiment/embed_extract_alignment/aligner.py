@@ -52,7 +52,11 @@ class Aligner:
             resolved_parent = Aligner._resolve_parent_type(matched, block_by_id)
             text_match = embed.block_text.strip() == matched.source.strip()
             parent_match = embed.parent_node_type == resolved_parent
-            extract_score = score_map.get(matched.block_id, None)
+            extract_score = (
+                None
+                if embed.is_diagnostic_compound_probe
+                else score_map.get(matched.block_id, None)
+            )
             score_agree = (
                 extract_score is not None
                 and int(embed.passed) == extract_score
@@ -137,6 +141,12 @@ class Aligner:
             return sum(1 for e in embed_events if e.path == path and e.passed == passed)
 
         compound_total = sum(1 for e in embed_events if e.path in ("fallback", "cascade"))
+        text_mismatch_simple_only = sum(
+            1 for p in aligned_pairs if not p.text_match and p.extract_score is not None
+        )
+        text_mismatch_compound_only = sum(
+            1 for p in aligned_pairs if not p.text_match and p.extract_score is None
+        )
 
         return PromptReport(
             prompt_id=prompt_id,
@@ -159,7 +169,9 @@ class Aligner:
             embed_unmatched_count=len(unmatched_embeds),
             extract_unmatched_count=len(unmatched_extracts),
             compound_aligned_count=sum(1 for p in aligned_pairs if p.extract_score is None),
-            text_mismatch_count=sum(1 for p in aligned_pairs if not p.text_match),
+            text_mismatch_count=text_mismatch_simple_only + text_mismatch_compound_only,
+            text_mismatch_simple_only=text_mismatch_simple_only,
+            text_mismatch_compound_only=text_mismatch_compound_only,
             parent_mismatch_count=sum(1 for p in aligned_pairs if not p.parent_match),
             score_disagree_count=sum(
                 1 for p in aligned_pairs

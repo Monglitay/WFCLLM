@@ -71,6 +71,18 @@ def load_config(config_path: Path) -> dict:
         sys.exit(1)
 
 
+def resolve_extract_lsh_params(first_record: dict, ext_cfg: dict) -> tuple[int, float]:
+    params = first_record.get("watermark_params") or {}
+    lsh_d_raw = params.get("lsh_d", ext_cfg.get("lsh_d", 3))
+    lsh_gamma_raw = params.get("lsh_gamma", ext_cfg.get("lsh_gamma", 0.5))
+    try:
+        return int(lsh_d_raw), float(lsh_gamma_raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"LSH 参数解析失败：lsh_d={lsh_d_raw!r}, lsh_gamma={lsh_gamma_raw!r}"
+        ) from exc
+
+
 class RunState:
     """断点状态管理：读写 data/run_state.json。"""
 
@@ -514,6 +526,35 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
     embed_dim = args.embed_dim or ext_cfg.get("embed_dim", 128)
     fpr_threshold = args.fpr_threshold or ext_cfg.get("fpr_threshold", 3.0)
     resume = args.resume if args.resume is not None else ext_cfg.get("resume")
+    # WatermarkPipeline writes one JSONL per watermark run/config, so extraction
+    # assumes the file is homogeneous and resolves LSH params from the first record.
+    try:
+        with open(input_file, encoding="utf-8") as f:
+            first_line = next((line.strip() for line in f if line.strip()), "")
+        first_record = json.loads(first_line) if first_line else {}
+        lsh_d, lsh_gamma = resolve_extract_lsh_params(first_record, ext_cfg)
+    except json.JSONDecodeError as exc:
+        print(f"[错误] 输入文件首条记录 JSON 解析失败：{exc}", file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        print(f"[错误] 输入文件首条记录 LSH 参数无效：{exc}", file=sys.stderr)
+        return 1
+
+    if "watermark_params" in first_record:
+        cfg_lsh_d = ext_cfg.get("lsh_d")
+        cfg_lsh_gamma = ext_cfg.get("lsh_gamma")
+        meta_pair = (lsh_d, lsh_gamma)
+        if cfg_lsh_d is not None and cfg_lsh_gamma is not None:
+            try:
+                cfg_pair = (int(cfg_lsh_d), float(cfg_lsh_gamma))
+            except (TypeError, ValueError):
+                cfg_pair = None
+            if cfg_pair is not None and cfg_pair != meta_pair:
+                print(
+                    f"[警告] extract 配置 LSH 参数 {cfg_pair} 与输入文件元数据 {meta_pair} 不一致；"
+                    f"优先使用输入文件元数据",
+                    file=sys.stderr,
+                )
 
     # 加载编码器：优先 best_model.pt，回退 checkpoint
     enc_config = EncoderConfig(embed_dim=embed_dim)
@@ -559,8 +600,6 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
         from wfcllm.watermark.lsh_space import LSHSpace
         from wfcllm.watermark.verifier import ProjectionVerifier
 
-        lsh_d = ext_cfg.get("lsh_d", 3)
-        lsh_gamma = ext_cfg.get("lsh_gamma", 0.5)
         fpr_target = getattr(args, "fpr", None) or ext_cfg.get("fpr", 0.01)
 
         lsh_space = LSHSpace(secret_key, embed_dim, lsh_d)
@@ -586,6 +625,8 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
         secret_key=secret_key,
         embed_dim=embed_dim,
         fpr_threshold=fpr_threshold,
+        lsh_d=lsh_d,
+        lsh_gamma=lsh_gamma,
     )
     detector = WatermarkDetector(extract_config, encoder, tokenizer, device=device)
 

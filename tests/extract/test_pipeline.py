@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import math
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -11,6 +13,7 @@ import pytest
 
 from wfcllm.extract.pipeline import ExtractPipeline, ExtractPipelineConfig
 from wfcllm.extract.config import DetectionResult
+from wfcllm.extract.calibrator import ThresholdCalibrator
 
 
 class TestExtractPipelineConfig:
@@ -135,3 +138,140 @@ class TestExtractPipelineStatistics:
             summary_doc = json.loads(summary_path.read_text())
             lo, hi = summary_doc["summary"]["watermark_rate_ci_95"]
             assert lo <= hi
+
+
+def test_calibrated_threshold_smoke_range():
+    resolved_threshold = ThresholdCalibrator._percentile_threshold(
+        z_scores=[0.3, 0.8, 1.1, 1.6, 2.0],
+        fpr=0.2,
+    )
+    assert 0.5 < resolved_threshold < 2.5
+
+
+def test_debug_extract_alignment_smoke_resolves_embedded_params_without_diag(tmp_path):
+    from tools.debug_extract_alignment import build_debug_payload
+
+    input_file = tmp_path / "watermarked.jsonl"
+    input_file.write_text(
+        json.dumps(
+            {
+                "id": "HumanEval/0",
+                "prompt": "def foo():\n",
+                "generated_code": "def foo():\n    return 1\n",
+                "watermark_params": {"lsh_d": 4, "lsh_gamma": 0.75},
+            }
+        ) + "\n",
+        encoding="utf-8",
+    )
+    config_file = tmp_path / "cfg.json"
+    config_file.write_text(
+        json.dumps({"extract": {"lsh_d": 3, "lsh_gamma": 0.5}}),
+        encoding="utf-8",
+    )
+
+    payload = build_debug_payload(
+        prompt_id="HumanEval/0",
+        input_file=str(input_file),
+        use_embedded_params=True,
+        config_path=str(config_file),
+        diag_details=None,
+    )
+
+    assert payload["prompt_id"] == "HumanEval/0"
+    assert payload["resolved_lsh_d"] == 4
+    assert payload["resolved_lsh_gamma"] == 0.75
+    assert payload["diagnostic_report_found"] is False
+
+
+def test_debug_extract_alignment_auto_discovers_diag_details(tmp_path):
+    from tools.debug_extract_alignment import build_debug_payload
+
+    watermarked_dir = tmp_path / "data" / "watermarked"
+    watermarked_dir.mkdir(parents=True)
+    input_file = watermarked_dir / "sample.jsonl"
+    input_file.write_text(
+        json.dumps(
+            {
+                "id": "HumanEval/0",
+                "prompt": "def foo():\n",
+                "generated_code": "def foo():\n    return 1\n",
+                "watermark_params": {"lsh_d": 4, "lsh_gamma": 0.75},
+            }
+        ) + "\n",
+        encoding="utf-8",
+    )
+
+    diag_dir = tmp_path / "data" / "diag_reports"
+    diag_dir.mkdir(parents=True)
+    details_file = diag_dir / "details_20990101_000000.jsonl"
+    details_file.write_text(
+        json.dumps(
+            {
+                "prompt_id": "HumanEval/0",
+                "text_mismatch_count": 1,
+                "parent_mismatch_count": 0,
+                "score_disagree_count": 0,
+                "aligned_pairs": [],
+            }
+        ) + "\n",
+        encoding="utf-8",
+    )
+
+    config_file = tmp_path / "cfg.json"
+    config_file.write_text(
+        json.dumps({"extract": {"lsh_d": 3, "lsh_gamma": 0.5}}),
+        encoding="utf-8",
+    )
+
+    payload = build_debug_payload(
+        prompt_id="HumanEval/0",
+        input_file=str(input_file),
+        use_embedded_params=True,
+        config_path=str(config_file),
+        diag_details=None,
+    )
+
+    assert payload["diagnostic_report_found"] is True
+    assert payload["diagnostic_details_file"] == str(details_file)
+    assert payload["text_mismatch_count"] == 1
+
+
+def test_debug_extract_alignment_cli_runs_from_script_path(tmp_path):
+    input_file = tmp_path / "watermarked.jsonl"
+    input_file.write_text(
+        json.dumps(
+            {
+                "id": "HumanEval/0",
+                "prompt": "def foo():\n",
+                "generated_code": "def foo():\n    return 1\n",
+                "watermark_params": {"lsh_d": 4, "lsh_gamma": 0.75},
+            }
+        ) + "\n",
+        encoding="utf-8",
+    )
+    config_file = tmp_path / "cfg.json"
+    config_file.write_text(
+        json.dumps({"extract": {"lsh_d": 3, "lsh_gamma": 0.5}}),
+        encoding="utf-8",
+    )
+
+    repo_root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/debug_extract_alignment.py",
+            "--prompt-id",
+            "HumanEval/0",
+            "--input-file",
+            str(input_file),
+            "--use-embedded-params",
+            "--config",
+            str(config_file),
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert "resolved_lsh_d" in result.stdout

@@ -2,6 +2,7 @@
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -70,3 +71,142 @@ class TestBaseConfigFallbackCascade:
         from pathlib import Path
         cfg = json.loads(Path("configs/base_config.json").read_text())
         assert cfg.get("watermark", {}).get("enable_cascade") is True
+
+
+def test_base_config_extract_and_watermark_sections_have_matching_lsh_defaults():
+    cfg = json.loads(Path("configs/base_config.json").read_text(encoding="utf-8"))
+    assert cfg["extract"]["lsh_d"] == 4
+    assert cfg["extract"]["lsh_gamma"] == 0.75
+    assert cfg["extract"]["lsh_d"] == cfg["watermark"]["lsh_d"]
+    assert cfg["extract"]["lsh_gamma"] == cfg["watermark"]["lsh_gamma"]
+
+
+def test_run_extract_uses_resolved_gamma_for_calibration(monkeypatch, tmp_path):
+    import run as run_module
+
+    captured: dict = {}
+
+    input_file = tmp_path / "input.jsonl"
+    input_file.write_text(
+        json.dumps(
+            {
+                "id": "HumanEval/0",
+                "generated_code": "def f():\n    return 1\n",
+                "watermark_params": {"lsh_d": 4, "lsh_gamma": 0.75},
+            }
+        ) + "\n",
+        encoding="utf-8",
+    )
+    calibration_file = tmp_path / "calibration.jsonl"
+    calibration_file.write_text(
+        json.dumps({"generated_code": "def g():\n    return 2\n"}) + "\n",
+        encoding="utf-8",
+    )
+    config_file = tmp_path / "cfg.json"
+    config_file.write_text(
+        json.dumps(
+            {
+                "extract": {
+                    "secret_key": "k",
+                    "input_file": str(input_file),
+                    "calibration_corpus": str(calibration_file),
+                    "lsh_d": 3,
+                    "lsh_gamma": 0.5,
+                    "fpr": 0.01,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeState:
+        @staticmethod
+        def is_done(phase: str) -> bool:
+            return phase == "encoder"
+
+        @staticmethod
+        def get(phase: str, key: str):
+            return None
+
+        @staticmethod
+        def mark_done(*args, **kwargs):
+            return None
+
+    class FakeEncoder:
+        def __init__(self, config):
+            self.config = config
+
+        def load_state_dict(self, state):
+            return None
+
+        def to(self, device):
+            return self
+
+    class FakeCalibrator:
+        def __init__(self, scorer, gamma):
+            captured["gamma"] = gamma
+
+        def calibrate(self, corpus, fpr):
+            return {"fpr_threshold": 1.2, "n_samples": len(corpus)}
+
+    class FakeDetector:
+        def __init__(self, config, encoder, tokenizer, device):
+            captured["resolved_threshold"] = config.fpr_threshold
+
+    class FakePipeline:
+        def __init__(self, detector, config):
+            self._details = tmp_path / "sample_details.jsonl"
+            self._summary = tmp_path / "sample_summary.json"
+
+        @staticmethod
+        def summary_path_for_details(details_path: Path) -> Path:
+            return Path(details_path).parent / "sample_summary.json"
+
+        def run(self) -> str:
+            self._details.write_text("{}", encoding="utf-8")
+            self._summary.write_text(
+                json.dumps(
+                    {
+                        "meta": {"total_samples": 1},
+                        "summary": {
+                            "watermark_rate": 1.0,
+                            "watermark_rate_ci_95": [1.0, 1.0],
+                            "mean_z_score": 1.0,
+                            "std_z_score": 0.0,
+                            "mean_p_value": 0.1,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return str(self._details)
+
+    monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+    monkeypatch.setattr("transformers.AutoTokenizer.from_pretrained", lambda _: object())
+    monkeypatch.setattr("wfcllm.encoder.model.SemanticEncoder", FakeEncoder)
+    monkeypatch.setattr("wfcllm.extract.calibrator.ThresholdCalibrator", FakeCalibrator)
+    monkeypatch.setattr("wfcllm.extract.scorer.BlockScorer", lambda *args, **kwargs: object())
+    monkeypatch.setattr("wfcllm.watermark.keying.WatermarkKeying", lambda *args, **kwargs: object())
+    monkeypatch.setattr("wfcllm.watermark.lsh_space.LSHSpace", lambda *args, **kwargs: object())
+    monkeypatch.setattr("wfcllm.watermark.verifier.ProjectionVerifier", lambda *args, **kwargs: object())
+    monkeypatch.setattr("wfcllm.extract.detector.WatermarkDetector", FakeDetector)
+    monkeypatch.setattr("wfcllm.extract.pipeline.ExtractPipeline", FakePipeline)
+    monkeypatch.setattr("wfcllm.extract.pipeline.ExtractPipelineConfig", lambda **kwargs: SimpleNamespace(**kwargs))
+
+    args = SimpleNamespace(
+        secret_key=None,
+        input_file=str(input_file),
+        extract_output_dir=None,
+        embed_dim=None,
+        fpr_threshold=None,
+        resume=None,
+        calibration_corpus=None,
+        fpr=None,
+        config=config_file,
+    )
+
+    rc = run_module.run_extract(args, FakeState())
+    assert rc == 0
+    assert captured["gamma"] == 0.75
+    resolved_threshold = captured["resolved_threshold"]
+    assert 0.5 < resolved_threshold < 2.5

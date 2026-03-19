@@ -76,6 +76,7 @@ class TestWatermarkPipelineLoadPrompts:
 
 import json
 import tempfile
+from types import SimpleNamespace
 from pathlib import Path
 from wfcllm.watermark.generator import GenerateResult, EmbedStats
 
@@ -95,6 +96,19 @@ class TestWatermarkPipelineRun:
             ),
         )
 
+    @staticmethod
+    def _build_generator(mock_result):
+        generator = MagicMock()
+        generator.generate.return_value = mock_result
+        generator.config = SimpleNamespace(
+            lsh_d=4,
+            lsh_gamma=0.75,
+            margin_base=0.1,
+            margin_alpha=0.05,
+            secret_key="test-secret",
+        )
+        return generator
+
     def test_run_creates_jsonl(self, mock_result):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = WatermarkPipelineConfig(
@@ -102,8 +116,7 @@ class TestWatermarkPipelineRun:
                 output_dir=tmpdir,
                 dataset_path="data/datasets",
             )
-            generator = MagicMock()
-            generator.generate.return_value = mock_result
+            generator = self._build_generator(mock_result)
 
             pipeline = WatermarkPipeline(generator=generator, config=cfg)
 
@@ -133,6 +146,28 @@ class TestWatermarkPipelineRun:
             assert record["fallback_blocks"] == 0
             assert abs(record["embed_rate"] - 2/3) < 1e-6
 
+    def test_pipeline_writes_watermark_params(self, tmp_path, mock_result):
+        cfg = WatermarkPipelineConfig(
+            dataset="humaneval",
+            output_dir=str(tmp_path),
+            dataset_path="data/datasets",
+        )
+        generator = self._build_generator(mock_result)
+        pipeline = WatermarkPipeline(generator=generator, config=cfg)
+
+        with patch.object(pipeline, "_load_prompts", return_value=[
+            {"id": "HumanEval/0", "prompt": "def foo():\n"},
+        ]):
+            output_path = pipeline.run()
+
+        row = json.loads(Path(output_path).read_text(encoding="utf-8").splitlines()[0])
+        assert row["watermark_params"] == {
+            "lsh_d": 4,
+            "lsh_gamma": 0.75,
+            "margin_base": 0.1,
+            "margin_alpha": 0.05,
+        }
+
     def test_run_returns_output_path(self, mock_result):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = WatermarkPipelineConfig(
@@ -140,8 +175,7 @@ class TestWatermarkPipelineRun:
                 output_dir=tmpdir,
                 dataset_path="data/datasets",
             )
-            generator = MagicMock()
-            generator.generate.return_value = mock_result
+            generator = self._build_generator(mock_result)
             pipeline = WatermarkPipeline(generator=generator, config=cfg)
             with patch.object(pipeline, "_load_prompts", return_value=[
                 {"id": "mbpp/1", "prompt": "Write a function"}
@@ -158,11 +192,11 @@ class TestWatermarkPipelineRun:
                 output_dir=tmpdir,
                 dataset_path="data/datasets",
             )
-            generator = MagicMock()
-            generator.generate.return_value = GenerateResult(
+            result = GenerateResult(
                 code="", stats=EmbedStats(total_blocks=0, embedded_blocks=0,
                     failed_blocks=0, fallback_blocks=0),
             )
+            generator = self._build_generator(result)
             pipeline = WatermarkPipeline(generator=generator, config=cfg)
             with patch.object(pipeline, "_load_prompts", return_value=[
                 {"id": "HumanEval/0", "prompt": "def foo():"}
@@ -170,3 +204,15 @@ class TestWatermarkPipelineRun:
                 output_path = pipeline.run()
             record = json.loads(Path(output_path).read_text().strip())
             assert record["embed_rate"] == 0.0
+
+
+def test_build_public_watermark_params_requires_public_config():
+    generator = SimpleNamespace(_config=SimpleNamespace(
+        lsh_d=4,
+        lsh_gamma=0.75,
+        margin_base=0.1,
+        margin_alpha=0.05,
+    ))
+
+    with pytest.raises(ValueError, match="via .config"):
+        WatermarkPipeline._build_public_watermark_params(generator)

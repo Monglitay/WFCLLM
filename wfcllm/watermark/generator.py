@@ -97,6 +97,10 @@ class WatermarkGenerator:
             for tid in self._tokenizer.encode(kw, add_special_tokens=False)
         }
 
+    @property
+    def config(self) -> WatermarkConfig:
+        return self._config
+
     @torch.no_grad()
     def generate(self, prompt: str) -> GenerateResult:
         """Generate code with watermark embedding."""

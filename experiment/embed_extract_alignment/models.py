@@ -16,6 +16,7 @@ class EmbedEvent:
     parent_node_type: str    # 生成端推断的父节点类型
     node_type: str           # 当前节点类型
     passed: bool             # 该 block 的最终嵌入结果（含 retry 后结果）
+    is_diagnostic_compound_probe: bool = False
 
 
 @dataclass
@@ -58,6 +59,8 @@ class PromptReport:
     extract_unmatched_count: int
     compound_aligned_count: int    # aligned_pairs 中 extract_score is None 的数量
     text_mismatch_count: int
+    text_mismatch_simple_only: int
+    text_mismatch_compound_only: int
     parent_mismatch_count: int
     score_disagree_count: int      # excludes pairs where extract_score is None
 
@@ -71,6 +74,8 @@ class SummaryReport:
     compound_only_events: int   # sum of all fallback+cascade events
     compound_ratio: float       # compound_only_events / total_embed_events
     text_mismatch_total: int
+    text_mismatch_simple_only_total: int
+    text_mismatch_compound_only_total: int
     parent_mismatch_total: int
     score_disagree_total: int
     avg_embed_rate: float       # mean(simple_passed / embed_total) for reports with embed_total > 0
