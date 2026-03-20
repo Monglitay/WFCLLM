@@ -48,19 +48,41 @@
     "cascade_max_depth": 1,
     "repetition_penalty": 1.05,
     "lsh_d": 4,
-    "lsh_gamma": 0.75
+    "lsh_gamma": 0.75,
+    "adaptive_gamma": {
+      "enabled": false,
+      "strategy": "piecewise_quantile",
+      "profile_path": null,
+      "profile_id": null,
+      "gamma_min": 0.25,
+      "gamma_max": 0.95,
+      "anchors": {
+        "p10": 0.95,
+        "p50": 0.75,
+        "p75": 0.55,
+        "p90": 0.35,
+        "p95": 0.25
+      }
+    }
   },
   "extract": {
     "secret_key": "1010",
     "embed_dim": 128,
     "fpr_threshold": 3.0,
-    "lsh_d": 3,
-    "lsh_gamma": 0.5,
+    "lsh_d": 4,
+    "lsh_gamma": 0.75,
     "calibration_corpus":"data/negative_corpus.jsonl",
     "fpr": 0.05,
     "input_file": "data/watermarked/humaneval_20260318_204554.jsonl",
     "output_dir": "data/results",
-    "resume": null
+    "resume": null,
+    "adaptive_detection": {
+      "mode": "fixed",
+      "require_block_contract_check": true,
+      "fail_on_structure_mismatch": true,
+      "warn_on_numeric_mismatch": true,
+      "exclude_invalid_samples": true
+    }
   },
   "generate_negative": {
     "lm_model_path": "data/models/deepseek-coder-7b-base",

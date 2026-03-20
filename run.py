@@ -83,32 +83,85 @@ def resolve_extract_lsh_params(first_record: dict, ext_cfg: dict) -> tuple[int, 
         ) from exc
 
 
-def resolve_use_pretrained_encoder(cfg: dict, phase: str) -> bool:
-    encoder_cfg = cfg.get("encoder", {})
-    phase_cfg = cfg.get(phase, {})
-    if "use_pretrained_encoder" in phase_cfg:
-        return bool(phase_cfg["use_pretrained_encoder"])
-    return bool(encoder_cfg.get("use_pretrained_only", False))
+def resolve_adaptive_gamma_config(args: argparse.Namespace, wm_cfg: dict):
+    from wfcllm.watermark.config import AdaptiveGammaConfig
 
+    configured = wm_cfg.get("adaptive_gamma") or {}
+    defaults = AdaptiveGammaConfig()
+    anchors = defaults.anchors.copy()
+    raw_anchors = configured.get("anchors")
+    if isinstance(raw_anchors, dict):
+        anchors.update(raw_anchors)
 
-def resolve_encoder_weight_path(
-    use_pretrained_encoder: bool,
-    state: "RunState",
-    output_model_dir: str,
-) -> str | None:
-    if use_pretrained_encoder:
-        return None
+    enabled = bool(configured.get("enabled", defaults.enabled))
+    if (
+        args.gamma_strategy is not None
+        or args.entropy_profile is not None
+        or args.profile_id is not None
+    ):
+        enabled = True
 
-    best_model_path = state.get("encoder", "best_model_path") or str(
-        Path(output_model_dir) / "best_model.pt"
+    return AdaptiveGammaConfig(
+        enabled=enabled,
+        strategy=args.gamma_strategy or configured.get("strategy", defaults.strategy),
+        profile_path=(
+            args.entropy_profile
+            if args.entropy_profile is not None
+            else configured.get("profile_path", defaults.profile_path)
+        ),
+        profile_id=(
+            args.profile_id
+            if args.profile_id is not None
+            else configured.get("profile_id", defaults.profile_id)
+        ),
+        gamma_min=float(configured.get("gamma_min", defaults.gamma_min)),
+        gamma_max=float(configured.get("gamma_max", defaults.gamma_max)),
+        anchors=anchors,
     )
-    encoder_checkpoint = state.get("encoder", "checkpoint")
 
-    if Path(best_model_path).exists():
-        return best_model_path
-    if encoder_checkpoint and Path(encoder_checkpoint).exists():
-        return encoder_checkpoint
-    return None
+
+def resolve_adaptive_detection_config(args: argparse.Namespace, ext_cfg: dict):
+    from wfcllm.extract.config import AdaptiveDetectionConfig
+
+    configured = ext_cfg.get("adaptive_detection") or {}
+    defaults = AdaptiveDetectionConfig()
+
+    require_block_contract_check = bool(
+        configured.get(
+            "require_block_contract_check",
+            defaults.require_block_contract_check,
+        )
+    )
+    fail_on_structure_mismatch = bool(
+        configured.get(
+            "fail_on_structure_mismatch",
+            defaults.fail_on_structure_mismatch,
+        )
+    )
+    if getattr(args, "strict_contract", False):
+        require_block_contract_check = True
+        fail_on_structure_mismatch = True
+
+    return AdaptiveDetectionConfig(
+        mode=(
+            getattr(args, "adaptive_detection_mode", None)
+            or configured.get("mode", defaults.mode)
+        ),
+        require_block_contract_check=require_block_contract_check,
+        fail_on_structure_mismatch=fail_on_structure_mismatch,
+        warn_on_numeric_mismatch=bool(
+            configured.get(
+                "warn_on_numeric_mismatch",
+                defaults.warn_on_numeric_mismatch,
+            )
+        ),
+        exclude_invalid_samples=bool(
+            configured.get(
+                "exclude_invalid_samples",
+                defaults.exclude_invalid_samples,
+            )
+        ),
+    )
 
 
 class RunState:
@@ -220,10 +273,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dataset-path", default=None, help="本地数据集根目录（默认: data/datasets）")
     parser.add_argument("--output-dir", default=None, help="水印 JSONL 输出目录（默认: data/watermarked）")
     parser.add_argument(
-        "--sample-limit",
-        type=int,
+        "--gamma-strategy",
+        choices=["piecewise_quantile"],
         default=None,
-        help="仅处理前 N 条 watermark prompts（调试/子集验证用）",
+        help="自适应 gamma 调度策略（默认从配置文件读取）",
+    )
+    parser.add_argument(
+        "--entropy-profile",
+        default=None,
+        help="entropy profile JSON 路径（启用 adaptive gamma 时使用）",
+    )
+    parser.add_argument(
+        "--profile-id",
+        default=None,
+        help="输出 watermark metadata 时使用的 entropy profile 标识",
     )
     # Extract 参数
     parser.add_argument("--input-file", default=None,
@@ -234,6 +297,17 @@ def build_parser() -> argparse.ArgumentParser:
                         help="负样本校准语料 JSONL 路径（提供则自动运行 ThresholdCalibrator）")
     parser.add_argument("--fpr", type=float, default=0.01,
                         help="校准目标 FPR（默认: 0.01，仅在 --calibration-corpus 指定时生效）")
+    parser.add_argument(
+        "--adaptive-detection-mode",
+        choices=["fixed", "prefer-adaptive", "require-adaptive"],
+        default=None,
+        help="提取阶段 adaptive hypothesis 的模式（默认从配置文件读取）",
+    )
+    parser.add_argument(
+        "--strict-contract",
+        action="store_true",
+        help="强制启用 block contract 检查并在结构不匹配时严格失败",
+    )
     # generate-negative 参数
     parser.add_argument(
         "--negative-output", default=None,
@@ -420,11 +494,9 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
     # Config 读取（优先 CLI，回退 config 文件）
     cfg = load_config(args.config)
     wm_cfg = cfg.get("watermark", {})
-    use_pretrained_encoder = resolve_use_pretrained_encoder(cfg, "watermark")
     dataset = args.dataset or wm_cfg.get("dataset", "humaneval")
     dataset_path = args.dataset_path or wm_cfg.get("dataset_path", "data/datasets")
     output_dir = args.output_dir or wm_cfg.get("output_dir", "data/watermarked")
-    sample_limit = args.sample_limit if args.sample_limit is not None else wm_cfg.get("sample_limit")
     embed_dim = args.embed_dim or wm_cfg.get("encoder_embed_dim", 128)
     secret_key = args.secret_key or wm_cfg.get("secret_key", "")
     lm_model_path = args.lm_model_path or wm_cfg.get("lm_model_path", "")
@@ -447,21 +519,18 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
         print(f"[回退] 编码器使用 HF Hub: {enc_config.model_name}")
     encoder = SemanticEncoder(config=enc_config)
 
-    encoder_weight_path = resolve_encoder_weight_path(
-        use_pretrained_encoder=use_pretrained_encoder,
-        state=state,
-        output_model_dir=enc_config.output_model_dir,
+    best_model_path = state.get("encoder", "best_model_path") or str(
+        Path(enc_config.output_model_dir) / "best_model.pt"
     )
-    if use_pretrained_encoder:
-        print("[配置] 跳过微调权重加载，使用原始预训练编码器")
-    elif encoder_weight_path and encoder_weight_path.endswith("best_model.pt"):
-        ckpt = torch.load(encoder_weight_path, map_location="cpu")
+    encoder_checkpoint = state.get("encoder", "checkpoint")
+    if Path(best_model_path).exists():
+        ckpt = torch.load(best_model_path, map_location="cpu")
         encoder.load_state_dict(ckpt["model_state_dict"])
-        print(f"[加载] 编码器权重来自: {encoder_weight_path}")
-    elif encoder_weight_path is not None:
-        ckpt = torch.load(encoder_weight_path, map_location="cpu")
+        print(f"[加载] 编码器权重来自: {best_model_path}")
+    elif encoder_checkpoint and Path(encoder_checkpoint).exists():
+        ckpt = torch.load(encoder_checkpoint, map_location="cpu")
         encoder.load_state_dict(ckpt["model_state_dict"])
-        print(f"[加载] 编码器权重来自 checkpoint（fallback）: {encoder_weight_path}")
+        print(f"[加载] 编码器权重来自 checkpoint（fallback）: {encoder_checkpoint}")
     else:
         print("[警告] 未找到微调权重，使用预训练模型")
     encoder_device = wm_cfg.get("encoder_device", "cpu")
@@ -500,6 +569,7 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
         repetition_penalty=wm_cfg.get("repetition_penalty", 1.3),
         lsh_d=wm_cfg.get("lsh_d", 3),
         lsh_gamma=wm_cfg.get("lsh_gamma", 0.5),
+        adaptive_gamma=resolve_adaptive_gamma_config(args, wm_cfg),
     )
     generator = WatermarkGenerator(lm_model, lm_tokenizer, encoder, encoder_tokenizer, wm_config)
 
@@ -510,7 +580,6 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
         output_dir=output_dir,
         dataset_path=dataset_path,
         resume=resume,
-        sample_limit=sample_limit,
     )
     pipeline = WatermarkPipeline(generator=generator, config=pipeline_config)
 
@@ -550,7 +619,6 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
     # Config 读取（优先 CLI，回退 config 文件；input_file 也可从 run_state 中取）
     cfg = load_config(args.config)
     ext_cfg = cfg.get("extract", {})
-    use_pretrained_encoder = resolve_use_pretrained_encoder(cfg, "extract")
     secret_key = args.secret_key or ext_cfg.get("secret_key", "")
     if not secret_key:
         print("[错误] --secret-key 为必填参数", file=sys.stderr)
@@ -607,21 +675,18 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
         print(f"[回退] 编码器使用 HF Hub: {enc_config.model_name}")
     encoder = SemanticEncoder(config=enc_config)
 
-    encoder_weight_path = resolve_encoder_weight_path(
-        use_pretrained_encoder=use_pretrained_encoder,
-        state=state,
-        output_model_dir=enc_config.output_model_dir,
+    best_model_path = state.get("encoder", "best_model_path") or str(
+        Path(enc_config.output_model_dir) / "best_model.pt"
     )
-    if use_pretrained_encoder:
-        print("[配置] 跳过微调权重加载，使用原始预训练编码器")
-    elif encoder_weight_path and encoder_weight_path.endswith("best_model.pt"):
-        ckpt = torch.load(encoder_weight_path, map_location="cpu")
+    encoder_checkpoint = state.get("encoder", "checkpoint")
+    if Path(best_model_path).exists():
+        ckpt = torch.load(best_model_path, map_location="cpu")
         encoder.load_state_dict(ckpt["model_state_dict"])
-        print(f"[加载] 编码器权重来自: {encoder_weight_path}")
-    elif encoder_weight_path is not None:
-        ckpt = torch.load(encoder_weight_path, map_location="cpu")
+        print(f"[加载] 编码器权重来自: {best_model_path}")
+    elif encoder_checkpoint and Path(encoder_checkpoint).exists():
+        ckpt = torch.load(encoder_checkpoint, map_location="cpu")
         encoder.load_state_dict(ckpt["model_state_dict"])
-        print(f"[加载] 编码器权重来自 checkpoint（fallback）: {encoder_weight_path}")
+        print(f"[加载] 编码器权重来自 checkpoint（fallback）: {encoder_checkpoint}")
     else:
         print("[警告] 未找到微调权重，使用预训练模型")
 
@@ -671,6 +736,7 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
         fpr_threshold=fpr_threshold,
         lsh_d=lsh_d,
         lsh_gamma=lsh_gamma,
+        adaptive_detection=resolve_adaptive_detection_config(args, ext_cfg),
     )
     detector = WatermarkDetector(extract_config, encoder, tokenizer, device=device)
 

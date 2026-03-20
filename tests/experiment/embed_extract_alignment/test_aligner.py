@@ -182,6 +182,39 @@ def test_fallback_embed_matches_compound_block():
     assert report.score_disagree_count == 0  # excluded because extract_score is None
 
 
+def test_cascade_diagnostic_preserves_compound_alignment():
+    embed = make_embed(
+        "for i in range(3):\n    pass",
+        path="cascade",
+        node_type="for_statement",
+        passed=False,
+    )
+    embed.is_diagnostic_compound_probe = True
+    simple = make_block("0", "x = 1", start_line=1, end_line=1)
+    compound = make_block(
+        "1",
+        "for i in range(3):\n    pass",
+        node_type="for_statement",
+        block_type="compound",
+        start_line=2,
+        end_line=3,
+    )
+    score = BlockScore(block_id="0", score=1, min_margin=0.5)
+
+    report = Aligner.align(
+        embed_events=[make_embed("x = 1", passed=True), embed],
+        simple_blocks=[simple],
+        all_blocks=[simple, compound],
+        block_scores=[score],
+        generated_code="x = 1\nfor i in range(3):\n    pass\n",
+    )
+
+    assert report.compound_aligned_count >= 1
+    assert report.score_disagree_count == 0
+    assert report.text_mismatch_simple_only == 0
+    assert report.text_mismatch_compound_only == 0
+
+
 def test_parent_mismatch_detection():
     """If embed.parent_node_type != resolved parent type → parent_match=False."""
     embed = make_embed("x = 1", parent_node_type="for_statement", passed=True)
@@ -233,3 +266,7 @@ class TestDiagnosticGeneratorNoFallback:
         assert not hasattr(DiagnosticGenerator, "_diag_try_passive_fallback"), (
             "DiagnosticGenerator._diag_try_passive_fallback 应已删除（与主系统对齐）"
         )
+
+    def test_embed_event_supports_diagnostic_compound_probe_flag(self):
+        event = make_embed("for i in range(3):\n    pass", path="cascade")
+        assert event.is_diagnostic_compound_probe is False

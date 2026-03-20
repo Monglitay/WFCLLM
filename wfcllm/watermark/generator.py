@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 import torch
 
+from wfcllm.common.block_contract import BlockContract, build_block_contracts
 from wfcllm.watermark.cascade import CascadeManager
 from wfcllm.watermark.config import WatermarkConfig
 from wfcllm.watermark.context import GenerationContext
@@ -37,6 +38,10 @@ class GenerateResult:
 
     code: str
     stats: EmbedStats
+    block_contracts: list[BlockContract] = field(default_factory=list)
+    adaptive_mode: str = "fixed"
+    profile_id: str | None = None
+    alignment_summary: dict[str, int | bool] = field(default_factory=dict)
 
     # Backward-compatible properties
     @property
@@ -96,6 +101,10 @@ class WatermarkGenerator:
             for kw in _STRUCTURAL_KEYWORDS
             for tid in self._tokenizer.encode(kw, add_special_tokens=False)
         }
+
+    @property
+    def config(self) -> WatermarkConfig:
+        return self._config
 
     @torch.no_grad()
     def generate(self, prompt: str) -> GenerateResult:
@@ -174,7 +183,17 @@ class WatermarkGenerator:
                         ctx, cascade_mgr, retry_loop, stats, pending_fallbacks
                     )
 
-        return GenerateResult(code=ctx.generated_text, stats=stats)
+        final_code = ctx.generated_text
+        block_contracts = build_block_contracts(final_code)
+
+        return GenerateResult(
+            code=final_code,
+            stats=stats,
+            block_contracts=block_contracts,
+            adaptive_mode=self._adaptive_mode(),
+            profile_id=None,
+            alignment_summary=self._build_alignment_summary(stats, block_contracts),
+        )
 
     def _verify_block(self, event):
         """Verify a single block against LSH criteria."""
@@ -215,3 +234,20 @@ class WatermarkGenerator:
         logger.debug(
             "[CASCADE OK] rolled back to compound block start; resuming main loop"
         )
+
+    def _adaptive_mode(self) -> str:
+        """Return canonical adaptive metadata mode for the current config."""
+        return "fixed"
+
+    def _build_alignment_summary(
+        self,
+        stats: EmbedStats,
+        block_contracts: list[BlockContract],
+    ) -> dict[str, int | bool]:
+        """Summarize final AST block metadata vs generation-time counters."""
+        final_block_count = len(block_contracts)
+        return {
+            "final_block_count": final_block_count,
+            "generator_total_blocks": stats.total_blocks,
+            "block_count_matches_total_blocks": final_block_count == stats.total_blocks,
+        }

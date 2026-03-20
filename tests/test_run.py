@@ -190,87 +190,117 @@ class TestRunWatermarkConfigNoFallback:
 
 def test_run_extract_passes_lsh_params():
     tree = ast.parse(Path("run.py").read_text(encoding="utf-8"))
+    seen_extract_config_call = False
+    matched_expected_call = False
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "ExtractConfig":
-            kws = {kw.arg for kw in node.keywords}
-            assert "lsh_d" in kws
-            assert "lsh_gamma" in kws
+            seen_extract_config_call = True
+            kw_map = {kw.arg: kw.value for kw in node.keywords}
+            has_expected_lsh_d = (
+                "lsh_d" in kw_map
+                and isinstance(kw_map["lsh_d"], ast.Name)
+                and kw_map["lsh_d"].id == "lsh_d"
+            )
+            has_expected_lsh_gamma = (
+                "lsh_gamma" in kw_map
+                and isinstance(kw_map["lsh_gamma"], ast.Name)
+                and kw_map["lsh_gamma"].id == "lsh_gamma"
+            )
+            if has_expected_lsh_d and has_expected_lsh_gamma:
+                matched_expected_call = True
+
+    assert seen_extract_config_call, "run.py must call ExtractConfig"
+    assert matched_expected_call, (
+        "run.py must pass lsh_d=lsh_d and lsh_gamma=lsh_gamma into ExtractConfig"
+    )
+
+
+def test_run_extract_resolves_lsh_params_from_first_record():
+    tree = ast.parse(Path("run.py").read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "resolve_extract_lsh_params":
+            assert len(node.args) >= 2
+            assert isinstance(node.args[0], ast.Name)
+            assert isinstance(node.args[1], ast.Name)
+            assert node.args[0].id == "first_record"
+            assert node.args[1].id == "ext_cfg"
             return
-    raise AssertionError("run.py must pass lsh_d/lsh_gamma into ExtractConfig")
+    raise AssertionError("run.py must resolve extract LSH params from first_record/ext_cfg")
 
 
-class TestPretrainedEncoderToggle:
-    def test_stage_override_takes_priority_over_global_toggle(self):
-        from run import resolve_use_pretrained_encoder
+def test_run_extract_returns_error_on_invalid_first_record_json(tmp_path, capsys):
+    from run import run_extract
 
-        cfg = {
-            "encoder": {"use_pretrained_only": False},
-            "watermark": {"use_pretrained_encoder": True},
-        }
+    class _State:
+        @staticmethod
+        def is_done(phase: str) -> bool:
+            return phase == "encoder"
 
-        assert resolve_use_pretrained_encoder(cfg, "watermark") is True
+        @staticmethod
+        def get(phase: str, key: str):
+            return None
 
-    def test_global_toggle_applies_when_stage_override_missing(self):
-        from run import resolve_use_pretrained_encoder
+    bad_input = tmp_path / "bad.jsonl"
+    bad_input.write_text("{ not valid json }\n", encoding="utf-8")
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text(
+        json.dumps({"extract": {"secret_key": "k", "input_file": str(bad_input)}}),
+        encoding="utf-8",
+    )
+    args = argparse.Namespace(
+        secret_key=None,
+        input_file=str(bad_input),
+        extract_output_dir=None,
+        embed_dim=None,
+        fpr_threshold=None,
+        resume=None,
+        calibration_corpus=None,
+        fpr=None,
+        config=cfg,
+    )
 
-        cfg = {
-            "encoder": {"use_pretrained_only": True},
-            "extract": {},
-        }
+    rc = run_extract(args, _State())
+    stderr = capsys.readouterr().err
+    assert rc == 1
+    assert "输入文件首条记录" in stderr
 
-        assert resolve_use_pretrained_encoder(cfg, "extract") is True
 
-    def test_default_is_loading_finetuned_weights(self):
-        from run import resolve_use_pretrained_encoder
+def test_run_extract_returns_error_on_invalid_first_record_lsh(tmp_path, capsys):
+    from run import run_extract
 
-        assert resolve_use_pretrained_encoder({}, "extract") is False
+    class _State:
+        @staticmethod
+        def is_done(phase: str) -> bool:
+            return phase == "encoder"
 
-    def test_pretrained_toggle_skips_encoder_weight_loading(self, tmp_path):
-        from run import RunState, resolve_encoder_weight_path
+        @staticmethod
+        def get(phase: str, key: str):
+            return None
 
-        best_model = tmp_path / "best_model.pt"
-        best_model.write_bytes(b"test")
-        checkpoint = tmp_path / "encoder_epoch1.pt"
-        checkpoint.write_bytes(b"test")
+    bad_input = tmp_path / "bad_lsh.jsonl"
+    bad_input.write_text(
+        json.dumps({"watermark_params": {"lsh_d": "bad", "lsh_gamma": 0.75}}) + "\n",
+        encoding="utf-8",
+    )
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text(
+        json.dumps({"extract": {"secret_key": "k", "input_file": str(bad_input)}}),
+        encoding="utf-8",
+    )
+    args = argparse.Namespace(
+        secret_key=None,
+        input_file=str(bad_input),
+        extract_output_dir=None,
+        embed_dim=None,
+        fpr_threshold=None,
+        resume=None,
+        calibration_corpus=None,
+        fpr=None,
+        config=cfg,
+    )
 
-        state = RunState(tmp_path / "state.json")
-        state.mark_done(
-            "encoder",
-            checkpoint=str(checkpoint),
-            best_model_path=str(best_model),
-        )
-
-        assert resolve_encoder_weight_path(
-            use_pretrained_encoder=True,
-            state=state,
-            output_model_dir=str(tmp_path),
-        ) is None
-
-    def test_finetuned_toggle_prefers_best_model_then_checkpoint(self, tmp_path):
-        from run import RunState, resolve_encoder_weight_path
-
-        best_model = tmp_path / "best_model.pt"
-        best_model.write_bytes(b"test")
-        checkpoint = tmp_path / "encoder_epoch1.pt"
-        checkpoint.write_bytes(b"test")
-
-        state = RunState(tmp_path / "state.json")
-        state.mark_done(
-            "encoder",
-            checkpoint=str(checkpoint),
-            best_model_path=str(best_model),
-        )
-
-        assert resolve_encoder_weight_path(
-            use_pretrained_encoder=False,
-            state=state,
-            output_model_dir=str(tmp_path),
-        ) == str(best_model)
-
-        best_model.unlink()
-
-        assert resolve_encoder_weight_path(
-            use_pretrained_encoder=False,
-            state=state,
-            output_model_dir=str(tmp_path),
-        ) == str(checkpoint)
+    rc = run_extract(args, _State())
+    stderr = capsys.readouterr().err
+    assert rc == 1
+    assert "LSH 参数无效" in stderr

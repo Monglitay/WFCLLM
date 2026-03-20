@@ -1,7 +1,7 @@
 """Tests for wfcllm.watermark.entropy."""
 
 import pytest
-from wfcllm.watermark.entropy import NodeEntropyEstimator
+from wfcllm.watermark.entropy import ENTROPY_SCALE, NodeEntropyEstimator
 from wfcllm.watermark.config import WatermarkConfig
 
 
@@ -44,6 +44,17 @@ class TestNodeEntropyEstimator:
             "for i in range(10):\n    x = i + 1"
         )
         assert compound > simple
+
+    def test_estimate_block_entropy_units_non_empty_code(self, estimator):
+        entropy_units = estimator.estimate_block_entropy_units("x = 1")
+        assert isinstance(entropy_units, int)
+        assert entropy_units > 0
+
+    def test_estimate_block_entropy_matches_units_over_scale(self, estimator):
+        code = "for i in range(3):\n    x = i\n"
+        entropy = estimator.estimate_block_entropy(code)
+        entropy_units = estimator.estimate_block_entropy_units(code)
+        assert entropy == pytest.approx(entropy_units / ENTROPY_SCALE)
 
     def test_compute_margin(self, estimator):
         """Margin = m_base + alpha * entropy."""

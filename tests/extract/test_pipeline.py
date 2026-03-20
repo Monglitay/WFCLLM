@@ -3,14 +3,39 @@ from __future__ import annotations
 
 import json
 import math
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from wfcllm.extract.alignment import compare_block_contracts
 from wfcllm.extract.pipeline import ExtractPipeline, ExtractPipelineConfig
 from wfcllm.extract.config import DetectionResult
+from wfcllm.extract.calibrator import ThresholdCalibrator
+
+
+def _contract(
+    *,
+    ordinal: int,
+    block_id: str,
+    entropy_units: int = 100,
+) -> dict:
+    return {
+        "ordinal": ordinal,
+        "block_id": block_id,
+        "node_type": "expression_statement",
+        "parent_node_type": "module",
+        "block_text_hash": f"hash-{block_id}",
+        "start_line": ordinal + 1,
+        "end_line": ordinal + 1,
+        "entropy_units": entropy_units,
+        "gamma_target": 0.0,
+        "k": 0,
+        "gamma_effective": 0.0,
+    }
 
 
 class TestExtractPipelineConfig:
@@ -135,3 +160,422 @@ class TestExtractPipelineStatistics:
             summary_doc = json.loads(summary_path.read_text())
             lo, hi = summary_doc["summary"]["watermark_rate_ci_95"]
             assert lo <= hi
+
+    def test_run_surfaces_contract_alignment_fields_when_metadata_present(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            code = "x = 1\n"
+            embedded_contracts = [_contract(ordinal=0, block_id="0"), _contract(ordinal=1, block_id="1")]
+            rebuilt_contracts = [_contract(ordinal=0, block_id="0")]
+            report = compare_block_contracts(embedded_contracts, rebuilt_contracts)
+
+            input_path = Path(tmpdir) / "test.jsonl"
+            input_path.write_text(
+                json.dumps(
+                    {
+                        "id": "HumanEval/0",
+                        "generated_code": code,
+                        "blocks": embedded_contracts,
+                        "adaptive_mode": "piecewise",
+                        "profile_id": "entropy-profile-v1",
+                        "embed_rate": 1.0,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            detector = MagicMock()
+            detector.detect.return_value = DetectionResult(
+                is_watermarked=False,
+                z_score=1.0,
+                p_value=0.5,
+                total_blocks=1,
+                independent_blocks=1,
+                hit_blocks=0,
+                block_details=[],
+                alignment_report=report,
+                contract_valid=report.contract_valid,
+            )
+
+            pipeline = ExtractPipeline(
+                detector=detector,
+                config=ExtractPipelineConfig(
+                    input_file=str(input_path),
+                    output_dir=tmpdir,
+                ),
+            )
+
+            details_path = pipeline.run()
+            detail_rows = Path(details_path).read_text(encoding="utf-8").splitlines()
+            row = json.loads(detail_rows[0])
+            _, kwargs = detector.detect.call_args
+
+            assert kwargs["watermark_metadata"]["blocks"] == embedded_contracts
+            assert kwargs["watermark_metadata"]["adaptive_mode"] == "piecewise"
+            assert kwargs["watermark_metadata"]["profile_id"] == "entropy-profile-v1"
+            assert row["contract_valid"] is False
+            assert row["contract_alignment"]["status"] == "structure_mismatch"
+            assert row["contract_alignment"]["block_count_mismatch"] is True
+
+    def test_run_without_metadata_keeps_detail_rows_legacy_shaped(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            jsonl_path = self._make_jsonl(tmpdir, n=1)
+            detector = MagicMock()
+            detector.detect.return_value = _make_detection_result(True, 4.5)
+
+            pipeline = ExtractPipeline(
+                detector=detector,
+                config=ExtractPipelineConfig(
+                    input_file=jsonl_path,
+                    output_dir=tmpdir,
+                ),
+            )
+
+            details_path = pipeline.run()
+            row = json.loads(Path(details_path).read_text(encoding="utf-8").splitlines()[0])
+
+            _, kwargs = detector.detect.call_args
+            assert kwargs == {}
+            assert "contract_valid" not in row
+            assert "contract_alignment" not in row
+
+    def test_summary_excludes_invalid_samples_when_policy_enabled(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "test.jsonl"
+            input_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "id": "HumanEval/0",
+                                "generated_code": "x = 1\n",
+                                "blocks": [_contract(ordinal=0, block_id="0")],
+                                "embed_rate": 1.0,
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "id": "HumanEval/1",
+                                "generated_code": "y = 2\n",
+                                "blocks": [_contract(ordinal=0, block_id="0")],
+                                "embed_rate": 0.0,
+                            }
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            detector = MagicMock()
+            detector._config.adaptive_detection.exclude_invalid_samples = True
+            detector.detect.side_effect = [
+                DetectionResult(
+                    is_watermarked=True,
+                    z_score=4.0,
+                    p_value=0.001,
+                    total_blocks=1,
+                    independent_blocks=1,
+                    hit_blocks=1,
+                    block_details=[],
+                    contract_valid=True,
+                    alignment_report=compare_block_contracts(
+                        [_contract(ordinal=0, block_id="0")],
+                        [_contract(ordinal=0, block_id="0")],
+                    ),
+                ),
+                DetectionResult(
+                    is_watermarked=False,
+                    z_score=0.5,
+                    p_value=0.6,
+                    total_blocks=1,
+                    independent_blocks=1,
+                    hit_blocks=0,
+                    block_details=[],
+                    contract_valid=False,
+                    alignment_report=compare_block_contracts(
+                        [_contract(ordinal=0, block_id="0"), _contract(ordinal=1, block_id="1")],
+                        [_contract(ordinal=0, block_id="0")],
+                    ),
+                ),
+            ]
+
+            pipeline = ExtractPipeline(
+                detector=detector,
+                config=ExtractPipelineConfig(
+                    input_file=str(input_path),
+                    output_dir=tmpdir,
+                ),
+            )
+
+            details_path = pipeline.run()
+            summary_doc = json.loads((Path(details_path).parent / "test_summary.json").read_text(encoding="utf-8"))
+
+            assert summary_doc["meta"]["total_samples"] == 2
+            assert summary_doc["meta"]["scored_samples"] == 1
+            assert summary_doc["meta"]["invalid_samples"] == 1
+            assert summary_doc["summary"]["watermark_rate"] == 1.0
+            assert summary_doc["summary"]["mean_z_score"] == 4.0
+
+    def test_summary_distinguishes_modes_and_invalid_reasons(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "test.jsonl"
+            input_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "id": "HumanEval/0",
+                                "generated_code": "x = 1\n",
+                                "blocks": [_contract(ordinal=0, block_id="0")],
+                                "adaptive_mode": "fixed",
+                                "embed_rate": 1.0,
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "id": "HumanEval/1",
+                                "generated_code": "y = 2\n",
+                                "blocks": [_contract(ordinal=0, block_id="0", entropy_units=101)],
+                                "adaptive_mode": "piecewise_quantile",
+                                "embed_rate": 1.0,
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "id": "HumanEval/2",
+                                "generated_code": "z = 3\n",
+                                "blocks": [
+                                    _contract(ordinal=0, block_id="0"),
+                                    _contract(ordinal=1, block_id="1"),
+                                ],
+                                "adaptive_mode": "piecewise_quantile",
+                                "embed_rate": 0.0,
+                            }
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            aligned_report = compare_block_contracts(
+                [_contract(ordinal=0, block_id="0")],
+                [_contract(ordinal=0, block_id="0")],
+            )
+            numeric_mismatch_report = compare_block_contracts(
+                [_contract(ordinal=0, block_id="0", entropy_units=101)],
+                [_contract(ordinal=0, block_id="0", entropy_units=100)],
+            )
+            structure_mismatch_report = compare_block_contracts(
+                [_contract(ordinal=0, block_id="0"), _contract(ordinal=1, block_id="1")],
+                [_contract(ordinal=0, block_id="0")],
+            )
+
+            detector = MagicMock()
+            detector._config.adaptive_detection.exclude_invalid_samples = False
+            detector.detect.side_effect = [
+                DetectionResult(
+                    is_watermarked=True,
+                    z_score=4.0,
+                    p_value=0.001,
+                    total_blocks=1,
+                    independent_blocks=1,
+                    hit_blocks=1,
+                    block_details=[],
+                    hypothesis_mode="fixed",
+                    contract_valid=True,
+                    alignment_report=aligned_report,
+                ),
+                DetectionResult(
+                    is_watermarked=False,
+                    z_score=0.5,
+                    p_value=0.6,
+                    total_blocks=1,
+                    independent_blocks=1,
+                    hit_blocks=0,
+                    block_details=[],
+                    hypothesis_mode="adaptive",
+                    contract_valid=False,
+                    alignment_report=numeric_mismatch_report,
+                ),
+                DetectionResult(
+                    is_watermarked=False,
+                    z_score=0.2,
+                    p_value=0.8,
+                    total_blocks=1,
+                    independent_blocks=1,
+                    hit_blocks=0,
+                    block_details=[],
+                    hypothesis_mode="adaptive",
+                    contract_valid=False,
+                    alignment_report=structure_mismatch_report,
+                ),
+            ]
+
+            pipeline = ExtractPipeline(
+                detector=detector,
+                config=ExtractPipelineConfig(
+                    input_file=str(input_path),
+                    output_dir=tmpdir,
+                ),
+            )
+
+            details_path = pipeline.run()
+            detail_rows = [
+                json.loads(line)
+                for line in Path(details_path).read_text(encoding="utf-8").splitlines()
+            ]
+            summary_doc = json.loads(
+                (Path(details_path).parent / "test_summary.json").read_text(encoding="utf-8")
+            )
+
+            assert detail_rows[0]["mode"] == "fixed"
+            assert detail_rows[1]["mode"] == "adaptive"
+            assert detail_rows[1]["alignment_ok"] is False
+            assert detail_rows[2]["alignment_ok"] is False
+            assert summary_doc["summary"]["mode_counts"] == {
+                "fixed": 1,
+                "adaptive": 2,
+            }
+            assert summary_doc["summary"]["invalid_reason_counts"] == {
+                "alignment_failed": 1,
+                "adaptive_contract_invalid": 1,
+            }
+
+
+def test_calibrated_threshold_smoke_range():
+    resolved_threshold = ThresholdCalibrator._percentile_threshold(
+        z_scores=[0.3, 0.8, 1.1, 1.6, 2.0],
+        fpr=0.2,
+    )
+    assert 0.5 < resolved_threshold < 2.5
+
+
+def test_debug_extract_alignment_smoke_resolves_embedded_params_without_diag(tmp_path):
+    from tools.debug_extract_alignment import build_debug_payload
+
+    input_file = tmp_path / "watermarked.jsonl"
+    input_file.write_text(
+        json.dumps(
+            {
+                "id": "HumanEval/0",
+                "prompt": "def foo():\n",
+                "generated_code": "def foo():\n    return 1\n",
+                "watermark_params": {"lsh_d": 4, "lsh_gamma": 0.75},
+            }
+        ) + "\n",
+        encoding="utf-8",
+    )
+    config_file = tmp_path / "cfg.json"
+    config_file.write_text(
+        json.dumps({"extract": {"lsh_d": 3, "lsh_gamma": 0.5}}),
+        encoding="utf-8",
+    )
+
+    payload = build_debug_payload(
+        prompt_id="HumanEval/0",
+        input_file=str(input_file),
+        use_embedded_params=True,
+        config_path=str(config_file),
+        diag_details=None,
+    )
+
+    assert payload["prompt_id"] == "HumanEval/0"
+    assert payload["resolved_lsh_d"] == 4
+    assert payload["resolved_lsh_gamma"] == 0.75
+    assert payload["diagnostic_report_found"] is False
+
+
+def test_debug_extract_alignment_auto_discovers_diag_details(tmp_path):
+    from tools.debug_extract_alignment import build_debug_payload
+
+    watermarked_dir = tmp_path / "data" / "watermarked"
+    watermarked_dir.mkdir(parents=True)
+    input_file = watermarked_dir / "sample.jsonl"
+    input_file.write_text(
+        json.dumps(
+            {
+                "id": "HumanEval/0",
+                "prompt": "def foo():\n",
+                "generated_code": "def foo():\n    return 1\n",
+                "watermark_params": {"lsh_d": 4, "lsh_gamma": 0.75},
+            }
+        ) + "\n",
+        encoding="utf-8",
+    )
+
+    diag_dir = tmp_path / "data" / "diag_reports"
+    diag_dir.mkdir(parents=True)
+    details_file = diag_dir / "details_20990101_000000.jsonl"
+    details_file.write_text(
+        json.dumps(
+            {
+                "prompt_id": "HumanEval/0",
+                "text_mismatch_count": 1,
+                "parent_mismatch_count": 0,
+                "score_disagree_count": 0,
+                "aligned_pairs": [],
+            }
+        ) + "\n",
+        encoding="utf-8",
+    )
+
+    config_file = tmp_path / "cfg.json"
+    config_file.write_text(
+        json.dumps({"extract": {"lsh_d": 3, "lsh_gamma": 0.5}}),
+        encoding="utf-8",
+    )
+
+    payload = build_debug_payload(
+        prompt_id="HumanEval/0",
+        input_file=str(input_file),
+        use_embedded_params=True,
+        config_path=str(config_file),
+        diag_details=None,
+    )
+
+    assert payload["diagnostic_report_found"] is True
+    assert payload["diagnostic_details_file"] == str(details_file)
+    assert payload["text_mismatch_count"] == 1
+
+
+def test_debug_extract_alignment_cli_runs_from_script_path(tmp_path):
+    input_file = tmp_path / "watermarked.jsonl"
+    input_file.write_text(
+        json.dumps(
+            {
+                "id": "HumanEval/0",
+                "prompt": "def foo():\n",
+                "generated_code": "def foo():\n    return 1\n",
+                "watermark_params": {"lsh_d": 4, "lsh_gamma": 0.75},
+            }
+        ) + "\n",
+        encoding="utf-8",
+    )
+    config_file = tmp_path / "cfg.json"
+    config_file.write_text(
+        json.dumps({"extract": {"lsh_d": 3, "lsh_gamma": 0.5}}),
+        encoding="utf-8",
+    )
+
+    repo_root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/debug_extract_alignment.py",
+            "--prompt-id",
+            "HumanEval/0",
+            "--input-file",
+            str(input_file),
+            "--use-embedded-params",
+            "--config",
+            str(config_file),
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert "resolved_lsh_d" in result.stdout

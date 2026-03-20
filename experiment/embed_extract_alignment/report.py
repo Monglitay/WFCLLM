@@ -26,7 +26,8 @@ def print_prompt_summary(report: PromptReport) -> None:
     )
     print(
         f"  compound_aligned={report.compound_aligned_count}  "
-        f"text_mismatch={report.text_mismatch_count}  "
+        f"text_mismatch={report.text_mismatch_count} "
+        f"(simple={report.text_mismatch_simple_only}, compound={report.text_mismatch_compound_only})  "
         f"parent_mismatch={report.parent_mismatch_count}  "
         f"score_disagree={report.score_disagree_count}  "
         f"z={report.detect_z_score:.2f}"
@@ -41,7 +42,11 @@ def print_summary(summary: SummaryReport) -> None:
     print(f"  prompts:           {summary.n_prompts}")
     print(f"  total_embed_events: {summary.total_embed_events}")
     print(f"  compound_events:   {summary.compound_only_events} ({summary.compound_ratio:.1%})")
-    print(f"  text_mismatch:     {summary.text_mismatch_total}")
+    print(
+        f"  text_mismatch:     {summary.text_mismatch_total} "
+        f"(simple={summary.text_mismatch_simple_only_total}, "
+        f"compound={summary.text_mismatch_compound_only_total})"
+    )
     print(f"  parent_mismatch:   {summary.parent_mismatch_total}")
     print(f"  score_disagree:    {summary.score_disagree_total}")
     print(f"  avg_embed_rate:    {summary.avg_embed_rate:.1%}")
@@ -55,7 +60,11 @@ def build_summary(reports: list[PromptReport]) -> SummaryReport:
         return SummaryReport(
             n_prompts=0,
             total_embed_events=0, compound_only_events=0, compound_ratio=0.0,
-            text_mismatch_total=0, parent_mismatch_total=0, score_disagree_total=0,
+            text_mismatch_total=0,
+            text_mismatch_simple_only_total=0,
+            text_mismatch_compound_only_total=0,
+            parent_mismatch_total=0,
+            score_disagree_total=0,
             avg_embed_rate=0.0, avg_detect_z=0.0,
         )
 
@@ -75,6 +84,8 @@ def build_summary(reports: list[PromptReport]) -> SummaryReport:
         compound_only_events=compound_total,
         compound_ratio=compound_total / total_embed if total_embed > 0 else 0.0,
         text_mismatch_total=sum(r.text_mismatch_count for r in reports),
+        text_mismatch_simple_only_total=sum(r.text_mismatch_simple_only for r in reports),
+        text_mismatch_compound_only_total=sum(r.text_mismatch_compound_only for r in reports),
         parent_mismatch_total=sum(r.parent_mismatch_count for r in reports),
         score_disagree_total=sum(r.score_disagree_count for r in reports),
         avg_embed_rate=avg_rate,

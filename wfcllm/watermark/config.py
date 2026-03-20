@@ -2,7 +2,28 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+
+@dataclass
+class AdaptiveGammaConfig:
+    """Adaptive gamma scheduling configuration."""
+
+    enabled: bool = False
+    strategy: str = "piecewise_quantile"
+    profile_path: str | None = None
+    profile_id: str | None = None
+    gamma_min: float = 0.25
+    gamma_max: float = 0.95
+    anchors: dict[str, float] = field(
+        default_factory=lambda: {
+            "p10": 0.95,
+            "p50": 0.75,
+            "p75": 0.55,
+            "p90": 0.35,
+            "p95": 0.25,
+        }
+    )
 
 
 @dataclass
@@ -37,6 +58,7 @@ class WatermarkConfig:
     # LSH parameters
     lsh_d: int = 3
     lsh_gamma: float = 0.5
+    adaptive_gamma: AdaptiveGammaConfig = field(default_factory=AdaptiveGammaConfig)
 
     # Cascade fallback (compound block re-generation)
     enable_cascade: bool = True
