@@ -1,6 +1,6 @@
 """Tests for wfcllm.watermark.config."""
 
-from wfcllm.watermark.config import WatermarkConfig
+from wfcllm.watermark.config import AdaptiveGammaConfig, WatermarkConfig
 
 
 class TestWatermarkConfig:
@@ -83,3 +83,20 @@ def test_cascade_config_custom():
     assert cfg.cascade_max_depth == 3
     assert cfg.cuda_empty_cache_interval == 5
     assert cfg.retry_token_budget == 128
+
+
+def test_adaptive_gamma_defaults():
+    cfg = WatermarkConfig(secret_key="k")
+    adaptive = cfg.adaptive_gamma
+    assert isinstance(adaptive, AdaptiveGammaConfig)
+    assert adaptive.enabled is False
+    assert adaptive.strategy == "piecewise_quantile"
+    assert adaptive.gamma_min == 0.25
+    assert adaptive.gamma_max == 0.95
+    assert adaptive.anchors == {
+        "p10": 0.95,
+        "p50": 0.75,
+        "p75": 0.55,
+        "p90": 0.35,
+        "p95": 0.25,
+    }

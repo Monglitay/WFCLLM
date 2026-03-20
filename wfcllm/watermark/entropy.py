@@ -9,6 +9,8 @@ from __future__ import annotations
 from wfcllm.common.ast_parser import PythonParser
 from wfcllm.watermark.config import WatermarkConfig
 
+ENTROPY_SCALE = 10000
+
 
 class NodeEntropyEstimator:
     """Estimate statement block entropy via AST node type lookup table."""
@@ -153,12 +155,17 @@ class NodeEntropyEstimator:
     }
 
     def estimate_block_entropy(self, block_source: str) -> float:
-        """Parse block AST, traverse all sub-nodes, sum their entropies."""
+        """Estimate entropy as float, derived from canonical integer units."""
+        return self.estimate_block_entropy_units(block_source) / ENTROPY_SCALE
+
+    def estimate_block_entropy_units(self, block_source: str) -> int:
+        """Parse block AST, traverse all sub-nodes, sum entropy in canonical units."""
         if not block_source.strip():
-            return 0.0
+            return 0
         parser = PythonParser()
         tree = parser.parse(block_source)
-        return self._sum_entropy(tree.root_node)
+        entropy = self._sum_entropy(tree.root_node)
+        return max(0, int(round(entropy * ENTROPY_SCALE)))
 
     def _sum_entropy(self, node) -> float:
         total = self.ENTROPY_TABLE.get(node.type, self.DEFAULT_ENTROPY)

@@ -267,6 +267,36 @@ python run.py --phase encoder --force
 python run.py --reset
 ```
 
+### Adaptive Gamma Watermarking
+
+```bash
+# 1. 从 watermark debug 日志构建 entropy profile
+python scripts/calibrate.py build-entropy-profile \
+    --input-log data/logs/watermark_debug.log \
+    --output data/calibration/humaneval_10_entropy_profile.json \
+    --language python \
+    --model-family deepseek-coder-7b-base
+
+# 2. 用 adaptive gamma 运行阶段二
+python run.py --phase watermark \
+    --config configs/humaneval_10_config.json \
+    --gamma-strategy piecewise_quantile \
+    --entropy-profile data/calibration/humaneval_10_entropy_profile.json \
+    --profile-id humaneval_10_entropy_profile
+
+# 3. 用 prefer-adaptive 模式运行阶段三
+python run.py --phase extract \
+    --config configs/humaneval_10_config.json \
+    --adaptive-detection-mode prefer-adaptive \
+    --strict-contract
+```
+
+当 extract summary 中出现以下计数时：
+
+- `alignment_failed`：embedded block contracts 与重建 AST 在结构上不一致，应先排查代码或 block 切分是否被改写。
+- `adaptive_contract_invalid`：adaptive metadata 的数值字段（如 `entropy_units`、`gamma_effective`）与重建结果不一致。
+- `mode_counts.fixed` / `mode_counts.adaptive`：用于区分本批样本里 fixed 与 adaptive 两条检测路径的占比。
+
 ---
 
 ## 各模块说明

@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from wfcllm.extract.config import BlockScore, DetectionResult, ExtractConfig
+from wfcllm.extract.config import (
+    AdaptiveDetectionConfig,
+    BlockScore,
+    DetectionResult,
+    ExtractConfig,
+)
 
 
 class TestExtractConfig:
@@ -11,6 +16,16 @@ class TestExtractConfig:
         assert cfg.secret_key == "test-key"
         assert cfg.embed_dim == 128
         assert cfg.fpr_threshold == 3.0
+
+    def test_adaptive_detection_defaults(self):
+        cfg = ExtractConfig(secret_key="test-key")
+        adaptive = cfg.adaptive_detection
+        assert isinstance(adaptive, AdaptiveDetectionConfig)
+        assert adaptive.prefer_adaptive is False
+        assert adaptive.require_block_contract_check is True
+        assert adaptive.fail_on_structure_mismatch is True
+        assert adaptive.warn_on_numeric_mismatch is True
+        assert adaptive.exclude_invalid_samples is True
 
     def test_custom_threshold(self):
         cfg = ExtractConfig(secret_key="k", fpr_threshold=2.5)

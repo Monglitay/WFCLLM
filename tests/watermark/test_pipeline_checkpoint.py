@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -32,6 +33,12 @@ def test_resume_latest_appends_only_remaining_samples(tmp_path: Path):
     )
     generator = MagicMock()
     generator.generate.side_effect = [_result("code-1"), _result("code-2")]
+    generator.config = SimpleNamespace(
+        lsh_d=4,
+        lsh_gamma=0.75,
+        margin_base=0.1,
+        margin_alpha=0.05,
+    )
     pipeline = WatermarkPipeline(generator=generator, config=cfg)
 
     prompts = [

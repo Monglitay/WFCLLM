@@ -11,9 +11,15 @@ from wfcllm.watermark.verifier import ProjectionVerifier
 class BlockScorer:
     """Score each statement block for watermark hit/miss via LSH."""
 
-    def __init__(self, keying: WatermarkKeying, verifier: ProjectionVerifier):
+    def __init__(
+        self,
+        keying: WatermarkKeying,
+        verifier: ProjectionVerifier,
+        default_gamma: float = 0.5,
+    ):
         self._keying = keying
         self._verifier = verifier
+        self._default_gamma = default_gamma
 
     def score_block(
         self, block: StatementBlock, blocks: list[StatementBlock]
@@ -27,6 +33,7 @@ class BlockScorer:
             block_id=block.block_id,
             score=score,
             min_margin=result.min_margin,
+            gamma_effective=self._default_gamma,
         )
 
     def score_all(

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import asdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -115,6 +116,10 @@ class WatermarkPipeline:
                     "dataset": self._config.dataset,
                     "prompt": item["prompt"],
                     "generated_code": result.code,
+                    "blocks": [asdict(contract) for contract in result.block_contracts],
+                    "adaptive_mode": result.adaptive_mode,
+                    "profile_id": result.profile_id,
+                    "alignment_summary": result.alignment_summary,
                     "total_blocks": result.total_blocks,
                     "embedded_blocks": result.embedded_blocks,
                     "failed_blocks": result.failed_blocks,

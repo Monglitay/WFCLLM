@@ -10,12 +10,18 @@ from wfcllm.extract.config import BlockScore, DetectionResult
 from wfcllm.extract.hypothesis import HypothesisTester
 
 
-def _make_score(block_id: str, score: int) -> BlockScore:
+def _make_score(
+    block_id: str,
+    score: int,
+    *,
+    gamma_effective: float = 0.5,
+) -> BlockScore:
     return BlockScore(
         block_id=block_id,
         score=score,
         min_margin=0.5 if score == 1 else 0.1,
         selected=True,
+        gamma_effective=gamma_effective,
     )
 
 
@@ -103,3 +109,57 @@ class TestHypothesisTesterGamma:
         result = tester.test(selected_scores=scores, total_blocks=20)
         expected_z = (20 - 10) / math.sqrt(5)
         assert result.z_score == pytest.approx(expected_z, rel=1e-6)
+
+    def test_fixed_mode_matches_legacy_formula(self):
+        """Fixed mode keeps the legacy binomial mean and variance."""
+        tester = HypothesisTester(fpr_threshold=3.0, gamma=0.25, mode="fixed")
+        scores = [_make_score(str(i), 1, gamma_effective=0.9) for i in range(15)]
+        scores += [_make_score(str(i + 15), 0, gamma_effective=0.1) for i in range(5)]
+
+        result = tester.test(selected_scores=scores, total_blocks=20)
+
+        expected_hits = 20 * 0.25
+        expected_variance = 20 * 0.25 * 0.75
+        expected_z = (15 - expected_hits) / math.sqrt(expected_variance)
+
+        assert result.hypothesis_mode == "fixed"
+        assert result.expected_hits == pytest.approx(expected_hits)
+        assert result.variance == pytest.approx(expected_variance)
+        assert result.z_score == pytest.approx(expected_z, rel=1e-6)
+
+    def test_adaptive_mode_uses_gamma_sequence_mean_and_variance(self):
+        """Adaptive mode uses Poisson-binomial mean and variance from per-block gamma."""
+        tester = HypothesisTester(fpr_threshold=3.0, gamma=0.5, mode="adaptive")
+        gammas = [0.1, 0.4, 0.8, 0.6]
+        hits = [1, 0, 1, 1]
+        scores = [
+            _make_score(str(i), hit, gamma_effective=gamma)
+            for i, (hit, gamma) in enumerate(zip(hits, gammas, strict=True))
+        ]
+
+        result = tester.test(selected_scores=scores, total_blocks=6)
+
+        expected_hits = sum(gammas)
+        expected_variance = sum(gamma * (1 - gamma) for gamma in gammas)
+        expected_z = (sum(hits) - expected_hits) / math.sqrt(expected_variance)
+
+        assert result.hypothesis_mode == "adaptive"
+        assert result.expected_hits == pytest.approx(expected_hits)
+        assert result.variance == pytest.approx(expected_variance)
+        assert result.z_score == pytest.approx(expected_z, rel=1e-6)
+
+    def test_result_exposes_adaptive_statistics_fields(self):
+        """Result and per-block details expose the adaptive stats surface."""
+        tester = HypothesisTester(fpr_threshold=3.0, mode="adaptive")
+        scores = [
+            _make_score("0", 1, gamma_effective=0.2),
+            _make_score("1", 0, gamma_effective=0.7),
+        ]
+
+        result = tester.test(selected_scores=scores, total_blocks=2)
+
+        assert result.block_details[0].gamma_effective == pytest.approx(0.2)
+        assert result.block_details[1].gamma_effective == pytest.approx(0.7)
+        assert result.expected_hits == pytest.approx(0.9)
+        assert result.variance == pytest.approx((0.2 * 0.8) + (0.7 * 0.3))
+        assert result.hypothesis_mode == "adaptive"

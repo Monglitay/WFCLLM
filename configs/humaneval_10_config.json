@@ -20,7 +20,7 @@
     "num_workers": 8,
     "pin_memory": true,
     "checkpoint_dir": "data/checkpoints/encoder",
-    "results_dir": "data/results",
+    "results_dir": "data/results_subset",
     "local_model_dir": "data/models",
     "local_dataset_dir": "data/datasets",
     "output_model_dir": "data/models/encoder"
@@ -30,7 +30,8 @@
     "lm_model_path": "data/models/deepseek-coder-7b-base",
     "dataset": "humaneval",
     "dataset_path": "data/datasets",
-    "output_dir": "data/watermarked",
+    "output_dir": "data/watermarked_subset",
+    "sample_limit": 10,
     "resume": null,
     "encoder_model_path": "data/models/encoder",
     "encoder_embed_dim": 128,
@@ -49,10 +50,10 @@
     "lsh_d": 4,
     "lsh_gamma": 0.75,
     "adaptive_gamma": {
-      "enabled": false,
+      "enabled": true,
       "strategy": "piecewise_quantile",
-      "profile_path": null,
-      "profile_id": null,
+      "profile_path": "data/calibration/humaneval_10_entropy_profile.json",
+      "profile_id": "humaneval_10_entropy_profile",
       "gamma_min": 0.25,
       "gamma_max": 0.95,
       "anchors": {
@@ -70,13 +71,13 @@
     "fpr_threshold": 3.0,
     "lsh_d": 4,
     "lsh_gamma": 0.75,
-    "calibration_corpus":"data/negative_corpus.jsonl",
+    "calibration_corpus": "data/negative_corpus_humaneval_10.jsonl",
     "fpr": 0.05,
-    "input_file": "data/watermarked/humaneval_20260310_223459.jsonl",
-    "output_dir": "data/results",
+    "input_file": null,
+    "output_dir": "data/results_subset",
     "resume": null,
     "adaptive_detection": {
-      "mode": "fixed",
+      "mode": "prefer-adaptive",
       "require_block_contract_check": true,
       "fail_on_structure_mismatch": true,
       "warn_on_numeric_mismatch": true,
@@ -87,12 +88,12 @@
     "lm_model_path": "data/models/deepseek-coder-7b-base",
     "dataset": "humaneval",
     "dataset_path": "data/datasets",
-    "output_path": "data/negative_corpus.jsonl",
+    "output_path": "data/negative_corpus_humaneval_10.jsonl",
     "max_new_tokens": 512,
     "temperature": 0.8,
     "top_p": 0.95,
     "top_k": 50,
     "device": "cuda",
-    "limit": null
+    "limit": 10
   }
 }

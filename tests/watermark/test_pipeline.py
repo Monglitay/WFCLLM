@@ -1,7 +1,9 @@
 """Tests for wfcllm.watermark.pipeline."""
 from __future__ import annotations
 
+from dataclasses import asdict, replace
 import pytest
+from wfcllm.common.block_contract import build_block_contracts
 from wfcllm.watermark.pipeline import WatermarkPipelineConfig
 
 
@@ -204,6 +206,188 @@ class TestWatermarkPipelineRun:
                 output_path = pipeline.run()
             record = json.loads(Path(output_path).read_text().strip())
             assert record["embed_rate"] == 0.0
+
+    def test_run_serializes_adaptive_metadata(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = WatermarkPipelineConfig(
+                dataset="humaneval",
+                output_dir=tmpdir,
+                dataset_path="data/datasets",
+            )
+            contracts = build_block_contracts("x = 1\n")
+            generator = self._build_generator(GenerateResult(
+                code="x = 1\n",
+                stats=EmbedStats(
+                    total_blocks=1,
+                    embedded_blocks=1,
+                    failed_blocks=0,
+                    fallback_blocks=0,
+                ),
+                block_contracts=contracts,
+                adaptive_mode="fixed",
+                profile_id=None,
+                alignment_summary={
+                    "final_block_count": 1,
+                    "generator_total_blocks": 1,
+                    "block_count_matches_total_blocks": True,
+                },
+            ))
+            pipeline = WatermarkPipeline(generator=generator, config=cfg)
+            with patch.object(pipeline, "_load_prompts", return_value=[
+                {"id": "HumanEval/0", "prompt": "def foo():"}
+            ]):
+                output_path = pipeline.run()
+
+            record = json.loads(Path(output_path).read_text().strip())
+            assert record["blocks"] == [asdict(contract) for contract in contracts]
+            assert record["adaptive_mode"] == "fixed"
+            assert record["profile_id"] is None
+            assert record["alignment_summary"] == {
+                "final_block_count": 1,
+                "generator_total_blocks": 1,
+                "block_count_matches_total_blocks": True,
+            }
+
+    def test_run_serializes_fixed_metadata_when_adaptive_config_is_enabled_but_runtime_is_not(self, monkeypatch):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = WatermarkPipelineConfig(
+                dataset="humaneval",
+                output_dir=tmpdir,
+                dataset_path="data/datasets",
+            )
+            from wfcllm.watermark.config import WatermarkConfig
+            from wfcllm.watermark.generator import WatermarkGenerator
+            from wfcllm.watermark.interceptor import InterceptEvent
+            from wfcllm.watermark.verifier import VerifyResult
+
+            runtime_cfg = WatermarkConfig(
+                secret_key="test-key",
+                max_new_tokens=50,
+                encoder_device="cpu",
+            )
+            runtime_cfg.adaptive_gamma.enabled = True
+
+            class FakeContext:
+                def __init__(self, model, tokenizer, config):
+                    self.generated_text = ""
+                    self.generated_ids = []
+                    self.last_event = None
+                    self.last_block_checkpoint = None
+                    self._steps = 0
+
+                @property
+                def eos_id(self):
+                    return -1
+
+                def prefill(self, prompt):
+                    return None
+
+                def forward_and_sample(self, penalty_ids=None):
+                    self._steps += 1
+                    if self._steps == 1:
+                        self.generated_text = "x = 1\n"
+                        self.generated_ids.append(101)
+                        self.last_event = InterceptEvent(
+                            block_text="x = 1",
+                            block_type="simple",
+                            node_type="expression_statement",
+                            parent_node_type="module",
+                            token_start_idx=0,
+                            token_count=1,
+                        )
+                        self.last_block_checkpoint = MagicMock(
+                            generated_ids=[],
+                            generated_text="",
+                        )
+                        return 101
+                    self.last_event = None
+                    return self.eos_id
+
+                def is_finished(self):
+                    return self._steps >= 2
+
+            monkeypatch.setattr(
+                "wfcllm.watermark.generator.GenerationContext",
+                FakeContext,
+            )
+
+            model = MagicMock()
+            tokenizer = MagicMock()
+            encoder = MagicMock()
+            enc_tok = MagicMock()
+            tokenizer.encode = MagicMock(return_value=[1, 2, 3])
+            tokenizer.decode = MagicMock(return_value="")
+            tokenizer.eos_token_id = 2
+
+            generator = WatermarkGenerator(
+                model=model,
+                tokenizer=tokenizer,
+                encoder=encoder,
+                encoder_tokenizer=enc_tok,
+                config=runtime_cfg,
+            )
+            generator._verify_block = MagicMock(
+                return_value=VerifyResult(
+                    passed=True,
+                    min_margin=0.1,
+                    lsh_signature=(1, 1, 1),
+                )
+            )
+
+            pipeline = WatermarkPipeline(generator=generator, config=cfg)
+            with patch.object(pipeline, "_load_prompts", return_value=[
+                {"id": "HumanEval/0", "prompt": "def foo():"}
+            ]):
+                output_path = pipeline.run()
+
+            record = json.loads(Path(output_path).read_text().strip())
+            assert record["adaptive_mode"] == "fixed"
+            assert record["profile_id"] is None
+
+    def test_run_serializes_non_fixed_adaptive_metadata_without_loss(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = WatermarkPipelineConfig(
+                dataset="humaneval",
+                output_dir=tmpdir,
+                dataset_path="data/datasets",
+            )
+            contracts = build_block_contracts("x = 1\n")
+            contracts = [
+                replace(
+                    contracts[0],
+                    gamma_target=0.75,
+                    k=3,
+                    gamma_effective=0.75,
+                )
+            ]
+
+            generator = self._build_generator(GenerateResult(
+                code="x = 1\n",
+                stats=EmbedStats(
+                    total_blocks=1,
+                    embedded_blocks=1,
+                    failed_blocks=0,
+                    fallback_blocks=0,
+                ),
+                block_contracts=contracts,
+                adaptive_mode="piecewise_quantile",
+                profile_id="entropy-profile-v1",
+                alignment_summary={
+                    "final_block_count": 1,
+                    "generator_total_blocks": 1,
+                    "block_count_matches_total_blocks": True,
+                },
+            ))
+            pipeline = WatermarkPipeline(generator=generator, config=cfg)
+            with patch.object(pipeline, "_load_prompts", return_value=[
+                {"id": "HumanEval/0", "prompt": "def foo():"}
+            ]):
+                output_path = pipeline.run()
+
+            record = json.loads(Path(output_path).read_text(encoding="utf-8").strip())
+            assert record["adaptive_mode"] == "piecewise_quantile"
+            assert record["profile_id"] == "entropy-profile-v1"
+            assert record["blocks"][0]["gamma_effective"] == 0.75
 
 
 def test_build_public_watermark_params_requires_public_config():
