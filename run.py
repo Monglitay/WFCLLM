@@ -71,6 +71,84 @@ def load_config(config_path: Path) -> dict:
         sys.exit(1)
 
 
+def resolve_adaptive_gamma_config(args: argparse.Namespace, wm_cfg: dict):
+    from wfcllm.watermark.config import AdaptiveGammaConfig
+
+    configured = wm_cfg.get("adaptive_gamma") or {}
+    defaults = AdaptiveGammaConfig()
+    anchors = defaults.anchors.copy()
+    raw_anchors = configured.get("anchors")
+    if isinstance(raw_anchors, dict):
+        anchors.update(raw_anchors)
+
+    enabled = bool(configured.get("enabled", defaults.enabled))
+    if (
+        args.gamma_strategy is not None
+        or args.entropy_profile is not None
+        or args.profile_id is not None
+    ):
+        enabled = True
+
+    return AdaptiveGammaConfig(
+        enabled=enabled,
+        strategy=args.gamma_strategy or configured.get("strategy", defaults.strategy),
+        profile_path=(
+            args.entropy_profile
+            if args.entropy_profile is not None
+            else configured.get("profile_path", defaults.profile_path)
+        ),
+        profile_id=(
+            args.profile_id
+            if args.profile_id is not None
+            else configured.get("profile_id", defaults.profile_id)
+        ),
+        gamma_min=float(configured.get("gamma_min", defaults.gamma_min)),
+        gamma_max=float(configured.get("gamma_max", defaults.gamma_max)),
+        anchors=anchors,
+    )
+
+
+def resolve_adaptive_detection_config(args: argparse.Namespace, ext_cfg: dict):
+    from wfcllm.extract.config import AdaptiveDetectionConfig
+
+    configured = ext_cfg.get("adaptive_detection") or {}
+    defaults = AdaptiveDetectionConfig()
+
+    require_block_contract_check = bool(
+        configured.get(
+            "require_block_contract_check",
+            defaults.require_block_contract_check,
+        )
+    )
+    fail_on_structure_mismatch = bool(
+        configured.get(
+            "fail_on_structure_mismatch",
+            defaults.fail_on_structure_mismatch,
+        )
+    )
+    if args.strict_contract:
+        require_block_contract_check = True
+        fail_on_structure_mismatch = True
+
+    return AdaptiveDetectionConfig(
+        mode=args.adaptive_detection_mode or configured.get("mode", defaults.mode),
+        require_block_contract_check=require_block_contract_check,
+        fail_on_structure_mismatch=fail_on_structure_mismatch,
+        warn_on_numeric_mismatch=bool(
+            configured.get(
+                "warn_on_numeric_mismatch",
+                defaults.warn_on_numeric_mismatch,
+            )
+        ),
+        exclude_invalid_samples=bool(
+            configured.get(
+                "exclude_invalid_samples",
+                defaults.exclude_invalid_samples,
+            )
+        ),
+    )
+
+
 class RunState:
     """断点状态管理：读写 data/run_state.json。"""
 
@@ -179,6 +257,22 @@ def build_parser() -> argparse.ArgumentParser:
                         help="水印嵌入数据集（humaneval 或 mbpp，默认: humaneval）")
     parser.add_argument("--dataset-path", default=None, help="本地数据集根目录（默认: data/datasets）")
     parser.add_argument("--output-dir", default=None, help="水印 JSONL 输出目录（默认: data/watermarked）")
+    parser.add_argument(
+        "--gamma-strategy",
+        choices=["piecewise_quantile"],
+        default=None,
+        help="自适应 gamma 调度策略（默认从配置文件读取）",
+    )
+    parser.add_argument(
+        "--entropy-profile",
+        default=None,
+        help="entropy profile JSON 路径（启用 adaptive gamma 时使用）",
+    )
+    parser.add_argument(
+        "--profile-id",
+        default=None,
+        help="输出 watermark metadata 时使用的 entropy profile 标识",
+    )
     # Extract 参数
     parser.add_argument("--input-file", default=None,
                         help="待检测的水印 JSONL 文件路径（不传则从 run_state 读取阶段二输出）")
@@ -188,6 +282,17 @@ def build_parser() -> argparse.ArgumentParser:
                         help="负样本校准语料 JSONL 路径（提供则自动运行 ThresholdCalibrator）")
     parser.add_argument("--fpr", type=float, default=0.01,
                         help="校准目标 FPR（默认: 0.01，仅在 --calibration-corpus 指定时生效）")
+    parser.add_argument(
+        "--adaptive-detection-mode",
+        choices=["fixed", "prefer-adaptive", "require-adaptive"],
+        default=None,
+        help="提取阶段 adaptive hypothesis 的模式（默认从配置文件读取）",
+    )
+    parser.add_argument(
+        "--strict-contract",
+        action="store_true",
+        help="强制启用 block contract 检查并在结构不匹配时严格失败",
+    )
     # generate-negative 参数
     parser.add_argument(
         "--negative-output", default=None,
@@ -449,6 +554,7 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
         repetition_penalty=wm_cfg.get("repetition_penalty", 1.3),
         lsh_d=wm_cfg.get("lsh_d", 3),
         lsh_gamma=wm_cfg.get("lsh_gamma", 0.5),
+        adaptive_gamma=resolve_adaptive_gamma_config(args, wm_cfg),
     )
     generator = WatermarkGenerator(lm_model, lm_tokenizer, encoder, encoder_tokenizer, wm_config)
 
@@ -586,6 +692,9 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
         secret_key=secret_key,
         embed_dim=embed_dim,
         fpr_threshold=fpr_threshold,
+        lsh_d=ext_cfg.get("lsh_d", 3),
+        lsh_gamma=ext_cfg.get("lsh_gamma", 0.5),
+        adaptive_detection=resolve_adaptive_detection_config(args, ext_cfg),
     )
     detector = WatermarkDetector(extract_config, encoder, tokenizer, device=device)
 

@@ -69,25 +69,34 @@ class ExtractPipeline:
                     rows.append(json.loads(line))
 
         total = len(rows)
-        watermarked = sum(1 for row in rows if row["is_watermarked"])
-        z_scores = [row["z_score"] for row in rows]
-        p_values = [row["p_value"] for row in rows]
-        block_counts = [row["independent_blocks"] for row in rows]
-        embed_rates = [embed_rate_by_id.get(row["id"], 0.0) for row in rows]
+        invalid_rows = [row for row in rows if row.get("contract_valid") is False]
+        scored_rows = rows
+        if self._exclude_invalid_samples():
+            scored_rows = [row for row in rows if row.get("contract_valid") is not False]
+
+        watermarked = sum(1 for row in scored_rows if row["is_watermarked"])
+        z_scores = [row["z_score"] for row in scored_rows]
+        p_values = [row["p_value"] for row in scored_rows]
+        block_counts = [row["independent_blocks"] for row in scored_rows]
+        embed_rates = [embed_rate_by_id.get(row["id"], 0.0) for row in scored_rows]
 
         summary = {
             "meta": {
                 "input_file": self._config.input_file,
                 "total_samples": total,
+                "scored_samples": len(scored_rows),
+                "invalid_samples": len(invalid_rows),
             },
             "summary": {
-                "watermark_rate": watermarked / total if total > 0 else 0.0,
-                "watermark_rate_ci_95": self._proportion_ci(watermarked, total),
+                "watermark_rate": watermarked / len(scored_rows) if scored_rows else 0.0,
+                "watermark_rate_ci_95": self._proportion_ci(watermarked, len(scored_rows)),
                 "mean_z_score": _mean(z_scores),
                 "std_z_score": _std(z_scores),
                 "mean_p_value": _mean(p_values),
                 "mean_blocks": _mean(block_counts),
                 "embed_rate_distribution": _distribution_stats(embed_rates),
+                "mode_counts": self._mode_counts(rows),
+                "invalid_reason_counts": self._invalid_reason_counts(rows),
             },
         }
 
@@ -97,6 +106,40 @@ class ExtractPipeline:
             encoding="utf-8",
         )
         return summary_path
+
+    def _exclude_invalid_samples(self) -> bool:
+        detector_config = getattr(self._detector, "_config", None)
+        adaptive_config = getattr(detector_config, "adaptive_detection", None)
+        return bool(getattr(adaptive_config, "exclude_invalid_samples", False))
+
+    @staticmethod
+    def _mode_counts(rows: list[dict]) -> dict[str, int]:
+        return {
+            "fixed": sum(1 for row in rows if row.get("mode", "fixed") == "fixed"),
+            "adaptive": sum(1 for row in rows if row.get("mode") == "adaptive"),
+        }
+
+    @staticmethod
+    def _invalid_reason_counts(rows: list[dict]) -> dict[str, int]:
+        alignment_failed = 0
+        adaptive_contract_invalid = 0
+
+        for row in rows:
+            alignment = row.get("contract_alignment") or {}
+            if alignment.get("structure_mismatch"):
+                alignment_failed += 1
+                continue
+            if (
+                row.get("mode") == "adaptive"
+                and row.get("contract_valid") is False
+                and alignment.get("numeric_mismatch")
+            ):
+                adaptive_contract_invalid += 1
+
+        return {
+            "alignment_failed": alignment_failed,
+            "adaptive_contract_invalid": adaptive_contract_invalid,
+        }
 
     def run(self) -> str:
         """Run batch extraction. Returns path to output details JSONL."""
@@ -137,15 +180,27 @@ class ExtractPipeline:
 
         with open(details_path, mode, encoding="utf-8") as f:
             for item in iterator:
-                result = self._detector.detect(item["generated_code"])
+                if "blocks" in item:
+                    result = self._detector.detect(
+                        item["generated_code"],
+                        watermark_metadata=item,
+                    )
+                else:
+                    result = self._detector.detect(item["generated_code"])
                 row = {
                     "id": item["id"],
+                    "mode": result.mode,
                     "is_watermarked": result.is_watermarked,
                     "z_score": result.z_score,
                     "p_value": result.p_value,
                     "independent_blocks": result.independent_blocks,
                     "hits": result.hit_blocks,
                 }
+                if result.contract_valid is not None:
+                    row["contract_valid"] = result.contract_valid
+                if result.alignment_report is not None:
+                    row["alignment_ok"] = result.alignment_ok
+                    row["contract_alignment"] = result.alignment_report.to_dict()
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
                 f.flush()
 
