@@ -70,3 +70,9 @@ class TestBaseConfigFallbackCascade:
         from pathlib import Path
         cfg = json.loads(Path("configs/base_config.json").read_text())
         assert cfg.get("watermark", {}).get("enable_cascade") is True
+
+
+def test_extract_lsh_defaults_match_watermark():
+    cfg = json.loads(Path("configs/base_config.json").read_text(encoding="utf-8"))
+    assert cfg["extract"]["lsh_d"] == cfg["watermark"]["lsh_d"]
+    assert cfg["extract"]["lsh_gamma"] == cfg["watermark"]["lsh_gamma"]

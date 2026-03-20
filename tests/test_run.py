@@ -186,3 +186,91 @@ class TestRunWatermarkConfigNoFallback:
                     assert "report_file" not in keywords
                     return
         raise AssertionError("run.py should mark extract state with details_file and summary_file")
+
+
+def test_run_extract_passes_lsh_params():
+    tree = ast.parse(Path("run.py").read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "ExtractConfig":
+            kws = {kw.arg for kw in node.keywords}
+            assert "lsh_d" in kws
+            assert "lsh_gamma" in kws
+            return
+    raise AssertionError("run.py must pass lsh_d/lsh_gamma into ExtractConfig")
+
+
+class TestPretrainedEncoderToggle:
+    def test_stage_override_takes_priority_over_global_toggle(self):
+        from run import resolve_use_pretrained_encoder
+
+        cfg = {
+            "encoder": {"use_pretrained_only": False},
+            "watermark": {"use_pretrained_encoder": True},
+        }
+
+        assert resolve_use_pretrained_encoder(cfg, "watermark") is True
+
+    def test_global_toggle_applies_when_stage_override_missing(self):
+        from run import resolve_use_pretrained_encoder
+
+        cfg = {
+            "encoder": {"use_pretrained_only": True},
+            "extract": {},
+        }
+
+        assert resolve_use_pretrained_encoder(cfg, "extract") is True
+
+    def test_default_is_loading_finetuned_weights(self):
+        from run import resolve_use_pretrained_encoder
+
+        assert resolve_use_pretrained_encoder({}, "extract") is False
+
+    def test_pretrained_toggle_skips_encoder_weight_loading(self, tmp_path):
+        from run import RunState, resolve_encoder_weight_path
+
+        best_model = tmp_path / "best_model.pt"
+        best_model.write_bytes(b"test")
+        checkpoint = tmp_path / "encoder_epoch1.pt"
+        checkpoint.write_bytes(b"test")
+
+        state = RunState(tmp_path / "state.json")
+        state.mark_done(
+            "encoder",
+            checkpoint=str(checkpoint),
+            best_model_path=str(best_model),
+        )
+
+        assert resolve_encoder_weight_path(
+            use_pretrained_encoder=True,
+            state=state,
+            output_model_dir=str(tmp_path),
+        ) is None
+
+    def test_finetuned_toggle_prefers_best_model_then_checkpoint(self, tmp_path):
+        from run import RunState, resolve_encoder_weight_path
+
+        best_model = tmp_path / "best_model.pt"
+        best_model.write_bytes(b"test")
+        checkpoint = tmp_path / "encoder_epoch1.pt"
+        checkpoint.write_bytes(b"test")
+
+        state = RunState(tmp_path / "state.json")
+        state.mark_done(
+            "encoder",
+            checkpoint=str(checkpoint),
+            best_model_path=str(best_model),
+        )
+
+        assert resolve_encoder_weight_path(
+            use_pretrained_encoder=False,
+            state=state,
+            output_model_dir=str(tmp_path),
+        ) == str(best_model)
+
+        best_model.unlink()
+
+        assert resolve_encoder_weight_path(
+            use_pretrained_encoder=False,
+            state=state,
+            output_model_dir=str(tmp_path),
+        ) == str(checkpoint)

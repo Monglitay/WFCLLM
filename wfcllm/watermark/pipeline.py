@@ -27,6 +27,7 @@ class WatermarkPipelineConfig:
     output_dir: str         # e.g. "data/watermarked"
     dataset_path: str       # local datasets root, e.g. "data/datasets"
     resume: str | None = None
+    sample_limit: int | None = None
 
     def __post_init__(self):
         if self.dataset not in SUPPORTED_DATASETS:
@@ -53,6 +54,27 @@ class WatermarkPipeline:
                 f"Resume file {resume_path.name} does not match dataset {self._config.dataset}"
             )
 
+    @staticmethod
+    def _resolve_generator_config(generator: WatermarkGenerator):
+        generator_dict = getattr(generator, "__dict__", {})
+        for attr_name in ("_config", "config"):
+            config = generator_dict.get(attr_name)
+            if config is not None:
+                return config
+        raise ValueError(
+            "Generator must expose watermark config via ._config or .config"
+        )
+
+    @classmethod
+    def _build_public_watermark_params(cls, generator: WatermarkGenerator) -> dict:
+        generator_config = cls._resolve_generator_config(generator)
+        return {
+            "lsh_d": generator_config.lsh_d,
+            "lsh_gamma": generator_config.lsh_gamma,
+            "margin_base": generator_config.margin_base,
+            "margin_alpha": generator_config.margin_alpha,
+        }
+
     def run(self) -> str:
         """Run batch watermarking. Returns path to output JSONL file."""
         out_dir = Path(self._config.output_dir)
@@ -68,6 +90,8 @@ class WatermarkPipeline:
             processed_ids = load_processed_ids(resume_path)
 
         all_prompts = self._load_prompts()
+        if self._config.sample_limit is not None:
+            all_prompts = all_prompts[: self._config.sample_limit]
         prompts = [item for item in all_prompts if item["id"] not in processed_ids]
         if is_resume and resume_path is not None and not prompts:
             print("All samples already processed", file=sys.stderr)
@@ -107,6 +131,9 @@ class WatermarkPipeline:
                     "fallback_blocks": result.fallback_blocks,
                     "embed_rate": embed_rate,
                 }
+                record["watermark_params"] = self._build_public_watermark_params(
+                    self._generator
+                )
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
                 f.flush()
 

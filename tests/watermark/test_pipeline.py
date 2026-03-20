@@ -76,6 +76,7 @@ class TestWatermarkPipelineLoadPrompts:
 
 import json
 import tempfile
+from types import SimpleNamespace
 from pathlib import Path
 from wfcllm.watermark.generator import GenerateResult, EmbedStats
 
@@ -95,6 +96,18 @@ class TestWatermarkPipelineRun:
             ),
         )
 
+    @staticmethod
+    def _build_generator(mock_result):
+        generator = MagicMock()
+        generator.generate.return_value = mock_result
+        generator._config = SimpleNamespace(
+            lsh_d=4,
+            lsh_gamma=0.75,
+            margin_base=0.001,
+            margin_alpha=0.002,
+        )
+        return generator
+
     def test_run_creates_jsonl(self, mock_result):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = WatermarkPipelineConfig(
@@ -102,8 +115,7 @@ class TestWatermarkPipelineRun:
                 output_dir=tmpdir,
                 dataset_path="data/datasets",
             )
-            generator = MagicMock()
-            generator.generate.return_value = mock_result
+            generator = self._build_generator(mock_result)
 
             pipeline = WatermarkPipeline(generator=generator, config=cfg)
 
@@ -140,8 +152,7 @@ class TestWatermarkPipelineRun:
                 output_dir=tmpdir,
                 dataset_path="data/datasets",
             )
-            generator = MagicMock()
-            generator.generate.return_value = mock_result
+            generator = self._build_generator(mock_result)
             pipeline = WatermarkPipeline(generator=generator, config=cfg)
             with patch.object(pipeline, "_load_prompts", return_value=[
                 {"id": "mbpp/1", "prompt": "Write a function"}
@@ -158,10 +169,11 @@ class TestWatermarkPipelineRun:
                 output_dir=tmpdir,
                 dataset_path="data/datasets",
             )
-            generator = MagicMock()
-            generator.generate.return_value = GenerateResult(
+            generator = self._build_generator(
+                GenerateResult(
                 code="", stats=EmbedStats(total_blocks=0, embedded_blocks=0,
                     failed_blocks=0, fallback_blocks=0),
+                )
             )
             pipeline = WatermarkPipeline(generator=generator, config=cfg)
             with patch.object(pipeline, "_load_prompts", return_value=[
@@ -170,3 +182,26 @@ class TestWatermarkPipelineRun:
                 output_path = pipeline.run()
             record = json.loads(Path(output_path).read_text().strip())
             assert record["embed_rate"] == 0.0
+
+    def test_run_writes_watermark_params_from_generator_private_config(self, mock_result):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = WatermarkPipelineConfig(
+                dataset="humaneval",
+                output_dir=tmpdir,
+                dataset_path="data/datasets",
+            )
+            generator = self._build_generator(mock_result)
+            pipeline = WatermarkPipeline(generator=generator, config=cfg)
+
+            with patch.object(pipeline, "_load_prompts", return_value=[
+                {"id": "HumanEval/0", "prompt": "def foo():\n"}
+            ]):
+                output_path = pipeline.run()
+
+            record = json.loads(Path(output_path).read_text(encoding="utf-8").strip())
+            assert record["watermark_params"] == {
+                "lsh_d": 4,
+                "lsh_gamma": 0.75,
+                "margin_base": 0.001,
+                "margin_alpha": 0.002,
+            }
