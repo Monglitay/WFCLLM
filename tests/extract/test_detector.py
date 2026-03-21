@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 
+from wfcllm.common.block_contract import build_block_contracts
 from wfcllm.extract.config import BlockScore, DetectionResult, ExtractConfig
 from wfcllm.extract.detector import WatermarkDetector
 
@@ -193,3 +194,36 @@ class TestWatermarkDetector:
         assert result.expected_hits == pytest.approx(1.0)
         assert result.variance == pytest.approx((0.2 * 0.8) + (0.8 * 0.2))
         assert [score.gamma_effective for score in result.block_details] == pytest.approx([0.2, 0.8])
+
+    def test_detect_scores_with_block_specific_k_from_metadata(
+        self, config, mock_encoder, mock_tokenizer
+    ):
+        config.adaptive_detection.require_block_contract_check = False
+        detector = WatermarkDetector(config, mock_encoder, mock_tokenizer, device="cpu")
+        detector._scorer._keying.derive = MagicMock(return_value=frozenset())
+        detector._scorer._verifier.verify = MagicMock(
+            return_value=MagicMock(passed=True, min_margin=0.1)
+        )
+
+        code = "x = 1\ny = 2\n"
+        contracts = [build_block_contracts(code)[0], build_block_contracts(code)[1]]
+        metadata = {
+            "blocks": [
+                {
+                    **contracts[0].__dict__,
+                    "k": 3,
+                    "gamma_effective": 0.1875,
+                },
+                {
+                    **contracts[1].__dict__,
+                    "k": 9,
+                    "gamma_effective": 0.5625,
+                },
+            ],
+            "adaptive_mode": "piecewise_quantile",
+        }
+
+        detector.detect(code, watermark_metadata=metadata)
+
+        derive_calls = detector._scorer._keying.derive.call_args_list
+        assert [call.kwargs["k"] for call in derive_calls] == [3, 9]

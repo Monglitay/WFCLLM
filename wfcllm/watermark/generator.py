@@ -7,11 +7,14 @@ from dataclasses import dataclass, field
 
 import torch
 
+from wfcllm.common.ast_parser import extract_statement_blocks
 from wfcllm.common.block_contract import BlockContract, build_block_contracts
 from wfcllm.watermark.cascade import CascadeManager
 from wfcllm.watermark.config import WatermarkConfig
 from wfcllm.watermark.context import GenerationContext
-from wfcllm.watermark.entropy import NodeEntropyEstimator
+from wfcllm.watermark.entropy import ENTROPY_SCALE, NodeEntropyEstimator
+from wfcllm.watermark.entropy_profile import EntropyProfile
+from wfcllm.watermark.gamma_schedule import GammaResolution, PiecewiseQuantileSchedule, quantize_gamma
 from wfcllm.watermark.keying import WatermarkKeying
 from wfcllm.watermark.lsh_space import LSHSpace
 from wfcllm.watermark.retry_loop import RetryLoop, RetryDiagnostics
@@ -88,6 +91,9 @@ class WatermarkGenerator:
             lsh_space=self._lsh_space,
             device=config.encoder_device,
         )
+        self._entropy_profile: EntropyProfile | None = None
+        self._gamma_schedule: PiecewiseQuantileSchedule | None = None
+        self._initialize_adaptive_gamma()
 
         _STRUCTURAL_KEYWORDS = [
             "import", "return", "def", "class", "if", "else", "elif",
@@ -125,6 +131,7 @@ class WatermarkGenerator:
             keying=self._keying,
             entropy_est=self._entropy_est,
             structural_token_ids=self._structural_token_ids,
+            gamma_resolver=self._resolve_gamma_for_block_text,
         )
         pending_fallbacks: list[str] = []
 
@@ -139,7 +146,11 @@ class WatermarkGenerator:
                 continue
 
             if event.block_type == "compound":
-                cascade_mgr.on_compound_block_start(ctx, event)
+                cascade_mgr.on_compound_block_start(
+                    ctx,
+                    event,
+                    stats_snapshot=self._snapshot_runtime_stats(stats),
+                )
                 continue
 
             # Simple block
@@ -183,31 +194,74 @@ class WatermarkGenerator:
                         ctx, cascade_mgr, retry_loop, stats, pending_fallbacks
                     )
 
+        final_event = getattr(ctx, "flush_final_event", lambda: None)()
+        if final_event is not None and final_event.block_type == "simple":
+            stats.total_blocks += 1
+            verify_result = self._verify_block(final_event)
+            if verify_result.passed:
+                stats.embedded_blocks += 1
+            else:
+                block_cp = ctx.last_block_checkpoint
+                if block_cp is None:
+                    stats.failed_blocks += 1
+                else:
+                    retry_result = retry_loop.run(block_cp, final_event)
+                    stats.retry_diagnostics.append(retry_result.diagnostics)
+                    if retry_result.success:
+                        stats.embedded_blocks += 1
+                    else:
+                        stats.failed_blocks += 1
+                        pending_fallbacks.append(final_event.block_text)
+
         final_code = ctx.generated_text
-        block_contracts = build_block_contracts(final_code)
+        gamma_resolver = (
+            self._resolve_gamma_for_entropy_units
+            if self._is_adaptive_runtime_enabled()
+            else None
+        )
+        block_contracts = build_block_contracts(
+            final_code,
+            gamma_resolver=gamma_resolver,
+        )
+        runtime_total_blocks = stats.total_blocks
+        final_total_blocks, final_embedded_blocks = self._finalize_stats(final_code)
+        stats.total_blocks = final_total_blocks
+        stats.embedded_blocks = final_embedded_blocks
 
         return GenerateResult(
             code=final_code,
             stats=stats,
             block_contracts=block_contracts,
             adaptive_mode=self._adaptive_mode(),
-            profile_id=None,
-            alignment_summary=self._build_alignment_summary(stats, block_contracts),
+            profile_id=self._profile_id(),
+            alignment_summary=self._build_alignment_summary(
+                runtime_total_blocks,
+                block_contracts,
+            ),
         )
 
     def _verify_block(self, event):
         """Verify a single block against LSH criteria."""
-        block_entropy = self._entropy_est.estimate_block_entropy(event.block_text)
+        entropy_units = self._entropy_est.estimate_block_entropy_units(event.block_text)
+        block_entropy = entropy_units / ENTROPY_SCALE
         margin = self._entropy_est.compute_margin(block_entropy, self._config)
-        valid_set = self._keying.derive(event.parent_node_type or "module")
+        gamma_resolution = self._resolve_gamma_for_entropy_units(entropy_units)
+        valid_set = self._keying.derive(
+            event.parent_node_type or "module",
+            k=gamma_resolution.k,
+        )
         result = self._verifier.verify(event.block_text, valid_set, margin)
 
         logger.debug(
-            "[simple block] node=%s parent=%s entropy=%.4f margin_thresh=%.4f\n"
+            "[simple block] node=%s parent=%s entropy=%.4f margin_thresh=%.4f "
+            "gamma_target=%.4f k=%d gamma_effective=%.4f\n"
             "  sig=%s in_valid=%s valid_set_size=%d min_margin=%.4f passed=%s\n"
             "  text=%r",
             event.node_type, event.parent_node_type,
             block_entropy, margin,
+            gamma_resolution.gamma_target,
+            gamma_resolution.k,
+            gamma_resolution.gamma_effective,
             result.lsh_signature,
             result.lsh_signature in valid_set,
             len(valid_set), result.min_margin, result.passed,
@@ -229,6 +283,10 @@ class WatermarkGenerator:
         if cascade_cp is None:
             return
 
+        self._restore_runtime_stats(
+            stats,
+            getattr(cascade_cp, "stats_snapshot", None),
+        )
         stats.cascade_blocks += 1
         pending_fallbacks.clear()
         logger.debug(
@@ -237,17 +295,116 @@ class WatermarkGenerator:
 
     def _adaptive_mode(self) -> str:
         """Return canonical adaptive metadata mode for the current config."""
+        if self._is_adaptive_runtime_enabled():
+            return self._config.adaptive_gamma.strategy
         return "fixed"
+
+    def _profile_id(self) -> str | None:
+        if not self._is_adaptive_runtime_enabled():
+            return None
+        return self._config.adaptive_gamma.profile_id
+
+    def _is_adaptive_runtime_enabled(self) -> bool:
+        return self._gamma_schedule is not None
+
+    def _initialize_adaptive_gamma(self) -> None:
+        adaptive_config = self._config.adaptive_gamma
+        if not adaptive_config.enabled:
+            return
+        if adaptive_config.profile_path is None:
+            return
+        if adaptive_config.strategy != "piecewise_quantile":
+            raise ValueError(
+                f"unsupported adaptive gamma strategy: {adaptive_config.strategy}"
+            )
+
+        self._entropy_profile = EntropyProfile.load(adaptive_config.profile_path)
+        anchor_quantiles = tuple(adaptive_config.anchors.keys())
+        anchor_gammas = tuple(
+            adaptive_config.anchors[quantile]
+            for quantile in anchor_quantiles
+        )
+        self._gamma_schedule = PiecewiseQuantileSchedule(
+            profile=self._entropy_profile,
+            anchor_quantiles=anchor_quantiles,
+            anchor_gammas=anchor_gammas,
+        )
+
+    def _resolve_gamma_for_block_text(self, block_text: str) -> GammaResolution:
+        entropy_units = self._entropy_est.estimate_block_entropy_units(block_text)
+        return self._resolve_gamma_for_entropy_units(entropy_units)
+
+    def _resolve_gamma_for_entropy_units(self, entropy_units: int) -> GammaResolution:
+        if self._gamma_schedule is not None:
+            return self._gamma_schedule.resolve(entropy_units, self._config.lsh_d)
+        return quantize_gamma(self._config.lsh_gamma, self._config.lsh_d)
 
     def _build_alignment_summary(
         self,
-        stats: EmbedStats,
+        runtime_total_blocks: int,
         block_contracts: list[BlockContract],
     ) -> dict[str, int | bool]:
         """Summarize final AST block metadata vs generation-time counters."""
         final_block_count = len(block_contracts)
         return {
             "final_block_count": final_block_count,
-            "generator_total_blocks": stats.total_blocks,
-            "block_count_matches_total_blocks": final_block_count == stats.total_blocks,
+            "generator_total_blocks": runtime_total_blocks,
+            "block_count_matches_total_blocks": final_block_count == runtime_total_blocks,
         }
+
+    @staticmethod
+    def _snapshot_runtime_stats(stats: EmbedStats) -> dict[str, object]:
+        return {
+            "total_blocks": stats.total_blocks,
+            "embedded_blocks": stats.embedded_blocks,
+            "failed_blocks": stats.failed_blocks,
+            "fallback_blocks": stats.fallback_blocks,
+            "retry_diagnostics": list(stats.retry_diagnostics),
+        }
+
+    @staticmethod
+    def _restore_runtime_stats(
+        stats: EmbedStats,
+        snapshot: object | None,
+    ) -> None:
+        if not isinstance(snapshot, dict):
+            return
+        stats.total_blocks = int(snapshot.get("total_blocks", stats.total_blocks))
+        stats.embedded_blocks = int(snapshot.get("embedded_blocks", stats.embedded_blocks))
+        stats.failed_blocks = int(snapshot.get("failed_blocks", stats.failed_blocks))
+        stats.fallback_blocks = int(snapshot.get("fallback_blocks", stats.fallback_blocks))
+        retry_diagnostics = snapshot.get("retry_diagnostics")
+        if isinstance(retry_diagnostics, list):
+            stats.retry_diagnostics = list(retry_diagnostics)
+
+    def _finalize_stats(self, final_code: str) -> tuple[int, int]:
+        """Recompute final simple-block totals from the emitted code."""
+        all_blocks = extract_statement_blocks(final_code)
+        simple_blocks = [block for block in all_blocks if block.block_type == "simple"]
+        if not simple_blocks:
+            return 0, 0
+
+        block_by_id = {block.block_id: block for block in all_blocks}
+        embedded_blocks = 0
+        for block in simple_blocks:
+            parent_node_type = (
+                block_by_id[block.parent_id].node_type
+                if block.parent_id is not None
+                else "module"
+            )
+            event = type(
+                "_FinalBlockEvent",
+                (),
+                {
+                    "block_text": block.source,
+                    "block_type": "simple",
+                    "node_type": block.node_type,
+                    "parent_node_type": parent_node_type,
+                    "token_start_idx": 0,
+                    "token_count": 0,
+                },
+            )()
+            if self._verify_block(event).passed:
+                embedded_blocks += 1
+
+        return len(simple_blocks), embedded_blocks

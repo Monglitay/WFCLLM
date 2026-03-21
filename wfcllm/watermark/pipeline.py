@@ -28,6 +28,7 @@ class WatermarkPipelineConfig:
     output_dir: str         # e.g. "data/watermarked"
     dataset_path: str       # local datasets root, e.g. "data/datasets"
     resume: str | None = None
+    sample_limit: int | None = None
 
     def __post_init__(self):
         if self.dataset not in SUPPORTED_DATASETS:
@@ -61,11 +62,38 @@ class WatermarkPipeline:
             raise ValueError(
                 "Generator must expose watermark config via .config"
             )
-        return {
+        params = {
             "lsh_d": generator_config.lsh_d,
             "lsh_gamma": generator_config.lsh_gamma,
             "margin_base": generator_config.margin_base,
             "margin_alpha": generator_config.margin_alpha,
+        }
+        adaptive_gamma = WatermarkPipeline._build_public_adaptive_gamma_params(generator)
+        if adaptive_gamma is not None:
+            params["adaptive_gamma"] = adaptive_gamma
+        return params
+
+    @staticmethod
+    def _build_public_adaptive_gamma_params(
+        generator: WatermarkGenerator,
+    ) -> dict | None:
+        generator_config = getattr(generator, "config", None)
+        adaptive_config = getattr(generator_config, "adaptive_gamma", None)
+        profile = getattr(generator, "_entropy_profile", None)
+        if adaptive_config is None or not getattr(adaptive_config, "enabled", False):
+            return None
+        if profile is None:
+            return None
+        return {
+            "strategy": getattr(adaptive_config, "strategy", "piecewise_quantile"),
+            "profile_id": getattr(adaptive_config, "profile_id", None),
+            "anchors": dict(getattr(adaptive_config, "anchors", {}) or {}),
+            "profile": {
+                "language": profile.language,
+                "model_family": profile.model_family,
+                "quantiles_units": dict(profile.quantiles_units_map),
+                "strategy": profile.strategy,
+            },
         }
 
     def run(self) -> str:
@@ -83,6 +111,8 @@ class WatermarkPipeline:
             processed_ids = load_processed_ids(resume_path)
 
         all_prompts = self._load_prompts()
+        if self._config.sample_limit is not None:
+            all_prompts = all_prompts[: self._config.sample_limit]
         prompts = [item for item in all_prompts if item["id"] not in processed_ids]
         if is_resume and resume_path is not None and not prompts:
             print("All samples already processed", file=sys.stderr)

@@ -97,3 +97,43 @@ class TestThresholdCalibrator:
         call_args = mock_scorer.score_all.call_args
         target_blocks = call_args[0][0]
         assert all(b.block_type == "simple" for b in target_blocks)
+
+    def test_calibrate_adaptive_mode_uses_gamma_sequence_mean_and_variance(
+        self,
+        mock_scorer,
+    ):
+        mock_scorer.score_all.return_value = [
+            BlockScore(block_id="0", score=1, min_margin=0.1, gamma_effective=0.2),
+            BlockScore(block_id="1", score=0, min_margin=0.1, gamma_effective=0.8),
+        ]
+
+        calibrator = ThresholdCalibrator(
+            mock_scorer,
+            gamma=0.5,
+            mode="adaptive",
+        )
+        result = calibrator.calibrate([{"generated_code": "x = 1\ny = 2\n"}], fpr=0.05)
+
+        expected_hits = 1.0
+        variance = (0.2 * 0.8) + (0.8 * 0.2)
+        expected_z = (1 - expected_hits) / math.sqrt(variance)
+        assert result["fpr_threshold"] == pytest.approx(expected_z)
+
+    def test_calibrate_adaptive_mode_passes_block_contracts_to_scorer(self, mock_scorer):
+        mock_scorer.score_all.return_value = [
+            BlockScore(block_id="0", score=1, min_margin=0.1, gamma_effective=0.375),
+        ]
+        calibrator = ThresholdCalibrator(
+            mock_scorer,
+            gamma=0.5,
+            mode="adaptive",
+            block_contract_builder=lambda code: {
+                "0": {"k": 6, "gamma_effective": 0.375},
+            },
+        )
+
+        calibrator.calibrate([{"generated_code": "x = 1\n"}], fpr=0.05)
+
+        assert mock_scorer.score_all.call_args.kwargs["block_contracts_by_id"] == {
+            "0": {"k": 6, "gamma_effective": 0.375},
+        }

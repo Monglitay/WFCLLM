@@ -54,7 +54,11 @@ class WatermarkDetector:
             )
 
         # all_blocks passed for parent_id → node_type lookup
-        scores = self._scorer.score_all(simple_blocks, blocks)
+        scores = self._scorer.score_all(
+            simple_blocks,
+            blocks,
+            block_contracts_by_id=self._block_contracts_by_id(watermark_metadata),
+        )
         self._apply_gamma_metadata(scores, watermark_metadata)
 
         # Simple blocks are AST leaves — inherently non-overlapping, skip DP
@@ -84,7 +88,12 @@ class WatermarkDetector:
 
         report = compare_block_contracts(
             watermark_metadata.get("blocks", []),
-            rebuild_block_contracts(code),
+            rebuild_block_contracts(
+                code,
+                watermark_metadata=watermark_metadata,
+                adaptive_gamma_config=self._config.adaptive_gamma,
+                default_lsh_d=self._config.lsh_d,
+            ),
         )
         result.alignment_report = report
         result.contract_valid = self._resolve_contract_validity(
@@ -127,6 +136,25 @@ class WatermarkDetector:
         for score in scores:
             if score.block_id in gamma_by_block_id:
                 score.gamma_effective = gamma_by_block_id[score.block_id]
+
+    @staticmethod
+    def _block_contracts_by_id(
+        watermark_metadata: dict | None,
+    ) -> dict[str, dict] | None:
+        if watermark_metadata is None:
+            return None
+        block_contracts = watermark_metadata.get("blocks")
+        if not isinstance(block_contracts, list):
+            return None
+        by_id: dict[str, dict] = {}
+        for contract in block_contracts:
+            if not isinstance(contract, dict):
+                continue
+            block_id = contract.get("block_id")
+            if block_id is None:
+                continue
+            by_id[str(block_id)] = contract
+        return by_id or None
 
     @staticmethod
     def _empty_result(

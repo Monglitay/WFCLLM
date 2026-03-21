@@ -64,6 +64,7 @@ class StatementInterceptor:
 
         encoded = self._accumulated.encode("utf-8")
         tree = self._parser.parse(self._accumulated)
+        root_has_error = tree.root_node.has_error
         current_blocks = self._extract_blocks(tree.root_node)
         current_keys = {(b.node_type, b.start_byte, b.end_byte) for b in current_blocks}
 
@@ -74,7 +75,10 @@ class StatementInterceptor:
 
         # Check pending simple blocks — fire if a newline now follows
         for key, block in list(self._pending_simple.items()):
-            if encoded[block.end_byte : block.end_byte + 1] == b"\n":
+            if (
+                not root_has_error
+                and encoded[block.end_byte : block.end_byte + 1] == b"\n"
+            ):
                 del self._pending_simple[key]
                 self._pre_event_state = self._make_snapshot()
                 self._emitted_keys.add(key)
@@ -94,13 +98,7 @@ class StatementInterceptor:
             if block.is_compound:
                 continue
             key = (block.node_type, block.start_byte, block.end_byte)
-            if encoded[block.end_byte : block.end_byte + 1] == b"\n":
-                self._pre_event_state = self._make_snapshot()
-                self._emitted_keys.add(key)
-                self._prev_all_keys = current_keys
-                return self._make_event(block)
-            else:
-                self._pending_simple[key] = block
+            self._pending_simple[key] = block
 
         # Pass 2: compound blocks
         for block in new_blocks:
@@ -167,6 +165,25 @@ class StatementInterceptor:
         self._pending_simple = {k: copy.deepcopy(v) for k, v in state.pending_simple.items()}
         self._emitted_keys = set(state.emitted_keys)
         self._token_boundaries = list(state.token_boundaries)
+
+    def finalize_pending_simple_block(self) -> InterceptEvent | None:
+        """Flush the final pending simple block when generation ends at EOF.
+
+        Simple statements normally emit only after a trailing newline. If code
+        ends immediately after the final simple block, emit it once here so the
+        generator can still verify the last block.
+        """
+        if not self._pending_simple:
+            return None
+
+        key, block = max(
+            self._pending_simple.items(),
+            key=lambda item: item[1].end_byte,
+        )
+        self._pre_event_state = self._make_snapshot()
+        del self._pending_simple[key]
+        self._emitted_keys.add(key)
+        return self._make_event(block)
 
     def _make_snapshot(self) -> dict:
         """Internal snapshot identical in structure to save_state output."""

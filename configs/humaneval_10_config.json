@@ -52,8 +52,8 @@
     "adaptive_gamma": {
       "enabled": true,
       "strategy": "piecewise_quantile",
-      "profile_path": "data/calibration/humaneval_10_entropy_profile.json",
-      "profile_id": "humaneval_10_entropy_profile",
+      "profile_path": "data/calibration/humaneval_entropy_profile.json",
+      "profile_id": "humaneval_entropy_profile",
       "gamma_min": 0.25,
       "gamma_max": 0.95,
       "anchors": {

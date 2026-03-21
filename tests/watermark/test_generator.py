@@ -1,6 +1,8 @@
 """Tests for wfcllm.watermark.generator — thin orchestrator."""
 
 from dataclasses import asdict
+import json
+import logging
 from types import SimpleNamespace
 import pytest
 import torch
@@ -299,7 +301,7 @@ class TestWatermarkGeneratorInit:
         )
         monkeypatch.setattr(
             "wfcllm.watermark.generator.build_block_contracts",
-            lambda code: [],
+            lambda code, gamma_resolver=None: [],
         )
 
         gen = WatermarkGenerator(
@@ -320,6 +322,239 @@ class TestWatermarkGeneratorInit:
             "final_block_count": 0,
             "generator_total_blocks": 1,
             "block_count_matches_total_blocks": False,
+        }
+
+    def test_generate_uses_final_ast_stats_when_no_runtime_simple_event_emitted(
+        self,
+        config,
+        mock_components,
+        monkeypatch,
+    ):
+        model, tokenizer, encoder, enc_tok = mock_components
+
+        class FakeContext:
+            def __init__(self, model, tokenizer, config):
+                self.generated_text = ""
+                self.generated_ids = []
+                self.last_event = None
+                self.last_block_checkpoint = None
+                self._steps = 0
+
+            @property
+            def eos_id(self):
+                return -1
+
+            def prefill(self, prompt):
+                return None
+
+            def forward_and_sample(self, penalty_ids=None):
+                self._steps += 1
+                if self._steps == 1:
+                    self.generated_text = "pass"
+                    self.generated_ids.append(101)
+                    self.last_event = None
+                    return 101
+                self.last_event = None
+                return self.eos_id
+
+            def is_finished(self):
+                return self._steps >= 2
+
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.GenerationContext",
+            FakeContext,
+        )
+
+        gen = WatermarkGenerator(
+            model=model, tokenizer=tokenizer,
+            encoder=encoder, encoder_tokenizer=enc_tok, config=config,
+        )
+        gen._verify_block = MagicMock(
+            return_value=VerifyResult(
+                passed=True,
+                min_margin=0.1,
+                lsh_signature=(1, 1, 1),
+            )
+        )
+
+        result = gen.generate("prompt")
+
+        assert result.total_blocks == 1
+        assert result.embedded_blocks == 1
+        assert result.alignment_summary == {
+            "final_block_count": 1,
+            "generator_total_blocks": 0,
+            "block_count_matches_total_blocks": False,
+        }
+
+    def test_generate_final_stats_ignore_duplicate_runtime_simple_events(
+        self,
+        config,
+        mock_components,
+        monkeypatch,
+    ):
+        model, tokenizer, encoder, enc_tok = mock_components
+
+        class FakeContext:
+            def __init__(self, model, tokenizer, config):
+                self.generated_text = ""
+                self.generated_ids = []
+                self.last_event = None
+                self.last_block_checkpoint = None
+                self._steps = 0
+
+            @property
+            def eos_id(self):
+                return -1
+
+            def prefill(self, prompt):
+                return None
+
+            def forward_and_sample(self, penalty_ids=None):
+                self._steps += 1
+                if self._steps == 1:
+                    self.generated_text = "x = 1\n"
+                    self.generated_ids.append(101)
+                    self.last_event = InterceptEvent(
+                        block_text="x = 1",
+                        block_type="simple",
+                        node_type="expression_statement",
+                        parent_node_type="module",
+                        token_start_idx=0,
+                        token_count=1,
+                    )
+                    self.last_block_checkpoint = SimpleNamespace(
+                        generated_ids=[],
+                        generated_text="",
+                    )
+                    return 101
+                if self._steps == 2:
+                    self.generated_text = "x = 1\n"
+                    self.generated_ids.append(102)
+                    self.last_event = InterceptEvent(
+                        block_text="x = 1",
+                        block_type="simple",
+                        node_type="expression_statement",
+                        parent_node_type="module",
+                        token_start_idx=0,
+                        token_count=1,
+                    )
+                    self.last_block_checkpoint = SimpleNamespace(
+                        generated_ids=[],
+                        generated_text="",
+                    )
+                    return 102
+                self.last_event = None
+                return self.eos_id
+
+            def is_finished(self):
+                return self._steps >= 3
+
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.GenerationContext",
+            FakeContext,
+        )
+
+        gen = WatermarkGenerator(
+            model=model, tokenizer=tokenizer,
+            encoder=encoder, encoder_tokenizer=enc_tok, config=config,
+        )
+        gen._verify_block = MagicMock(
+            return_value=VerifyResult(
+                passed=True,
+                min_margin=0.1,
+                lsh_signature=(1, 1, 1),
+            )
+        )
+
+        result = gen.generate("prompt")
+
+        assert result.total_blocks == 1
+        assert result.embedded_blocks == 1
+        assert result.alignment_summary == {
+            "final_block_count": 1,
+            "generator_total_blocks": 2,
+            "block_count_matches_total_blocks": False,
+        }
+
+    def test_generate_verifies_flushed_final_simple_block_at_eof(
+        self,
+        config,
+        mock_components,
+        monkeypatch,
+    ):
+        model, tokenizer, encoder, enc_tok = mock_components
+
+        class FakeContext:
+            def __init__(self, model, tokenizer, config):
+                self.generated_text = ""
+                self.generated_ids = []
+                self.last_event = None
+                self.last_block_checkpoint = None
+                self._steps = 0
+
+            @property
+            def eos_id(self):
+                return -1
+
+            def prefill(self, prompt):
+                return None
+
+            def forward_and_sample(self, penalty_ids=None):
+                self._steps += 1
+                if self._steps == 1:
+                    self.generated_text = "return x"
+                    self.generated_ids.append(101)
+                    self.last_event = None
+                    return 101
+                self.last_event = None
+                return self.eos_id
+
+            def is_finished(self):
+                return self._steps >= 2
+
+            def flush_final_event(self):
+                event = InterceptEvent(
+                    block_text="return x",
+                    block_type="simple",
+                    node_type="return_statement",
+                    parent_node_type="module",
+                    token_start_idx=0,
+                    token_count=1,
+                )
+                self.last_event = event
+                self.last_block_checkpoint = SimpleNamespace(
+                    generated_ids=[],
+                    generated_text="",
+                )
+                return event
+
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.GenerationContext",
+            FakeContext,
+        )
+
+        gen = WatermarkGenerator(
+            model=model, tokenizer=tokenizer,
+            encoder=encoder, encoder_tokenizer=enc_tok, config=config,
+        )
+        gen._verify_block = MagicMock(
+            return_value=VerifyResult(
+                passed=True,
+                min_margin=0.1,
+                lsh_signature=(1, 1, 1),
+            )
+        )
+
+        result = gen.generate("prompt")
+
+        assert gen._verify_block.call_count == 2
+        first_call = gen._verify_block.call_args_list[0]
+        assert first_call.args[0].block_text == "return x"
+        assert result.alignment_summary == {
+            "final_block_count": 1,
+            "generator_total_blocks": 1,
+            "block_count_matches_total_blocks": True,
         }
 
 
@@ -343,6 +578,166 @@ class TestStructuralTokenFiltering:
         )
         assert 10 in gen._structural_token_ids
         assert 11 in gen._structural_token_ids
+
+
+class TestBlockGammaRuntime:
+    def test_verify_block_debug_log_includes_gamma_fields(self, caplog):
+        config = WatermarkConfig(
+            secret_key="test-key",
+            max_new_tokens=50,
+            encoder_device="cpu",
+            lsh_d=4,
+            lsh_gamma=0.75,
+        )
+        model = MagicMock()
+        tokenizer = MagicMock()
+        encoder = MagicMock()
+        enc_tok = MagicMock()
+        tokenizer.encode = MagicMock(return_value=[1, 2, 3])
+        tokenizer.decode = MagicMock(return_value="")
+        tokenizer.eos_token_id = 2
+
+        gen = WatermarkGenerator(
+            model=model,
+            tokenizer=tokenizer,
+            encoder=encoder,
+            encoder_tokenizer=enc_tok,
+            config=config,
+        )
+        gen._verifier.verify = MagicMock(
+            return_value=VerifyResult(
+                passed=True,
+                min_margin=0.1,
+                lsh_signature=(1, 1, 1, 1),
+            )
+        )
+
+        event = InterceptEvent(
+            block_text="x = 1",
+            block_type="simple",
+            node_type="expression_statement",
+            parent_node_type="module",
+            token_start_idx=0,
+            token_count=1,
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="wfcllm.watermark.generator"):
+            gen._verify_block(event)
+
+        assert "gamma_target=" in caplog.text
+        assert "gamma_effective=" in caplog.text
+        assert "k=" in caplog.text
+
+    def test_generate_with_adaptive_gamma_uses_resolved_k_and_emits_metadata(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        profile_path = tmp_path / "profile.json"
+        profile_path.write_text(
+            json.dumps(
+                {
+                    "language": "python",
+                    "model_family": "demo-model",
+                    "quantiles_units": {
+                        "p10": 1,
+                        "p50": 2,
+                        "p75": 3,
+                        "p90": 4,
+                        "p95": 5,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        config = WatermarkConfig(
+            secret_key="test-key",
+            max_new_tokens=50,
+            encoder_device="cpu",
+            lsh_d=4,
+        )
+        config.adaptive_gamma.enabled = True
+        config.adaptive_gamma.profile_path = str(profile_path)
+        config.adaptive_gamma.profile_id = "entropy-profile-v1"
+
+        class FakeContext:
+            def __init__(self, model, tokenizer, config):
+                self.generated_text = ""
+                self.generated_ids = []
+                self.last_event = None
+                self.last_block_checkpoint = None
+                self._steps = 0
+
+            @property
+            def eos_id(self):
+                return -1
+
+            def prefill(self, prompt):
+                return None
+
+            def forward_and_sample(self, penalty_ids=None):
+                self._steps += 1
+                if self._steps == 1:
+                    self.generated_text = "x = 1\n"
+                    self.generated_ids.append(101)
+                    self.last_event = InterceptEvent(
+                        block_text="x = 1",
+                        block_type="simple",
+                        node_type="expression_statement",
+                        parent_node_type="module",
+                        token_start_idx=0,
+                        token_count=1,
+                    )
+                    self.last_block_checkpoint = SimpleNamespace(
+                        generated_ids=[],
+                        generated_text="",
+                    )
+                    return 101
+                self.last_event = None
+                return self.eos_id
+
+            def is_finished(self):
+                return self._steps >= 2
+
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.GenerationContext",
+            FakeContext,
+        )
+
+        model = MagicMock()
+        tokenizer = MagicMock()
+        encoder = MagicMock()
+        enc_tok = MagicMock()
+        tokenizer.encode = MagicMock(return_value=[1, 2, 3])
+        tokenizer.decode = MagicMock(return_value="")
+        tokenizer.eos_token_id = 2
+
+        gen = WatermarkGenerator(
+            model=model,
+            tokenizer=tokenizer,
+            encoder=encoder,
+            encoder_tokenizer=enc_tok,
+            config=config,
+        )
+        gen._keying.derive = MagicMock(return_value=frozenset())
+        gen._verifier.verify = MagicMock(
+            return_value=VerifyResult(
+                passed=True,
+                min_margin=0.1,
+                lsh_signature=(1, 1, 1, 1),
+            )
+        )
+
+        result = gen.generate("prompt")
+
+        assert result.adaptive_mode == "piecewise_quantile"
+        assert result.profile_id == "entropy-profile-v1"
+        assert result.block_contracts[0].k == 4
+        assert result.block_contracts[0].gamma_effective == pytest.approx(4 / 16)
+        derive_call = gen._keying.derive.call_args_list[0]
+        assert derive_call.args[0] == "module"
+        assert derive_call.kwargs["k"] == 4
 
 
 class TestFallbackDeprecated:
@@ -614,3 +1009,159 @@ class TestCascadeRegression:
         ctx.forward_and_sample.assert_not_called()
         assert stats.cascade_blocks == 1
         assert pending_fallbacks == []
+
+    def test_cascade_restores_runtime_counts_to_compound_checkpoint(self, monkeypatch):
+        config = WatermarkConfig(
+            secret_key="test-key",
+            max_new_tokens=64,
+            encoder_device="cpu",
+            enable_cascade=True,
+        )
+        model = MagicMock()
+        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+        tokenizer = MagicMock()
+        tokenizer.encode = MagicMock(return_value=[1])
+        tokenizer.decode = MagicMock(return_value="")
+        tokenizer.eos_token_id = 2
+        encoder = MagicMock()
+        enc_tok = MagicMock()
+
+        compound_cp = SimpleNamespace(
+            generated_ids=[],
+            generated_text="",
+        )
+        simple_cp = SimpleNamespace(
+            generated_ids=[101],
+            generated_text="if flag:\n",
+        )
+
+        class FakeContext:
+            def __init__(self, model, tokenizer, config):
+                self.generated_ids = []
+                self.generated_text = ""
+                self.last_event = None
+                self.last_block_checkpoint = None
+                self._cursor = 0
+                self._steps = 0
+                self._sequence = self._first_pass_sequence()
+
+            def _first_pass_sequence(self):
+                return [
+                    ("compound", "if flag:\n"),
+                    ("simple", "    x = old\n"),
+                    ("simple", "    y = bad\n"),
+                    ("eos", ""),
+                ]
+
+            def _post_cascade_sequence(self):
+                return [
+                    ("compound", "if flag:\n"),
+                    ("simple", "    x = final\n"),
+                    ("eos", ""),
+                ]
+
+            @property
+            def eos_id(self):
+                return -1
+
+            def prefill(self, prompt):
+                return None
+
+            def rollback(self, cp):
+                self.generated_ids = list(getattr(cp, "generated_ids", []))
+                self.generated_text = getattr(cp, "generated_text", "")
+                self.last_event = None
+                self.last_block_checkpoint = None
+                self._cursor = 0
+                self._sequence = self._post_cascade_sequence()
+
+            def forward_and_sample(self, penalty_ids=None):
+                self._steps += 1
+                if self._cursor >= len(self._sequence):
+                    self.last_event = None
+                    return self.eos_id
+
+                kind, text = self._sequence[self._cursor]
+                self._cursor += 1
+                self.generated_ids.append(self._steps)
+                self.generated_text += text
+
+                if kind == "eos":
+                    self.last_event = None
+                    return self.eos_id
+
+                if kind == "compound":
+                    self.last_event = InterceptEvent(
+                        block_text=text,
+                        block_type="compound",
+                        node_type="if_statement",
+                        parent_node_type="module",
+                        token_start_idx=0,
+                        token_count=1,
+                    )
+                    self.last_block_checkpoint = compound_cp
+                    return 1
+
+                self.last_event = InterceptEvent(
+                    block_text=text,
+                    block_type="simple",
+                    node_type="expression_statement",
+                    parent_node_type="if_statement",
+                    token_start_idx=0,
+                    token_count=1,
+                )
+                self.last_block_checkpoint = simple_cp
+                return 1
+
+            def is_finished(self):
+                return self._steps >= 8
+
+        class FakeRetryLoop:
+            def __init__(self, **kwargs):
+                self.calls = []
+
+            def run(self, checkpoint, original_event):
+                self.calls.append((checkpoint, original_event.block_text))
+                return RetryResult(
+                    success=False,
+                    attempts=1,
+                    final_event=None,
+                    diagnostics=RetryDiagnostics(),
+                )
+
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.GenerationContext",
+            FakeContext,
+        )
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.RetryLoop",
+            FakeRetryLoop,
+        )
+
+        gen = WatermarkGenerator(
+            model=model,
+            tokenizer=tokenizer,
+            encoder=encoder,
+            encoder_tokenizer=enc_tok,
+            config=config,
+        )
+
+        def fake_verify_block(event):
+            return VerifyResult(
+                passed=event.block_text != "    y = bad\n",
+                min_margin=0.01,
+                lsh_signature=(0, 0, 0, 0),
+            )
+
+        gen._verify_block = fake_verify_block
+
+        result = gen.generate("prompt")
+
+        assert result.total_blocks == 1
+        assert result.embedded_blocks == 1
+        assert result.failed_blocks == 0
+        assert result.alignment_summary == {
+            "final_block_count": 1,
+            "generator_total_blocks": 1,
+            "block_count_matches_total_blocks": True,
+        }

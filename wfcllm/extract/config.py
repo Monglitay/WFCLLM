@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
+from wfcllm.watermark.config import AdaptiveGammaConfig
+
 if TYPE_CHECKING:
     from wfcllm.extract.alignment import AlignmentReport
 
@@ -39,6 +41,7 @@ class ExtractConfig:
     lsh_d: int = 3
     lsh_gamma: float = 0.5
     adaptive_detection: AdaptiveDetectionConfig = field(default_factory=AdaptiveDetectionConfig)
+    adaptive_gamma: AdaptiveGammaConfig = field(default_factory=AdaptiveGammaConfig)
 
 
 @dataclass

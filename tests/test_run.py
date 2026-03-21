@@ -172,6 +172,9 @@ class TestRunWatermarkConfigNoFallback:
     def test_run_watermark_pipeline_config_receives_resume(self):
         assert self._find_keyword_call("run.py", "WatermarkPipelineConfig", "resume")
 
+    def test_run_watermark_pipeline_config_receives_sample_limit(self):
+        assert self._find_keyword_call("run.py", "WatermarkPipelineConfig", "sample_limit")
+
     def test_run_extract_pipeline_config_receives_resume(self):
         assert self._find_keyword_call("run.py", "ExtractPipelineConfig", "resume")
 
