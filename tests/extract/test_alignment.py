@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import json
 
 from wfcllm.common.block_contract import build_block_contracts
-from wfcllm.extract.alignment import compare_block_contracts
+from wfcllm.extract.alignment import compare_block_contracts, rebuild_block_contracts
+from wfcllm.watermark.entropy_profile import EntropyProfile
+from wfcllm.watermark.gamma_schedule import PiecewiseQuantileSchedule
 
 
 def _contract(
@@ -65,8 +68,6 @@ class TestCompareBlockContracts:
 
 
 def test_rebuild_block_contracts_matches_canonical_builder():
-    from wfcllm.extract.alignment import rebuild_block_contracts
-
     code = (
         "def f(x):\n"
         "    total = x + 1\n"
@@ -77,3 +78,60 @@ def test_rebuild_block_contracts_matches_canonical_builder():
     canonical = [asdict(contract) for contract in build_block_contracts(code)]
 
     assert rebuilt == canonical
+
+
+def test_rebuild_block_contracts_uses_adaptive_gamma_metadata(tmp_path):
+    code = "x = 1\n"
+    entropy_units = build_block_contracts(code)[0].entropy_units
+    profile_payload = {
+        "language": "python",
+        "model_family": "demo-model",
+        "quantiles_units": {
+            "p10": max(0, entropy_units - 2),
+            "p50": max(0, entropy_units - 1),
+            "p75": entropy_units,
+            "p90": entropy_units + 1,
+            "p95": entropy_units + 2,
+        },
+        "strategy": "piecewise_quantile",
+    }
+    profile_path = tmp_path / "profile.json"
+    profile_path.write_text(json.dumps(profile_payload), encoding="utf-8")
+
+    anchors = {
+        "p10": 0.95,
+        "p50": 0.75,
+        "p75": 0.55,
+        "p90": 0.35,
+        "p95": 0.25,
+    }
+    schedule = PiecewiseQuantileSchedule(
+        profile=EntropyProfile.load(profile_path),
+        anchor_quantiles=tuple(anchors.keys()),
+        anchor_gammas=tuple(anchors.values()),
+    )
+    embedded = [
+        asdict(contract)
+        for contract in build_block_contracts(
+            code,
+            gamma_resolver=lambda units: schedule.resolve(units, 4),
+        )
+    ]
+
+    rebuilt = rebuild_block_contracts(
+        code,
+        watermark_metadata={
+            "adaptive_mode": "piecewise_quantile",
+            "watermark_params": {
+                "lsh_d": 4,
+                "adaptive_gamma": {
+                    "strategy": "piecewise_quantile",
+                    "profile_id": "entropy-profile-v1",
+                    "anchors": anchors,
+                    "profile": profile_payload,
+                },
+            },
+        },
+    )
+
+    assert rebuilt == embedded

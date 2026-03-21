@@ -27,6 +27,14 @@ class TestWatermarkPipelineConfig:
                 dataset_path="data/datasets",
             )
 
+    def test_sample_limit_default_none(self):
+        cfg = WatermarkPipelineConfig(
+            dataset="humaneval",
+            output_dir="data/watermarked",
+            dataset_path="data/datasets",
+        )
+        assert cfg.sample_limit is None
+
 
 from unittest.mock import patch, MagicMock
 from wfcllm.watermark.pipeline import WatermarkPipeline
@@ -170,6 +178,89 @@ class TestWatermarkPipelineRun:
             "margin_alpha": 0.05,
         }
 
+    def test_pipeline_writes_public_adaptive_gamma_metadata(self, tmp_path):
+        cfg = WatermarkPipelineConfig(
+            dataset="humaneval",
+            output_dir=str(tmp_path),
+            dataset_path="data/datasets",
+        )
+        contracts = build_block_contracts("x = 1\n")
+        generator = self._build_generator(
+            GenerateResult(
+                code="x = 1\n",
+                stats=EmbedStats(
+                    total_blocks=1,
+                    embedded_blocks=1,
+                    failed_blocks=0,
+                    fallback_blocks=0,
+                ),
+                block_contracts=contracts,
+                adaptive_mode="piecewise_quantile",
+                profile_id="entropy-profile-v1",
+                alignment_summary={
+                    "final_block_count": 1,
+                    "generator_total_blocks": 1,
+                    "block_count_matches_total_blocks": True,
+                },
+            )
+        )
+        generator.config.adaptive_gamma = SimpleNamespace(
+            enabled=True,
+            strategy="piecewise_quantile",
+            profile_id="entropy-profile-v1",
+            anchors={
+                "p10": 0.95,
+                "p50": 0.75,
+                "p75": 0.55,
+                "p90": 0.35,
+                "p95": 0.25,
+            },
+        )
+        generator._entropy_profile = SimpleNamespace(
+            language="python",
+            model_family="demo-model",
+            quantiles_units_map={
+                "p10": 1,
+                "p50": 2,
+                "p75": 3,
+                "p90": 4,
+                "p95": 5,
+            },
+            strategy="piecewise_quantile",
+        )
+        pipeline = WatermarkPipeline(generator=generator, config=cfg)
+
+        with patch.object(pipeline, "_load_prompts", return_value=[
+            {"id": "HumanEval/0", "prompt": "def foo():\n"},
+        ]):
+            output_path = pipeline.run()
+
+        row = json.loads(Path(output_path).read_text(encoding="utf-8").splitlines()[0])
+        assert row["watermark_params"]["adaptive_gamma"] == {
+            "strategy": "piecewise_quantile",
+            "profile_id": "entropy-profile-v1",
+            "anchors": {
+                "p10": 0.95,
+                "p50": 0.75,
+                "p75": 0.55,
+                "p90": 0.35,
+                "p95": 0.25,
+            },
+            "profile": {
+                "language": "python",
+                "model_family": "demo-model",
+                "quantiles_units": {
+                    "p10": 1,
+                    "p50": 2,
+                    "p75": 3,
+                    "p90": 4,
+                    "p95": 5,
+                },
+                "strategy": "piecewise_quantile",
+            },
+        }
+        assert "profile_path" not in row["watermark_params"]["adaptive_gamma"]
+
     def test_run_returns_output_path(self, mock_result):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = WatermarkPipelineConfig(
@@ -185,6 +276,27 @@ class TestWatermarkPipelineRun:
                 output_path = pipeline.run()
             assert "mbpp" in output_path
             assert output_path.endswith(".jsonl")
+
+    def test_run_respects_sample_limit(self, mock_result):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = WatermarkPipelineConfig(
+                dataset="humaneval",
+                output_dir=tmpdir,
+                dataset_path="data/datasets",
+                sample_limit=1,
+            )
+            generator = self._build_generator(mock_result)
+            pipeline = WatermarkPipeline(generator=generator, config=cfg)
+
+            with patch.object(pipeline, "_load_prompts", return_value=[
+                {"id": "HumanEval/0", "prompt": "def foo():\n"},
+                {"id": "HumanEval/1", "prompt": "def bar():\n"},
+            ]):
+                output_path = pipeline.run()
+
+            lines = Path(output_path).read_text(encoding="utf-8").splitlines()
+            assert len(lines) == 1
+            assert generator.generate.call_count == 1
 
     def test_embed_rate_zero_blocks(self):
         """embed_rate is 0.0 when total_blocks is 0."""

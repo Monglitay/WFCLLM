@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import logging
 from dataclasses import dataclass, field
 
 from wfcllm.watermark.config import WatermarkConfig
 from wfcllm.watermark.context import GenerationContext, Checkpoint
 from wfcllm.watermark.entropy import NodeEntropyEstimator
+from wfcllm.watermark.gamma_schedule import GammaResolution, quantize_gamma
 from wfcllm.watermark.interceptor import InterceptEvent
 from wfcllm.watermark.keying import WatermarkKeying
 from wfcllm.watermark.verifier import ProjectionVerifier
@@ -63,6 +65,7 @@ class RetryLoop:
         keying: WatermarkKeying,
         entropy_est: NodeEntropyEstimator,
         structural_token_ids: set[int],
+        gamma_resolver: Callable[[str], GammaResolution] | None = None,
     ):
         self._ctx = ctx
         self._config = config
@@ -70,6 +73,7 @@ class RetryLoop:
         self._keying = keying
         self._entropy_est = entropy_est
         self._structural_token_ids = structural_token_ids
+        self._gamma_resolver = gamma_resolver
         self._retry_budget = (
             config.retry_token_budget
             if config.retry_token_budget is not None
@@ -91,7 +95,6 @@ class RetryLoop:
             RetryResult with success status and diagnostics.
         """
         parent = original_event.parent_node_type or "module"
-        valid_set = self._keying.derive(parent)
 
         diagnostics = RetryDiagnostics(per_attempt=[])
         prev_retry_ids: list[int] | None = None
@@ -118,6 +121,8 @@ class RetryLoop:
             # Verify
             block_entropy = self._entropy_est.estimate_block_entropy(event.block_text)
             margin = self._entropy_est.compute_margin(block_entropy, self._config)
+            gamma_resolution = self._resolve_gamma(event.block_text)
+            valid_set = self._keying.derive(parent, k=gamma_resolution.k)
             result = self._verifier.verify(event.block_text, valid_set, margin)
 
             info = AttemptInfo(
@@ -133,9 +138,13 @@ class RetryLoop:
 
             logger.debug(
                 "  [retry %d/%d] entropy=%.4f margin_thresh=%.4f"
+                " gamma_target=%.4f k=%d gamma_effective=%.4f"
                 " sig=%s in_valid=%s min_margin=%.4f passed=%s\n  text=%r",
                 attempt_i + 1, self._config.max_retries,
                 block_entropy, margin,
+                gamma_resolution.gamma_target,
+                gamma_resolution.k,
+                gamma_resolution.gamma_effective,
                 result.lsh_signature,
                 result.lsh_signature in valid_set,
                 result.min_margin, result.passed,
@@ -182,3 +191,8 @@ class RetryLoop:
             if event is not None and event.block_type == "simple":
                 return event
         return None
+
+    def _resolve_gamma(self, block_text: str) -> GammaResolution:
+        if self._gamma_resolver is not None:
+            return self._gamma_resolver(block_text)
+        return quantize_gamma(self._config.lsh_gamma, self._config.lsh_d)

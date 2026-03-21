@@ -262,6 +262,54 @@ class TestPreEventState:
             "After restoring pre-event state, same tokens must re-trigger the event"
         )
 
+
+class TestFinalizePendingSimpleBlock:
+    def test_finalize_emits_last_simple_block_at_eof(self):
+        ic = StatementInterceptor()
+
+        for ch in "return x":
+            event = ic.feed_token(ch)
+            assert event is None
+
+        event = ic.finalize_pending_simple_block()
+
+        assert event is not None
+        assert event.block_type == "simple"
+        assert event.block_text == "return x"
+
+    def test_finalize_returns_none_when_no_pending_simple_block(self):
+        ic = StatementInterceptor()
+        for ch in "x = 1\n":
+            ic.feed_token(ch)
+
+        event = ic.finalize_pending_simple_block()
+        assert event is None
+
+    def test_multiline_docstring_does_not_emit_transient_inner_lines(self):
+        ic = StatementInterceptor()
+        code = (
+            "def f():\n"
+            "    \"\"\"\n"
+            "    line1\n"
+            "    line2\n"
+            "    \"\"\"\n"
+            "    return 1\n"
+        )
+        events = []
+        for ch in code:
+            event = ic.feed_token(ch)
+            if event is not None and event.block_type == "simple":
+                events.append(event.block_text.strip())
+
+        final_event = ic.finalize_pending_simple_block()
+        if final_event is not None and final_event.block_type == "simple":
+            events.append(final_event.block_text.strip())
+
+        assert events == [
+            "\"\"\"\n    line1\n    line2\n    \"\"\"",
+            "return 1",
+        ]
+
     def test_pre_event_state_vs_save_state_differ_on_emitted_keys(self):
         """save_state() after event includes block key; get_pre_event_state() does not."""
         ic = StatementInterceptor()
@@ -392,4 +440,3 @@ class TestInterceptorCheckpointRollback:
                 warnings.simplefilter("error", DeprecationWarning)
                 with pytest.raises(DeprecationWarning):
                     ic.get_pre_event_state()
-

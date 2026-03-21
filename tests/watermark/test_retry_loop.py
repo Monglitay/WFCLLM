@@ -1,9 +1,11 @@
 """Tests for wfcllm.watermark.retry_loop — rejection sampling retry logic."""
 
+import logging
 import pytest
 from unittest.mock import MagicMock, patch
 from dataclasses import dataclass
 
+from wfcllm.watermark.gamma_schedule import GammaResolution
 from wfcllm.watermark.retry_loop import RetryLoop, RetryResult, RetryDiagnostics, AttemptInfo
 from wfcllm.watermark.context import GenerationContext, Checkpoint
 from wfcllm.watermark.config import WatermarkConfig
@@ -216,3 +218,49 @@ class TestRetryLoopUnit:
         # First call to forward_and_sample should have penalty_ids=None
         first_call = mock_ctx.forward_and_sample.call_args_list[0]
         assert first_call.kwargs.get("penalty_ids") is None or first_call.args == ()
+
+    def test_retry_debug_log_includes_gamma_fields(
+        self,
+        config,
+        mock_ctx,
+        mock_verifier,
+        mock_keying,
+        mock_entropy,
+        caplog,
+    ):
+        event = InterceptEvent(
+            block_text="x = 1", block_type="simple",
+            node_type="expression_statement", parent_node_type="module",
+            token_start_idx=0, token_count=2,
+        )
+
+        mock_ctx.last_event = event
+        mock_ctx.eos_id = 2
+        mock_ctx.is_finished.return_value = False
+        mock_ctx.forward_and_sample.return_value = 5
+
+        mock_verifier.verify.return_value = VerifyResult(passed=True, min_margin=0.1)
+        mock_keying.derive.return_value = frozenset()
+        mock_entropy.estimate_block_entropy.return_value = 1.0
+        mock_entropy.compute_margin.return_value = 0.001
+
+        loop = RetryLoop(
+            ctx=mock_ctx, config=config,
+            verifier=mock_verifier, keying=mock_keying,
+            entropy_est=mock_entropy, structural_token_ids=set(),
+            gamma_resolver=lambda block_text: GammaResolution(
+                gamma_target=0.75,
+                k=6,
+                gamma_effective=0.75,
+            ),
+        )
+        cp = MagicMock(spec=Checkpoint)
+        original_event = MagicMock(spec=InterceptEvent)
+        original_event.parent_node_type = "module"
+
+        with caplog.at_level(logging.DEBUG, logger="wfcllm.watermark.retry_loop"):
+            loop.run(cp, original_event)
+
+        assert "gamma_target=" in caplog.text
+        assert "gamma_effective=" in caplog.text
+        assert "k=" in caplog.text

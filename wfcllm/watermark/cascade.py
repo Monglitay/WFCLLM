@@ -19,6 +19,7 @@ class CascadeCheckpoint:
     checkpoint: Checkpoint
     compound_event: InterceptEvent
     checkpoint_key: tuple
+    stats_snapshot: object | None = None
     failed_simple_blocks: list[str] = field(default_factory=list)
 
 
@@ -53,7 +54,10 @@ class CascadeManager:
         )
 
     def on_compound_block_start(
-        self, ctx: GenerationContext, event: InterceptEvent
+        self,
+        ctx: GenerationContext,
+        event: InterceptEvent,
+        stats_snapshot: object | None = None,
     ) -> None:
         """Save a cascade checkpoint when a compound block starts."""
         if not self._enabled:
@@ -76,6 +80,7 @@ class CascadeManager:
             checkpoint=block_cp,
             compound_event=event,
             checkpoint_key=checkpoint_key,
+            stats_snapshot=stats_snapshot,
         )
         self._stack.append(cp)
         if len(self._stack) > self._max_depth:

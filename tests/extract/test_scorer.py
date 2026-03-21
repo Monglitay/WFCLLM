@@ -113,3 +113,19 @@ class TestBlockScorer:
         assert len(results) == 2
         assert results[0].block_id == "0"
         assert results[1].block_id == "1"
+
+    def test_score_block_uses_block_specific_k_when_present(self, mock_verifier):
+        mock_verifier.verify.return_value = VerifyResult(passed=True, min_margin=0.3)
+        keying = MagicMock()
+        keying.derive.return_value = frozenset()
+        scorer = BlockScorer(keying, mock_verifier, default_gamma=0.75)
+        block = _make_block("0")
+
+        result = scorer.score_block(
+            block,
+            blocks=[block],
+            block_contract={"k": 6, "gamma_effective": 0.375},
+        )
+
+        keying.derive.assert_called_once_with("module", k=6)
+        assert result.gamma_effective == pytest.approx(0.375)

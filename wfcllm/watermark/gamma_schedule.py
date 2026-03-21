@@ -16,6 +16,24 @@ class GammaResolution:
     gamma_effective: float
 
 
+def quantize_gamma(gamma_target: float, lsh_d: int) -> GammaResolution:
+    """Quantize a target gamma into the effective LSH region count."""
+    if lsh_d < 1:
+        raise ValueError("lsh_d must be >= 1")
+
+    clipped_gamma = min(max(gamma_target, 0.0), 1.0)
+    universe_size = 2 ** lsh_d
+    k_unclipped = round(clipped_gamma * universe_size)
+    k = min(max(k_unclipped, 1), universe_size - 1)
+    gamma_effective = k / universe_size
+
+    return GammaResolution(
+        gamma_target=round(clipped_gamma, 12),
+        k=k,
+        gamma_effective=gamma_effective,
+    )
+
+
 @dataclass(frozen=True)
 class PiecewiseQuantileSchedule:
     """Piecewise-linear gamma schedule from profile quantile anchors."""
@@ -32,20 +50,8 @@ class PiecewiseQuantileSchedule:
 
     def resolve(self, entropy_units: int, lsh_d: int) -> GammaResolution:
         """Resolve target and quantized gamma for a block."""
-        if lsh_d < 1:
-            raise ValueError("lsh_d must be >= 1")
-
         gamma_target = self._interpolate_gamma(entropy_units)
-        universe_size = 2 ** lsh_d
-        k_unclipped = round(gamma_target * universe_size)
-        k = min(max(k_unclipped, 1), universe_size - 1)
-        gamma_effective = k / universe_size
-
-        return GammaResolution(
-            gamma_target=round(gamma_target, 12),
-            k=k,
-            gamma_effective=gamma_effective,
-        )
+        return quantize_gamma(gamma_target, lsh_d)
 
     def _interpolate_gamma(self, entropy_units: int) -> float:
         entropy_anchors = [self.profile.quantile_units(q) for q in self.anchor_quantiles]

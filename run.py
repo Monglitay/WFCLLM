@@ -95,29 +95,68 @@ def resolve_adaptive_gamma_config(args: argparse.Namespace, wm_cfg: dict):
 
     enabled = bool(configured.get("enabled", defaults.enabled))
     if (
-        args.gamma_strategy is not None
-        or args.entropy_profile is not None
-        or args.profile_id is not None
+        getattr(args, "gamma_strategy", None) is not None
+        or getattr(args, "entropy_profile", None) is not None
+        or getattr(args, "profile_id", None) is not None
     ):
         enabled = True
 
     return AdaptiveGammaConfig(
         enabled=enabled,
-        strategy=args.gamma_strategy or configured.get("strategy", defaults.strategy),
+        strategy=(
+            getattr(args, "gamma_strategy", None)
+            or configured.get("strategy", defaults.strategy)
+        ),
         profile_path=(
-            args.entropy_profile
-            if args.entropy_profile is not None
+            getattr(args, "entropy_profile", None)
+            if getattr(args, "entropy_profile", None) is not None
             else configured.get("profile_path", defaults.profile_path)
         ),
         profile_id=(
-            args.profile_id
-            if args.profile_id is not None
+            getattr(args, "profile_id", None)
+            if getattr(args, "profile_id", None) is not None
             else configured.get("profile_id", defaults.profile_id)
         ),
         gamma_min=float(configured.get("gamma_min", defaults.gamma_min)),
         gamma_max=float(configured.get("gamma_max", defaults.gamma_max)),
         anchors=anchors,
     )
+
+
+def resolve_extract_adaptive_gamma_config(args: argparse.Namespace, cfg: dict):
+    extract_cfg = cfg.get("extract", {})
+    configured = extract_cfg.get("adaptive_gamma")
+    if isinstance(configured, dict):
+        return resolve_adaptive_gamma_config(
+            args,
+            {"adaptive_gamma": configured},
+        )
+    return resolve_adaptive_gamma_config(args, cfg.get("watermark", {}))
+
+
+def build_extract_calibration_contract_builder(
+    adaptive_detection_config,
+    adaptive_gamma_config,
+    lsh_d: int,
+):
+    if not getattr(adaptive_detection_config, "prefer_adaptive", False):
+        return None
+    if not getattr(adaptive_gamma_config, "enabled", False):
+        return None
+
+    from wfcllm.extract.alignment import rebuild_block_contracts
+
+    def builder(code: str) -> dict[str, dict]:
+        return {
+            contract["block_id"]: contract
+            for contract in rebuild_block_contracts(
+                code,
+                adaptive_gamma_config=adaptive_gamma_config,
+                default_lsh_d=lsh_d,
+            )
+        }
+
+    return builder
 
 
 def resolve_adaptive_detection_config(args: argparse.Namespace, ext_cfg: dict):
@@ -272,6 +311,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="水印嵌入数据集（humaneval 或 mbpp，默认: humaneval）")
     parser.add_argument("--dataset-path", default=None, help="本地数据集根目录（默认: data/datasets）")
     parser.add_argument("--output-dir", default=None, help="水印 JSONL 输出目录（默认: data/watermarked）")
+    parser.add_argument(
+        "--sample-limit",
+        type=int,
+        default=None,
+        help="仅处理前 N 条 watermark prompts（调试/子集验证用）",
+    )
     parser.add_argument(
         "--gamma-strategy",
         choices=["piecewise_quantile"],
@@ -497,6 +542,7 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
     dataset = args.dataset or wm_cfg.get("dataset", "humaneval")
     dataset_path = args.dataset_path or wm_cfg.get("dataset_path", "data/datasets")
     output_dir = args.output_dir or wm_cfg.get("output_dir", "data/watermarked")
+    sample_limit = args.sample_limit if args.sample_limit is not None else wm_cfg.get("sample_limit")
     embed_dim = args.embed_dim or wm_cfg.get("encoder_embed_dim", 128)
     secret_key = args.secret_key or wm_cfg.get("secret_key", "")
     lm_model_path = args.lm_model_path or wm_cfg.get("lm_model_path", "")
@@ -580,6 +626,7 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
         output_dir=output_dir,
         dataset_path=dataset_path,
         resume=resume,
+        sample_limit=sample_limit,
     )
     pipeline = WatermarkPipeline(generator=generator, config=pipeline_config)
 
@@ -635,6 +682,8 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
     embed_dim = args.embed_dim or ext_cfg.get("embed_dim", 128)
     fpr_threshold = args.fpr_threshold or ext_cfg.get("fpr_threshold", 3.0)
     resume = args.resume if args.resume is not None else ext_cfg.get("resume")
+    adaptive_detection_config = resolve_adaptive_detection_config(args, ext_cfg)
+    adaptive_gamma_config = resolve_extract_adaptive_gamma_config(args, cfg)
     # WatermarkPipeline writes one JSONL per watermark run/config, so extraction
     # assumes the file is homogeneous and resolves LSH params from the first record.
     try:
@@ -710,6 +759,12 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
         from wfcllm.watermark.verifier import ProjectionVerifier
 
         fpr_target = getattr(args, "fpr", None) or ext_cfg.get("fpr", 0.01)
+        block_contract_builder = build_extract_calibration_contract_builder(
+            adaptive_detection_config,
+            adaptive_gamma_config,
+            lsh_d,
+        )
+        calibration_mode = "adaptive" if block_contract_builder is not None else "fixed"
 
         lsh_space = LSHSpace(secret_key, embed_dim, lsh_d)
         keying = WatermarkKeying(secret_key, lsh_d, lsh_gamma)
@@ -725,7 +780,12 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
                     corpus.append(_calib_json.loads(line))
         print(f"[校准] 加载负样本语料 {len(corpus)} 条，FPR 目标={fpr_target}")
 
-        calibrator = ThresholdCalibrator(scorer, gamma=lsh_gamma)
+        calibrator = ThresholdCalibrator(
+            scorer,
+            gamma=lsh_gamma,
+            mode=calibration_mode,
+            block_contract_builder=block_contract_builder,
+        )
         calib_result = calibrator.calibrate(corpus, fpr=fpr_target)
         fpr_threshold = calib_result["fpr_threshold"]
         print(f"[校准] 完成：M_r = {fpr_threshold:.4f}（FPR={fpr_target}，样本数={calib_result['n_samples']}）")
@@ -736,7 +796,8 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
         fpr_threshold=fpr_threshold,
         lsh_d=lsh_d,
         lsh_gamma=lsh_gamma,
-        adaptive_detection=resolve_adaptive_detection_config(args, ext_cfg),
+        adaptive_detection=adaptive_detection_config,
+        adaptive_gamma=adaptive_gamma_config,
     )
     detector = WatermarkDetector(extract_config, encoder, tokenizer, device=device)
 

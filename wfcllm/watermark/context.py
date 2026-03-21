@@ -225,6 +225,28 @@ class GenerationContext:
             return True
         return False
 
+    def flush_final_event(self) -> InterceptEvent | None:
+        """Emit the last pending simple block when generation stops at EOF."""
+        event = self.interceptor.finalize_pending_simple_block()
+        self.last_event = event
+        if event is None:
+            self.last_block_checkpoint = None
+            return None
+
+        block_start = event.token_start_idx
+        if 0 <= block_start < len(self._step_history):
+            frame = self._step_history[block_start]
+            self.last_block_checkpoint = Checkpoint(
+                generated_ids=frame[0],
+                generated_text=frame[1],
+                kv_snapshot=CacheSnapshot(seq_len=frame[2]),
+                interceptor_state=frame[3],
+                use_prefill_logits=frame[4],
+            )
+        else:
+            self.last_block_checkpoint = self.checkpoint()
+        return event
+
     def _sample(
         self,
         logits: torch.Tensor,

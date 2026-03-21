@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
+from typing import TYPE_CHECKING
 
 from wfcllm.common.ast_parser import extract_statement_blocks
+
+if TYPE_CHECKING:
+    from wfcllm.watermark.gamma_schedule import GammaResolution
 
 
 @dataclass(frozen=True)
@@ -23,7 +28,10 @@ class BlockContract:
     gamma_effective: float = 0.0
 
 
-def build_block_contracts(code: str) -> list[BlockContract]:
+def build_block_contracts(
+    code: str,
+    gamma_resolver: Callable[[int], "GammaResolution"] | None = None,
+) -> list[BlockContract]:
     """Extract statement blocks and return canonical block contracts."""
     from wfcllm.watermark.entropy import NodeEntropyEstimator
 
@@ -41,6 +49,15 @@ def build_block_contracts(code: str) -> list[BlockContract]:
             if block.parent_id is not None
             else "module"
         )
+        entropy_units = estimator.estimate_block_entropy_units(block.source)
+        gamma_target = 0.0
+        k = 0
+        gamma_effective = 0.0
+        if gamma_resolver is not None:
+            gamma = gamma_resolver(entropy_units)
+            gamma_target = gamma.gamma_target
+            k = gamma.k
+            gamma_effective = gamma.gamma_effective
         contracts.append(
             BlockContract(
                 ordinal=ordinal,
@@ -50,7 +67,10 @@ def build_block_contracts(code: str) -> list[BlockContract]:
                 block_text_hash=sha256(block.source.encode("utf-8")).hexdigest(),
                 start_line=block.start_line,
                 end_line=block.end_line,
-                entropy_units=estimator.estimate_block_entropy_units(block.source),
+                entropy_units=entropy_units,
+                gamma_target=gamma_target,
+                k=k,
+                gamma_effective=gamma_effective,
             )
         )
     return contracts
