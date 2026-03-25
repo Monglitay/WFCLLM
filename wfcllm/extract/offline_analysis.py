@@ -194,8 +194,8 @@ def _build_detail_delta(
     left_record: dict[str, Any],
     right_record: dict[str, Any],
 ) -> DetailDelta:
-    left_is_watermarked = bool(left_record["is_watermarked"])
-    right_is_watermarked = bool(right_record["is_watermarked"])
+    left_is_watermarked = _require_boolean_field(left_record, "is_watermarked")
+    right_is_watermarked = _require_boolean_field(right_record, "is_watermarked")
     detection_flipped = left_is_watermarked != right_is_watermarked
     flip_direction: str | None = None
     anomaly_flags: list[str] = []
@@ -239,16 +239,32 @@ def _load_jsonl_records(path: Path) -> dict[str, dict[str, Any]]:
             continue
         record = json.loads(line)
         sample_id = record["id"]
+        if sample_id in records:
+            raise ValueError(f"duplicate id: {sample_id}")
         records[sample_id] = record
     return records
 
 
 def _extract_watermark_params(records: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    selected_params: dict[str, Any] | None = None
+    saw_missing_or_invalid = False
     for record in records.values():
-        watermark_params = record.get("watermark_params") or {}
-        if isinstance(watermark_params, dict) and watermark_params:
-            return dict(watermark_params)
-    return {}
+        watermark_params = record.get("watermark_params")
+        if watermark_params is None:
+            saw_missing_or_invalid = True
+            continue
+        if not isinstance(watermark_params, dict) or not watermark_params:
+            saw_missing_or_invalid = True
+            continue
+        current_params = dict(watermark_params)
+        if selected_params is None:
+            selected_params = current_params
+            continue
+        if current_params != selected_params:
+            raise ValueError("inconsistent watermark_params across artifact rows")
+    if selected_params is not None and saw_missing_or_invalid:
+        raise ValueError("inconsistent watermark_params across artifact rows")
+    return selected_params or {}
 
 
 def _preferred_params(
@@ -260,3 +276,10 @@ def _preferred_params(
     if summary is not None and summary.watermark_params:
         return "summary", dict(summary.watermark_params)
     return "missing", {}
+
+
+def _require_boolean_field(record: dict[str, Any], field_name: str) -> bool:
+    value = record[field_name]
+    if not isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a boolean")
+    return value

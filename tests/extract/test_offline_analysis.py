@@ -4,6 +4,8 @@ import json
 import math
 from importlib import import_module
 
+import pytest
+
 
 def _load_module():
     return import_module("wfcllm.extract.offline_analysis")
@@ -199,3 +201,95 @@ def test_build_detail_delta_report_calculates_z_score_delta(tmp_path):
     assert delta.independent_blocks_delta == 1
     assert delta.hits_delta == 0
     assert "z_score_drop" in delta.anomaly_flags
+
+
+def test_build_detail_delta_report_rejects_non_boolean_is_watermarked(tmp_path):
+    offline_analysis = _load_module()
+
+    left_path = tmp_path / "left_details.jsonl"
+    right_path = tmp_path / "right_details.jsonl"
+    _write_jsonl(
+        left_path,
+        [
+            {
+                "id": "HumanEval/9",
+                "is_watermarked": "false",
+                "z_score": 1.0,
+                "p_value": 0.5,
+                "independent_blocks": 4,
+                "hits": 2,
+            }
+        ],
+    )
+    _write_jsonl(
+        right_path,
+        [
+            {
+                "id": "HumanEval/9",
+                "is_watermarked": False,
+                "z_score": 0.9,
+                "p_value": 0.6,
+                "independent_blocks": 4,
+                "hits": 2,
+            }
+        ],
+    )
+
+    left = offline_analysis.load_detail_artifact(left_path)
+    right = offline_analysis.load_detail_artifact(right_path)
+
+    with pytest.raises(ValueError, match="is_watermarked"):
+        offline_analysis.build_detail_delta_report(left, right)
+
+
+def test_load_detail_artifact_rejects_duplicate_ids(tmp_path):
+    offline_analysis = _load_module()
+
+    detail_path = tmp_path / "details.jsonl"
+    _write_jsonl(
+        detail_path,
+        [
+            {
+                "id": "HumanEval/1",
+                "is_watermarked": True,
+                "z_score": 1.0,
+                "p_value": 0.2,
+                "independent_blocks": 4,
+                "hits": 2,
+            },
+            {
+                "id": "HumanEval/1",
+                "is_watermarked": False,
+                "z_score": 0.5,
+                "p_value": 0.4,
+                "independent_blocks": 4,
+                "hits": 1,
+            },
+        ],
+    )
+
+    with pytest.raises(ValueError, match="duplicate id"):
+        offline_analysis.load_detail_artifact(detail_path)
+
+
+
+
+def test_load_watermarked_artifact_rejects_mixed_missing_and_present_watermark_params(tmp_path):
+    offline_analysis = _load_module()
+
+    watermarked_path = tmp_path / "watermarked_mixed.jsonl"
+    _write_jsonl(
+        watermarked_path,
+        [
+            {
+                "id": "HumanEval/0",
+                "watermark_params": {"lsh_d": 4, "lsh_gamma": 0.75},
+            },
+            {
+                "id": "HumanEval/1",
+            },
+        ],
+    )
+
+    with pytest.raises(ValueError, match="inconsistent watermark_params"):
+        offline_analysis.load_watermarked_artifact(watermarked_path)
