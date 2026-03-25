@@ -50,10 +50,10 @@
     "lsh_d": 4,
     "lsh_gamma": 0.75,
     "adaptive_gamma": {
-      "enabled": false,
+      "enabled": true,
       "strategy": "piecewise_quantile",
-      "profile_path": null,
-      "profile_id": null,
+      "profile_path": "data/calibration/humaneval_entropy_profile.json",
+      "profile_id": "humaneval_entropy_profile",
       "gamma_min": 0.25,
       "gamma_max": 0.95,
       "anchors": {
@@ -73,11 +73,11 @@
     "lsh_gamma": 0.75,
     "calibration_corpus":"data/negative_corpus.jsonl",
     "fpr": 0.05,
-    "input_file": "data/watermarked/humaneval_20260318_204554.jsonl",
+    "input_file": null,
     "output_dir": "data/results",
     "resume": null,
     "adaptive_detection": {
-      "mode": "fixed",
+      "mode": "prefer-adaptive",
       "require_block_contract_check": true,
       "fail_on_structure_mismatch": true,
       "warn_on_numeric_mismatch": true,
@@ -85,6 +85,7 @@
     }
   },
   "generate_negative": {
+    "source_mode": "reference",
     "lm_model_path": "data/models/deepseek-coder-7b-base",
     "dataset": "humaneval",
     "dataset_path": "data/datasets",

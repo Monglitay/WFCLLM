@@ -9,8 +9,13 @@ import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
-from wfcllm.common.dataset_loader import SUPPORTED_DATASETS, load_prompts
+from wfcllm.common.dataset_loader import (
+    SUPPORTED_DATASETS,
+    load_prompts,
+    load_reference_solutions,
+)
 
 
 @dataclass
@@ -35,6 +40,7 @@ class NegativeCorpusConfig:
     top_k: int = 50
     device: str = "cuda"
     limit: int | None = None
+    source_mode: Literal["reference", "llm"] = "reference"
     """Process only first N prompts (for debugging). None = all."""
 
     def __post_init__(self):
@@ -42,6 +48,8 @@ class NegativeCorpusConfig:
             raise ValueError(
                 f"dataset must be one of {SUPPORTED_DATASETS}, got '{self.dataset}'"
             )
+        if self.source_mode not in {"reference", "llm"}:
+            raise ValueError("source_mode must be 'reference' or 'llm'")
 
 
 class NegativeCorpusGenerator:
@@ -53,10 +61,17 @@ class NegativeCorpusGenerator:
     """
 
     def __init__(self, config: NegativeCorpusConfig):
+        self._config = config
+        self._device = config.device
+        self._model = None
+        self._tokenizer = None
+
+        if config.source_mode == "reference":
+            return
+
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
-        self._config = config
         device = config.device
         if device == "cuda" and not torch.cuda.is_available():
             print("[警告] CUDA 不可用，回退到 CPU", file=sys.stderr)
@@ -114,13 +129,32 @@ class NegativeCorpusGenerator:
         import torch
 
         cfg = self._config
+        out_path = Path(cfg.output_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if cfg.source_mode == "reference":
+            rows = load_reference_solutions(cfg.dataset, cfg.dataset_path)
+            if cfg.limit is not None:
+                rows = rows[: cfg.limit]
+            print(f"  共 {len(rows)} 条 reference 样本", file=sys.stderr)
+
+            with open(out_path, "w", encoding="utf-8") as f:
+                for row in rows:
+                    record = {
+                        "id": row["id"],
+                        "dataset": cfg.dataset,
+                        "prompt": row["prompt"],
+                        "generated_code": row["generated_code"],
+                    }
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+            print(f"\n完成，输出至: {out_path}（{len(rows)} 条）", file=sys.stderr)
+            return str(out_path)
+
         prompts = load_prompts(cfg.dataset, cfg.dataset_path)
         if cfg.limit is not None:
             prompts = prompts[: cfg.limit]
         print(f"  共 {len(prompts)} 条 prompt", file=sys.stderr)
-
-        out_path = Path(cfg.output_path)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(out_path, "w", encoding="utf-8") as f:
             for i, item in enumerate(prompts):

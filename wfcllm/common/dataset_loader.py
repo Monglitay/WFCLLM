@@ -52,3 +52,49 @@ def load_prompts(dataset: str, dataset_path: str) -> list[dict]:
         for item in ds[split]:
             prompts.append({"id": f"mbpp/{item['task_id']}", "prompt": item["text"]})
     return prompts
+
+
+def load_reference_solutions(dataset: str, dataset_path: str) -> list[dict]:
+    """Load prompt/reference-solution pairs from local datasets."""
+    if dataset not in SUPPORTED_DATASETS:
+        raise ValueError(
+            f"dataset must be one of {SUPPORTED_DATASETS}, got '{dataset}'"
+        )
+
+    path = str(Path(dataset_path) / dataset)
+
+    if dataset == "humaneval":
+        ds = load_dataset(
+            "openai/openai_humaneval",
+            cache_dir=path,
+            download_mode="reuse_cache_if_exists",
+        )
+        rows = []
+        for split in ds:
+            for item in ds[split]:
+                rows.append(
+                    {
+                        "id": item["task_id"],
+                        "prompt": item["prompt"],
+                        "generated_code": item["canonical_solution"],
+                    }
+                )
+        return rows
+
+    ds = load_dataset(
+        "google-research-datasets/mbpp",
+        "full",
+        cache_dir=path,
+        download_mode="reuse_cache_if_exists",
+    )
+    rows = []
+    for split in ds:
+        for item in ds[split]:
+            rows.append(
+                {
+                    "id": f"mbpp/{item['task_id']}",
+                    "prompt": item["text"],
+                    "generated_code": item["code"],
+                }
+            )
+    return rows

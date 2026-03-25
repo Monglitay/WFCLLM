@@ -1,0 +1,34 @@
+{
+  "meta": {
+    "input_file": "data/watermarked_subset/humaneval_20260320_123116.jsonl",
+    "total_samples": 10,
+    "scored_samples": 10,
+    "invalid_samples": 0
+  },
+  "summary": {
+    "watermark_rate": 0.2,
+    "watermark_rate_ci_95": [
+      0.056681,
+      0.509843
+    ],
+    "mean_z_score": 0.1826873610439799,
+    "std_z_score": 1.8254024828860131,
+    "mean_p_value": 0.48694805300592614,
+    "mean_blocks": 5.0,
+    "embed_rate_distribution": {
+      "mean": 0.669702,
+      "std": 0.389155,
+      "p25": 0.6,
+      "p50": 0.748512,
+      "p75": 1.0
+    },
+    "mode_counts": {
+      "fixed": 0,
+      "adaptive": 10
+    },
+    "invalid_reason_counts": {
+      "alignment_failed": 0,
+      "adaptive_contract_invalid": 0
+    }
+  }
+}

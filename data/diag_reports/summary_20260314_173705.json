@@ -1,0 +1,11 @@
+{
+  "n_prompts": 20,
+  "total_embed_events": 178,
+  "compound_only_events": 114,
+  "compound_ratio": 0.6404494382022472,
+  "text_mismatch_total": 9,
+  "parent_mismatch_total": 1,
+  "score_disagree_total": 10,
+  "avg_embed_rate": 0.0,
+  "avg_detect_z": 1.2130501333542605
+}

@@ -1,0 +1,14 @@
+{
+  "language": "python",
+  "model_family": "deepseek-coder-7b-base",
+  "strategy": "piecewise_quantile",
+  "sample_count": 382,
+  "quantiles_units": {
+    "p10": 5110,
+    "p50": 10019,
+    "p75": 17276,
+    "p90": 29535,
+    "p95": 37805
+  },
+  "profile_id": "humaneval_10_entropy_profile"
+}

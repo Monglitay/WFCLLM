@@ -5,7 +5,11 @@ from unittest.mock import patch
 
 import pytest
 
-from wfcllm.common.dataset_loader import SUPPORTED_DATASETS, load_prompts
+from wfcllm.common.dataset_loader import (
+    SUPPORTED_DATASETS,
+    load_prompts,
+    load_reference_solutions,
+)
 
 
 class TestLoadPrompts:
@@ -51,3 +55,49 @@ class TestLoadPrompts:
         assert len(prompts) == 1
         assert prompts[0]["id"] == "mbpp/1"
         assert prompts[0]["prompt"] == "Write a function"
+
+
+class TestLoadReferenceSolutions:
+    @patch("wfcllm.common.dataset_loader.load_dataset")
+    def test_humaneval_returns_id_prompt_and_canonical_solution(self, mock_load):
+        fake_split = [
+            {
+                "task_id": "HumanEval/0",
+                "prompt": "def foo():\n",
+                "canonical_solution": "    return 1\n",
+            }
+        ]
+        mock_ds = {"test": fake_split}
+        mock_load.return_value = mock_ds
+
+        rows = load_reference_solutions("humaneval", "data/datasets")
+
+        assert rows == [
+            {
+                "id": "HumanEval/0",
+                "prompt": "def foo():\n",
+                "generated_code": "    return 1\n",
+            }
+        ]
+
+    @patch("wfcllm.common.dataset_loader.load_dataset")
+    def test_mbpp_returns_id_prompt_and_reference_code(self, mock_load):
+        fake_split = [
+            {
+                "task_id": 1,
+                "text": "Write a function",
+                "code": "def f():\n    return 1\n",
+            }
+        ]
+        mock_ds = {"train": fake_split}
+        mock_load.return_value = mock_ds
+
+        rows = load_reference_solutions("mbpp", "data/datasets")
+
+        assert rows == [
+            {
+                "id": "mbpp/1",
+                "prompt": "Write a function",
+                "generated_code": "def f():\n    return 1\n",
+            }
+        ]
