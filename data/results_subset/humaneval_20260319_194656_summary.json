@@ -1,0 +1,24 @@
+{
+  "meta": {
+    "input_file": "data/watermarked_subset/humaneval_20260319_194656.jsonl",
+    "total_samples": 10
+  },
+  "summary": {
+    "watermark_rate": 0.3,
+    "watermark_rate_ci_95": [
+      0.107789,
+      0.603227
+    ],
+    "mean_z_score": 1.2199764835013516,
+    "std_z_score": 1.640173544069389,
+    "mean_p_value": 0.27428691835443186,
+    "mean_blocks": 5.8,
+    "embed_rate_distribution": {
+      "mean": 0.543959,
+      "std": 0.213015,
+      "p25": 0.446429,
+      "p50": 0.571429,
+      "p75": 0.608333
+    }
+  }
+}

@@ -25,6 +25,7 @@ class TestNegativeCorpusConfig:
         assert cfg.top_k == 50
         assert cfg.device == "cuda"
         assert cfg.limit is None
+        assert cfg.source_mode == "reference"
 
     def test_custom_values(self):
         cfg = NegativeCorpusConfig(
@@ -33,10 +34,12 @@ class TestNegativeCorpusConfig:
             dataset="mbpp",
             temperature=1.0,
             limit=5,
+            source_mode="llm",
         )
         assert cfg.dataset == "mbpp"
         assert cfg.temperature == 1.0
         assert cfg.limit == 5
+        assert cfg.source_mode == "llm"
 
     def test_unsupported_dataset_raises(self):
         with pytest.raises(ValueError, match="dataset must be one of"):
@@ -80,12 +83,45 @@ class TestNegativeCorpusGeneratorGenerate:
 
 
 class TestNegativeCorpusGeneratorRun:
+    def test_run_reference_mode_writes_dataset_solutions(self, tmp_path):
+        cfg = NegativeCorpusConfig(
+            lm_model_path="",
+            output_path=str(tmp_path / "out.jsonl"),
+            device="cpu",
+            source_mode="reference",
+        )
+        gen = NegativeCorpusGenerator.__new__(NegativeCorpusGenerator)
+        gen._config = cfg
+        gen._device = "cpu"
+
+        references = [
+            {
+                "id": "HumanEval/0",
+                "prompt": "def foo():\n",
+                "generated_code": "    return 1\n",
+            },
+            {
+                "id": "HumanEval/1",
+                "prompt": "def bar():\n",
+                "generated_code": "    return 2\n",
+            },
+        ]
+
+        with patch("wfcllm.extract.negative_corpus.load_reference_solutions", return_value=references), \
+             patch("torch.cuda.is_available", return_value=False):
+            out_path = gen.run()
+
+        rows = [json.loads(line) for line in Path(out_path).read_text().splitlines()]
+        assert rows[0]["generated_code"] == "    return 1\n"
+        assert rows[1]["generated_code"] == "    return 2\n"
+
     def test_run_writes_jsonl(self, tmp_path):
         """run() writes one JSONL record per prompt with correct fields."""
         cfg = NegativeCorpusConfig(
             lm_model_path="data/models/my-model",
             output_path=str(tmp_path / "out.jsonl"),
             device="cpu",
+            source_mode="llm",
         )
         gen = NegativeCorpusGenerator.__new__(NegativeCorpusGenerator)
         gen._config = cfg
@@ -118,6 +154,7 @@ class TestNegativeCorpusGeneratorRun:
             output_path=str(tmp_path / "out.jsonl"),
             device="cpu",
             limit=1,
+            source_mode="llm",
         )
         gen = NegativeCorpusGenerator.__new__(NegativeCorpusGenerator)
         gen._config = cfg

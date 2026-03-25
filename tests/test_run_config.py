@@ -47,6 +47,7 @@ def test_parser_default_config():
     parser = build_parser()
     args = parser.parse_args([])
     assert args.config == Path("configs/base_config.json")
+    assert args.fpr is None
 
 
 def test_parser_custom_config():
@@ -416,15 +417,145 @@ def test_run_extract_uses_adaptive_calibration_when_adaptive_detection_enabled(
     assert captured["block_contract_builder"] is not None
     assert captured["built_contracts"]["0"]["k"] > 0
 
+def test_run_extract_prefers_configured_fpr_when_cli_fpr_not_provided(
+    monkeypatch,
+    tmp_path,
+):
+    import run as run_module
 
+    captured: dict = {}
+
+    input_file = tmp_path / "input.jsonl"
+    input_file.write_text(
+        json.dumps(
+            {
+                "id": "HumanEval/0",
+                "generated_code": "x = 1\n",
+                "watermark_params": {"lsh_d": 4, "lsh_gamma": 0.75},
+            }
+        ) + "\n",
+        encoding="utf-8",
+    )
+    calibration_file = tmp_path / "calibration.jsonl"
+    calibration_file.write_text(
+        json.dumps({"generated_code": "x = 1\n"}) + "\n",
+        encoding="utf-8",
+    )
+    config_file = tmp_path / "cfg.json"
+    config_file.write_text(
+        json.dumps(
+            {
+                "extract": {
+                    "secret_key": "k",
+                    "input_file": str(input_file),
+                    "calibration_corpus": str(calibration_file),
+                    "lsh_d": 4,
+                    "lsh_gamma": 0.75,
+                    "fpr": 0.05,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeState:
+        @staticmethod
+        def is_done(phase: str) -> bool:
+            return phase == "encoder"
+
+        @staticmethod
+        def get(phase: str, key: str):
+            return None
+
+        @staticmethod
+        def mark_done(*args, **kwargs):
+            return None
+
+    class FakeEncoder:
+        def __init__(self, config):
+            self.config = config
+
+        def load_state_dict(self, state):
+            return None
+
+        def to(self, device):
+            return self
+
+    class FakeCalibrator:
+        def __init__(self, scorer, gamma, mode="fixed", block_contract_builder=None):
+            return None
+
+        def calibrate(self, corpus, fpr):
+            captured["fpr"] = fpr
+            return {"fpr_threshold": 1.0, "n_samples": len(corpus)}
+
+    class FakeDetector:
+        def __init__(self, config, encoder, tokenizer, device):
+            return None
+
+    class FakePipeline:
+        def __init__(self, detector, config):
+            self._details = tmp_path / "sample_details.jsonl"
+            self._summary = tmp_path / "sample_summary.json"
+
+        @staticmethod
+        def summary_path_for_details(details_path: Path) -> Path:
+            return Path(details_path).parent / "sample_summary.json"
+
+        def run(self) -> str:
+            self._details.write_text("{}", encoding="utf-8")
+            self._summary.write_text(
+                json.dumps(
+                    {
+                        "meta": {"total_samples": 1},
+                        "summary": {
+                            "watermark_rate": 1.0,
+                            "watermark_rate_ci_95": [1.0, 1.0],
+                            "mean_z_score": 1.0,
+                            "std_z_score": 0.0,
+                            "mean_p_value": 0.1,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return str(self._details)
+
+    monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+    monkeypatch.setattr("transformers.AutoTokenizer.from_pretrained", lambda _: object())
+    monkeypatch.setattr("wfcllm.encoder.model.SemanticEncoder", FakeEncoder)
+    monkeypatch.setattr("wfcllm.extract.calibrator.ThresholdCalibrator", FakeCalibrator)
+    monkeypatch.setattr("wfcllm.extract.scorer.BlockScorer", lambda *args, **kwargs: object())
+    monkeypatch.setattr("wfcllm.watermark.keying.WatermarkKeying", lambda *args, **kwargs: object())
+    monkeypatch.setattr("wfcllm.watermark.lsh_space.LSHSpace", lambda *args, **kwargs: object())
+    monkeypatch.setattr("wfcllm.watermark.verifier.ProjectionVerifier", lambda *args, **kwargs: object())
+    monkeypatch.setattr("wfcllm.extract.detector.WatermarkDetector", FakeDetector)
+    monkeypatch.setattr("wfcllm.extract.pipeline.ExtractPipeline", FakePipeline)
+    monkeypatch.setattr("wfcllm.extract.pipeline.ExtractPipelineConfig", lambda **kwargs: SimpleNamespace(**kwargs))
+
+    args = SimpleNamespace(
+        secret_key=None,
+        input_file=str(input_file),
+        extract_output_dir=None,
+        embed_dim=None,
+        fpr_threshold=None,
+        resume=None,
+        calibration_corpus=None,
+        fpr=None,
+        config=config_file,
+    )
+
+    rc = run_module.run_extract(args, FakeState())
+    assert rc == 0
+    assert captured["fpr"] == 0.05
 def test_base_config_includes_adaptive_sections():
     cfg = json.loads(Path("configs/base_config.json").read_text(encoding="utf-8"))
 
     assert cfg["watermark"]["adaptive_gamma"] == {
-        "enabled": False,
+        "enabled": True,
         "strategy": "piecewise_quantile",
-        "profile_path": None,
-        "profile_id": None,
+        "profile_path": "data/calibration/humaneval_entropy_profile.json",
+        "profile_id": "humaneval_entropy_profile",
         "gamma_min": 0.25,
         "gamma_max": 0.95,
         "anchors": {
@@ -436,12 +567,14 @@ def test_base_config_includes_adaptive_sections():
         },
     }
     assert cfg["extract"]["adaptive_detection"] == {
-        "mode": "fixed",
+        "mode": "prefer-adaptive",
         "require_block_contract_check": True,
         "fail_on_structure_mismatch": True,
         "warn_on_numeric_mismatch": True,
         "exclude_invalid_samples": True,
     }
+    assert cfg["extract"]["input_file"] is None
+    assert cfg["extract"]["fpr"] == 0.05
 
 
 def test_humaneval_subset_config_exposes_adaptive_experiment_defaults():
@@ -457,3 +590,9 @@ def test_humaneval_subset_config_exposes_adaptive_experiment_defaults():
     assert adaptive_gamma["profile_path"].endswith("_entropy_profile.json")
     assert adaptive_gamma["profile_id"] == Path(adaptive_gamma["profile_path"]).stem
     assert cfg["extract"]["adaptive_detection"]["mode"] == "prefer-adaptive"
+    assert cfg["generate_negative"]["source_mode"] == "reference"
+
+
+def test_base_config_defaults_generate_negative_to_reference_mode():
+    cfg = json.loads(Path("configs/base_config.json").read_text(encoding="utf-8"))
+    assert cfg["generate_negative"]["source_mode"] == "reference"

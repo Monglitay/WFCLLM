@@ -340,8 +340,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fpr-threshold", type=float, default=None, help="FPR 阈值 M_r（默认: 3.0，需通过校准脚本生成）")
     parser.add_argument("--calibration-corpus", default=None,
                         help="负样本校准语料 JSONL 路径（提供则自动运行 ThresholdCalibrator）")
-    parser.add_argument("--fpr", type=float, default=0.01,
-                        help="校准目标 FPR（默认: 0.01，仅在 --calibration-corpus 指定时生效）")
+    parser.add_argument("--fpr", type=float, default=None,
+                        help="校准目标 FPR（不传则优先读取 config，仅在 --calibration-corpus 指定时生效）")
     parser.add_argument(
         "--adaptive-detection-mode",
         choices=["fixed", "prefer-adaptive", "require-adaptive"],
@@ -836,7 +836,7 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
 
 
 def run_generate_negative(args: argparse.Namespace, state: RunState) -> int:
-    """生成负样本语料：用 LLM 直接生成代码（不加水印）。
+    """生成负样本语料：支持原生参考解或无水印 LLM 生成。
 
     输出 JSONL 格式与阶段二水印数据集相同（含 generated_code 字段），
     可直接作为 --calibration-corpus 传给 run.py --phase extract。
@@ -846,9 +846,10 @@ def run_generate_negative(args: argparse.Namespace, state: RunState) -> int:
 
     cfg = load_config(args.config)
     neg_cfg = cfg.get("generate_negative", {})
+    source_mode = neg_cfg.get("source_mode", "reference")
 
     lm_model_path = args.lm_model_path or neg_cfg.get("lm_model_path", "")
-    if not lm_model_path:
+    if source_mode == "llm" and not lm_model_path:
         print("[错误] --lm-model-path 为必填参数", file=sys.stderr)
         return 1
 
@@ -871,6 +872,7 @@ def run_generate_negative(args: argparse.Namespace, state: RunState) -> int:
         top_k=neg_cfg.get("top_k", 50),
         device=neg_cfg.get("device", "cuda"),
         limit=limit,
+        source_mode=source_mode,
     )
 
     try:

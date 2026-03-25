@@ -58,7 +58,7 @@ class TestRunGenerateNegative:
     @pytest.fixture
     def neg_cfg_file(self, tmp_path):
         import json as _json
-        cfg_data = {"generate_negative": {"lm_model_path": "", "dataset": "humaneval", "dataset_path": "data/datasets", "output_path": "data/neg.jsonl", "max_new_tokens": 512, "temperature": 0.8, "top_p": 0.95, "top_k": 50, "device": "cuda", "limit": None}}
+        cfg_data = {"generate_negative": {"source_mode": "llm", "lm_model_path": "", "dataset": "humaneval", "dataset_path": "data/datasets", "output_path": "data/neg.jsonl", "max_new_tokens": 512, "temperature": 0.8, "top_p": 0.95, "top_k": 50, "device": "cuda", "limit": None}}
         cfg_path = tmp_path / "cfg.json"
         cfg_path.write_text(_json.dumps(cfg_data))
         return cfg_path
@@ -80,6 +80,46 @@ class TestRunGenerateNegative:
 
         rc = run_generate_negative(args, state)
         assert rc == 1
+
+    def test_run_generate_negative_reference_mode_allows_missing_lm_model_path(
+        self,
+        tmp_path,
+    ):
+        from unittest.mock import patch, MagicMock
+        from run import run_generate_negative, RunState
+
+        cfg_path = tmp_path / "cfg.json"
+        cfg_path.write_text(
+            json.dumps(
+                {
+                    "generate_negative": {
+                        "source_mode": "reference",
+                        "lm_model_path": "",
+                        "dataset": "humaneval",
+                        "dataset_path": "data/datasets",
+                        "output_path": str(tmp_path / "neg.jsonl"),
+                        "limit": None,
+                    }
+                }
+            )
+        )
+        state = RunState(tmp_path / "state.json")
+        args = argparse.Namespace(
+            lm_model_path=None,
+            dataset=None,
+            dataset_path=None,
+            negative_output=None,
+            negative_limit=None,
+            config=cfg_path,
+        )
+        mock_gen = MagicMock()
+        mock_gen.run.return_value = str(tmp_path / "neg.jsonl")
+
+        with patch("wfcllm.extract.negative_corpus.NegativeCorpusGenerator", return_value=mock_gen):
+            rc = run_generate_negative(args, state)
+
+        assert rc == 0
+        mock_gen.run.assert_called_once()
 
     def test_run_generate_negative_calls_generator(self, tmp_path, neg_cfg_file):
         """run_generate_negative calls NegativeCorpusGenerator.run() and marks done."""

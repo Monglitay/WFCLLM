@@ -1,6 +1,7 @@
 {
   "encoder": {
     "model_name": "Salesforce/codet5-base",
+    "use_pretrained_only": false,
     "embed_dim": 128,
     "use_lora": true,
     "lora_r": 16,
@@ -20,7 +21,7 @@
     "num_workers": 8,
     "pin_memory": true,
     "checkpoint_dir": "data/checkpoints/encoder",
-    "results_dir": "data/results_subset",
+    "results_dir": "data/results",
     "local_model_dir": "data/models",
     "local_dataset_dir": "data/datasets",
     "output_model_dir": "data/models/encoder"
@@ -30,15 +31,14 @@
     "lm_model_path": "data/models/deepseek-coder-7b-base",
     "dataset": "humaneval",
     "dataset_path": "data/datasets",
-    "output_dir": "data/watermarked_subset",
-    "sample_limit": 10,
+    "output_dir": "data/watermarked",
     "resume": null,
     "encoder_model_path": "data/models/encoder",
     "encoder_embed_dim": 128,
     "encoder_device": "cuda",
     "margin_base": 0.001,
     "margin_alpha": 0.002,
-    "max_retries": 30,
+    "max_retries": 50,
     "temperature": 0.7,
     "top_p": 0.95,
     "top_k": 50,
@@ -47,7 +47,7 @@
     "enable_cascade": true,
     "cascade_max_depth": 1,
     "repetition_penalty": 1.05,
-    "lsh_d": 4,
+    "lsh_d": 5,
     "lsh_gamma": 0.75,
     "adaptive_gamma": {
       "enabled": true,
@@ -55,12 +55,12 @@
       "profile_path": "data/calibration/humaneval_entropy_profile.json",
       "profile_id": "humaneval_entropy_profile",
       "gamma_min": 0.25,
-      "gamma_max": 0.95,
+      "gamma_max": 0.75,
       "anchors": {
-        "p10": 0.95,
+        "p10": 0.90,
         "p50": 0.75,
-        "p75": 0.55,
-        "p90": 0.35,
+        "p75": 0.60,
+        "p90": 0.50,
         "p95": 0.25
       }
     }
@@ -69,12 +69,12 @@
     "secret_key": "1010",
     "embed_dim": 128,
     "fpr_threshold": 3.0,
-    "lsh_d": 4,
+    "lsh_d": 5,
     "lsh_gamma": 0.75,
-    "calibration_corpus": "data/negative_corpus_humaneval_10.jsonl",
+    "calibration_corpus":"data/negative_corpus.jsonl",
     "fpr": 0.05,
     "input_file": null,
-    "output_dir": "data/results_subset",
+    "output_dir": "data/results",
     "resume": null,
     "adaptive_detection": {
       "mode": "prefer-adaptive",
@@ -89,12 +89,12 @@
     "lm_model_path": "data/models/deepseek-coder-7b-base",
     "dataset": "humaneval",
     "dataset_path": "data/datasets",
-    "output_path": "data/negative_corpus_humaneval_10.jsonl",
+    "output_path": "data/negative_corpus.jsonl",
     "max_new_tokens": 512,
     "temperature": 0.8,
     "top_p": 0.95,
     "top_k": 50,
     "device": "cuda",
-    "limit": 10
+    "limit": null
   }
 }

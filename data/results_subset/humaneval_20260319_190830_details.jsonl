@@ -1,0 +1,10 @@
+{"id": "HumanEval/0", "is_watermarked": false, "z_score": -0.3333333333333333, "p_value": 0.6305586598182363, "independent_blocks": 3, "hits": 2}
+{"id": "HumanEval/1", "is_watermarked": false, "z_score": 0.4472135954999579, "p_value": 0.32736042300928847, "independent_blocks": 15, "hits": 12}
+{"id": "HumanEval/2", "is_watermarked": false, "z_score": 1.4142135623730951, "p_value": 0.07864960352514251, "independent_blocks": 6, "hits": 6}
+{"id": "HumanEval/3", "is_watermarked": false, "z_score": 0.6546536707079772, "p_value": 0.25634538013096164, "independent_blocks": 7, "hits": 6}
+{"id": "HumanEval/4", "is_watermarked": false, "z_score": -0.8164965809277261, "p_value": 0.7928919108787373, "independent_blocks": 2, "hits": 1}
+{"id": "HumanEval/5", "is_watermarked": false, "z_score": 0.5773502691896258, "p_value": 0.28185143082538655, "independent_blocks": 1, "hits": 1}
+{"id": "HumanEval/6", "is_watermarked": false, "z_score": 0.3651483716701107, "p_value": 0.35750032734404463, "independent_blocks": 10, "hits": 8}
+{"id": "HumanEval/7", "is_watermarked": false, "z_score": 1.6329931618554523, "p_value": 0.051235217429874684, "independent_blocks": 8, "hits": 8}
+{"id": "HumanEval/8", "is_watermarked": false, "z_score": 0.5222329678670935, "p_value": 0.30075406722029496, "independent_blocks": 11, "hits": 9}
+{"id": "HumanEval/9", "is_watermarked": true, "z_score": 2.5555555555555554, "p_value": 0.005300921784243289, "independent_blocks": 27, "hits": 26}
