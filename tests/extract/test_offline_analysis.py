@@ -1,0 +1,201 @@
+from __future__ import annotations
+
+import json
+import math
+from importlib import import_module
+
+
+def _load_module():
+    return import_module("wfcllm.extract.offline_analysis")
+
+
+def _write_json(path, payload: dict) -> None:
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _write_jsonl(path, rows: list[dict]) -> None:
+    path.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+
+def test_compare_run_parameters_prefers_saved_watermarked_metadata(tmp_path):
+    offline_analysis = _load_module()
+
+    summary_path = tmp_path / "summary.json"
+    watermarked_path = tmp_path / "watermarked.jsonl"
+
+    _write_json(
+        summary_path,
+        {
+            "dataset": "HumanEval",
+            "watermark_params": {"lsh_d": 3, "lsh_gamma": 0.5},
+        },
+    )
+    _write_jsonl(
+        watermarked_path,
+        [
+            {
+                "id": "HumanEval/0",
+                "watermark_params": {"lsh_d": 4, "lsh_gamma": 0.75},
+            }
+        ],
+    )
+
+    summary = offline_analysis.load_summary_artifact(summary_path)
+    watermarked = offline_analysis.load_watermarked_artifact(watermarked_path)
+
+    comparison = offline_analysis.compare_run_parameters(
+        summary,
+        summary,
+        watermarked,
+        None,
+    )
+
+    assert comparison.left_source == "watermarked"
+    assert comparison.left_params == {"lsh_d": 4, "lsh_gamma": 0.75}
+    assert comparison.right_source == "summary"
+    assert comparison.right_params == {"lsh_d": 3, "lsh_gamma": 0.5}
+    assert comparison.differing_keys == ("lsh_d", "lsh_gamma")
+
+
+def test_artifact_compatibility_requires_same_id_set_and_comparable_details(tmp_path):
+    offline_analysis = _load_module()
+
+    left_path = tmp_path / "left.jsonl"
+    right_path = tmp_path / "right.jsonl"
+
+    _write_jsonl(
+        left_path,
+        [
+            {
+                "id": "HumanEval/0",
+                "is_watermarked": True,
+                "z_score": 2.1,
+                "p_value": 0.02,
+                "independent_blocks": 8,
+                "hits": 6,
+            },
+            {
+                "id": "HumanEval/1",
+                "is_watermarked": False,
+                "z_score": 0.5,
+                "p_value": 0.31,
+                "independent_blocks": 8,
+                "hits": 4,
+            },
+        ],
+    )
+    _write_jsonl(
+        right_path,
+        [
+            {
+                "id": "HumanEval/0",
+                "is_watermarked": True,
+                "z_score": 1.9,
+                "p_value": 0.03,
+                "independent_blocks": 8,
+            }
+        ],
+    )
+
+    left = offline_analysis.load_detail_artifact(left_path)
+    right = offline_analysis.load_detail_artifact(right_path)
+    compatibility = offline_analysis.check_artifact_compatibility(left, right)
+
+    assert compatibility.same_id_set is False
+    assert compatibility.missing_in_right == ("HumanEval/1",)
+    assert compatibility.comparable_details is False
+    assert compatibility.missing_detail_fields == {"HumanEval/0": ("hits",)}
+    assert compatibility.is_compatible is False
+
+
+def test_build_detail_delta_report_flags_true_to_false_detection_flip(tmp_path):
+    offline_analysis = _load_module()
+
+    left_path = tmp_path / "left_details.jsonl"
+    right_path = tmp_path / "right_details.jsonl"
+
+    _write_jsonl(
+        left_path,
+        [
+            {
+                "id": "HumanEval/7",
+                "is_watermarked": True,
+                "z_score": 2.6,
+                "p_value": 0.01,
+                "independent_blocks": 8,
+                "hits": 6,
+            }
+        ],
+    )
+    _write_jsonl(
+        right_path,
+        [
+            {
+                "id": "HumanEval/7",
+                "is_watermarked": False,
+                "z_score": 1.1,
+                "p_value": 0.13,
+                "independent_blocks": 8,
+                "hits": 5,
+            }
+        ],
+    )
+
+    left = offline_analysis.load_detail_artifact(left_path)
+    right = offline_analysis.load_detail_artifact(right_path)
+    report = offline_analysis.build_detail_delta_report(left, right)
+    delta = report.deltas["HumanEval/7"]
+
+    assert report.total_samples == 1
+    assert report.detection_loss_ids == ("HumanEval/7",)
+    assert delta.detection_flipped is True
+    assert delta.flip_direction == "true_to_false"
+    assert "detection_lost" in delta.anomaly_flags
+
+
+def test_build_detail_delta_report_calculates_z_score_delta(tmp_path):
+    offline_analysis = _load_module()
+
+    left_path = tmp_path / "left_details.jsonl"
+    right_path = tmp_path / "right_details.jsonl"
+
+    _write_jsonl(
+        left_path,
+        [
+            {
+                "id": "HumanEval/3",
+                "is_watermarked": True,
+                "z_score": 1.8,
+                "p_value": 0.04,
+                "independent_blocks": 10,
+                "hits": 7,
+            }
+        ],
+    )
+    _write_jsonl(
+        right_path,
+        [
+            {
+                "id": "HumanEval/3",
+                "is_watermarked": True,
+                "z_score": 0.9,
+                "p_value": 0.12,
+                "independent_blocks": 11,
+                "hits": 7,
+            }
+        ],
+    )
+
+    left = offline_analysis.load_detail_artifact(left_path)
+    right = offline_analysis.load_detail_artifact(right_path)
+    report = offline_analysis.build_detail_delta_report(left, right)
+    delta = report.deltas["HumanEval/3"]
+
+    assert math.isclose(delta.z_score_delta, -0.9)
+    assert math.isclose(delta.p_value_delta, 0.08)
+    assert delta.independent_blocks_delta == 1
+    assert delta.hits_delta == 0
+    assert "z_score_drop" in delta.anomaly_flags
