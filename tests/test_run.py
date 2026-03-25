@@ -13,6 +13,17 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from run import RunState, PHASES, ALL_PHASES
 
 
+def _write_json(path: Path, payload: dict) -> None:
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+
 class TestRunState:
     def test_phases_order(self):
         assert PHASES == ["encoder", "watermark", "extract"]
@@ -181,6 +192,112 @@ class TestCLI:
             capture_output=True, text=True,
         )
         assert result.returncode != 0
+
+    def test_run_offline_analysis_writes_json_report(self, tmp_path):
+        from run import run_offline_analysis
+
+        left_summary = tmp_path / "left_summary.json"
+        right_summary = tmp_path / "right_summary.json"
+        left_details = tmp_path / "left_details.jsonl"
+        right_details = tmp_path / "right_details.jsonl"
+        left_watermarked = tmp_path / "left_watermarked.jsonl"
+        right_watermarked = tmp_path / "right_watermarked.jsonl"
+        report_output = tmp_path / "offline_analysis.json"
+
+        _write_json(
+            left_summary,
+            {
+                "dataset": "HumanEval",
+                "watermark_params": {"lsh_d": 3, "lsh_gamma": 0.5},
+                "summary": {"watermark_rate": 1.0},
+            },
+        )
+        _write_json(
+            right_summary,
+            {
+                "dataset": "HumanEval",
+                "watermark_params": {"lsh_d": 4, "lsh_gamma": 0.75},
+                "summary": {"watermark_rate": 0.0},
+            },
+        )
+        _write_jsonl(
+            left_details,
+            [
+                {
+                    "id": "HumanEval/0",
+                    "is_watermarked": True,
+                    "z_score": 2.4,
+                    "p_value": 0.02,
+                    "independent_blocks": 8,
+                    "hits": 6,
+                }
+            ],
+        )
+        _write_jsonl(
+            right_details,
+            [
+                {
+                    "id": "HumanEval/0",
+                    "is_watermarked": False,
+                    "z_score": 1.0,
+                    "p_value": 0.14,
+                    "independent_blocks": 8,
+                    "hits": 5,
+                }
+            ],
+        )
+        _write_jsonl(
+            left_watermarked,
+            [
+                {
+                    "id": "HumanEval/0",
+                    "watermark_params": {"lsh_d": 3, "lsh_gamma": 0.5},
+                    "total_blocks": 8,
+                    "embedded_blocks": 6,
+                    "failed_blocks": 0,
+                    "fallback_blocks": 0,
+                    "embed_rate": 0.75,
+                }
+            ],
+        )
+        _write_jsonl(
+            right_watermarked,
+            [
+                {
+                    "id": "HumanEval/0",
+                    "watermark_params": {"lsh_d": 4, "lsh_gamma": 0.75},
+                    "total_blocks": 8,
+                    "embedded_blocks": 5,
+                    "failed_blocks": 1,
+                    "fallback_blocks": 0,
+                    "embed_rate": 0.625,
+                }
+            ],
+        )
+
+        args = argparse.Namespace(
+            compare_summary_left=str(left_summary),
+            compare_details_left=str(left_details),
+            compare_watermarked_left=str(left_watermarked),
+            compare_summary_right=str(right_summary),
+            compare_details_right=str(right_details),
+            compare_watermarked_right=str(right_watermarked),
+            compare_output=str(report_output),
+        )
+
+        rc = run_offline_analysis(args)
+
+        assert rc == 0
+        assert report_output.exists()
+        report = json.loads(report_output.read_text(encoding="utf-8"))
+        assert set(report) == {
+            "compatibility",
+            "parameter_diff",
+            "detail_delta",
+            "embedding_delta",
+            "anomalies",
+            "regression_classification",
+        }
 
 
 class TestRunWatermarkConfigNoFallback:

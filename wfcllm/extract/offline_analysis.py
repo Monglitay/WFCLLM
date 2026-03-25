@@ -14,6 +14,13 @@ DETAIL_FIELDS = (
     "independent_blocks",
     "hits",
 )
+EMBEDDING_FIELDS = (
+    "total_blocks",
+    "embedded_blocks",
+    "failed_blocks",
+    "fallback_blocks",
+    "embed_rate",
+)
 
 
 @dataclass(frozen=True)
@@ -230,6 +237,218 @@ def _build_detail_delta(
         hits_delta=hits_delta,
         anomaly_flags=tuple(anomaly_flags),
     )
+
+
+
+
+@dataclass(frozen=True)
+class EmbeddingDelta:
+    sample_id: str
+    total_blocks_delta: int
+    embedded_blocks_delta: int
+    failed_blocks_delta: int
+    fallback_blocks_delta: int
+    embed_rate_delta: float
+
+
+def build_offline_regression_report(
+    *,
+    left_summary: SummaryArtifact | None,
+    left_details: DetailArtifact,
+    left_watermarked: WatermarkedArtifact | None,
+    right_summary: SummaryArtifact | None,
+    right_details: DetailArtifact,
+    right_watermarked: WatermarkedArtifact | None,
+) -> dict[str, Any]:
+    parameter_comparison = compare_run_parameters(
+        left_summary,
+        right_summary,
+        left_watermarked,
+        right_watermarked,
+    )
+    compatibility = check_artifact_compatibility(left_details, right_details)
+    detail_delta_report = build_detail_delta_report(left_details, right_details)
+    embedding_delta = _build_embedding_delta_report(left_watermarked, right_watermarked)
+    anomalies = _build_anomalies(detail_delta_report, embedding_delta)
+    regression_classification = _classify_regression(
+        parameter_comparison,
+        detail_delta_report,
+        left_summary,
+        right_summary,
+    )
+
+    return {
+        "compatibility": {
+            "is_compatible": compatibility.is_compatible,
+            "same_id_set": compatibility.same_id_set,
+            "missing_in_left": list(compatibility.missing_in_left),
+            "missing_in_right": list(compatibility.missing_in_right),
+            "comparable_details": compatibility.comparable_details,
+            "missing_detail_fields": {
+                sample_id: list(fields)
+                for sample_id, fields in compatibility.missing_detail_fields.items()
+            },
+        },
+        "parameter_diff": {
+            "left_source": parameter_comparison.left_source,
+            "left_params": parameter_comparison.left_params,
+            "right_source": parameter_comparison.right_source,
+            "right_params": parameter_comparison.right_params,
+            "differing_keys": list(parameter_comparison.differing_keys),
+        },
+        "detail_delta": {
+            "total_samples": detail_delta_report.total_samples,
+            "detection_loss_ids": list(detail_delta_report.detection_loss_ids),
+            "samples": {
+                sample_id: {
+                    "left_is_watermarked": delta.left_is_watermarked,
+                    "right_is_watermarked": delta.right_is_watermarked,
+                    "detection_flipped": delta.detection_flipped,
+                    "flip_direction": delta.flip_direction,
+                    "z_score_delta": delta.z_score_delta,
+                    "p_value_delta": delta.p_value_delta,
+                    "independent_blocks_delta": delta.independent_blocks_delta,
+                    "hits_delta": delta.hits_delta,
+                    "anomaly_flags": list(delta.anomaly_flags),
+                }
+                for sample_id, delta in detail_delta_report.deltas.items()
+            },
+        },
+        "embedding_delta": embedding_delta,
+        "anomalies": anomalies,
+        "regression_classification": regression_classification,
+    }
+
+
+def write_offline_regression_report(path: str | Path, report: dict[str, Any]) -> Path:
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    return output_path
+
+
+def _build_embedding_delta_report(
+    left: WatermarkedArtifact | None,
+    right: WatermarkedArtifact | None,
+) -> dict[str, Any]:
+    if left is None or right is None:
+        return {
+            "comparable": False,
+            "missing_artifact": "left" if left is None else "right",
+            "samples": {},
+        }
+
+    shared_ids = sorted(set(left.records) & set(right.records))
+    samples: dict[str, dict[str, Any]] = {}
+    for sample_id in shared_ids:
+        left_record = left.records[sample_id]
+        right_record = right.records[sample_id]
+        if any(field not in left_record or field not in right_record for field in EMBEDDING_FIELDS):
+            continue
+        delta = EmbeddingDelta(
+            sample_id=sample_id,
+            total_blocks_delta=int(right_record["total_blocks"]) - int(left_record["total_blocks"]),
+            embedded_blocks_delta=int(right_record["embedded_blocks"]) - int(left_record["embedded_blocks"]),
+            failed_blocks_delta=int(right_record["failed_blocks"]) - int(left_record["failed_blocks"]),
+            fallback_blocks_delta=int(right_record["fallback_blocks"]) - int(left_record["fallback_blocks"]),
+            embed_rate_delta=float(right_record["embed_rate"]) - float(left_record["embed_rate"]),
+        )
+        samples[sample_id] = {
+            "total_blocks_delta": delta.total_blocks_delta,
+            "embedded_blocks_delta": delta.embedded_blocks_delta,
+            "failed_blocks_delta": delta.failed_blocks_delta,
+            "fallback_blocks_delta": delta.fallback_blocks_delta,
+            "embed_rate_delta": delta.embed_rate_delta,
+        }
+
+    return {
+        "comparable": True,
+        "missing_artifact": None,
+        "samples": samples,
+    }
+
+
+def _build_anomalies(
+    detail_delta_report: DetailDeltaReport,
+    embedding_delta: dict[str, Any],
+) -> dict[str, Any]:
+    detail_flags: dict[str, list[str]] = {}
+    for sample_id, delta in detail_delta_report.deltas.items():
+        if delta.anomaly_flags:
+            detail_flags[sample_id] = list(delta.anomaly_flags)
+
+    embedding_flags: dict[str, list[str]] = {}
+    for sample_id, sample_delta in embedding_delta.get("samples", {}).items():
+        sample_flags: list[str] = []
+        if sample_delta["embed_rate_delta"] < 0:
+            sample_flags.append("embed_rate_drop")
+        if sample_delta["failed_blocks_delta"] > 0:
+            sample_flags.append("failed_blocks_increase")
+        if sample_flags:
+            embedding_flags[sample_id] = sample_flags
+
+    return {
+        "detail": detail_flags,
+        "embedding": embedding_flags,
+    }
+
+
+def _classify_regression(
+    parameter_comparison: RunParameterComparison,
+    detail_delta_report: DetailDeltaReport,
+    left_summary: SummaryArtifact | None,
+    right_summary: SummaryArtifact | None,
+) -> dict[str, Any]:
+    differing_keys = set(parameter_comparison.differing_keys)
+    left_rate = _extract_watermark_rate(left_summary)
+    right_rate = _extract_watermark_rate(right_summary)
+    rate_drop = (
+        left_rate is not None and right_rate is not None and right_rate < left_rate
+    )
+    z_score_drop_count = sum(
+        1 for delta in detail_delta_report.deltas.values() if delta.z_score_delta < 0
+    )
+    extraction_conservatism = bool(detail_delta_report.detection_loss_ids)
+    adaptive_gamma_shift = any(
+        key.startswith("adaptive_gamma") or key == "lsh_gamma" for key in differing_keys
+    )
+    parameter_drift = bool(differing_keys)
+    calibration_drift = "fpr_threshold" in differing_keys
+    implementation_bug = bool(
+        extraction_conservatism
+        and not parameter_drift
+        and z_score_drop_count == detail_delta_report.total_samples
+    )
+
+    if implementation_bug:
+        recommended_branch = "stop"
+    elif adaptive_gamma_shift:
+        recommended_branch = "B"
+    elif calibration_drift or extraction_conservatism or rate_drop:
+        recommended_branch = "C"
+    elif parameter_drift:
+        recommended_branch = "A"
+    else:
+        recommended_branch = "A"
+
+    return {
+        "parameter_drift": parameter_drift,
+        "adaptive_gamma_shift": adaptive_gamma_shift,
+        "extraction_conservatism": extraction_conservatism,
+        "calibration_drift": calibration_drift,
+        "implementation_bug": implementation_bug,
+        "recommended_branch": recommended_branch,
+    }
+
+
+def _extract_watermark_rate(summary: SummaryArtifact | None) -> float | None:
+    if summary is None:
+        return None
+    payload_summary = summary.payload.get("summary") or {}
+    watermark_rate = payload_summary.get("watermark_rate")
+    if watermark_rate is None:
+        return None
+    return float(watermark_rate)
 
 
 def _load_jsonl_records(path: Path) -> dict[str, dict[str, Any]]:

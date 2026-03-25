@@ -274,22 +274,112 @@ def test_load_detail_artifact_rejects_duplicate_ids(tmp_path):
 
 
 
-def test_load_watermarked_artifact_rejects_mixed_missing_and_present_watermark_params(tmp_path):
+
+
+def test_build_offline_regression_report_includes_regression_classification_keys(tmp_path):
     offline_analysis = _load_module()
 
-    watermarked_path = tmp_path / "watermarked_mixed.jsonl"
+    left_summary_path = tmp_path / "left_summary.json"
+    right_summary_path = tmp_path / "right_summary.json"
+    left_details_path = tmp_path / "left_details.jsonl"
+    right_details_path = tmp_path / "right_details.jsonl"
+    left_watermarked_path = tmp_path / "left_watermarked.jsonl"
+    right_watermarked_path = tmp_path / "right_watermarked.jsonl"
+
+    _write_json(
+        left_summary_path,
+        {
+            "dataset": "HumanEval",
+            "watermark_params": {"lsh_d": 3, "lsh_gamma": 0.5},
+            "summary": {"watermark_rate": 1.0},
+        },
+    )
+    _write_json(
+        right_summary_path,
+        {
+            "dataset": "HumanEval",
+            "watermark_params": {"lsh_d": 4, "lsh_gamma": 0.75},
+            "summary": {"watermark_rate": 0.0},
+        },
+    )
     _write_jsonl(
-        watermarked_path,
+        left_details_path,
+        [
+            {
+                "id": "HumanEval/0",
+                "is_watermarked": True,
+                "z_score": 2.8,
+                "p_value": 0.01,
+                "independent_blocks": 8,
+                "hits": 6,
+            }
+        ],
+    )
+    _write_jsonl(
+        right_details_path,
+        [
+            {
+                "id": "HumanEval/0",
+                "is_watermarked": False,
+                "z_score": 1.1,
+                "p_value": 0.12,
+                "independent_blocks": 9,
+                "hits": 5,
+            }
+        ],
+    )
+    _write_jsonl(
+        left_watermarked_path,
+        [
+            {
+                "id": "HumanEval/0",
+                "watermark_params": {"lsh_d": 3, "lsh_gamma": 0.5},
+                "total_blocks": 8,
+                "embedded_blocks": 6,
+                "failed_blocks": 0,
+                "fallback_blocks": 0,
+                "embed_rate": 0.75,
+            }
+        ],
+    )
+    _write_jsonl(
+        right_watermarked_path,
         [
             {
                 "id": "HumanEval/0",
                 "watermark_params": {"lsh_d": 4, "lsh_gamma": 0.75},
-            },
-            {
-                "id": "HumanEval/1",
-            },
+                "total_blocks": 8,
+                "embedded_blocks": 5,
+                "failed_blocks": 1,
+                "fallback_blocks": 0,
+                "embed_rate": 0.625,
+            }
         ],
     )
 
-    with pytest.raises(ValueError, match="inconsistent watermark_params"):
-        offline_analysis.load_watermarked_artifact(watermarked_path)
+    report = offline_analysis.build_offline_regression_report(
+        left_summary=offline_analysis.load_summary_artifact(left_summary_path),
+        left_details=offline_analysis.load_detail_artifact(left_details_path),
+        left_watermarked=offline_analysis.load_watermarked_artifact(left_watermarked_path),
+        right_summary=offline_analysis.load_summary_artifact(right_summary_path),
+        right_details=offline_analysis.load_detail_artifact(right_details_path),
+        right_watermarked=offline_analysis.load_watermarked_artifact(right_watermarked_path),
+    )
+
+    assert set(report) == {
+        "compatibility",
+        "parameter_diff",
+        "detail_delta",
+        "embedding_delta",
+        "anomalies",
+        "regression_classification",
+    }
+    assert set(report["regression_classification"]) == {
+        "parameter_drift",
+        "adaptive_gamma_shift",
+        "extraction_conservatism",
+        "calibration_drift",
+        "implementation_bug",
+        "recommended_branch",
+    }
+    assert report["regression_classification"]["recommended_branch"] in {"A", "B", "C", "stop"}

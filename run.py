@@ -13,33 +13,33 @@
     python run.py --phase encoder --force  # 强制重跑（忽略已完成标记）
 
     # 阶段二：对 humaneval 数据集批量嵌入水印
-    python run.py --phase watermark \\
-        --lm-model-path data/models/deepseek-coder-7b \\
-        --secret-key mysecret \\
+    python run.py --phase watermark \
+        --lm-model-path data/models/deepseek-coder-7b \
+        --secret-key mysecret \
         --dataset humaneval
 
     # 阶段三：检测水印 JSONL，输出 details JSONL + 统计摘要
-    python run.py --phase extract \\
-        --secret-key mysecret \\
+    python run.py --phase extract \
+        --secret-key mysecret \
         --input-file data/watermarked/humaneval_20260309_120000.jsonl
 
     # 阶段二：恢复最新 watermark 输出
-    python run.py --phase watermark \\
-        --lm-model-path data/models/deepseek-coder-7b \\
-        --secret-key mysecret \\
-        --dataset humaneval \\
+    python run.py --phase watermark \
+        --lm-model-path data/models/deepseek-coder-7b \
+        --secret-key mysecret \
+        --dataset humaneval \
         --resume latest
 
     # 阶段三：恢复最新 extract details 文件
-    python run.py --phase extract \\
-        --secret-key mysecret \\
-        --input-file data/watermarked/humaneval_20260318_120000.jsonl \\
+    python run.py --phase extract \
+        --secret-key mysecret \
+        --input-file data/watermarked/humaneval_20260318_120000.jsonl \
         --resume latest
 
     # 阶段三（先用负样本语料自动校准 FPR 阈值，再检测）
-    python run.py --phase extract \\
-        --secret-key mysecret \\
-        --calibration-corpus data/negative_corpus.jsonl \\
+    python run.py --phase extract \
+        --secret-key mysecret \
+        --calibration-corpus data/negative_corpus.jsonl \
         --fpr 0.01
 """
 from __future__ import annotations
@@ -57,6 +57,7 @@ OPTIONAL_PHASES = ["generate-negative"]
 ALL_PHASES = PHASES + OPTIONAL_PHASES
 DEFAULT_STATE_FILE = Path("data/run_state.json")
 DEFAULT_CONFIG_FILE = Path("configs/base_config.json")
+
 
 def load_config(config_path: Path) -> dict:
     """读取 JSON 配置文件，返回按阶段分组的 dict。"""
@@ -307,8 +308,12 @@ def build_parser() -> argparse.ArgumentParser:
     # Watermark 参数
     parser.add_argument("--secret-key", default=None, help="水印密钥")
     parser.add_argument("--lm-model-path", default=None, help="代码生成 LLM 路径")
-    parser.add_argument("--dataset", default=None, choices=["humaneval", "mbpp"],
-                        help="水印嵌入数据集（humaneval 或 mbpp，默认: humaneval）")
+    parser.add_argument(
+        "--dataset",
+        default=None,
+        choices=["humaneval", "mbpp"],
+        help="水印嵌入数据集（humaneval 或 mbpp，默认: humaneval）",
+    )
     parser.add_argument("--dataset-path", default=None, help="本地数据集根目录（默认: data/datasets）")
     parser.add_argument("--output-dir", default=None, help="水印 JSONL 输出目录（默认: data/watermarked）")
     parser.add_argument(
@@ -334,14 +339,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="输出 watermark metadata 时使用的 entropy profile 标识",
     )
     # Extract 参数
-    parser.add_argument("--input-file", default=None,
-                        help="待检测的水印 JSONL 文件路径（不传则从 run_state 读取阶段二输出）")
+    parser.add_argument(
+        "--input-file",
+        default=None,
+        help="待检测的水印 JSONL 文件路径（不传则从 run_state 读取阶段二输出）",
+    )
     parser.add_argument("--extract-output-dir", default=None, help="检测报告输出目录（默认: data/results）")
     parser.add_argument("--fpr-threshold", type=float, default=None, help="FPR 阈值 M_r（默认: 3.0，需通过校准脚本生成）")
-    parser.add_argument("--calibration-corpus", default=None,
-                        help="负样本校准语料 JSONL 路径（提供则自动运行 ThresholdCalibrator）")
-    parser.add_argument("--fpr", type=float, default=None,
-                        help="校准目标 FPR（不传则优先读取 config，仅在 --calibration-corpus 指定时生效）")
+    parser.add_argument(
+        "--calibration-corpus",
+        default=None,
+        help="负样本校准语料 JSONL 路径（提供则自动运行 ThresholdCalibrator）",
+    )
+    parser.add_argument(
+        "--fpr",
+        type=float,
+        default=None,
+        help="校准目标 FPR（不传则优先读取 config，仅在 --calibration-corpus 指定时生效）",
+    )
     parser.add_argument(
         "--adaptive-detection-mode",
         choices=["fixed", "prefer-adaptive", "require-adaptive"],
@@ -353,13 +368,23 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="强制启用 block contract 检查并在结构不匹配时严格失败",
     )
+    parser.add_argument("--compare-summary-left", default=None, help="离线对比左侧 summary JSON 路径")
+    parser.add_argument("--compare-details-left", default=None, help="离线对比左侧 details JSONL 路径")
+    parser.add_argument("--compare-watermarked-left", default=None, help="离线对比左侧 watermarked JSONL 路径")
+    parser.add_argument("--compare-summary-right", default=None, help="离线对比右侧 summary JSON 路径")
+    parser.add_argument("--compare-details-right", default=None, help="离线对比右侧 details JSONL 路径")
+    parser.add_argument("--compare-watermarked-right", default=None, help="离线对比右侧 watermarked JSONL 路径")
+    parser.add_argument("--compare-output", default=None, help="离线对比输出 JSON 路径")
     # generate-negative 参数
     parser.add_argument(
-        "--negative-output", default=None,
+        "--negative-output",
+        default=None,
         help="负样本语料输出 JSONL 路径（默认从配置文件读取，或 data/negative_corpus.jsonl）",
     )
     parser.add_argument(
-        "--negative-limit", type=int, default=None,
+        "--negative-limit",
+        type=int,
+        default=None,
         help="只处理前 N 条 prompt（调试用，默认: 全量）",
     )
     return parser
@@ -378,6 +403,19 @@ def cmd_status(state: RunState) -> None:
 def cmd_reset(state: RunState) -> None:
     state.reset()
     print("已重置所有阶段状态。")
+
+
+def is_compare_only_mode(args: argparse.Namespace) -> bool:
+    required_flags = (
+        "compare_summary_left",
+        "compare_details_left",
+        "compare_watermarked_left",
+        "compare_summary_right",
+        "compare_details_right",
+        "compare_watermarked_right",
+        "compare_output",
+    )
+    return all(getattr(args, flag, None) for flag in required_flags)
 
 
 def main() -> int:
@@ -399,7 +437,7 @@ def main() -> int:
     phases_to_run = [args.phase] if args.phase else PHASES
 
     for phase in phases_to_run:
-        if state.is_done(phase) and not args.force and not args.eval_only:
+        if state.is_done(phase) and not args.force and not args.eval_only and not is_compare_only_mode(args):
             print(f"[跳过] {phase}（已完成，使用 --force 强制重跑）")
             continue
         rc = run_phase(phase, args, state)
@@ -430,11 +468,9 @@ def run_encoder(args: argparse.Namespace, state: RunState) -> int:
 
     print("=== 阶段一：语义编码器预训练 ===")
 
-    # eval-only 分支
     if args.eval_only:
         from wfcllm.encoder.train import evaluate_only
 
-        # 优先顺序：CLI --checkpoint > best_model.pt > run_state checkpoint
         default_best = str(Path(EncoderConfig().output_model_dir) / "best_model.pt")
         checkpoint = (
             args.checkpoint
@@ -484,7 +520,6 @@ def run_encoder(args: argparse.Namespace, state: RunState) -> int:
     if args.no_bf16:
         config.use_bf16 = False
 
-    # 若用户未指定 --model-name，自动检测本地
     if args.model_name is None:
         local_codet5 = Path(config.local_model_dir) / "codet5-base"
         if local_codet5.exists() and (local_codet5 / "config.json").exists():
@@ -499,10 +534,7 @@ def run_encoder(args: argparse.Namespace, state: RunState) -> int:
         print(f"[错误] 编码器训练失败：{e}", file=sys.stderr)
         return 1
 
-    # best_model.pt 固定路径
     best_model_path = str(Path(config.output_model_dir) / "best_model.pt")
-
-    # 找到最新的 checkpoint 文件（向后兼容）
     ckpt_pattern = str(Path(config.checkpoint_dir) / "encoder_epoch*.pt")
     checkpoints = sorted(glob.glob(ckpt_pattern))
     checkpoint_path = checkpoints[-1] if checkpoints else config.checkpoint_dir
@@ -531,12 +563,10 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
 
     print("=== 阶段二：生成时水印嵌入 ===")
 
-    # 前置检查
     if not state.is_done("encoder"):
         print("[错误] 请先完成阶段一（encoder）", file=sys.stderr)
         return 1
 
-    # Config 读取（优先 CLI，回退 config 文件）
     cfg = load_config(args.config)
     wm_cfg = cfg.get("watermark", {})
     dataset = args.dataset or wm_cfg.get("dataset", "humaneval")
@@ -554,7 +584,6 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
         print("[错误] --lm-model-path 为必填参数", file=sys.stderr)
         return 1
 
-    # 加载编码器：优先 best_model.pt，回退 checkpoint
     device = "cuda" if torch.cuda.is_available() else "cpu"
     enc_config = EncoderConfig(embed_dim=embed_dim)
     local_codet5 = Path(enc_config.local_model_dir) / "codet5-base"
@@ -583,10 +612,10 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
     encoder = encoder.to(encoder_device)
     encoder_tokenizer = AutoTokenizer.from_pretrained(enc_config.model_name)
 
-    # 加载代码生成 LLM（4-bit 量化以节省显存）
-    import os
-    os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
+    import os as _os
+    _os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
     from transformers import BitsAndBytesConfig
+
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_compute_dtype=torch.bfloat16,
@@ -595,7 +624,9 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
     )
     lm_tokenizer = AutoTokenizer.from_pretrained(lm_model_path)
     lm_model = AutoModelForCausalLM.from_pretrained(
-        lm_model_path, quantization_config=bnb_config, device_map="auto"
+        lm_model_path,
+        quantization_config=bnb_config,
+        device_map="auto",
     )
 
     wm_config = WatermarkConfig(
@@ -620,7 +651,6 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
     generator = WatermarkGenerator(lm_model, lm_tokenizer, encoder, encoder_tokenizer, wm_config)
 
     resume = args.resume if args.resume is not None else wm_cfg.get("resume")
-
     pipeline_config = WatermarkPipelineConfig(
         dataset=dataset,
         output_dir=output_dir,
@@ -641,12 +671,37 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
     return 0
 
 
+def run_offline_analysis(args: argparse.Namespace) -> int:
+    from wfcllm.extract.offline_analysis import (
+        build_offline_regression_report,
+        load_detail_artifact,
+        load_summary_artifact,
+        load_watermarked_artifact,
+        write_offline_regression_report,
+    )
+
+    report = build_offline_regression_report(
+        left_summary=load_summary_artifact(args.compare_summary_left),
+        left_details=load_detail_artifact(args.compare_details_left),
+        left_watermarked=load_watermarked_artifact(args.compare_watermarked_left),
+        right_summary=load_summary_artifact(args.compare_summary_right),
+        right_details=load_detail_artifact(args.compare_details_right),
+        right_watermarked=load_watermarked_artifact(args.compare_watermarked_right),
+    )
+    output_path = write_offline_regression_report(args.compare_output, report)
+    print(f"[完成] 离线回归报告已保存至 {output_path}")
+    return 0
+
+
 def run_extract(args: argparse.Namespace, state: RunState) -> int:
     """阶段三：批量检测水印（基于 JSONL 水印数据集）。
 
     读取阶段二输出的 JSONL 文件，对每条记录调用 WatermarkDetector.detect()，
     产出 details JSONL，并基于其重建 summary JSON。
     """
+    if is_compare_only_mode(args):
+        return run_offline_analysis(args)
+
     import torch
     from transformers import AutoTokenizer
 
@@ -658,12 +713,10 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
 
     print("=== 阶段三：水印提取与验证 ===")
 
-    # 前置检查
     if not state.is_done("encoder"):
         print("[错误] 请先完成阶段一（encoder）", file=sys.stderr)
         return 1
 
-    # Config 读取（优先 CLI，回退 config 文件；input_file 也可从 run_state 中取）
     cfg = load_config(args.config)
     ext_cfg = cfg.get("extract", {})
     secret_key = args.secret_key or ext_cfg.get("secret_key", "")
@@ -684,8 +737,7 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
     resume = args.resume if args.resume is not None else ext_cfg.get("resume")
     adaptive_detection_config = resolve_adaptive_detection_config(args, ext_cfg)
     adaptive_gamma_config = resolve_extract_adaptive_gamma_config(args, cfg)
-    # WatermarkPipeline writes one JSONL per watermark run/config, so extraction
-    # assumes the file is homogeneous and resolves LSH params from the first record.
+
     try:
         with open(input_file, encoding="utf-8") as f:
             first_line = next((line.strip() for line in f if line.strip()), "")
@@ -714,7 +766,6 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
                     file=sys.stderr,
                 )
 
-    # 加载编码器：优先 best_model.pt，回退 checkpoint
     enc_config = EncoderConfig(embed_dim=embed_dim)
     local_codet5 = Path(enc_config.local_model_dir) / "codet5-base"
     if local_codet5.exists() and (local_codet5 / "config.json").exists():
@@ -743,7 +794,6 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
     encoder = encoder.to(device)
     tokenizer = AutoTokenizer.from_pretrained(enc_config.model_name)
 
-    # 自动校准：若指定了负样本语料，先运行 ThresholdCalibrator
     calibration_corpus_path = (
         getattr(args, "calibration_corpus", None)
         or ext_cfg.get("calibration_corpus")
@@ -772,6 +822,7 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
         scorer = BlockScorer(keying, verifier)
 
         import json as _calib_json
+
         corpus = []
         with open(calibration_corpus_path, encoding="utf-8") as f:
             for line in f:
@@ -788,7 +839,9 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
         )
         calib_result = calibrator.calibrate(corpus, fpr=fpr_target)
         fpr_threshold = calib_result["fpr_threshold"]
-        print(f"[校准] 完成：M_r = {fpr_threshold:.4f}（FPR={fpr_target}，样本数={calib_result['n_samples']}）")
+        print(
+            f"[校准] 完成：M_r = {fpr_threshold:.4f}（FPR={fpr_target}，样本数={calib_result['n_samples']}）"
+        )
 
     extract_config = ExtractConfig(
         secret_key=secret_key,
@@ -815,13 +868,16 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
         return 1
 
     import json as _json
+
     summary_path = ExtractPipeline.summary_path_for_details(Path(details_path))
     summary_doc = _json.loads(summary_path.read_text(encoding="utf-8"))
     summary = summary_doc["summary"]
     print(f"\n=== 检测结果摘要 ===")
     print(f"  样本总数:     {summary_doc['meta']['total_samples']}")
-    print(f"  水印检测率:   {summary['watermark_rate']:.1%}  "
-          f"95% CI [{summary['watermark_rate_ci_95'][0]:.3f}, {summary['watermark_rate_ci_95'][1]:.3f}]")
+    print(
+        f"  水印检测率:   {summary['watermark_rate']:.1%}  "
+        f"95% CI [{summary['watermark_rate_ci_95'][0]:.3f}, {summary['watermark_rate_ci_95'][1]:.3f}]"
+    )
     print(f"  平均 Z 分数:  {summary['mean_z_score']:.4f} ± {summary['std_z_score']:.4f}")
     print(f"  平均 p 值:    {summary['mean_p_value']:.6f}")
     print(f"  报告已保存至: {summary_path}")
@@ -842,6 +898,7 @@ def run_generate_negative(args: argparse.Namespace, state: RunState) -> int:
     可直接作为 --calibration-corpus 传给 run.py --phase extract。
     """
     from wfcllm.extract.negative_corpus import NegativeCorpusConfig, NegativeCorpusGenerator
+
     print("=== 生成负样本语料 ===")
 
     cfg = load_config(args.config)
@@ -855,10 +912,7 @@ def run_generate_negative(args: argparse.Namespace, state: RunState) -> int:
 
     dataset = args.dataset or neg_cfg.get("dataset", "humaneval")
     dataset_path = args.dataset_path or neg_cfg.get("dataset_path", "data/datasets")
-    output_path = (
-        args.negative_output
-        or neg_cfg.get("output_path", "data/negative_corpus.jsonl")
-    )
+    output_path = args.negative_output or neg_cfg.get("output_path", "data/negative_corpus.jsonl")
     limit = args.negative_limit or neg_cfg.get("limit", None)
 
     config = NegativeCorpusConfig(
