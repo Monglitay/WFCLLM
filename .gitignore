@@ -24,6 +24,7 @@ __pycache__/
 
 # Worktrees
 .worktrees/
+.claude/worktrees/
 
 # Logs
 logs/
