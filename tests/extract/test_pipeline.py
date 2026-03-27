@@ -145,6 +145,43 @@ class TestExtractPipelineStatistics:
             assert "independent_blocks" in first
             assert "hits" in first
 
+    def test_summary_includes_declared_calibration_regime(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            jsonl_path = self._make_jsonl(tmpdir, n=1)
+            detector = MagicMock()
+            detector.detect.return_value = _make_detection_result(True, 4.5)
+            pipeline = ExtractPipeline(
+                detector=detector,
+                config=ExtractPipelineConfig(
+                    input_file=jsonl_path,
+                    output_dir=tmpdir,
+                    summary_metadata={
+                        "calibration": {
+                            "source": "data/negative_corpus.jsonl",
+                            "fpr": 0.05,
+                            "threshold": 1.2,
+                            "hypothesis_mode": "adaptive",
+                            "statistic_definition": "sum(gamma_i), sum(gamma_i*(1-gamma_i))",
+                            "decision_rule": "z_score >= threshold",
+                        }
+                    },
+                ),
+            )
+
+            details_path = pipeline.run()
+            summary_doc = json.loads(
+                Path(details_path).with_name("test_summary.json").read_text(encoding="utf-8")
+            )
+
+            assert summary_doc["meta"]["calibration"] == {
+                "source": "data/negative_corpus.jsonl",
+                "fpr": 0.05,
+                "threshold": 1.2,
+                "hypothesis_mode": "adaptive",
+                "statistic_definition": "sum(gamma_i), sum(gamma_i*(1-gamma_i))",
+                "decision_rule": "z_score >= threshold",
+            }
+
     def test_watermark_rate_ci_lower_le_upper(self):
         """CI lower bound should be <= upper bound."""
         with tempfile.TemporaryDirectory() as tmpdir:

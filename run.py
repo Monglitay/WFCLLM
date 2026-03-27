@@ -405,17 +405,65 @@ def cmd_reset(state: RunState) -> None:
     print("已重置所有阶段状态。")
 
 
+COMPARE_ONLY_REQUIRED_FLAGS = (
+    "compare_summary_left",
+    "compare_details_left",
+    "compare_summary_right",
+    "compare_details_right",
+    "compare_output",
+)
+COMPARE_ONLY_OPTIONAL_WATERMARKED_FLAGS = (
+    "compare_watermarked_left",
+    "compare_watermarked_right",
+)
+
+
+def get_config(args: argparse.Namespace) -> dict:
+    cfg = getattr(args, "_config_cache", None)
+    if cfg is None:
+        cfg = load_config(args.config)
+        setattr(args, "_config_cache", cfg)
+    return cfg
+
+
+def configured_extract_input(args: argparse.Namespace) -> str | None:
+    return (get_config(args).get("extract") or {}).get("input_file")
+
+
 def is_compare_only_mode(args: argparse.Namespace) -> bool:
-    required_flags = (
-        "compare_summary_left",
-        "compare_details_left",
-        "compare_watermarked_left",
-        "compare_summary_right",
-        "compare_details_right",
-        "compare_watermarked_right",
-        "compare_output",
+    required_present = all(getattr(args, flag, None) for flag in COMPARE_ONLY_REQUIRED_FLAGS)
+    if not required_present:
+        return False
+
+    optional_watermarked_flags = tuple(
+        getattr(args, flag, None) for flag in COMPARE_ONLY_OPTIONAL_WATERMARKED_FLAGS
     )
-    return all(getattr(args, flag, None) for flag in required_flags)
+    return not any(optional_watermarked_flags) or all(optional_watermarked_flags)
+
+
+def should_skip_completed_phase(args: argparse.Namespace, phase: str, state: RunState) -> bool:
+    if not state.is_done(phase):
+        return False
+    if args.force or args.eval_only or is_compare_only_mode(args):
+        return False
+    if phase == "extract" and has_explicit_extract_input(args):
+        return False
+    return True
+
+
+def has_explicit_extract_input(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "input_file", None) or configured_extract_input(args))
+
+
+def validate_compare_only_mode(args: argparse.Namespace) -> str | None:
+    compare_flags = COMPARE_ONLY_REQUIRED_FLAGS + COMPARE_ONLY_OPTIONAL_WATERMARKED_FLAGS
+    if not any(getattr(args, flag, None) for flag in compare_flags):
+        return None
+    if args.phase != "extract":
+        return "[错误] compare-only 模式仅支持 --phase extract"
+    if not is_compare_only_mode(args):
+        return "[错误] compare-only 模式要求提供左右 summary/details 和 compare-output；watermarked 必须两侧同时提供或同时省略"
+    return None
 
 
 def main() -> int:
@@ -434,10 +482,15 @@ def main() -> int:
         cmd_reset(state)
         return 0
 
+    compare_only_error = validate_compare_only_mode(args)
+    if compare_only_error is not None:
+        print(compare_only_error, file=sys.stderr)
+        return 1
+
     phases_to_run = [args.phase] if args.phase else PHASES
 
     for phase in phases_to_run:
-        if state.is_done(phase) and not args.force and not args.eval_only and not is_compare_only_mode(args):
+        if should_skip_completed_phase(args, phase, state):
             print(f"[跳过] {phase}（已完成，使用 --force 强制重跑）")
             continue
         rc = run_phase(phase, args, state)
@@ -680,13 +733,24 @@ def run_offline_analysis(args: argparse.Namespace) -> int:
         write_offline_regression_report,
     )
 
+    left_watermarked = (
+        load_watermarked_artifact(args.compare_watermarked_left)
+        if args.compare_watermarked_left
+        else None
+    )
+    right_watermarked = (
+        load_watermarked_artifact(args.compare_watermarked_right)
+        if args.compare_watermarked_right
+        else None
+    )
+
     report = build_offline_regression_report(
         left_summary=load_summary_artifact(args.compare_summary_left),
         left_details=load_detail_artifact(args.compare_details_left),
-        left_watermarked=load_watermarked_artifact(args.compare_watermarked_left),
+        left_watermarked=left_watermarked,
         right_summary=load_summary_artifact(args.compare_summary_right),
         right_details=load_detail_artifact(args.compare_details_right),
-        right_watermarked=load_watermarked_artifact(args.compare_watermarked_right),
+        right_watermarked=right_watermarked,
     )
     output_path = write_offline_regression_report(args.compare_output, report)
     print(f"[完成] 离线回归报告已保存至 {output_path}")
@@ -713,11 +777,7 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
 
     print("=== 阶段三：水印提取与验证 ===")
 
-    if not state.is_done("encoder"):
-        print("[错误] 请先完成阶段一（encoder）", file=sys.stderr)
-        return 1
-
-    cfg = load_config(args.config)
+    cfg = get_config(args)
     ext_cfg = cfg.get("extract", {})
     secret_key = args.secret_key or ext_cfg.get("secret_key", "")
     if not secret_key:
@@ -729,6 +789,9 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
         return 1
     if not Path(input_file).exists():
         print(f"[错误] 文件不存在：{input_file}", file=sys.stderr)
+        return 1
+    if not state.is_done("encoder") and args.input_file is None and ext_cfg.get("input_file") is None:
+        print("[错误] 请先完成阶段一（encoder）", file=sys.stderr)
         return 1
 
     output_dir = args.extract_output_dir or ext_cfg.get("output_dir", "data/results")
@@ -794,6 +857,7 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
     encoder = encoder.to(device)
     tokenizer = AutoTokenizer.from_pretrained(enc_config.model_name)
 
+    calibration_summary_metadata = None
     calibration_corpus_path = (
         getattr(args, "calibration_corpus", None)
         or ext_cfg.get("calibration_corpus")
@@ -839,6 +903,20 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
         )
         calib_result = calibrator.calibrate(corpus, fpr=fpr_target)
         fpr_threshold = calib_result["fpr_threshold"]
+        calibration_summary_metadata = {
+            "calibration": {
+                "source": str(calibration_corpus_path),
+                "fpr": float(fpr_target),
+                "threshold": float(fpr_threshold),
+                "hypothesis_mode": calibration_mode,
+                "statistic_definition": (
+                    "sum(gamma_i), sum(gamma_i*(1-gamma_i))"
+                    if calibration_mode == "adaptive"
+                    else "m * gamma, m * gamma * (1 - gamma)"
+                ),
+                "decision_rule": "z_score >= threshold",
+            }
+        }
         print(
             f"[校准] 完成：M_r = {fpr_threshold:.4f}（FPR={fpr_target}，样本数={calib_result['n_samples']}）"
         )
@@ -858,6 +936,7 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
         input_file=input_file,
         output_dir=output_dir,
         resume=resume,
+        summary_metadata=calibration_summary_metadata,
     )
     pipeline = ExtractPipeline(detector=detector, config=pipeline_config)
 

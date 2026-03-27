@@ -100,6 +100,59 @@ def test_adaptive_roundtrip_preserves_contracts(tmp_path):
     assert result.contract_valid is True
 
 
+def test_saved_historical_best_anchor_region_roundtrips_without_numeric_mismatch(tmp_path):
+    code = "x = 1\n"
+    historical_anchors = {
+        "p10": 0.75,
+        "p50": 0.75,
+        "p75": 0.50,
+        "p90": 0.50,
+        "p95": 0.25,
+    }
+    metadata, _ = _adaptive_metadata(code, tmp_path)
+    profile_payload = metadata["watermark_params"]["adaptive_gamma"]["profile"]
+    schedule = PiecewiseQuantileSchedule(
+        profile=EntropyProfile(
+            language=profile_payload["language"],
+            model_family=profile_payload["model_family"],
+            quantiles_units_map=profile_payload["quantiles_units"],
+            strategy=profile_payload["strategy"],
+        ),
+        anchor_quantiles=tuple(historical_anchors.keys()),
+        anchor_gammas=tuple(historical_anchors.values()),
+    )
+    metadata["watermark_params"]["lsh_d"] = 4
+    metadata["watermark_params"]["adaptive_gamma"]["anchors"] = historical_anchors
+    metadata["blocks"] = [
+        asdict(contract)
+        for contract in build_block_contracts(
+            code,
+            gamma_resolver=lambda units: schedule.resolve(units, 4),
+        )
+    ]
+
+    detector = WatermarkDetector(
+        ExtractConfig(secret_key="test-key", lsh_d=4),
+        MagicMock(),
+        MagicMock(),
+        device="cpu",
+    )
+    scored_blocks = [
+        BlockScore(
+            block_id=metadata["blocks"][0]["block_id"],
+            score=1,
+            min_margin=0.1,
+        )
+    ]
+
+    with patch.object(detector._scorer, "score_all", return_value=scored_blocks):
+        result = detector.detect(code, watermark_metadata=metadata)
+
+    assert result.mode == "adaptive"
+    assert result.alignment_ok is True
+    assert result.contract_valid is True
+
+
 def test_tampered_adaptive_metadata_is_marked_invalid(tmp_path):
     code = "x = 1\n"
     metadata, _ = _adaptive_metadata(code, tmp_path)

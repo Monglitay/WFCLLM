@@ -6,9 +6,11 @@ from pathlib import Path
 
 import pytest
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+RUN_PY = PROJECT_ROOT / "run.py"
 
 # ── 将项目根目录加入 sys.path（如果需要）
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from run import RunState, PHASES, ALL_PHASES
 
@@ -161,6 +163,23 @@ class TestRunGenerateNegative:
 
 
 class TestCLI:
+    def test_cli_subprocess_invocations_do_not_use_bare_run_py_script_name(self):
+        tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not (isinstance(node.func, ast.Attribute) and node.func.attr == "run"):
+                continue
+            if not node.args or not isinstance(node.args[0], ast.List):
+                continue
+            constants = [
+                elt.value
+                for elt in node.args[0].elts
+                if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+            ]
+            assert "run.py" not in constants
+
     def test_build_parser_parses_resume_argument(self):
         from run import build_parser
 
@@ -169,7 +188,7 @@ class TestCLI:
 
     def test_status_exits_zero(self):
         result = subprocess.run(
-            ["conda", "run", "-n", "WFCLLM", "python", "run.py", "--status"],
+            ["conda", "run", "-n", "WFCLLM", "python", str(RUN_PY), "--status"],
             capture_output=True, text=True,
         )
         assert result.returncode == 0
@@ -179,8 +198,7 @@ class TestCLI:
         # 使用临时状态文件以免影响真实 data/
         monkeypatch.chdir(tmp_path)
         result = subprocess.run(
-            ["conda", "run", "-n", "WFCLLM", "python",
-             str(Path(__file__).parent.parent / "run.py"), "--reset"],
+            ["conda", "run", "-n", "WFCLLM", "python", str(RUN_PY), "--reset"],
             capture_output=True, text=True,
         )
         assert result.returncode == 0
@@ -188,7 +206,7 @@ class TestCLI:
 
     def test_unknown_phase_exits_nonzero(self):
         result = subprocess.run(
-            ["conda", "run", "-n", "WFCLLM", "python", "run.py", "--phase", "invalid"],
+            ["conda", "run", "-n", "WFCLLM", "python", str(RUN_PY), "--phase", "invalid"],
             capture_output=True, text=True,
         )
         assert result.returncode != 0
@@ -299,10 +317,200 @@ class TestCLI:
             "regression_classification",
         }
 
+    def test_main_rejects_compare_only_mode_outside_extract_phase(self, monkeypatch, capsys):
+        import run as run_module
+
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "run.py",
+                "--phase",
+                "watermark",
+                "--compare-summary-left",
+                "left-summary.json",
+                "--compare-details-left",
+                "left-details.jsonl",
+                "--compare-watermarked-left",
+                "left-watermarked.jsonl",
+                "--compare-summary-right",
+                "right-summary.json",
+                "--compare-details-right",
+                "right-details.jsonl",
+                "--compare-watermarked-right",
+                "right-watermarked.jsonl",
+                "--compare-output",
+                "report.json",
+            ],
+        )
+
+        rc = run_module.main()
+        stderr = capsys.readouterr().err
+
+        assert rc == 1
+        assert "compare-only" in stderr
+        assert "extract" in stderr
+
+    def test_main_compare_only_extract_bypasses_extract_prerequisites(self, tmp_path, monkeypatch):
+        import run as run_module
+
+        left_summary = tmp_path / "left_summary.json"
+        right_summary = tmp_path / "right_summary.json"
+        left_details = tmp_path / "left_details.jsonl"
+        right_details = tmp_path / "right_details.jsonl"
+        report_output = tmp_path / "offline_analysis.json"
+
+        _write_json(left_summary, {"dataset": "HumanEval", "summary": {"watermark_rate": 1.0}})
+        _write_json(right_summary, {"dataset": "HumanEval", "summary": {"watermark_rate": 0.8}})
+        _write_jsonl(
+            left_details,
+            [
+                {
+                    "id": "HumanEval/0",
+                    "is_watermarked": True,
+                    "z_score": 2.4,
+                    "p_value": 0.02,
+                    "independent_blocks": 8,
+                    "hits": 6,
+                }
+            ],
+        )
+        _write_jsonl(
+            right_details,
+            [
+                {
+                    "id": "HumanEval/0",
+                    "is_watermarked": False,
+                    "z_score": 1.0,
+                    "p_value": 0.14,
+                    "independent_blocks": 8,
+                    "hits": 5,
+                }
+            ],
+        )
+
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "run.py",
+                "--phase",
+                "extract",
+                "--compare-summary-left",
+                str(left_summary),
+                "--compare-details-left",
+                str(left_details),
+                "--compare-summary-right",
+                str(right_summary),
+                "--compare-details-right",
+                str(right_details),
+                "--compare-output",
+                str(report_output),
+            ],
+        )
+
+        rc = run_module.main()
+
+        assert rc == 0
+        assert report_output.exists()
+
+    def test_main_runs_explicit_extract_input_even_when_extract_phase_is_done(
+        self,
+        tmp_path,
+        monkeypatch,
+        capsys,
+    ):
+        import run as run_module
+
+        input_file = tmp_path / "input.jsonl"
+        input_file.write_text("{}\n", encoding="utf-8")
+        called: list[str] = []
+
+        class FakeState:
+            @staticmethod
+            def is_done(phase: str) -> bool:
+                return phase == "extract"
+
+        def fake_run_phase(phase: str, args, state) -> int:
+            called.append(phase)
+            assert phase == "extract"
+            assert args.input_file == str(input_file)
+            return 0
+
+        monkeypatch.setattr(run_module, "RunState", FakeState)
+        monkeypatch.setattr(run_module, "run_phase", fake_run_phase)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "run.py",
+                "--phase",
+                "extract",
+                "--input-file",
+                str(input_file),
+            ],
+        )
+
+        rc = run_module.main()
+        captured = capsys.readouterr()
+
+        assert rc == 0
+        assert called == ["extract"]
+        assert "[跳过] extract" not in captured.out
+
+    def test_main_runs_configured_extract_input_even_when_extract_phase_is_done(
+        self,
+        tmp_path,
+        monkeypatch,
+        capsys,
+    ):
+        import run as run_module
+
+        input_file = tmp_path / "input.jsonl"
+        input_file.write_text("{}\n", encoding="utf-8")
+        config_file = tmp_path / "cfg.json"
+        config_file.write_text(
+            json.dumps({"extract": {"input_file": str(input_file)}}),
+            encoding="utf-8",
+        )
+        called: list[str] = []
+
+        class FakeState:
+            @staticmethod
+            def is_done(phase: str) -> bool:
+                return phase == "extract"
+
+        def fake_run_phase(phase: str, args, state) -> int:
+            called.append(phase)
+            assert phase == "extract"
+            assert args.config == config_file
+            return 0
+
+        monkeypatch.setattr(run_module, "RunState", FakeState)
+        monkeypatch.setattr(run_module, "run_phase", fake_run_phase)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "run.py",
+                "--phase",
+                "extract",
+                "--config",
+                str(config_file),
+            ],
+        )
+
+        rc = run_module.main()
+        captured = capsys.readouterr()
+
+        assert rc == 0
+        assert called == ["extract"]
+        assert "[跳过] extract" not in captured.out
+
 
 class TestRunWatermarkConfigNoFallback:
-    def _find_keyword_call(self, source_path: str, call_name: str, keyword_name: str) -> bool:
-        tree = ast.parse(Path(source_path).read_text(encoding="utf-8"))
+    def _find_keyword_call(self, call_name: str, keyword_name: str) -> bool:
+        tree = ast.parse(RUN_PY.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and getattr(node.func, "id", None) == call_name:
                 if any(keyword.arg == keyword_name for keyword in node.keywords):
@@ -311,7 +519,7 @@ class TestRunWatermarkConfigNoFallback:
 
     def test_run_watermark_no_enable_fallback(self):
         """run.py 构建 WatermarkConfig 不传 enable_fallback（已废弃）。"""
-        source = Path("run.py").read_text()
+        source = RUN_PY.read_text()
         tree = ast.parse(source)
         for node in ast.walk(tree):
             if isinstance(node, ast.keyword) and node.arg == "enable_fallback":
@@ -319,7 +527,7 @@ class TestRunWatermarkConfigNoFallback:
 
     def test_run_watermark_has_enable_cascade(self):
         """run.py 构建 WatermarkConfig 传递 enable_cascade。"""
-        source = Path("run.py").read_text()
+        source = RUN_PY.read_text()
         tree = ast.parse(source)
         for node in ast.walk(tree):
             if isinstance(node, ast.keyword) and node.arg == "enable_cascade":
@@ -327,16 +535,16 @@ class TestRunWatermarkConfigNoFallback:
         raise AssertionError("run.py 应传递 enable_cascade 参数给 WatermarkConfig")
 
     def test_run_watermark_pipeline_config_receives_resume(self):
-        assert self._find_keyword_call("run.py", "WatermarkPipelineConfig", "resume")
+        assert self._find_keyword_call("WatermarkPipelineConfig", "resume")
 
     def test_run_watermark_pipeline_config_receives_sample_limit(self):
-        assert self._find_keyword_call("run.py", "WatermarkPipelineConfig", "sample_limit")
+        assert self._find_keyword_call("WatermarkPipelineConfig", "sample_limit")
 
     def test_run_extract_pipeline_config_receives_resume(self):
-        assert self._find_keyword_call("run.py", "ExtractPipelineConfig", "resume")
+        assert self._find_keyword_call("ExtractPipelineConfig", "resume")
 
     def test_run_extract_marks_summary_file_in_state(self):
-        tree = ast.parse(Path("run.py").read_text(encoding="utf-8"))
+        tree = ast.parse(RUN_PY.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "mark_done":
                 if node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == "extract":
@@ -349,7 +557,7 @@ class TestRunWatermarkConfigNoFallback:
 
 
 def test_run_extract_passes_lsh_params():
-    tree = ast.parse(Path("run.py").read_text(encoding="utf-8"))
+    tree = ast.parse(RUN_PY.read_text(encoding="utf-8"))
     seen_extract_config_call = False
     matched_expected_call = False
 
@@ -377,7 +585,7 @@ def test_run_extract_passes_lsh_params():
 
 
 def test_run_extract_resolves_lsh_params_from_first_record():
-    tree = ast.parse(Path("run.py").read_text(encoding="utf-8"))
+    tree = ast.parse(RUN_PY.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "resolve_extract_lsh_params":
             assert len(node.args) >= 2

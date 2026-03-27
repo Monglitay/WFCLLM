@@ -10,6 +10,42 @@ from scipy.stats import norm
 from wfcllm.extract.config import BlockScore, DetectionResult
 
 
+def distribution_parameters(
+    scores: list[BlockScore],
+    gamma: float,
+    mode: Literal["fixed", "adaptive"],
+) -> tuple[float, float]:
+    """Compute null-distribution mean and variance for block hits."""
+    if mode == "adaptive":
+        expected_hits = sum(score.gamma_effective for score in scores)
+        variance = sum(
+            score.gamma_effective * (1 - score.gamma_effective)
+            for score in scores
+        )
+        return expected_hits, variance
+
+    m = len(scores)
+    expected_hits = m * gamma
+    variance = m * gamma * (1 - gamma)
+    return expected_hits, variance
+
+
+def compute_z_score(
+    observed_hits: int,
+    expected_hits: float,
+    variance: float,
+) -> float:
+    """Compute a Z score from observed hits and null-distribution statistics."""
+    if variance <= 0.0:
+        if observed_hits > expected_hits:
+            return math.inf
+        if observed_hits < expected_hits:
+            return -math.inf
+        return 0.0
+
+    return (observed_hits - expected_hits) / math.sqrt(variance)
+
+
 class HypothesisTester:
     """One-sided Z-test for watermark presence."""
 
@@ -74,18 +110,11 @@ class HypothesisTester:
         self,
         selected_scores: list[BlockScore],
     ) -> tuple[float, float]:
-        if self._mode == "adaptive":
-            expected_hits = sum(score.gamma_effective for score in selected_scores)
-            variance = sum(
-                score.gamma_effective * (1 - score.gamma_effective)
-                for score in selected_scores
-            )
-            return expected_hits, variance
-
-        m = len(selected_scores)
-        expected_hits = m * self._gamma
-        variance = m * self._gamma * (1 - self._gamma)
-        return expected_hits, variance
+        return distribution_parameters(
+            selected_scores,
+            gamma=self._gamma,
+            mode=self._mode,
+        )
 
     @staticmethod
     def _compute_z_score(
@@ -93,11 +122,4 @@ class HypothesisTester:
         expected_hits: float,
         variance: float,
     ) -> float:
-        if variance <= 0.0:
-            if observed_hits > expected_hits:
-                return math.inf
-            if observed_hits < expected_hits:
-                return -math.inf
-            return 0.0
-
-        return (observed_hits - expected_hits) / math.sqrt(variance)
+        return compute_z_score(observed_hits, expected_hits, variance)

@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import wfcllm.extract.hypothesis as hypothesis_module
 from wfcllm.common.ast_parser import StatementBlock
 from wfcllm.extract.calibrator import ThresholdCalibrator
 from wfcllm.extract.config import BlockScore
@@ -97,6 +98,69 @@ class TestThresholdCalibrator:
         call_args = mock_scorer.score_all.call_args
         target_blocks = call_args[0][0]
         assert all(b.block_type == "simple" for b in target_blocks)
+
+    def test_calibrator_uses_shared_hypothesis_z_score_helper(self, mock_scorer, monkeypatch):
+        """Calibrator should reuse hypothesis z-score math instead of duplicating it."""
+        mock_scorer.score_all.return_value = [
+            BlockScore(block_id="0", score=1, min_margin=0.1),
+            BlockScore(block_id="1", score=0, min_margin=0.1),
+            BlockScore(block_id="2", score=1, min_margin=0.1),
+            BlockScore(block_id="3", score=1, min_margin=0.1),
+        ]
+        calibrator = ThresholdCalibrator(mock_scorer, gamma=0.25)
+
+        captured: dict[str, float] = {}
+
+        def fake_compute_z_score(
+            observed_hits: int,
+            expected_hits: float,
+            variance: float,
+        ) -> float:
+            captured["observed_hits"] = observed_hits
+            captured["expected_hits"] = expected_hits
+            captured["variance"] = variance
+            return 12.34
+
+        monkeypatch.setattr(
+            "wfcllm.extract.hypothesis.compute_z_score",
+            fake_compute_z_score,
+        )
+
+        result = calibrator.calibrate([{"generated_code": "x = 1\ny = 2\n"}], fpr=0.05)
+
+        assert result["fpr_threshold"] == pytest.approx(12.34)
+        assert captured == {
+            "observed_hits": 3,
+            "expected_hits": pytest.approx(1.0),
+            "variance": pytest.approx(0.75),
+        }
+
+    def test_calibrator_uses_shared_hypothesis_distribution_helper(self, mock_scorer, monkeypatch):
+        mock_scorer.score_all.return_value = [
+            BlockScore(block_id="0", score=1, min_margin=0.1, gamma_effective=0.2),
+            BlockScore(block_id="1", score=0, min_margin=0.1, gamma_effective=0.8),
+        ]
+        calibrator = ThresholdCalibrator(mock_scorer, gamma=0.5, mode="adaptive")
+
+        captured: dict[str, object] = {}
+        original_distribution_parameters = hypothesis_module.distribution_parameters
+
+        def fake_distribution_parameters(scores, gamma, mode):
+            captured["scores"] = scores
+            captured["gamma"] = gamma
+            captured["mode"] = mode
+            return original_distribution_parameters(scores, gamma=gamma, mode=mode)
+
+        monkeypatch.setattr(
+            "wfcllm.extract.hypothesis.distribution_parameters",
+            fake_distribution_parameters,
+        )
+
+        calibrator.calibrate([{"generated_code": "x = 1\ny = 2\n"}], fpr=0.05)
+
+        assert captured["gamma"] == pytest.approx(0.5)
+        assert captured["mode"] == "adaptive"
+        assert len(captured["scores"]) == 2
 
     def test_calibrate_adaptive_mode_uses_gamma_sequence_mean_and_variance(
         self,

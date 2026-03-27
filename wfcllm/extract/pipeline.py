@@ -29,6 +29,7 @@ class ExtractPipelineConfig:
     input_file: str     # Path to input JSONL produced by WatermarkPipeline
     output_dir: str     # Directory for report JSON output
     resume: str | None = None
+    summary_metadata: dict | None = None
 
 
 class ExtractPipeline:
@@ -86,6 +87,7 @@ class ExtractPipeline:
                 "total_samples": total,
                 "scored_samples": len(scored_rows),
                 "invalid_samples": len(invalid_rows),
+                **(self._config.summary_metadata or {}),
             },
             "summary": {
                 "watermark_rate": watermarked / len(scored_rows) if scored_rows else 0.0,

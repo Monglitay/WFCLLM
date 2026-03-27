@@ -6,8 +6,11 @@ from types import SimpleNamespace
 
 import pytest
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+CONFIGS_DIR = PROJECT_ROOT / "configs"
+
 # run.py 在项目根目录，需加入 sys.path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(PROJECT_ROOT))
 from run import load_config
 
 
@@ -82,28 +85,32 @@ def test_parser_accepts_adaptive_watermark_and_extract_flags():
 class TestBaseConfigFallbackCascade:
     def test_no_enable_fallback_in_watermark_config(self):
         """base_config.json watermark 节不应有 enable_fallback 字段（已废弃）。"""
-        import json
-        from pathlib import Path
-        cfg = json.loads(Path("configs/base_config.json").read_text())
+        cfg = json.loads((CONFIGS_DIR / "base_config.json").read_text())
         assert "enable_fallback" not in cfg.get("watermark", {}), (
             "base_config.json 的 watermark 节不应再有 enable_fallback"
         )
 
     def test_enable_cascade_true_in_watermark_config(self):
         """base_config.json watermark 节的 enable_cascade 应为 true。"""
-        import json
-        from pathlib import Path
-        cfg = json.loads(Path("configs/base_config.json").read_text())
+        cfg = json.loads((CONFIGS_DIR / "base_config.json").read_text())
         assert cfg.get("watermark", {}).get("enable_cascade") is True
 
+def test_base_config_b_restores_humaneval_best_known_region():
+    cfg_path = CONFIGS_DIR / "base_config_B.json"
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    anchors = cfg["watermark"]["adaptive_gamma"]["anchors"]
 
-def test_base_config_extract_and_watermark_sections_have_matching_lsh_defaults():
-    cfg = json.loads(Path("configs/base_config.json").read_text(encoding="utf-8"))
+    assert cfg["watermark"]["lsh_d"] == 4
     assert cfg["extract"]["lsh_d"] == 4
+    assert cfg["watermark"]["lsh_gamma"] == 0.75
     assert cfg["extract"]["lsh_gamma"] == 0.75
-    assert cfg["extract"]["lsh_d"] == cfg["watermark"]["lsh_d"]
-    assert cfg["extract"]["lsh_gamma"] == cfg["watermark"]["lsh_gamma"]
-
+    assert anchors == {
+        "p10": 0.75,
+        "p50": 0.75,
+        "p75": 0.50,
+        "p90": 0.50,
+        "p95": 0.25,
+    }
 
 def test_run_extract_uses_resolved_gamma_for_calibration(monkeypatch, tmp_path):
     import run as run_module
@@ -181,6 +188,7 @@ def test_run_extract_uses_resolved_gamma_for_calibration(monkeypatch, tmp_path):
 
     class FakePipeline:
         def __init__(self, detector, config):
+            captured["summary_metadata"] = config.summary_metadata
             self._details = tmp_path / "sample_details.jsonl"
             self._summary = tmp_path / "sample_summary.json"
 
@@ -236,6 +244,14 @@ def test_run_extract_uses_resolved_gamma_for_calibration(monkeypatch, tmp_path):
     assert captured["gamma"] == 0.75
     assert captured["mode"] == "fixed"
     assert captured["has_block_contract_builder"] is False
+    assert captured["summary_metadata"]["calibration"] == {
+        "source": str(calibration_file),
+        "fpr": 0.01,
+        "threshold": 1.2,
+        "hypothesis_mode": "fixed",
+        "statistic_definition": "m * gamma, m * gamma * (1 - gamma)",
+        "decision_rule": "z_score >= threshold",
+    }
     resolved_threshold = captured["resolved_threshold"]
     assert 0.5 < resolved_threshold < 2.5
 
@@ -547,9 +563,129 @@ def test_run_extract_prefers_configured_fpr_when_cli_fpr_not_provided(
 
     rc = run_module.run_extract(args, FakeState())
     assert rc == 0
-    assert captured["fpr"] == 0.05
+
+
+def test_run_extract_allows_extract_only_validation_without_encoder_done(
+    monkeypatch,
+    tmp_path,
+):
+    import run as run_module
+
+    captured: dict = {}
+
+    input_file = tmp_path / "input.jsonl"
+    input_file.write_text(
+        json.dumps(
+            {
+                "id": "HumanEval/0",
+                "generated_code": "x = 1\n",
+                "watermark_params": {"lsh_d": 4, "lsh_gamma": 0.75},
+            }
+        ) + "\n",
+        encoding="utf-8",
+    )
+    config_file = tmp_path / "cfg.json"
+    config_file.write_text(
+        json.dumps(
+            {
+                "extract": {
+                    "secret_key": "k",
+                    "input_file": str(input_file),
+                    "lsh_d": 4,
+                    "lsh_gamma": 0.75,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeState:
+        @staticmethod
+        def is_done(phase: str) -> bool:
+            return False
+
+        @staticmethod
+        def get(phase: str, key: str):
+            return None
+
+        @staticmethod
+        def mark_done(*args, **kwargs):
+            captured["mark_done"] = (args, kwargs)
+            return None
+
+    class FakeEncoder:
+        def __init__(self, config):
+            self.config = config
+
+        def load_state_dict(self, state):
+            return None
+
+        def to(self, device):
+            return self
+
+    class FakeDetector:
+        def __init__(self, config, encoder, tokenizer, device):
+            captured["resolved_threshold"] = config.fpr_threshold
+
+    class FakePipeline:
+        def __init__(self, detector, config):
+            self._details = tmp_path / "sample_details.jsonl"
+            self._summary = tmp_path / "sample_summary.json"
+
+        @staticmethod
+        def summary_path_for_details(details_path: Path) -> Path:
+            return Path(details_path).parent / "sample_summary.json"
+
+        def run(self) -> str:
+            self._details.write_text("{}", encoding="utf-8")
+            self._summary.write_text(
+                json.dumps(
+                    {
+                        "meta": {"total_samples": 1},
+                        "summary": {
+                            "watermark_rate": 1.0,
+                            "watermark_rate_ci_95": [1.0, 1.0],
+                            "mean_z_score": 1.0,
+                            "std_z_score": 0.0,
+                            "mean_p_value": 0.1,
+                            "mean_blocks": 1.0,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return str(self._details)
+
+    monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+    monkeypatch.setattr("transformers.AutoTokenizer.from_pretrained", lambda _: object())
+    monkeypatch.setattr("wfcllm.encoder.model.SemanticEncoder", FakeEncoder)
+    monkeypatch.setattr("wfcllm.extract.detector.WatermarkDetector", FakeDetector)
+    monkeypatch.setattr("wfcllm.extract.pipeline.ExtractPipeline", FakePipeline)
+    monkeypatch.setattr("wfcllm.extract.pipeline.ExtractPipelineConfig", lambda **kwargs: SimpleNamespace(**kwargs))
+
+    args = SimpleNamespace(
+        secret_key=None,
+        input_file=str(input_file),
+        extract_output_dir=None,
+        embed_dim=None,
+        fpr_threshold=None,
+        resume=None,
+        calibration_corpus=None,
+        fpr=None,
+        config=config_file,
+        adaptive_detection_mode=None,
+        strict_contract=False,
+        gamma_strategy=None,
+        entropy_profile=None,
+        profile_id=None,
+    )
+
+    rc = run_module.run_extract(args, FakeState())
+
+    assert rc == 0
+    assert captured["mark_done"][0][0] == "extract"
 def test_base_config_includes_adaptive_sections():
-    cfg = json.loads(Path("configs/base_config.json").read_text(encoding="utf-8"))
+    cfg = json.loads((CONFIGS_DIR / "base_config.json").read_text(encoding="utf-8"))
 
     assert cfg["watermark"]["adaptive_gamma"] == {
         "enabled": True,
@@ -579,7 +715,7 @@ def test_base_config_includes_adaptive_sections():
 
 def test_humaneval_subset_config_exposes_adaptive_experiment_defaults():
     cfg = json.loads(
-        Path("configs/humaneval_10_config.json").read_text(encoding="utf-8")
+        (CONFIGS_DIR / "humaneval_10_config.json").read_text(encoding="utf-8")
     )
 
     adaptive_gamma = cfg["watermark"]["adaptive_gamma"]
@@ -594,5 +730,5 @@ def test_humaneval_subset_config_exposes_adaptive_experiment_defaults():
 
 
 def test_base_config_defaults_generate_negative_to_reference_mode():
-    cfg = json.loads(Path("configs/base_config.json").read_text(encoding="utf-8"))
+    cfg = json.loads((CONFIGS_DIR / "base_config.json").read_text(encoding="utf-8"))
     assert cfg["generate_negative"]["source_mode"] == "reference"

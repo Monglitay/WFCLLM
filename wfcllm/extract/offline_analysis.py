@@ -90,6 +90,10 @@ class DetailDeltaReport:
         return len(self.deltas)
 
 
+def _empty_detail_delta_report() -> DetailDeltaReport:
+    return DetailDeltaReport(deltas={}, detection_loss_ids=())
+
+
 def load_summary_artifact(path: str | Path) -> SummaryArtifact:
     artifact_path = Path(path)
     payload = json.loads(artifact_path.read_text(encoding="utf-8"))
@@ -267,12 +271,17 @@ def build_offline_regression_report(
         right_watermarked,
     )
     compatibility = check_artifact_compatibility(left_details, right_details)
-    detail_delta_report = build_detail_delta_report(left_details, right_details)
+    detail_delta_report = (
+        build_detail_delta_report(left_details, right_details)
+        if compatibility.is_compatible
+        else _empty_detail_delta_report()
+    )
     embedding_delta = _build_embedding_delta_report(left_watermarked, right_watermarked)
     anomalies = _build_anomalies(detail_delta_report, embedding_delta)
     regression_classification = _classify_regression(
         parameter_comparison,
         detail_delta_report,
+        compatibility,
         left_summary,
         right_summary,
     )
@@ -396,6 +405,7 @@ def _build_anomalies(
 def _classify_regression(
     parameter_comparison: RunParameterComparison,
     detail_delta_report: DetailDeltaReport,
+    compatibility: ArtifactCompatibility,
     left_summary: SummaryArtifact | None,
     right_summary: SummaryArtifact | None,
 ) -> dict[str, Any]:
@@ -420,14 +430,16 @@ def _classify_regression(
         and z_score_drop_count == detail_delta_report.total_samples
     )
 
-    if implementation_bug:
+    if not compatibility.is_compatible:
         recommended_branch = "stop"
-    elif adaptive_gamma_shift:
+    elif implementation_bug:
         recommended_branch = "B"
-    elif calibration_drift or extraction_conservatism or rate_drop:
+    elif calibration_drift:
         recommended_branch = "C"
     elif parameter_drift:
         recommended_branch = "A"
+    elif extraction_conservatism or rate_drop:
+        recommended_branch = "C"
     else:
         recommended_branch = "A"
 

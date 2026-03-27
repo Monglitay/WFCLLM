@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import math
 from typing import Callable, Literal
 
 from wfcllm.common.ast_parser import extract_statement_blocks
+from wfcllm.extract import hypothesis
 from wfcllm.extract.config import BlockScore
 from wfcllm.extract.scorer import BlockScorer
 
@@ -92,18 +92,11 @@ class ThresholdCalibrator:
         self,
         scores: list[BlockScore],
     ) -> tuple[float, float]:
-        if self._mode == "adaptive":
-            expected_hits = sum(score.gamma_effective for score in scores)
-            variance = sum(
-                score.gamma_effective * (1 - score.gamma_effective)
-                for score in scores
-            )
-            return expected_hits, variance
-
-        m = len(scores)
-        expected_hits = m * self._gamma
-        variance = m * self._gamma * (1 - self._gamma)
-        return expected_hits, variance
+        return hypothesis.distribution_parameters(
+            scores,
+            gamma=self._gamma,
+            mode=self._mode,
+        )
 
     @staticmethod
     def _compute_z_score(
@@ -111,13 +104,7 @@ class ThresholdCalibrator:
         expected_hits: float,
         variance: float,
     ) -> float:
-        if variance <= 0.0:
-            if observed_hits > expected_hits:
-                return math.inf
-            if observed_hits < expected_hits:
-                return -math.inf
-            return 0.0
-        return (observed_hits - expected_hits) / math.sqrt(variance)
+        return hypothesis.compute_z_score(observed_hits, expected_hits, variance)
 
     @staticmethod
     def _percentile_threshold(z_scores: list[float], fpr: float) -> float:

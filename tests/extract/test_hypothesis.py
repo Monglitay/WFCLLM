@@ -6,6 +6,7 @@ import math
 
 import pytest
 
+import wfcllm.extract.hypothesis as hypothesis_module
 from wfcllm.extract.config import BlockScore, DetectionResult
 from wfcllm.extract.hypothesis import HypothesisTester
 
@@ -88,7 +89,97 @@ class TestHypothesisTester:
         result = tester.test(selected_scores=scores, total_blocks=5)
         assert len(result.block_details) == 2
         assert result.block_details[0].block_id == "0"
+    def test_compute_z_score_is_exposed_for_cross_module_reuse(self):
+        """Shared z-score helper should remain importable by sibling modules."""
+        z_score = hypothesis_module.compute_z_score(
+            observed_hits=7,
+            expected_hits=5.0,
+            variance=4.0,
+        )
 
+        assert z_score == pytest.approx(1.0)
+
+    def test_distribution_parameters_is_exposed_for_cross_module_reuse(self):
+        """Shared distribution helper should remain importable by sibling modules."""
+        scores = [
+            _make_score("0", 1, gamma_effective=0.2),
+            _make_score("1", 0, gamma_effective=0.8),
+        ]
+
+        expected_hits, variance = hypothesis_module.distribution_parameters(
+            scores,
+            gamma=0.5,
+            mode="adaptive",
+        )
+
+        assert expected_hits == pytest.approx(1.0)
+        assert variance == pytest.approx((0.2 * 0.8) + (0.8 * 0.2))
+
+    def test_hypothesis_tester_uses_shared_compute_z_score_helper(self, monkeypatch):
+        """Detector should route z-score math through the shared helper."""
+        tester = HypothesisTester(fpr_threshold=3.0, gamma=0.25, mode="fixed")
+        scores = [
+            _make_score("0", 1),
+            _make_score("1", 0),
+            _make_score("2", 1),
+            _make_score("3", 1),
+        ]
+
+        captured: dict[str, float] = {}
+
+        def fake_compute_z_score(
+            observed_hits: int,
+            expected_hits: float,
+            variance: float,
+        ) -> float:
+            captured["observed_hits"] = observed_hits
+            captured["expected_hits"] = expected_hits
+            captured["variance"] = variance
+            return 12.34
+
+        monkeypatch.setattr(
+            hypothesis_module,
+            "compute_z_score",
+            fake_compute_z_score,
+        )
+
+        result = tester.test(selected_scores=scores, total_blocks=4)
+
+        assert result.z_score == pytest.approx(12.34)
+        assert captured == {
+            "observed_hits": 3,
+            "expected_hits": pytest.approx(1.0),
+            "variance": pytest.approx(0.75),
+        }
+
+    def test_hypothesis_tester_uses_shared_distribution_helper(self, monkeypatch):
+        """Detector should route distribution math through the shared helper."""
+        tester = HypothesisTester(fpr_threshold=3.0, gamma=0.5, mode="adaptive")
+        scores = [
+            _make_score("0", 1, gamma_effective=0.2),
+            _make_score("1", 0, gamma_effective=0.8),
+        ]
+
+        captured: dict[str, object] = {}
+        original_distribution_parameters = hypothesis_module.distribution_parameters
+
+        def fake_distribution_parameters(scores, gamma, mode):
+            captured["scores"] = scores
+            captured["gamma"] = gamma
+            captured["mode"] = mode
+            return original_distribution_parameters(scores, gamma=gamma, mode=mode)
+
+        monkeypatch.setattr(
+            hypothesis_module,
+            "distribution_parameters",
+            fake_distribution_parameters,
+        )
+
+        tester.test(selected_scores=scores, total_blocks=2)
+
+        assert captured["gamma"] == pytest.approx(0.5)
+        assert captured["mode"] == "adaptive"
+        assert len(captured["scores"]) == 2
 
 class TestHypothesisTesterGamma:
     def test_custom_gamma_z_score(self):
