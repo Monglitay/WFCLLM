@@ -96,6 +96,29 @@ class WatermarkPipeline:
             },
         }
 
+    @staticmethod
+    def _resolve_diagnostics_dir(output_dir: Path) -> Path:
+        """Resolve the diagnostics directory paired with a watermarked output dir."""
+        if output_dir.name == "watermarked":
+            return output_dir.parent / "diagnostics"
+        return output_dir / "diagnostics"
+
+    @staticmethod
+    def _build_block_ledger_path(output_path: Path, diagnostics_dir: Path) -> Path:
+        """Build a deterministic block-ledger path from the watermarked artifact stem."""
+        return diagnostics_dir / f"{output_path.stem}_block_ledger.jsonl"
+
+    @staticmethod
+    def _merge_diagnostic_summary(
+        record: dict[str, object],
+        diagnostic_summary: object,
+    ) -> None:
+        if not isinstance(diagnostic_summary, dict):
+            return
+        for key, value in diagnostic_summary.items():
+            if key not in record:
+                record[key] = value
+
     def run(self) -> str:
         """Run batch watermarking. Returns path to output JSONL file."""
         out_dir = Path(self._config.output_dir)
@@ -127,6 +150,10 @@ class WatermarkPipeline:
             out_path = out_dir / f"{self._config.dataset}_{timestamp}.jsonl"
             mode = "w"
 
+        diagnostics_dir = self._resolve_diagnostics_dir(out_dir)
+        diagnostics_dir.mkdir(parents=True, exist_ok=True)
+        diagnostics_path = self._build_block_ledger_path(out_path, diagnostics_dir)
+
         iterator = (
             tqdm(prompts, desc=f"Watermarking {self._config.dataset}", unit="prompt")
             if tqdm is not None
@@ -134,44 +161,53 @@ class WatermarkPipeline:
         )
 
         with open(out_path, mode, encoding="utf-8") as f:
-            for item in iterator:
-                result = self._generator.generate(item["prompt"])
-                embed_rate = (
-                    result.embedded_blocks / result.total_blocks
-                    if result.total_blocks > 0
-                    else 0.0
-                )
-                record = {
-                    "id": item["id"],
-                    "dataset": self._config.dataset,
-                    "prompt": item["prompt"],
-                    "generated_code": result.code,
-                    "blocks": [asdict(contract) for contract in result.block_contracts],
-                    "adaptive_mode": result.adaptive_mode,
-                    "profile_id": result.profile_id,
-                    "alignment_summary": result.alignment_summary,
-                    "total_blocks": result.total_blocks,
-                    "embedded_blocks": result.embedded_blocks,
-                    "failed_blocks": result.failed_blocks,
-                    "fallback_blocks": result.fallback_blocks,
-                    "embed_rate": embed_rate,
-                }
-                record["watermark_params"] = self._build_public_watermark_params(
-                    self._generator
-                )
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
-                f.flush()
+            with open(diagnostics_path, mode, encoding="utf-8") as diagnostics_file:
+                for item in iterator:
+                    result = self._generator.generate(item["prompt"])
+                    embed_rate = (
+                        result.embedded_blocks / result.total_blocks
+                        if result.total_blocks > 0
+                        else 0.0
+                    )
+                    record = {
+                        "id": item["id"],
+                        "dataset": self._config.dataset,
+                        "prompt": item["prompt"],
+                        "generated_code": result.code,
+                        "blocks": [asdict(contract) for contract in result.block_contracts],
+                        "adaptive_mode": result.adaptive_mode,
+                        "profile_id": result.profile_id,
+                        "alignment_summary": result.alignment_summary,
+                        "total_blocks": result.total_blocks,
+                        "embedded_blocks": result.embedded_blocks,
+                        "failed_blocks": result.failed_blocks,
+                        "fallback_blocks": result.fallback_blocks,
+                        "embed_rate": embed_rate,
+                    }
+                    self._merge_diagnostic_summary(record, result.diagnostic_summary)
+                    record["watermark_params"] = self._build_public_watermark_params(
+                        self._generator
+                    )
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                    for ledger_row in result.block_ledgers:
+                        diagnostics_file.write(
+                            json.dumps(ledger_row, ensure_ascii=False) + "\n"
+                        )
 
-                summary = (
-                    f"  ✓ {item['id']} | "
-                    f"blocks: {result.embedded_blocks}/{result.total_blocks} | "
-                    f"failed: {result.failed_blocks} | "
-                    f"fallback: {result.fallback_blocks} | "
-                    f"embed_rate: {embed_rate:.1%}"
-                )
-                print(summary, file=sys.stderr)
+                    f.flush()
+                    diagnostics_file.flush()
+
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
+                    summary = (
+                        f"  ✓ {item['id']} | "
+                        f"blocks: {result.embedded_blocks}/{result.total_blocks} | "
+                        f"failed: {result.failed_blocks} | "
+                        f"fallback: {result.fallback_blocks} | "
+                        f"embed_rate: {embed_rate:.1%}"
+                    )
+                    print(summary, file=sys.stderr)
 
         return str(out_path)

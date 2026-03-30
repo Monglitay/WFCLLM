@@ -261,6 +261,129 @@ class TestWatermarkPipelineRun:
         }
         assert "profile_path" not in row["watermark_params"]["adaptive_gamma"]
 
+    def test_run_persists_diagnostic_summary_and_block_ledger(self, tmp_path):
+        watermarked_dir = tmp_path / "watermarked"
+        cfg = WatermarkPipelineConfig(
+            dataset="humaneval",
+            output_dir=str(watermarked_dir),
+            dataset_path="data/datasets",
+        )
+        diagnostic_summary = {
+            "diagnostics_version": 1,
+            "retry_summary": {
+                "blocks_with_retry": 1,
+                "attempts_total": 1,
+                "attempts_no_block": 0,
+                "retry_rescued_blocks": 1,
+                "retry_exhausted_blocks": 0,
+            },
+            "cascade_summary": {
+                "cascade_triggers": 0,
+                "cascade_rollbacks": 0,
+                "cascade_rescued_blocks": 0,
+            },
+            "failure_reason_counts": {
+                "signature_miss": 1,
+            },
+            "rescued_blocks": 1,
+            "unrescued_blocks": 0,
+        }
+        block_ledgers = [
+            {
+                "sample_id": "HumanEval/0",
+                "block_ordinal": 0,
+                "initial_verify": {"passed": False, "failure_reason": "signature_miss"},
+                "retry_attempts": [{"attempt_index": 1, "produced_block": True}],
+                "cascade_events": [],
+                "final_outcome": {"embedded": True, "rescued_by_retry": True},
+            },
+            {
+                "sample_id": "HumanEval/0",
+                "block_ordinal": 1,
+                "initial_verify": {"passed": True},
+                "retry_attempts": [],
+                "cascade_events": [],
+                "final_outcome": {"embedded": True},
+            },
+        ]
+        generator = self._build_generator(GenerateResult(
+            code="def foo():\n    return 1\n",
+            stats=EmbedStats(
+                total_blocks=2,
+                embedded_blocks=2,
+                failed_blocks=0,
+                fallback_blocks=0,
+            ),
+            diagnostic_summary=diagnostic_summary,
+            block_ledgers=block_ledgers,
+        ))
+        pipeline = WatermarkPipeline(generator=generator, config=cfg)
+        with patch.object(pipeline, "_load_prompts", return_value=[
+            {"id": "HumanEval/0", "prompt": "def foo():\n"}
+        ]):
+            output_path = Path(pipeline.run())
+
+        row = json.loads(output_path.read_text(encoding="utf-8").splitlines()[0])
+        assert row["diagnostics_version"] == 1
+        assert row["retry_summary"] == diagnostic_summary["retry_summary"]
+        assert row["cascade_summary"] == diagnostic_summary["cascade_summary"]
+
+        diagnostics_path = (
+            output_path.parent.parent
+            / "diagnostics"
+            / f"{output_path.stem}_block_ledger.jsonl"
+        )
+        assert diagnostics_path.exists()
+        ledger_rows = [
+            json.loads(line)
+            for line in diagnostics_path.read_text(encoding="utf-8").splitlines()
+        ]
+        assert ledger_rows == block_ledgers
+
+    def test_run_persists_cascade_visibility_without_fallback_blocks(self, tmp_path):
+        watermarked_dir = tmp_path / "watermarked"
+        cfg = WatermarkPipelineConfig(
+            dataset="humaneval",
+            output_dir=str(watermarked_dir),
+            dataset_path="data/datasets",
+        )
+        generator = self._build_generator(GenerateResult(
+            code="if x:\n    return 1\n",
+            stats=EmbedStats(
+                total_blocks=1,
+                embedded_blocks=1,
+                failed_blocks=0,
+                fallback_blocks=0,
+            ),
+            diagnostic_summary={
+                "diagnostics_version": 1,
+                "retry_summary": {
+                    "blocks_with_retry": 0,
+                    "attempts_total": 0,
+                    "attempts_no_block": 0,
+                    "retry_rescued_blocks": 0,
+                    "retry_exhausted_blocks": 0,
+                },
+                "cascade_summary": {
+                    "cascade_triggers": 1,
+                    "cascade_rollbacks": 1,
+                    "cascade_rescued_blocks": 0,
+                },
+                "failure_reason_counts": {},
+                "rescued_blocks": 0,
+                "unrescued_blocks": 0,
+            },
+        ))
+        pipeline = WatermarkPipeline(generator=generator, config=cfg)
+        with patch.object(pipeline, "_load_prompts", return_value=[
+            {"id": "HumanEval/0", "prompt": "def foo():\n"}
+        ]):
+            output_path = pipeline.run()
+
+        row = json.loads(Path(output_path).read_text(encoding="utf-8").splitlines()[0])
+        assert row["fallback_blocks"] == 0
+        assert row["cascade_summary"]["cascade_triggers"] == 1
+
     def test_run_returns_output_path(self, mock_result):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = WatermarkPipelineConfig(
