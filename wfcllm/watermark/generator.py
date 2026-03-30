@@ -12,6 +12,12 @@ from wfcllm.common.block_contract import BlockContract, build_block_contracts
 from wfcllm.watermark.cascade import CascadeManager
 from wfcllm.watermark.config import WatermarkConfig
 from wfcllm.watermark.context import GenerationContext
+from wfcllm.watermark.diagnostics import (
+    BlockLifecycleRecord,
+    FailureReason,
+    hash_block_text,
+    summarize_sample_diagnostics,
+)
 from wfcllm.watermark.entropy import ENTROPY_SCALE, NodeEntropyEstimator
 from wfcllm.watermark.entropy_profile import EntropyProfile
 from wfcllm.watermark.gamma_schedule import GammaResolution, PiecewiseQuantileSchedule, quantize_gamma
@@ -45,6 +51,8 @@ class GenerateResult:
     adaptive_mode: str = "fixed"
     profile_id: str | None = None
     alignment_summary: dict[str, int | bool] = field(default_factory=dict)
+    diagnostic_summary: dict[str, object] = field(default_factory=dict)
+    block_ledgers: list[dict[str, object]] = field(default_factory=list)
 
     # Backward-compatible properties
     @property
@@ -134,6 +142,10 @@ class WatermarkGenerator:
             gamma_resolver=self._resolve_gamma_for_block_text,
         )
         pending_fallbacks: list[str] = []
+        sample_id = self._sample_id_for_prompt(prompt)
+        ledger_entries: list[dict[str, object]] = []
+        ledger_by_ordinal: dict[int, dict[str, object]] = {}
+        pending_cascade_replacements: list[int] = []
 
         while not ctx.is_finished():
             next_id = ctx.forward_and_sample()
@@ -153,65 +165,35 @@ class WatermarkGenerator:
                 )
                 continue
 
-            # Simple block
-            stats.total_blocks += 1
-            verify_result = self._verify_block(event)
-
-            if verify_result.passed:
-                stats.embedded_blocks += 1
-                pending_fallbacks.clear()
-                continue
-
-            # Verification failed → retry
-            block_cp = ctx.last_block_checkpoint
-            if block_cp is None:
-                # Shouldn't happen, but degrade gracefully
-                stats.failed_blocks += 1
-                pending_fallbacks.append(event.block_text)
-                continue
-
-            retry_result = retry_loop.run(block_cp, event)
-            stats.retry_diagnostics.append(retry_result.diagnostics)
-
-            if retry_result.success:
-                stats.embedded_blocks += 1
-                pending_fallbacks.clear()
-                logger.debug(
-                    "[RETRY OK] block #%d after %d attempts",
-                    stats.total_blocks, retry_result.attempts,
-                )
-            else:
-                stats.failed_blocks += 1
-                pending_fallbacks.append(event.block_text)
-                cascade_mgr.on_simple_block_failed(event.block_text)
-                logger.debug(
-                    "[RETRY FAILED] block #%d exhausted %d retries",
-                    stats.total_blocks, retry_result.attempts,
-                )
-
-                if cascade_mgr.should_cascade():
-                    self._try_cascade(
-                        ctx, cascade_mgr, retry_loop, stats, pending_fallbacks
-                    )
+            self._process_simple_block(
+                event=event,
+                ctx=ctx,
+                stats=stats,
+                cascade_mgr=cascade_mgr,
+                retry_loop=retry_loop,
+                pending_fallbacks=pending_fallbacks,
+                sample_id=sample_id,
+                ledger_entries=ledger_entries,
+                ledger_by_ordinal=ledger_by_ordinal,
+                pending_cascade_replacements=pending_cascade_replacements,
+                allow_cascade=True,
+            )
 
         final_event = getattr(ctx, "flush_final_event", lambda: None)()
         if final_event is not None and final_event.block_type == "simple":
-            stats.total_blocks += 1
-            verify_result = self._verify_block(final_event)
-            if verify_result.passed:
-                stats.embedded_blocks += 1
-            else:
-                block_cp = ctx.last_block_checkpoint
-                if block_cp is None:
-                    stats.failed_blocks += 1
-                else:
-                    retry_result = retry_loop.run(block_cp, final_event)
-                    stats.retry_diagnostics.append(retry_result.diagnostics)
-                    if retry_result.success:
-                        stats.embedded_blocks += 1
-                    else:
-                        stats.failed_blocks += 1
-                        pending_fallbacks.append(final_event.block_text)
+            self._process_simple_block(
+                event=final_event,
+                ctx=ctx,
+                stats=stats,
+                cascade_mgr=cascade_mgr,
+                retry_loop=retry_loop,
+                pending_fallbacks=pending_fallbacks,
+                sample_id=sample_id,
+                ledger_entries=ledger_entries,
+                ledger_by_ordinal=ledger_by_ordinal,
+                pending_cascade_replacements=pending_cascade_replacements,
+                allow_cascade=False,
+            )
 
         final_code = ctx.generated_text
         gamma_resolver = (
@@ -227,6 +209,11 @@ class WatermarkGenerator:
         final_total_blocks, final_embedded_blocks = self._finalize_stats(final_code)
         stats.total_blocks = final_total_blocks
         stats.embedded_blocks = final_embedded_blocks
+        lifecycle_records = [
+            entry["record"]
+            for entry in ledger_entries
+            if isinstance(entry.get("record"), BlockLifecycleRecord)
+        ]
 
         return GenerateResult(
             code=final_code,
@@ -238,6 +225,8 @@ class WatermarkGenerator:
                 runtime_total_blocks,
                 block_contracts,
             ),
+            diagnostic_summary=summarize_sample_diagnostics(lifecycle_records),
+            block_ledgers=self._serialize_block_ledgers(ledger_entries),
         )
 
     def _verify_block(self, event):
@@ -281,7 +270,7 @@ class WatermarkGenerator:
         """
         cascade_cp = cascade_mgr.cascade(ctx)
         if cascade_cp is None:
-            return
+            return None
 
         self._restore_runtime_stats(
             stats,
@@ -289,9 +278,14 @@ class WatermarkGenerator:
         )
         stats.cascade_blocks += 1
         pending_fallbacks.clear()
+        restored_stats = self._snapshot_runtime_stats(stats)
         logger.debug(
             "[CASCADE OK] rolled back to compound block start; resuming main loop"
         )
+        metadata_builder = getattr(cascade_cp, "build_diagnostic_metadata", None)
+        if callable(metadata_builder):
+            return metadata_builder(restored_stats=restored_stats)
+        return self._fallback_cascade_metadata(cascade_cp, restored_stats)
 
     def _adaptive_mode(self) -> str:
         """Return canonical adaptive metadata mode for the current config."""
@@ -350,6 +344,263 @@ class WatermarkGenerator:
             "final_block_count": final_block_count,
             "generator_total_blocks": runtime_total_blocks,
             "block_count_matches_total_blocks": final_block_count == runtime_total_blocks,
+        }
+
+    def _process_simple_block(
+        self,
+        event,
+        ctx,
+        stats: EmbedStats,
+        cascade_mgr: CascadeManager,
+        retry_loop: RetryLoop,
+        pending_fallbacks: list[str],
+        sample_id: str,
+        ledger_entries: list[dict[str, object]],
+        ledger_by_ordinal: dict[int, dict[str, object]],
+        pending_cascade_replacements: list[int],
+        allow_cascade: bool,
+    ) -> None:
+        stats.total_blocks += 1
+        ledger_entry, reused_from_cascade = self._acquire_block_ledger(
+            sample_id,
+            event,
+            ledger_entries,
+            ledger_by_ordinal,
+            pending_cascade_replacements,
+        )
+        record = ledger_entry["record"]
+        self._capture_block_identity(ledger_entry, event)
+
+        verify_result = self._verify_block(event)
+        if not reused_from_cascade and not record.initial_verify:
+            record.initial_verify = {"passed": verify_result.passed}
+            if not verify_result.passed:
+                record.initial_verify["failure_reason"] = self._classify_failure_reason(
+                    event,
+                    verify_result,
+                )
+
+        if verify_result.passed:
+            stats.embedded_blocks += 1
+            pending_fallbacks.clear()
+            self._mark_block_success(
+                record,
+                rescued_by_cascade=reused_from_cascade,
+            )
+            return
+
+        failure_reason = self._classify_failure_reason(event, verify_result)
+
+        block_cp = ctx.last_block_checkpoint
+        if block_cp is None:
+            stats.failed_blocks += 1
+            pending_fallbacks.append(event.block_text)
+            self._mark_block_failure(
+                record,
+                failure_reason=failure_reason,
+                exhausted_retries=False,
+            )
+            return
+
+        retry_result = retry_loop.run(block_cp, event)
+        stats.retry_diagnostics.append(retry_result.diagnostics)
+        self._append_retry_attempts(record, retry_result.diagnostics)
+
+        if retry_result.success:
+            stats.embedded_blocks += 1
+            pending_fallbacks.clear()
+            self._mark_block_success(
+                record,
+                rescued_by_retry=True,
+                rescued_by_cascade=reused_from_cascade,
+            )
+            logger.debug(
+                "[RETRY OK] block #%d after %d attempts",
+                stats.total_blocks, retry_result.attempts,
+            )
+            return
+
+        stats.failed_blocks += 1
+        pending_fallbacks.append(event.block_text)
+        self._mark_block_failure(
+            record,
+            failure_reason=failure_reason,
+            exhausted_retries=True,
+        )
+        cascade_mgr.on_simple_block_failed(
+            event.block_text,
+            block_ordinal=record.block_ordinal,
+        )
+        logger.debug(
+            "[RETRY FAILED] block #%d exhausted %d retries",
+            stats.total_blocks, retry_result.attempts,
+        )
+
+        if allow_cascade and cascade_mgr.should_cascade():
+            cascade_metadata = self._try_cascade(
+                ctx,
+                cascade_mgr,
+                retry_loop,
+                stats,
+                pending_fallbacks,
+            )
+            self._record_cascade_replacements(
+                ledger_by_ordinal,
+                pending_cascade_replacements,
+                cascade_metadata,
+            )
+
+    @staticmethod
+    def _sample_id_for_prompt(prompt: str) -> str:
+        return f"prompt:{hash_block_text(prompt)[:16]}"
+
+    def _acquire_block_ledger(
+        self,
+        sample_id: str,
+        event,
+        ledger_entries: list[dict[str, object]],
+        ledger_by_ordinal: dict[int, dict[str, object]],
+        pending_cascade_replacements: list[int],
+    ) -> tuple[dict[str, object], bool]:
+        if pending_cascade_replacements:
+            block_ordinal = pending_cascade_replacements.pop(0)
+            entry = ledger_by_ordinal[block_ordinal]
+            return entry, True
+
+        block_ordinal = len(ledger_entries)
+        entry = {
+            "record": BlockLifecycleRecord(
+                sample_id=sample_id,
+                block_ordinal=block_ordinal,
+            ),
+        }
+        ledger_entries.append(entry)
+        ledger_by_ordinal[block_ordinal] = entry
+        return entry, False
+
+    @staticmethod
+    def _capture_block_identity(
+        ledger_entry: dict[str, object],
+        event,
+    ) -> None:
+        ledger_entry["node_type"] = event.node_type
+        ledger_entry["parent_node_type"] = event.parent_node_type or "module"
+        ledger_entry["block_text_hash"] = hash_block_text(event.block_text)
+
+    def _classify_failure_reason(self, event, verify_result) -> str:
+        if verify_result.passed:
+            return FailureReason.unknown.value
+        entropy_units = self._entropy_est.estimate_block_entropy_units(event.block_text)
+        block_entropy = entropy_units / ENTROPY_SCALE
+        margin_threshold = self._entropy_est.compute_margin(block_entropy, self._config)
+        in_valid_set = verify_result.in_valid_set
+        if in_valid_set is None:
+            return FailureReason.unknown.value
+        margin_passed = verify_result.min_margin > margin_threshold
+        if not in_valid_set and margin_passed:
+            return FailureReason.signature_miss.value
+        if in_valid_set and not margin_passed:
+            return FailureReason.margin_miss.value
+        if not in_valid_set and not margin_passed:
+            return FailureReason.signature_and_margin_miss.value
+        return FailureReason.unknown.value
+
+    @staticmethod
+    def _append_retry_attempts(
+        record: BlockLifecycleRecord,
+        diagnostics: RetryDiagnostics,
+    ) -> None:
+        for attempt_index, attempt in enumerate(diagnostics.per_attempt):
+            retry_record = {
+                "attempt_index": attempt_index,
+                "produced_block": not attempt.no_block,
+            }
+            if attempt.failure_reason is not None:
+                retry_record["failure_reason"] = attempt.failure_reason
+            record.retry_attempts.append(retry_record)
+
+    @staticmethod
+    def _mark_block_success(
+        record: BlockLifecycleRecord,
+        rescued_by_retry: bool = False,
+        rescued_by_cascade: bool = False,
+    ) -> None:
+        record.final_outcome["embedded"] = True
+        record.final_outcome.setdefault("rescued_by_retry", False)
+        record.final_outcome.setdefault("rescued_by_cascade", False)
+        if rescued_by_retry:
+            record.final_outcome["rescued_by_retry"] = True
+        if rescued_by_cascade:
+            record.final_outcome["rescued_by_cascade"] = True
+
+    @staticmethod
+    def _mark_block_failure(
+        record: BlockLifecycleRecord,
+        failure_reason: str,
+        exhausted_retries: bool,
+    ) -> None:
+        record.final_outcome["embedded"] = False
+        record.final_outcome.setdefault("rescued_by_retry", False)
+        record.final_outcome.setdefault("rescued_by_cascade", False)
+        record.final_outcome["exhausted_retries"] = exhausted_retries
+        record.final_outcome["failure_reason"] = failure_reason
+
+    def _record_cascade_replacements(
+        self,
+        ledger_by_ordinal: dict[int, dict[str, object]],
+        pending_cascade_replacements: list[int],
+        cascade_metadata: dict[str, object] | None,
+    ) -> None:
+        if not isinstance(cascade_metadata, dict):
+            return
+        for block_ordinal in cascade_metadata.get("replaced_block_ordinals", []):
+            if not isinstance(block_ordinal, int):
+                continue
+            entry = ledger_by_ordinal.get(block_ordinal)
+            if entry is None:
+                continue
+            record = entry["record"]
+            record.cascade_events.append(dict(cascade_metadata))
+            record.final_outcome["failure_reason"] = FailureReason.cascade_replaced.value
+            if block_ordinal not in pending_cascade_replacements:
+                pending_cascade_replacements.append(block_ordinal)
+
+    @staticmethod
+    def _serialize_block_ledgers(
+        ledger_entries: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        payloads: list[dict[str, object]] = []
+        for entry in ledger_entries:
+            record = entry["record"]
+            payload = record.to_dict()
+            if "node_type" in entry:
+                payload["node_type"] = entry["node_type"]
+            if "parent_node_type" in entry:
+                payload["parent_node_type"] = entry["parent_node_type"]
+            if "block_text_hash" in entry:
+                payload["block_text_hash"] = entry["block_text_hash"]
+            payloads.append(payload)
+        return payloads
+
+    @staticmethod
+    def _fallback_cascade_metadata(
+        cascade_cp,
+        restored_stats: dict[str, object],
+    ) -> dict[str, object]:
+        replaced_block_ordinals: list[int] = []
+        for item in getattr(cascade_cp, "failed_simple_blocks", []):
+            if isinstance(item, dict) and isinstance(item.get("block_ordinal"), int):
+                replaced_block_ordinals.append(item["block_ordinal"])
+        return {
+            "triggered": True,
+            "compound_node_type": getattr(cascade_cp.compound_event, "node_type", None),
+            "failed_simple_count_before_cascade": len(
+                getattr(cascade_cp, "failed_simple_blocks", [])
+            ),
+            "replaced_block_ordinals": replaced_block_ordinals,
+            "restored_total_blocks": int(restored_stats.get("total_blocks", 0)),
+            "restored_embedded_blocks": int(restored_stats.get("embedded_blocks", 0)),
+            "restored_failed_blocks": int(restored_stats.get("failed_blocks", 0)),
         }
 
     @staticmethod
