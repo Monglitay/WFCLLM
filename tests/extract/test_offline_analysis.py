@@ -792,3 +792,97 @@ def test_build_offline_regression_report_keeps_legacy_watermarked_rows_compatibl
 
     assert "route_one_summary" not in sample
     assert report["anomalies"]["route_one"] == {}
+
+
+def test_build_offline_regression_report_does_not_flag_unchanged_cascade_no_recovery(tmp_path):
+    offline_analysis = _load_module()
+
+    left_summary_path = tmp_path / "left_summary.json"
+    right_summary_path = tmp_path / "right_summary.json"
+    left_details_path = tmp_path / "left_details.jsonl"
+    right_details_path = tmp_path / "right_details.jsonl"
+    left_watermarked_path = tmp_path / "left_watermarked.jsonl"
+    right_watermarked_path = tmp_path / "right_watermarked.jsonl"
+
+    _write_json(left_summary_path, {"dataset": "HumanEval", "summary": {"watermark_rate": 1.0}})
+    _write_json(right_summary_path, {"dataset": "HumanEval", "summary": {"watermark_rate": 1.0}})
+    _write_jsonl(
+        left_details_path,
+        [
+            {
+                "id": "HumanEval/2",
+                "is_watermarked": True,
+                "z_score": 2.2,
+                "p_value": 0.03,
+                "independent_blocks": 8,
+                "hits": 6,
+            }
+        ],
+    )
+    _write_jsonl(
+        right_details_path,
+        [
+            {
+                "id": "HumanEval/2",
+                "is_watermarked": True,
+                "z_score": 2.1,
+                "p_value": 0.04,
+                "independent_blocks": 8,
+                "hits": 6,
+            }
+        ],
+    )
+    identical_route_one = {
+        "diagnostics_version": 2,
+        "retry_summary": {
+            "blocks_with_retry": 1,
+            "retry_rescued_blocks": 0,
+            "retry_exhausted_blocks": 0,
+        },
+        "cascade_summary": {
+            "cascade_triggers": 2,
+            "cascade_rescued_blocks": 0,
+        },
+        "failure_reason_counts": {"signature_miss": 2},
+        "rescued_blocks": 0,
+        "unrescued_blocks": 2,
+    }
+    _write_jsonl(
+        left_watermarked_path,
+        [
+            {
+                "id": "HumanEval/2",
+                "total_blocks": 8,
+                "embedded_blocks": 5,
+                "failed_blocks": 1,
+                "fallback_blocks": 0,
+                "embed_rate": 0.625,
+                **identical_route_one,
+            }
+        ],
+    )
+    _write_jsonl(
+        right_watermarked_path,
+        [
+            {
+                "id": "HumanEval/2",
+                "total_blocks": 8,
+                "embedded_blocks": 5,
+                "failed_blocks": 1,
+                "fallback_blocks": 0,
+                "embed_rate": 0.625,
+                **identical_route_one,
+            }
+        ],
+    )
+
+    report = offline_analysis.build_offline_regression_report(
+        left_summary=offline_analysis.load_summary_artifact(left_summary_path),
+        left_details=offline_analysis.load_detail_artifact(left_details_path),
+        left_watermarked=offline_analysis.load_watermarked_artifact(left_watermarked_path),
+        right_summary=offline_analysis.load_summary_artifact(right_summary_path),
+        right_details=offline_analysis.load_detail_artifact(right_details_path),
+        right_watermarked=offline_analysis.load_watermarked_artifact(right_watermarked_path),
+    )
+
+    assert report["anomalies"]["route_one"] == {}

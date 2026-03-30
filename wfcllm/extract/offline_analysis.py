@@ -430,9 +430,11 @@ def _build_anomalies(
             sample_flags.append("near_miss_with_exhausted_retry")
 
         if (
-            cascade_summary.get("cascade_triggers", 0) > 0
-            and cascade_summary.get("cascade_rescued_blocks", 0) == 0
-            and right_summary.get("unrescued_blocks", 0) > 0
+            _is_cascade_no_recovery(right_summary)
+            and (
+                not _is_cascade_no_recovery(route_one_summary.get("left") or {})
+                or _cascade_no_recovery_worsened(route_one_summary.get("delta") or {})
+            )
         ):
             sample_flags.append("cascade_no_recovery")
 
@@ -665,3 +667,21 @@ def _build_route_one_count_delta(
             (left_counts or {}).get(key, 0)
         )
     return delta
+
+
+def _is_cascade_no_recovery(summary: dict[str, Any]) -> bool:
+    cascade_summary = summary.get("cascade_summary") or {}
+    return (
+        cascade_summary.get("cascade_triggers", 0) > 0
+        and cascade_summary.get("cascade_rescued_blocks", 0) == 0
+        and summary.get("unrescued_blocks", 0) > 0
+    )
+
+
+def _cascade_no_recovery_worsened(delta: dict[str, Any]) -> bool:
+    cascade_delta = delta.get("cascade_summary") or {}
+    return (
+        delta.get("unrescued_blocks_delta", 0) > 0
+        or cascade_delta.get("cascade_triggers_delta", 0) > 0
+        or delta.get("rescued_blocks_delta", 0) < 0
+    )
