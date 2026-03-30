@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, TypedDict
 
 
 class FailureReason(str, Enum):
@@ -44,14 +44,37 @@ def _normalize_value(value: Any) -> Any:
     return value
 
 
+class InitialVerifyRecord(TypedDict, total=False):
+    passed: bool
+    failure_reason: FailureReason
+
+
+class RetryAttemptRecord(TypedDict, total=False):
+    attempt_index: int
+    produced_block: bool
+    failure_reason: FailureReason
+
+
+class CascadeEventRecord(TypedDict, total=False):
+    triggered: bool
+
+
+class FinalOutcomeRecord(TypedDict, total=False):
+    embedded: bool
+    rescued_by_retry: bool
+    rescued_by_cascade: bool
+    exhausted_retries: bool
+    failure_reason: FailureReason
+
+
 @dataclass
 class BlockLifecycleRecord:
     sample_id: str
     block_ordinal: int
-    initial_verify: Dict[str, Any]
-    retry_attempts: List[Dict[str, Any]] = field(default_factory=list)
-    cascade_events: List[Dict[str, Any]] = field(default_factory=list)
-    final_outcome: Dict[str, Any] = field(default_factory=dict)
+    initial_verify: InitialVerifyRecord = field(default_factory=dict)
+    retry_attempts: List[RetryAttemptRecord] = field(default_factory=list)
+    cascade_events: List[CascadeEventRecord] = field(default_factory=list)
+    final_outcome: FinalOutcomeRecord = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -106,16 +129,22 @@ def summarize_sample_diagnostics(records: Iterable[BlockLifecycleRecord]) -> Dic
             cascade_summary["cascade_rollbacks"] += 1
 
         outcome = record.final_outcome or {}
+        record_rescued = False
         if outcome.get("rescued_by_retry"):
             retry_summary["retry_rescued_blocks"] += 1
-            rescued_blocks += 1
+            record_rescued = True
         if outcome.get("rescued_by_cascade"):
             cascade_summary["cascade_rescued_blocks"] += 1
+            record_rescued = True
+        if record_rescued:
             rescued_blocks += 1
         if not outcome.get("embedded", False):
             unrescued_blocks += 1
         if outcome.get("exhausted_retries"):
             retry_summary["retry_exhausted_blocks"] += 1
+        terminal_reason = outcome.get("failure_reason")
+        if terminal_reason is not None:
+            failure_reason_counts[_normalize_failure_reason(terminal_reason)] += 1
 
     return {
         "diagnostics_version": 1,
