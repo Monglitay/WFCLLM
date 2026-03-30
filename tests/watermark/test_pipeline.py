@@ -328,6 +328,7 @@ class TestWatermarkPipelineRun:
             output_path = Path(pipeline.run())
 
         row = json.loads(output_path.read_text(encoding="utf-8").splitlines()[0])
+        assert row["diagnostics_ledger_rows"] == len(block_ledgers)
         assert row["diagnostics_version"] == 1
         assert row["retry_summary"] == diagnostic_summary["retry_summary"]
         assert row["cascade_summary"] == diagnostic_summary["cascade_summary"]
@@ -773,6 +774,7 @@ class TestWatermarkPipelineRun:
                     "id": "HumanEval/0",
                     "total_blocks": 0,
                     "embedded_blocks": 0,
+                    "diagnostics_ledger_rows": 2,
                     "diagnostics_version": 1,
                     "retry_summary": {},
                     "cascade_summary": {},

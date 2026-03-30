@@ -138,6 +138,9 @@ class WatermarkPipeline:
 
     @staticmethod
     def _sample_requires_ledger(payload: dict[str, object]) -> bool:
+        diagnostics_ledger_rows = payload.get("diagnostics_ledger_rows")
+        if isinstance(diagnostics_ledger_rows, int):
+            return diagnostics_ledger_rows > 0
         total_blocks = payload.get("total_blocks")
         if isinstance(total_blocks, int):
             if total_blocks > 0:
@@ -219,22 +222,22 @@ class WatermarkPipeline:
         return ordinals_by_sample
 
     @staticmethod
-    def _expected_block_count(payload: dict[str, object]) -> int:
+    def _expected_block_count(payload: dict[str, object]) -> int | None:
+        diagnostics_ledger_rows = payload.get("diagnostics_ledger_rows")
+        if isinstance(diagnostics_ledger_rows, int) and diagnostics_ledger_rows >= 0:
+            return diagnostics_ledger_rows
         alignment_summary = payload.get("alignment_summary")
         if isinstance(alignment_summary, dict):
             final_block_count = alignment_summary.get("final_block_count")
-            generator_total_blocks = alignment_summary.get("generator_total_blocks")
             if isinstance(final_block_count, int) and final_block_count > 0:
                 return final_block_count
-            if isinstance(generator_total_blocks, int) and generator_total_blocks > 0:
-                return generator_total_blocks
         blocks = payload.get("blocks")
         if isinstance(blocks, list):
             return len(blocks)
         total_blocks = payload.get("total_blocks")
         if isinstance(total_blocks, int):
             return total_blocks
-        return 0
+        return None
 
     @staticmethod
     def _incomplete_diagnostics_message(
@@ -297,7 +300,7 @@ class WatermarkPipeline:
         for sample_id, payload in expected_records.items():
             ordinal_counts = ordinals_by_sample.get(sample_id, Counter())
             expected_count = self._expected_block_count(payload)
-            if expected_count <= 0:
+            if expected_count is None:
                 continue
             if (
                 ordinal_counts
@@ -404,16 +407,18 @@ class WatermarkPipeline:
                         "fallback_blocks": result.fallback_blocks,
                         "embed_rate": embed_rate,
                     }
+                    persisted_block_ledgers = self._iter_persisted_block_ledgers(
+                        sample_id=item["id"],
+                        block_ledgers=result.block_ledgers,
+                    )
+                    record["diagnostics_ledger_rows"] = len(persisted_block_ledgers)
                     self._merge_diagnostic_summary(record, result.diagnostic_summary)
                     record["watermark_params"] = self._build_public_watermark_params(
                         self._generator
                     )
                     f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-                    for ledger_row in self._iter_persisted_block_ledgers(
-                        sample_id=item["id"],
-                        block_ledgers=result.block_ledgers,
-                    ):
+                    for ledger_row in persisted_block_ledgers:
                         diagnostics_file.write(
                             json.dumps(ledger_row, ensure_ascii=False) + "\n"
                         )
