@@ -696,6 +696,72 @@ class TestWatermarkPipelineRun:
             with pytest.raises(ValueError, match="diagnostics"):
                 pipeline.run()
 
+    def test_run_resume_detects_truncated_diagnostics_sidecar(self, tmp_path):
+        configured_output_dir = tmp_path / "configured" / "watermarked"
+        actual_resume_dir = tmp_path / "actual" / "watermarked"
+        actual_resume_dir.mkdir(parents=True)
+        resume_path = actual_resume_dir / "humaneval_20260101_010101.jsonl"
+        resume_path.write_text(
+            json.dumps(
+                {
+                    "id": "HumanEval/0",
+                    "total_blocks": 2,
+                    "embedded_blocks": 1,
+                    "diagnostics_version": 1,
+                    "retry_summary": {},
+                    "cascade_summary": {},
+                    "alignment_summary": {"final_block_count": 2},
+                    "blocks": [{"ordinal": 0}, {"ordinal": 1}],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        diagnostics_dir = (resume_path.parent.parent / "diagnostics")
+        diagnostics_dir.mkdir(parents=True)
+        diagnostics_path = diagnostics_dir / f"{resume_path.stem}_block_ledger.jsonl"
+        diagnostics_path.write_text(
+            json.dumps(
+                {
+                    "sample_id": "HumanEval/0",
+                    "block_ordinal": 0,
+                    "initial_verify": {"passed": True},
+                    "retry_attempts": [],
+                    "cascade_events": [],
+                    "final_outcome": {"embedded": True},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        cfg = WatermarkPipelineConfig(
+            dataset="humaneval",
+            output_dir=str(configured_output_dir),
+            dataset_path="data/datasets",
+            resume=str(resume_path),
+        )
+        generator = self._build_generator(GenerateResult(
+            code="def bar():\n    return 2\n",
+            stats=EmbedStats(
+                total_blocks=1,
+                embedded_blocks=1,
+                failed_blocks=0,
+                fallback_blocks=0,
+            ),
+            diagnostic_summary={
+                "diagnostics_version": 1,
+                "retry_summary": {},
+                "cascade_summary": {},
+            },
+        ))
+        pipeline = WatermarkPipeline(generator=generator, config=cfg)
+        with patch.object(pipeline, "_load_prompts", return_value=[
+            {"id": "HumanEval/0", "prompt": "def foo():\n"},
+            {"id": "HumanEval/1", "prompt": "def bar():\n"},
+        ]):
+            with pytest.raises(ValueError, match="diagnostics"):
+                pipeline.run()
+
     def test_run_persists_only_allowlisted_diagnostic_summary_fields(self, tmp_path):
         cfg = WatermarkPipelineConfig(
             dataset="humaneval",

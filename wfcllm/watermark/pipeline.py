@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections import Counter, defaultdict
 from dataclasses import asdict
 from dataclasses import dataclass
 from datetime import datetime
@@ -184,31 +185,126 @@ class WatermarkPipeline:
                     sample_ids.add(sample_id)
         return sample_ids
 
+    @staticmethod
+    def _load_diagnostics_ordinals(
+        diagnostics_path: Path,
+    ) -> dict[str, Counter[int]]:
+        ordinals_by_sample: dict[str, Counter[int]] = defaultdict(Counter)
+        with open(diagnostics_path, encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                sample_id = payload.get("sample_id")
+                block_ordinal = payload.get("block_ordinal")
+                if (
+                    isinstance(sample_id, str)
+                    and sample_id
+                    and isinstance(block_ordinal, int)
+                ):
+                    ordinals_by_sample[sample_id][block_ordinal] += 1
+        return ordinals_by_sample
+
+    @staticmethod
+    def _expected_block_count(payload: dict[str, object]) -> int:
+        alignment_summary = payload.get("alignment_summary")
+        if isinstance(alignment_summary, dict):
+            final_block_count = alignment_summary.get("final_block_count")
+            if isinstance(final_block_count, int):
+                return final_block_count
+        blocks = payload.get("blocks")
+        if isinstance(blocks, list):
+            return len(blocks)
+        total_blocks = payload.get("total_blocks")
+        if isinstance(total_blocks, int):
+            return total_blocks
+        return 0
+
+    @staticmethod
+    def _incomplete_diagnostics_message(
+        sample_id: str,
+        ordinal_counts: Counter[int],
+        expected_count: int,
+    ) -> str:
+        observed_set = set(ordinal_counts.keys())
+        missing_ordinals = sorted(
+            set(range(expected_count)) - observed_set
+        )
+        out_of_range = sorted(
+            ordinal for ordinal in observed_set if ordinal < 0 or ordinal >= expected_count
+        )
+        duplicate_ordinals = sorted(
+            ordinal for ordinal, count in ordinal_counts.items() if count > 1
+        )
+        row_count = sum(ordinal_counts.values())
+        details: list[str] = []
+        if missing_ordinals:
+            details.append(f"missing ordinals {missing_ordinals}")
+        if out_of_range:
+            details.append(f"out-of-range ordinals {out_of_range}")
+        if duplicate_ordinals:
+            details.append(f"duplicate ordinals {duplicate_ordinals}")
+        if row_count != expected_count:
+            details.append(f"expected {expected_count} rows but found {row_count}")
+        detail_text = "; ".join(details) if details else "unexpected diagnostics layout"
+        return (
+            f"Resume diagnostics sidecar for {sample_id} is incomplete: {detail_text}"
+        )
+
     def _validate_resume_diagnostics_alignment(
         self,
         resume_path: Path,
         diagnostics_path: Path,
     ) -> None:
         resume_records = self._load_resume_records_by_id(resume_path)
-        expected_ids = {
-            sample_id
+        expected_records = {
+            sample_id: payload
             for sample_id, payload in resume_records.items()
             if self._resume_row_expects_sidecar(payload)
             and self._sample_requires_ledger(payload)
         }
-        if not expected_ids:
+        if not expected_records:
             return
         if not diagnostics_path.exists():
             raise ValueError(
                 f"Resume diagnostics sidecar missing: {diagnostics_path}"
             )
-        observed_ids = self._load_diagnostics_sample_ids(diagnostics_path)
-        missing_ids = sorted(expected_ids - observed_ids)
+        ordinals_by_sample = self._load_diagnostics_ordinals(diagnostics_path)
+        observed_ids = set(ordinals_by_sample)
+        missing_ids = sorted(set(expected_records) - observed_ids)
         if missing_ids:
             preview = ", ".join(missing_ids[:3])
             raise ValueError(
                 "Resume diagnostics sidecar is not aligned with processed samples; "
                 f"missing sample_id entries for: {preview}"
+            )
+        for sample_id, payload in expected_records.items():
+            ordinal_counts = ordinals_by_sample.get(sample_id, Counter())
+            expected_count = self._expected_block_count(payload)
+            if expected_count <= 0:
+                continue
+            if (
+                ordinal_counts
+                and sum(ordinal_counts.values()) == expected_count
+                and set(range(expected_count)) == set(ordinal_counts.keys())
+                and all(
+                    ordinal >= 0 and ordinal < expected_count
+                    for ordinal in ordinal_counts
+                )
+            ):
+                continue
+            raise ValueError(
+                self._incomplete_diagnostics_message(
+                    sample_id=sample_id,
+                    ordinal_counts=ordinal_counts,
+                    expected_count=expected_count,
+                )
             )
 
     @staticmethod
