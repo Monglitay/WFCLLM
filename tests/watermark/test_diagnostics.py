@@ -52,6 +52,51 @@ def test_block_lifecycle_record_to_dict_contains_ids_and_reasons():
     assert serialized["initial_verify"]["failure_reason"] == "signature_miss"
 
 
+def test_block_lifecycle_record_to_dict_serializes_nested_retry_data():
+    record = _example_record()
+    serialized = record.to_dict()
+    assert serialized["retry_attempts"][0]["failure_reason"] == "no_block_generated"
+    assert serialized["retry_attempts"][1]["produced_block"] is True
+    assert serialized["cascade_events"][0]["triggered"] is True
+
+
+def test_summarize_sample_diagnostics_counts_rescued_rollups():
+    retry_rescue = BlockLifecycleRecord(
+        sample_id="HumanEval/2",
+        block_ordinal=2,
+        initial_verify={"failure_reason": FailureReason.margin_miss},
+        retry_attempts=[
+            {"attempt_index": 0, "produced_block": True, "failure_reason": None},
+        ],
+        final_outcome={"embedded": True, "rescued_by_retry": True},
+    )
+    cascade_rescue = BlockLifecycleRecord(
+        sample_id="HumanEval/2",
+        block_ordinal=3,
+        initial_verify={"failure_reason": FailureReason.signature_miss},
+        retry_attempts=[],
+        cascade_events=[{"triggered": True}],
+        final_outcome={"embedded": True, "rescued_by_cascade": True},
+    )
+    summary = summarize_sample_diagnostics([retry_rescue, cascade_rescue])
+
+    assert summary["retry_summary"]["retry_rescued_blocks"] == 1
+    assert summary["cascade_summary"]["cascade_rescued_blocks"] == 1
+    assert summary["rescued_blocks"] == 2
+
+
+def test_successful_retry_without_failure_reason_does_not_increment_unknown():
+    record = BlockLifecycleRecord(
+        sample_id="HumanEval/3",
+        block_ordinal=4,
+        initial_verify={"failure_reason": FailureReason.signature_miss},
+        retry_attempts=[{"attempt_index": 0, "produced_block": True}],
+        final_outcome={"embedded": True, "rescued_by_retry": True},
+    )
+    summary = summarize_sample_diagnostics([record])
+    assert summary["failure_reason_counts"]["unknown"] == 0
+
+
 def test_summarize_sample_diagnostics_counts():
     record = _example_record()
     summary = summarize_sample_diagnostics([record])
