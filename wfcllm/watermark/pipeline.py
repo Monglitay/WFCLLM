@@ -40,6 +40,20 @@ class WatermarkPipelineConfig:
 class WatermarkPipeline:
     """Batch watermark embedding over a HumanEval or MBPP dataset."""
 
+    _ROUTE_ONE_RESUME_SENTINEL_FIELDS = (
+        "diagnostics_version",
+        "retry_summary",
+        "cascade_summary",
+    )
+    _DIAGNOSTIC_SUMMARY_ALLOWLIST = (
+        "diagnostics_version",
+        "retry_summary",
+        "cascade_summary",
+        "failure_reason_counts",
+        "rescued_blocks",
+        "unrescued_blocks",
+    )
+
     def __init__(self, generator: WatermarkGenerator, config: WatermarkPipelineConfig):
         self._generator = generator
         self._config = config
@@ -97,27 +111,121 @@ class WatermarkPipeline:
         }
 
     @staticmethod
-    def _resolve_diagnostics_dir(output_dir: Path) -> Path:
+    def _resolve_diagnostics_dir(output_path: Path) -> Path:
         """Resolve the diagnostics directory paired with a watermarked output dir."""
-        if output_dir.name == "watermarked":
-            return output_dir.parent / "diagnostics"
-        return output_dir / "diagnostics"
+        output_parent = output_path.parent
+        if output_parent.name == "watermarked":
+            return output_parent.parent / "diagnostics"
+        return output_parent / "diagnostics"
 
     @staticmethod
     def _build_block_ledger_path(output_path: Path, diagnostics_dir: Path) -> Path:
         """Build a deterministic block-ledger path from the watermarked artifact stem."""
         return diagnostics_dir / f"{output_path.stem}_block_ledger.jsonl"
 
-    @staticmethod
+    @classmethod
     def _merge_diagnostic_summary(
+        cls,
         record: dict[str, object],
         diagnostic_summary: object,
     ) -> None:
         if not isinstance(diagnostic_summary, dict):
             return
-        for key, value in diagnostic_summary.items():
-            if key not in record:
-                record[key] = value
+        for key in cls._DIAGNOSTIC_SUMMARY_ALLOWLIST:
+            if key in diagnostic_summary:
+                record[key] = diagnostic_summary[key]
+
+    @staticmethod
+    def _sample_requires_ledger(payload: dict[str, object]) -> bool:
+        total_blocks = payload.get("total_blocks")
+        if isinstance(total_blocks, int):
+            return total_blocks > 0
+        return True
+
+    @classmethod
+    def _resume_row_expects_sidecar(cls, payload: dict[str, object]) -> bool:
+        return any(field in payload for field in cls._ROUTE_ONE_RESUME_SENTINEL_FIELDS)
+
+    @staticmethod
+    def _load_resume_records_by_id(resume_path: Path) -> dict[str, dict[str, object]]:
+        records: dict[str, dict[str, object]] = {}
+        with open(resume_path, encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                sample_id = payload.get("id")
+                if isinstance(sample_id, str) and sample_id:
+                    records[sample_id] = payload
+        return records
+
+    @staticmethod
+    def _load_diagnostics_sample_ids(diagnostics_path: Path) -> set[str]:
+        sample_ids: set[str] = set()
+        with open(diagnostics_path, encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                sample_id = payload.get("sample_id")
+                if isinstance(sample_id, str) and sample_id:
+                    sample_ids.add(sample_id)
+        return sample_ids
+
+    def _validate_resume_diagnostics_alignment(
+        self,
+        resume_path: Path,
+        diagnostics_path: Path,
+    ) -> None:
+        resume_records = self._load_resume_records_by_id(resume_path)
+        expected_ids = {
+            sample_id
+            for sample_id, payload in resume_records.items()
+            if self._resume_row_expects_sidecar(payload)
+            and self._sample_requires_ledger(payload)
+        }
+        if not expected_ids:
+            return
+        if not diagnostics_path.exists():
+            raise ValueError(
+                f"Resume diagnostics sidecar missing: {diagnostics_path}"
+            )
+        observed_ids = self._load_diagnostics_sample_ids(diagnostics_path)
+        missing_ids = sorted(expected_ids - observed_ids)
+        if missing_ids:
+            preview = ", ".join(missing_ids[:3])
+            raise ValueError(
+                "Resume diagnostics sidecar is not aligned with processed samples; "
+                f"missing sample_id entries for: {preview}"
+            )
+
+    @staticmethod
+    def _iter_persisted_block_ledgers(
+        sample_id: str,
+        block_ledgers: object,
+    ) -> list[dict[str, object]]:
+        if not isinstance(block_ledgers, list):
+            return []
+        rows: list[dict[str, object]] = []
+        for row in block_ledgers:
+            if not isinstance(row, dict):
+                continue
+            payload = dict(row)
+            payload["sample_id"] = sample_id
+            rows.append(payload)
+        return rows
 
     def run(self) -> str:
         """Run batch watermarking. Returns path to output JSONL file."""
@@ -133,14 +241,6 @@ class WatermarkPipeline:
             self._validate_resume_path(resume_path)
             processed_ids = load_processed_ids(resume_path)
 
-        all_prompts = self._load_prompts()
-        if self._config.sample_limit is not None:
-            all_prompts = all_prompts[: self._config.sample_limit]
-        prompts = [item for item in all_prompts if item["id"] not in processed_ids]
-        if is_resume and resume_path is not None and not prompts:
-            print("All samples already processed", file=sys.stderr)
-            return str(resume_path)
-
         out_dir.mkdir(parents=True, exist_ok=True)
         if is_resume and resume_path is not None:
             out_path = resume_path
@@ -150,9 +250,23 @@ class WatermarkPipeline:
             out_path = out_dir / f"{self._config.dataset}_{timestamp}.jsonl"
             mode = "w"
 
-        diagnostics_dir = self._resolve_diagnostics_dir(out_dir)
+        diagnostics_dir = self._resolve_diagnostics_dir(out_path)
         diagnostics_dir.mkdir(parents=True, exist_ok=True)
         diagnostics_path = self._build_block_ledger_path(out_path, diagnostics_dir)
+
+        if is_resume and resume_path is not None and processed_ids:
+            self._validate_resume_diagnostics_alignment(
+                resume_path=resume_path,
+                diagnostics_path=diagnostics_path,
+            )
+
+        all_prompts = self._load_prompts()
+        if self._config.sample_limit is not None:
+            all_prompts = all_prompts[: self._config.sample_limit]
+        prompts = [item for item in all_prompts if item["id"] not in processed_ids]
+        if is_resume and resume_path is not None and not prompts:
+            print("All samples already processed", file=sys.stderr)
+            return str(resume_path)
 
         iterator = (
             tqdm(prompts, desc=f"Watermarking {self._config.dataset}", unit="prompt")
@@ -190,7 +304,10 @@ class WatermarkPipeline:
                     )
                     f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-                    for ledger_row in result.block_ledgers:
+                    for ledger_row in self._iter_persisted_block_ledgers(
+                        sample_id=item["id"],
+                        block_ledgers=result.block_ledgers,
+                    ):
                         diagnostics_file.write(
                             json.dumps(ledger_row, ensure_ascii=False) + "\n"
                         )

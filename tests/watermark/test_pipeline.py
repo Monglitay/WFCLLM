@@ -384,6 +384,173 @@ class TestWatermarkPipelineRun:
         assert row["fallback_blocks"] == 0
         assert row["cascade_summary"]["cascade_triggers"] == 1
 
+    def test_run_writes_ledger_beside_explicit_resume_output_path(self, tmp_path):
+        configured_output_dir = tmp_path / "configured" / "watermarked"
+        actual_resume_dir = tmp_path / "actual" / "watermarked"
+        actual_resume_dir.mkdir(parents=True)
+        resume_path = actual_resume_dir / "humaneval_20260101_010101.jsonl"
+        resume_path.write_text(
+            json.dumps({"id": "HumanEval/0", "total_blocks": 1}) + "\n",
+            encoding="utf-8",
+        )
+        expected_ledger_path = (
+            resume_path.parent.parent
+            / "diagnostics"
+            / f"{resume_path.stem}_block_ledger.jsonl"
+        )
+        expected_ledger_path.parent.mkdir(parents=True)
+        existing_ledger_row = {
+            "sample_id": "HumanEval/0",
+            "block_ordinal": 0,
+            "initial_verify": {"passed": True},
+            "retry_attempts": [],
+            "cascade_events": [],
+            "final_outcome": {"embedded": True},
+        }
+        expected_ledger_path.write_text(
+            json.dumps(existing_ledger_row) + "\n",
+            encoding="utf-8",
+        )
+        cfg = WatermarkPipelineConfig(
+            dataset="humaneval",
+            output_dir=str(configured_output_dir),
+            dataset_path="data/datasets",
+            resume=str(resume_path),
+        )
+        block_ledgers = [
+            {
+                "sample_id": "HumanEval/1",
+                "block_ordinal": 0,
+                "initial_verify": {"passed": True},
+                "retry_attempts": [],
+                "cascade_events": [],
+                "final_outcome": {"embedded": True},
+            }
+        ]
+        generator = self._build_generator(GenerateResult(
+            code="def bar():\n    return 2\n",
+            stats=EmbedStats(
+                total_blocks=1,
+                embedded_blocks=1,
+                failed_blocks=0,
+                fallback_blocks=0,
+            ),
+            diagnostic_summary={
+                "diagnostics_version": 1,
+                "retry_summary": {},
+                "cascade_summary": {},
+            },
+            block_ledgers=block_ledgers,
+        ))
+        pipeline = WatermarkPipeline(generator=generator, config=cfg)
+        with patch.object(pipeline, "_load_prompts", return_value=[
+            {"id": "HumanEval/0", "prompt": "def foo():\n"},
+            {"id": "HumanEval/1", "prompt": "def bar():\n"},
+        ]):
+            output_path = Path(pipeline.run())
+
+        assert output_path == resume_path
+        assert expected_ledger_path.exists()
+        ledger_rows = [
+            json.loads(line)
+            for line in expected_ledger_path.read_text(encoding="utf-8").splitlines()
+        ]
+        assert ledger_rows == [existing_ledger_row, *block_ledgers]
+
+        wrong_ledger_path = (
+            configured_output_dir.parent
+            / "diagnostics"
+            / f"{output_path.stem}_block_ledger.jsonl"
+        )
+        assert not wrong_ledger_path.exists()
+
+    def test_run_resume_requires_aligned_diagnostics_sidecar(self, tmp_path):
+        configured_output_dir = tmp_path / "configured" / "watermarked"
+        actual_resume_dir = tmp_path / "actual" / "watermarked"
+        actual_resume_dir.mkdir(parents=True)
+        resume_path = actual_resume_dir / "humaneval_20260101_010101.jsonl"
+        resume_path.write_text(
+            json.dumps(
+                {
+                    "id": "HumanEval/0",
+                    "total_blocks": 1,
+                    "embedded_blocks": 1,
+                    "diagnostics_version": 1,
+                    "retry_summary": {},
+                    "cascade_summary": {},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        cfg = WatermarkPipelineConfig(
+            dataset="humaneval",
+            output_dir=str(configured_output_dir),
+            dataset_path="data/datasets",
+            resume=str(resume_path),
+        )
+        generator = self._build_generator(GenerateResult(
+            code="def bar():\n    return 2\n",
+            stats=EmbedStats(
+                total_blocks=1,
+                embedded_blocks=1,
+                failed_blocks=0,
+                fallback_blocks=0,
+            ),
+            diagnostic_summary={
+                "diagnostics_version": 1,
+                "retry_summary": {},
+                "cascade_summary": {},
+            },
+        ))
+        pipeline = WatermarkPipeline(generator=generator, config=cfg)
+        with patch.object(pipeline, "_load_prompts", return_value=[
+            {"id": "HumanEval/0", "prompt": "def foo():\n"},
+            {"id": "HumanEval/1", "prompt": "def bar():\n"},
+        ]):
+            with pytest.raises(ValueError, match="diagnostics"):
+                pipeline.run()
+
+    def test_run_persists_only_allowlisted_diagnostic_summary_fields(self, tmp_path):
+        cfg = WatermarkPipelineConfig(
+            dataset="humaneval",
+            output_dir=str(tmp_path / "watermarked"),
+            dataset_path="data/datasets",
+        )
+        generator = self._build_generator(GenerateResult(
+            code="def foo():\n    return 1\n",
+            stats=EmbedStats(
+                total_blocks=1,
+                embedded_blocks=1,
+                failed_blocks=0,
+                fallback_blocks=0,
+            ),
+            diagnostic_summary={
+                "diagnostics_version": 1,
+                "retry_summary": {"attempts_total": 0},
+                "cascade_summary": {"cascade_triggers": 0},
+                "failure_reason_counts": {"unknown": 0},
+                "rescued_blocks": 0,
+                "unrescued_blocks": 0,
+                "debug_blob": {"raw": [1, 2, 3]},
+                "trace_id": "abc123",
+            },
+        ))
+        pipeline = WatermarkPipeline(generator=generator, config=cfg)
+        with patch.object(pipeline, "_load_prompts", return_value=[
+            {"id": "HumanEval/0", "prompt": "def foo():\n"},
+        ]):
+            output_path = Path(pipeline.run())
+
+        row = json.loads(output_path.read_text(encoding="utf-8").splitlines()[0])
+        assert row["diagnostics_version"] == 1
+        assert row["retry_summary"] == {"attempts_total": 0}
+        assert row["cascade_summary"] == {"cascade_triggers": 0}
+        assert row["failure_reason_counts"] == {"unknown": 0}
+        assert row["rescued_blocks"] == 0
+        assert row["unrescued_blocks"] == 0
+        assert "debug_blob" not in row
+        assert "trace_id" not in row
     def test_run_returns_output_path(self, mock_result):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = WatermarkPipelineConfig(
