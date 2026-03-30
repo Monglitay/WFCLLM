@@ -145,7 +145,8 @@ class WatermarkGenerator:
         sample_id = self._sample_id_for_prompt(prompt)
         ledger_entries: list[dict[str, object]] = []
         ledger_by_ordinal: dict[int, dict[str, object]] = {}
-        pending_cascade_replacements: list[int] = []
+        active_cascade_scope: dict[str, object] | None = None
+        self._last_active_cascade_scope = None
 
         while not ctx.is_finished():
             next_id = ctx.forward_and_sample()
@@ -158,6 +159,10 @@ class WatermarkGenerator:
                 continue
 
             if event.block_type == "compound":
+                active_cascade_scope = self._update_active_cascade_scope_for_compound(
+                    active_cascade_scope,
+                    event,
+                )
                 cascade_mgr.on_compound_block_start(
                     ctx,
                     event,
@@ -175,9 +180,10 @@ class WatermarkGenerator:
                 sample_id=sample_id,
                 ledger_entries=ledger_entries,
                 ledger_by_ordinal=ledger_by_ordinal,
-                pending_cascade_replacements=pending_cascade_replacements,
+                active_cascade_scope=active_cascade_scope,
                 allow_cascade=True,
             )
+            active_cascade_scope = self._last_active_cascade_scope
 
         final_event = getattr(ctx, "flush_final_event", lambda: None)()
         if final_event is not None and final_event.block_type == "simple":
@@ -191,9 +197,10 @@ class WatermarkGenerator:
                 sample_id=sample_id,
                 ledger_entries=ledger_entries,
                 ledger_by_ordinal=ledger_by_ordinal,
-                pending_cascade_replacements=pending_cascade_replacements,
+                active_cascade_scope=active_cascade_scope,
                 allow_cascade=False,
             )
+            active_cascade_scope = self._last_active_cascade_scope
 
         final_code = ctx.generated_text
         gamma_resolver = (
@@ -283,9 +290,21 @@ class WatermarkGenerator:
             "[CASCADE OK] rolled back to compound block start; resuming main loop"
         )
         metadata_builder = getattr(cascade_cp, "build_diagnostic_metadata", None)
-        if callable(metadata_builder):
-            return metadata_builder(restored_stats=restored_stats)
-        return self._fallback_cascade_metadata(cascade_cp, restored_stats)
+        scope_builder = getattr(cascade_cp, "build_replacement_scope", None)
+        diagnostic_metadata = (
+            metadata_builder(restored_stats=restored_stats)
+            if callable(metadata_builder)
+            else self._fallback_cascade_metadata(cascade_cp, restored_stats)
+        )
+        replacement_scope = (
+            scope_builder()
+            if callable(scope_builder)
+            else self._fallback_replacement_scope(cascade_cp)
+        )
+        return {
+            "diagnostic_metadata": diagnostic_metadata,
+            "replacement_scope": replacement_scope,
+        }
 
     def _adaptive_mode(self) -> str:
         """Return canonical adaptive metadata mode for the current config."""
@@ -357,17 +376,18 @@ class WatermarkGenerator:
         sample_id: str,
         ledger_entries: list[dict[str, object]],
         ledger_by_ordinal: dict[int, dict[str, object]],
-        pending_cascade_replacements: list[int],
+        active_cascade_scope: dict[str, object] | None,
         allow_cascade: bool,
     ) -> None:
         stats.total_blocks += 1
-        ledger_entry, reused_from_cascade = self._acquire_block_ledger(
+        ledger_entry, reused_from_cascade, active_cascade_scope = self._acquire_block_ledger(
             sample_id,
             event,
             ledger_entries,
             ledger_by_ordinal,
-            pending_cascade_replacements,
+            active_cascade_scope,
         )
+        self._last_active_cascade_scope = active_cascade_scope
         record = ledger_entry["record"]
         self._capture_block_identity(ledger_entry, event)
 
@@ -437,17 +457,16 @@ class WatermarkGenerator:
         )
 
         if allow_cascade and cascade_mgr.should_cascade():
-            cascade_metadata = self._try_cascade(
+            cascade_result = self._try_cascade(
                 ctx,
                 cascade_mgr,
                 retry_loop,
                 stats,
                 pending_fallbacks,
             )
-            self._record_cascade_replacements(
+            self._last_active_cascade_scope = self._activate_cascade_replacement_scope(
                 ledger_by_ordinal,
-                pending_cascade_replacements,
-                cascade_metadata,
+                cascade_result,
             )
 
     @staticmethod
@@ -460,12 +479,15 @@ class WatermarkGenerator:
         event,
         ledger_entries: list[dict[str, object]],
         ledger_by_ordinal: dict[int, dict[str, object]],
-        pending_cascade_replacements: list[int],
-    ) -> tuple[dict[str, object], bool]:
-        if pending_cascade_replacements:
-            block_ordinal = pending_cascade_replacements.pop(0)
+        active_cascade_scope: dict[str, object] | None,
+    ) -> tuple[dict[str, object], bool, dict[str, object] | None]:
+        active_cascade_scope, block_ordinal = self._resolve_cascade_replacement_ordinal(
+            active_cascade_scope,
+            event,
+        )
+        if block_ordinal is not None:
             entry = ledger_by_ordinal[block_ordinal]
-            return entry, True
+            return entry, True, active_cascade_scope
 
         block_ordinal = len(ledger_entries)
         entry = {
@@ -476,7 +498,7 @@ class WatermarkGenerator:
         }
         ledger_entries.append(entry)
         ledger_by_ordinal[block_ordinal] = entry
-        return entry, False
+        return entry, False, active_cascade_scope
 
     @staticmethod
     def _capture_block_identity(
@@ -545,25 +567,107 @@ class WatermarkGenerator:
         record.final_outcome["exhausted_retries"] = exhausted_retries
         record.final_outcome["failure_reason"] = failure_reason
 
-    def _record_cascade_replacements(
+    def _activate_cascade_replacement_scope(
         self,
         ledger_by_ordinal: dict[int, dict[str, object]],
-        pending_cascade_replacements: list[int],
-        cascade_metadata: dict[str, object] | None,
-    ) -> None:
-        if not isinstance(cascade_metadata, dict):
-            return
-        for block_ordinal in cascade_metadata.get("replaced_block_ordinals", []):
+        cascade_result: dict[str, object] | None,
+    ) -> dict[str, object] | None:
+        if not isinstance(cascade_result, dict):
+            return None
+        cascade_metadata = cascade_result.get("diagnostic_metadata")
+        replacement_scope = cascade_result.get("replacement_scope")
+        if isinstance(cascade_metadata, dict):
+            for block_ordinal in cascade_metadata.get("replaced_block_ordinals", []):
+                if not isinstance(block_ordinal, int):
+                    continue
+                entry = ledger_by_ordinal.get(block_ordinal)
+                if entry is None:
+                    continue
+                record = entry["record"]
+                record.cascade_events.append(dict(cascade_metadata))
+                record.final_outcome["failure_reason"] = FailureReason.cascade_replaced.value
+
+        if not isinstance(replacement_scope, dict):
+            return None
+        pending_ordinals: list[int] = []
+        for block_ordinal in replacement_scope.get("replaced_block_ordinals", []):
             if not isinstance(block_ordinal, int):
                 continue
-            entry = ledger_by_ordinal.get(block_ordinal)
-            if entry is None:
-                continue
-            record = entry["record"]
-            record.cascade_events.append(dict(cascade_metadata))
-            record.final_outcome["failure_reason"] = FailureReason.cascade_replaced.value
-            if block_ordinal not in pending_cascade_replacements:
-                pending_cascade_replacements.append(block_ordinal)
+            if block_ordinal in ledger_by_ordinal:
+                pending_ordinals.append(block_ordinal)
+        if not pending_ordinals:
+            return None
+        return {
+            "compound_node_type": replacement_scope.get("compound_node_type"),
+            "compound_parent_node_type": replacement_scope.get(
+                "compound_parent_node_type",
+                "module",
+            ),
+            "pending_block_ordinals": pending_ordinals,
+            "descendant_parent_types": set(),
+        }
+
+    def _resolve_cascade_replacement_ordinal(
+        self,
+        active_cascade_scope: dict[str, object] | None,
+        event,
+    ) -> tuple[dict[str, object] | None, int | None]:
+        if not isinstance(active_cascade_scope, dict):
+            return None, None
+
+        compound_node_type = active_cascade_scope.get("compound_node_type")
+        if not isinstance(compound_node_type, str):
+            return None, None
+
+        parent_node_type = event.parent_node_type or "module"
+        descendant_parent_types = active_cascade_scope.get("descendant_parent_types")
+        if not isinstance(descendant_parent_types, set):
+            descendant_parent_types = set()
+            active_cascade_scope["descendant_parent_types"] = descendant_parent_types
+
+        if parent_node_type == compound_node_type:
+            pending_block_ordinals = active_cascade_scope.get("pending_block_ordinals")
+            if not isinstance(pending_block_ordinals, list) or not pending_block_ordinals:
+                return None, None
+            block_ordinal = pending_block_ordinals.pop(0)
+            if pending_block_ordinals:
+                active_cascade_scope["pending_block_ordinals"] = pending_block_ordinals
+                return active_cascade_scope, block_ordinal
+            return None, block_ordinal
+
+        if parent_node_type in descendant_parent_types:
+            return active_cascade_scope, None
+
+        return None, None
+
+    def _update_active_cascade_scope_for_compound(
+        self,
+        active_cascade_scope: dict[str, object] | None,
+        event,
+    ) -> dict[str, object] | None:
+        if not isinstance(active_cascade_scope, dict):
+            return None
+
+        compound_node_type = active_cascade_scope.get("compound_node_type")
+        compound_parent_node_type = active_cascade_scope.get(
+            "compound_parent_node_type",
+            "module",
+        )
+        if not isinstance(compound_node_type, str):
+            return None
+
+        parent_node_type = event.parent_node_type or "module"
+        descendant_parent_types = active_cascade_scope.get("descendant_parent_types")
+        if not isinstance(descendant_parent_types, set):
+            descendant_parent_types = set()
+            active_cascade_scope["descendant_parent_types"] = descendant_parent_types
+
+        if event.node_type == compound_node_type and parent_node_type == compound_parent_node_type:
+            return active_cascade_scope
+        if parent_node_type == compound_node_type or parent_node_type in descendant_parent_types:
+            descendant_parent_types.add(event.node_type)
+            return active_cascade_scope
+        return None
 
     @staticmethod
     def _serialize_block_ledgers(
@@ -601,6 +705,20 @@ class WatermarkGenerator:
             "restored_total_blocks": int(restored_stats.get("total_blocks", 0)),
             "restored_embedded_blocks": int(restored_stats.get("embedded_blocks", 0)),
             "restored_failed_blocks": int(restored_stats.get("failed_blocks", 0)),
+        }
+
+    @staticmethod
+    def _fallback_replacement_scope(cascade_cp) -> dict[str, object]:
+        replaced_block_ordinals: list[int] = []
+        for item in getattr(cascade_cp, "failed_simple_blocks", []):
+            if isinstance(item, dict) and isinstance(item.get("block_ordinal"), int):
+                replaced_block_ordinals.append(item["block_ordinal"])
+        return {
+            "compound_node_type": getattr(cascade_cp.compound_event, "node_type", None),
+            "compound_parent_node_type": (
+                getattr(cascade_cp.compound_event, "parent_node_type", None) or "module"
+            ),
+            "replaced_block_ordinals": replaced_block_ordinals,
         }
 
     @staticmethod

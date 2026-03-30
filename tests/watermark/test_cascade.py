@@ -110,6 +110,7 @@ class TestCascadeEnabled:
         ctx.last_block_checkpoint = cp
         event = MagicMock(spec=InterceptEvent)
         event.node_type = "if_statement"
+        event.parent_node_type = None
         mgr.on_compound_block_start(
             ctx,
             event,
@@ -141,6 +142,11 @@ class TestCascadeEnabled:
             "restored_failed_blocks": 0,
         }
         json.dumps(metadata)
+
+        scope = result.build_replacement_scope()
+        assert scope["compound_node_type"] == "if_statement"
+        assert scope["compound_parent_node_type"] == "module"
+        assert scope["replaced_block_ordinals"] == [3]
 
     def test_max_depth_evicts_oldest(self, mgr):
         """Exceeding max_depth drops the oldest checkpoint."""

@@ -42,6 +42,18 @@ class CascadeCheckpoint:
             metadata["restored_failed_blocks"] = int(restored_stats.get("failed_blocks", 0))
         return metadata
 
+    def build_replacement_scope(self) -> dict[str, object]:
+        return {
+            "checkpoint_key": list(self.checkpoint_key),
+            "compound_node_type": self.compound_event.node_type,
+            "compound_parent_node_type": self.compound_event.parent_node_type or "module",
+            "replaced_block_ordinals": [
+                item["block_ordinal"]
+                for item in self.failed_simple_blocks
+                if isinstance(item.get("block_ordinal"), int)
+            ],
+        }
+
 
 class CascadeManager:
     """Manage compound block cascade fallback. Default disabled."""

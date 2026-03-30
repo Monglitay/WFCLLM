@@ -1138,6 +1138,336 @@ class TestFallbackDeprecated:
 
 
 class TestCascadeRegression:
+    def test_regenerated_compound_with_fewer_direct_simple_blocks_does_not_reuse_stale_replacement(
+        self,
+        monkeypatch,
+    ):
+        config = WatermarkConfig(
+            secret_key="test-key",
+            max_new_tokens=64,
+            encoder_device="cpu",
+            enable_cascade=True,
+        )
+
+        model = MagicMock()
+        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+        tokenizer = MagicMock()
+        tokenizer.encode = MagicMock(return_value=[1])
+        tokenizer.decode = MagicMock(return_value="")
+        tokenizer.eos_token_id = 2
+        encoder = MagicMock()
+        enc_tok = MagicMock()
+
+        compound_cp = SimpleNamespace(
+            generated_ids=[],
+            generated_text="",
+        )
+        simple_cp = SimpleNamespace(
+            generated_ids=[101],
+            generated_text="for i in items:\n",
+        )
+        nested_compound_cp = SimpleNamespace(
+            generated_ids=[102],
+            generated_text="for i in items:\n    if guard:\n",
+        )
+
+        class FakeContext:
+            def __init__(self, model, tokenizer, config):
+                self.generated_ids = []
+                self.generated_text = ""
+                self.last_event = None
+                self.last_block_checkpoint = None
+                self._cursor = 0
+                self._steps = 0
+                self._sequence = self._first_pass_sequence()
+
+            def _first_pass_sequence(self):
+                return [
+                    ("compound", "for i in items:\n", "for_statement", "module", compound_cp),
+                    ("simple", "    x = bad\n", "expression_statement", "for_statement", simple_cp),
+                    ("eos", "", None, None, None),
+                ]
+
+            def _post_cascade_sequence(self):
+                return [
+                    ("compound", "for i in items:\n", "for_statement", "module", compound_cp),
+                    ("compound", "    if guard:\n", "if_statement", "for_statement", nested_compound_cp),
+                    ("simple", "        keep = i\n", "expression_statement", "if_statement", nested_compound_cp),
+                    ("simple", "result = keep\n", "expression_statement", "module", simple_cp),
+                    ("eos", "", None, None, None),
+                ]
+
+            @property
+            def eos_id(self):
+                return -1
+
+            def prefill(self, prompt):
+                return None
+
+            def rollback(self, cp):
+                self.generated_ids = list(getattr(cp, "generated_ids", []))
+                self.generated_text = getattr(cp, "generated_text", "")
+                self.last_event = None
+                self.last_block_checkpoint = None
+                self._cursor = 0
+                self._sequence = self._post_cascade_sequence()
+
+            def forward_and_sample(self, penalty_ids=None):
+                self._steps += 1
+                if self._cursor >= len(self._sequence):
+                    self.last_event = None
+                    return self.eos_id
+
+                kind, text, node_type, parent_node_type, checkpoint = self._sequence[self._cursor]
+                self._cursor += 1
+
+                if kind == "eos":
+                    self.last_event = None
+                    return self.eos_id
+
+                self.generated_ids.append(self._steps)
+                self.generated_text += text
+                self.last_event = InterceptEvent(
+                    block_text=text,
+                    block_type=kind,
+                    node_type=node_type,
+                    parent_node_type=parent_node_type,
+                    token_start_idx=0,
+                    token_count=1,
+                )
+                self.last_block_checkpoint = checkpoint
+                return 1
+
+            def is_finished(self):
+                return self._steps >= 8
+
+        class FakeRetryLoop:
+            def __init__(self, **kwargs):
+                return None
+
+            def run(self, checkpoint, original_event):
+                return RetryResult(
+                    success=False,
+                    attempts=1,
+                    final_event=None,
+                    diagnostics=RetryDiagnostics(
+                        per_attempt=[
+                            AttemptInfo(
+                                passed=False,
+                                no_block=False,
+                                failure_reason="signature_miss",
+                            )
+                        ]
+                    ),
+                )
+
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.GenerationContext",
+            FakeContext,
+        )
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.RetryLoop",
+            FakeRetryLoop,
+        )
+
+        gen = WatermarkGenerator(
+            model=model,
+            tokenizer=tokenizer,
+            encoder=encoder,
+            encoder_tokenizer=enc_tok,
+            config=config,
+        )
+
+        def fake_verify_block(event):
+            stripped = event.block_text.strip()
+            return VerifyResult(
+                passed=stripped != "x = bad",
+                min_margin=0.2,
+                lsh_signature=(1, 1, 1),
+                in_valid_set=stripped != "x = bad",
+            )
+
+        gen._verify_block = MagicMock(side_effect=fake_verify_block)
+
+        result = gen.generate("prompt")
+
+        replaced = result.block_ledgers[0]
+        later_top_level = next(
+            item for item in result.block_ledgers
+            if item["parent_node_type"] == "module"
+        )
+
+        assert replaced["final_outcome"]["failure_reason"] == "cascade_replaced"
+        assert replaced["final_outcome"].get("rescued_by_cascade") is False
+        assert later_top_level["parent_node_type"] == "module"
+        assert later_top_level["final_outcome"]["embedded"] is True
+        assert later_top_level["final_outcome"].get("rescued_by_cascade") is False
+
+    def test_later_top_level_simple_does_not_inherit_stale_cascade_replacement_state(
+        self,
+        monkeypatch,
+    ):
+        config = WatermarkConfig(
+            secret_key="test-key",
+            max_new_tokens=64,
+            encoder_device="cpu",
+            enable_cascade=True,
+        )
+
+        model = MagicMock()
+        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+        tokenizer = MagicMock()
+        tokenizer.encode = MagicMock(return_value=[1])
+        tokenizer.decode = MagicMock(return_value="")
+        tokenizer.eos_token_id = 2
+        encoder = MagicMock()
+        enc_tok = MagicMock()
+
+        compound_cp = SimpleNamespace(
+            generated_ids=[],
+            generated_text="",
+        )
+        failed_simple_cp = SimpleNamespace(
+            generated_ids=[101],
+            generated_text="for i in items:\n",
+        )
+        nested_compound_cp = SimpleNamespace(
+            generated_ids=[102],
+            generated_text="for i in items:\n    if guard:\n",
+        )
+        top_level_cp = SimpleNamespace(
+            generated_ids=[201],
+            generated_text="for i in items:\n    if guard:\n        keep = i\n",
+        )
+
+        class FakeContext:
+            def __init__(self, model, tokenizer, config):
+                self.generated_ids = []
+                self.generated_text = ""
+                self.last_event = None
+                self.last_block_checkpoint = None
+                self._cursor = 0
+                self._steps = 0
+                self._sequence = self._first_pass_sequence()
+
+            def _first_pass_sequence(self):
+                return [
+                    ("compound", "for i in items:\n", "for_statement", "module", compound_cp),
+                    ("simple", "    x = bad\n", "expression_statement", "for_statement", failed_simple_cp),
+                    ("eos", "", None, None, None),
+                ]
+
+            def _post_cascade_sequence(self):
+                return [
+                    ("compound", "for i in items:\n", "for_statement", "module", compound_cp),
+                    ("compound", "    if guard:\n", "if_statement", "for_statement", nested_compound_cp),
+                    ("simple", "        keep = i\n", "expression_statement", "if_statement", nested_compound_cp),
+                    ("simple", "summary = keep\n", "expression_statement", "module", top_level_cp),
+                    ("eos", "", None, None, None),
+                ]
+
+            @property
+            def eos_id(self):
+                return -1
+
+            def prefill(self, prompt):
+                return None
+
+            def rollback(self, cp):
+                self.generated_ids = list(getattr(cp, "generated_ids", []))
+                self.generated_text = getattr(cp, "generated_text", "")
+                self.last_event = None
+                self.last_block_checkpoint = None
+                self._cursor = 0
+                self._sequence = self._post_cascade_sequence()
+
+            def forward_and_sample(self, penalty_ids=None):
+                self._steps += 1
+                if self._cursor >= len(self._sequence):
+                    self.last_event = None
+                    return self.eos_id
+
+                kind, text, node_type, parent_node_type, checkpoint = self._sequence[self._cursor]
+                self._cursor += 1
+
+                if kind == "eos":
+                    self.last_event = None
+                    return self.eos_id
+
+                self.generated_ids.append(self._steps)
+                self.generated_text += text
+                self.last_event = InterceptEvent(
+                    block_text=text,
+                    block_type=kind,
+                    node_type=node_type,
+                    parent_node_type=parent_node_type,
+                    token_start_idx=0,
+                    token_count=1,
+                )
+                self.last_block_checkpoint = checkpoint
+                return 1
+
+            def is_finished(self):
+                return self._steps >= 8
+
+        class FakeRetryLoop:
+            def __init__(self, **kwargs):
+                return None
+
+            def run(self, checkpoint, original_event):
+                return RetryResult(
+                    success=False,
+                    attempts=1,
+                    final_event=None,
+                    diagnostics=RetryDiagnostics(
+                        per_attempt=[
+                            AttemptInfo(
+                                passed=False,
+                                no_block=False,
+                                failure_reason="signature_miss",
+                            )
+                        ]
+                    ),
+                )
+
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.GenerationContext",
+            FakeContext,
+        )
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.RetryLoop",
+            FakeRetryLoop,
+        )
+
+        gen = WatermarkGenerator(
+            model=model,
+            tokenizer=tokenizer,
+            encoder=encoder,
+            encoder_tokenizer=enc_tok,
+            config=config,
+        )
+
+        def fake_verify_block(event):
+            stripped = event.block_text.strip()
+            return VerifyResult(
+                passed=stripped != "x = bad",
+                min_margin=0.2,
+                lsh_signature=(1, 1, 1),
+                in_valid_set=stripped != "x = bad",
+            )
+
+        gen._verify_block = MagicMock(side_effect=fake_verify_block)
+
+        result = gen.generate("prompt")
+
+        assert result.block_ledgers[0]["final_outcome"]["failure_reason"] == "cascade_replaced"
+        top_level_ledger = next(
+            item for item in result.block_ledgers
+            if item["parent_node_type"] == "module"
+        )
+        assert top_level_ledger["final_outcome"].get("rescued_by_cascade") is False
+        assert result.diagnostic_summary["cascade_summary"]["cascade_rescued_blocks"] == 0
+
     def test_same_compound_cascades_at_most_once(self, monkeypatch):
         """同一个 compound block 成功 cascade 后，不应再次回滚到同一起点。"""
         config = WatermarkConfig(
