@@ -102,6 +102,7 @@ class RetryLoop:
 
         diagnostics = RetryDiagnostics(per_attempt=[])
         prev_retry_ids: list[int] | None = None
+        final_event: InterceptEvent | None = None
         sigs_seen: set[tuple] = set()
         texts_seen: set[str] = set()
 
@@ -115,6 +116,7 @@ class RetryLoop:
             )
 
             if event is None:
+                final_event = None
                 diagnostics.per_attempt.append(
                     AttemptInfo(
                         no_block=True,
@@ -126,6 +128,8 @@ class RetryLoop:
                     attempt_i + 1, self._config.max_retries,
                 )
                 continue
+
+            final_event = event
 
             # Verify
             block_entropy = self._entropy_est.estimate_block_entropy(event.block_text)
@@ -193,7 +197,7 @@ class RetryLoop:
         return RetryResult(
             success=False,
             attempts=self._config.max_retries,
-            final_event=None,
+            final_event=final_event,
             diagnostics=diagnostics,
         )
 

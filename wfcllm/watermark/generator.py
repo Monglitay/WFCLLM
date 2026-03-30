@@ -434,6 +434,10 @@ class WatermarkGenerator:
         retry_result = retry_loop.run(block_cp, event)
         stats.retry_diagnostics.append(retry_result.diagnostics)
         self._append_retry_attempts(record, retry_result.diagnostics)
+        self._sync_retry_terminal_identity(
+            ledger_entry,
+            retry_result,
+        )
 
         if retry_result.success:
             stats.embedded_blocks += 1
@@ -517,6 +521,21 @@ class WatermarkGenerator:
         ledger_entry["node_type"] = event.node_type
         ledger_entry["parent_node_type"] = event.parent_node_type or "module"
         ledger_entry["block_text_hash"] = hash_block_text(event.block_text)
+
+    @classmethod
+    def _sync_retry_terminal_identity(
+        cls,
+        ledger_entry: dict[str, object],
+        retry_result,
+    ) -> None:
+        terminal_attempts = retry_result.diagnostics.per_attempt
+        if not terminal_attempts:
+            return
+        if terminal_attempts[-1].no_block:
+            return
+        if retry_result.final_event is None:
+            return
+        cls._capture_block_identity(ledger_entry, retry_result.final_event)
 
     def _classify_failure_reason(self, event, verify_result) -> str:
         if verify_result.passed:
