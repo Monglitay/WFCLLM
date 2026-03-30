@@ -85,7 +85,8 @@ def summarize_sample_diagnostics(records: Iterable[BlockLifecycleRecord]) -> Dic
 
     for record in records:
         initial_reason = record.initial_verify.get("failure_reason")
-        failure_reason_counts[_normalize_failure_reason(initial_reason)] += 1
+        if initial_reason is not None:
+            failure_reason_counts[_normalize_failure_reason(initial_reason)] += 1
 
         attempts = record.retry_attempts or []
         if attempts:
@@ -95,7 +96,8 @@ def summarize_sample_diagnostics(records: Iterable[BlockLifecycleRecord]) -> Dic
             if not attempt.get("produced_block", False):
                 retry_summary["attempts_no_block"] += 1
             reason = attempt.get("failure_reason")
-            failure_reason_counts[_normalize_failure_reason(reason)] += 1
+            if reason is not None:
+                failure_reason_counts[_normalize_failure_reason(reason)] += 1
 
         for event in record.cascade_events or []:
             triggered = event.get("triggered", False)
