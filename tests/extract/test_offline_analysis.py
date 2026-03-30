@@ -301,9 +301,18 @@ def test_load_watermarked_artifact_preserves_optional_route_one_summary(tmp_path
     artifact = offline_analysis.load_watermarked_artifact(watermarked_path)
 
     record = artifact.records["HumanEval/0"]
-    assert record["retry_summary"]["blocks_with_retry"] == 2
-    assert record["cascade_summary"]["cascade_triggers"] == 1
-    assert record["failure_reason_counts"]["signature_miss"] == 3
+    assert record["diagnostics_version"] == 1
+    assert record["retry_summary"] == {
+        "blocks_with_retry": 2,
+        "retry_exhausted_blocks": 1,
+    }
+    assert record["cascade_summary"] == {
+        "cascade_triggers": 1,
+        "cascade_rescued_blocks": 0,
+    }
+    assert record["failure_reason_counts"] == {"signature_miss": 3}
+    assert record["rescued_blocks"] == 1
+    assert record["unrescued_blocks"] == 0
 
 
 def test_load_watermarked_artifact_keeps_older_rows_compatible(tmp_path):
@@ -326,7 +335,14 @@ def test_load_watermarked_artifact_keeps_older_rows_compatible(tmp_path):
 
     artifact = offline_analysis.load_watermarked_artifact(legacy_path)
 
-    assert artifact.records["HumanEval/1"]["embed_rate"] == 0.75
+    record = artifact.records["HumanEval/1"]
+    assert record["embed_rate"] == 0.75
+    assert "diagnostics_version" not in record
+    assert "retry_summary" not in record
+    assert "cascade_summary" not in record
+    assert "failure_reason_counts" not in record
+    assert "rescued_blocks" not in record
+    assert "unrescued_blocks" not in record
 
 
 
