@@ -44,6 +44,22 @@ def _normalize_value(value: Any) -> Any:
     return value
 
 
+def _freeze_normalized_value(value: Any) -> Any:
+    value = _normalize_value(value)
+    if isinstance(value, dict):
+        return tuple(sorted((k, _freeze_normalized_value(v)) for k, v in value.items()))
+    if isinstance(value, list):
+        return tuple(_freeze_normalized_value(item) for item in value)
+    return value
+
+
+def _cascade_event_identity(event: Dict[str, Any]) -> Any:
+    rollback_id = event.get("rollback_id")
+    if rollback_id is not None:
+        return ("rollback_id", _freeze_normalized_value(rollback_id))
+    return ("event", _freeze_normalized_value(event))
+
+
 class InitialVerifyRecord(TypedDict, total=False):
     passed: bool
     failure_reason: FailureReason
@@ -105,6 +121,7 @@ def summarize_sample_diagnostics(records: Iterable[BlockLifecycleRecord]) -> Dic
     }
     rescued_blocks = 0
     unrescued_blocks = 0
+    seen_cascade_rollbacks = set()
 
     for record in records:
         initial_reason = record.initial_verify.get("failure_reason")
@@ -123,6 +140,10 @@ def summarize_sample_diagnostics(records: Iterable[BlockLifecycleRecord]) -> Dic
                 failure_reason_counts[_normalize_failure_reason(reason)] += 1
 
         for event in record.cascade_events or []:
+            event_identity = _cascade_event_identity(event)
+            if event_identity in seen_cascade_rollbacks:
+                continue
+            seen_cascade_rollbacks.add(event_identity)
             triggered = event.get("triggered", False)
             if triggered:
                 cascade_summary["cascade_triggers"] += 1

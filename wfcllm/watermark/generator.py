@@ -102,6 +102,7 @@ class WatermarkGenerator:
         self._entropy_profile: EntropyProfile | None = None
         self._gamma_schedule: PiecewiseQuantileSchedule | None = None
         self._initialize_adaptive_gamma()
+        self._cascade_rollback_counter = 0
 
         _STRUCTURAL_KEYWORDS = [
             "import", "return", "def", "class", "if", "else", "elif",
@@ -301,6 +302,14 @@ class WatermarkGenerator:
             if callable(scope_builder)
             else self._fallback_replacement_scope(cascade_cp)
         )
+        self._cascade_rollback_counter += 1
+        rollback_id = f"cascade-{self._cascade_rollback_counter}"
+        if isinstance(diagnostic_metadata, dict):
+            diagnostic_metadata = dict(diagnostic_metadata)
+            diagnostic_metadata["rollback_id"] = rollback_id
+        if isinstance(replacement_scope, dict):
+            replacement_scope = dict(replacement_scope)
+            replacement_scope["rollback_id"] = rollback_id
         return {
             "diagnostic_metadata": diagnostic_metadata,
             "replacement_scope": replacement_scope,
@@ -548,6 +557,8 @@ class WatermarkGenerator:
         rescued_by_cascade: bool = False,
     ) -> None:
         record.final_outcome["embedded"] = True
+        record.final_outcome.pop("failure_reason", None)
+        record.final_outcome.pop("exhausted_retries", None)
         record.final_outcome.setdefault("rescued_by_retry", False)
         record.final_outcome.setdefault("rescued_by_cascade", False)
         if rescued_by_retry:
@@ -598,6 +609,7 @@ class WatermarkGenerator:
         if not pending_ordinals:
             return None
         return {
+            "rollback_id": replacement_scope.get("rollback_id"),
             "compound_node_type": replacement_scope.get("compound_node_type"),
             "compound_parent_node_type": replacement_scope.get(
                 "compound_parent_node_type",
@@ -605,6 +617,7 @@ class WatermarkGenerator:
             ),
             "pending_block_ordinals": pending_ordinals,
             "descendant_parent_types": set(),
+            "ambiguous_same_type_nesting": False,
         }
 
     def _resolve_cascade_replacement_ordinal(
@@ -617,6 +630,9 @@ class WatermarkGenerator:
 
         compound_node_type = active_cascade_scope.get("compound_node_type")
         if not isinstance(compound_node_type, str):
+            return None, None
+
+        if active_cascade_scope.get("ambiguous_same_type_nesting"):
             return None, None
 
         parent_node_type = event.parent_node_type or "module"
@@ -665,6 +681,8 @@ class WatermarkGenerator:
         if event.node_type == compound_node_type and parent_node_type == compound_parent_node_type:
             return active_cascade_scope
         if parent_node_type == compound_node_type or parent_node_type in descendant_parent_types:
+            if event.node_type == compound_node_type:
+                active_cascade_scope["ambiguous_same_type_nesting"] = True
             descendant_parent_types.add(event.node_type)
             return active_cascade_scope
         return None

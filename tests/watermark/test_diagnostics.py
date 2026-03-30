@@ -123,6 +123,32 @@ def test_cascade_replaced_failure_reason_counts():
     assert summary["failure_reason_counts"]["cascade_replaced"] == 1
 
 
+def test_summarize_sample_diagnostics_counts_cascade_trigger_once_per_rollback():
+    copied_event = {
+        "triggered": True,
+        "compound_node_type": "if_statement",
+        "replaced_block_ordinals": [3, 4],
+    }
+    first_record = BlockLifecycleRecord(
+        sample_id="HumanEval/7",
+        block_ordinal=3,
+        cascade_events=[dict(copied_event)],
+        final_outcome={"embedded": True, "rescued_by_cascade": True},
+    )
+    second_record = BlockLifecycleRecord(
+        sample_id="HumanEval/7",
+        block_ordinal=4,
+        cascade_events=[dict(copied_event)],
+        final_outcome={"embedded": True, "rescued_by_cascade": True},
+    )
+
+    summary = summarize_sample_diagnostics([first_record, second_record])
+
+    assert summary["cascade_summary"]["cascade_triggers"] == 1
+    assert summary["cascade_summary"]["cascade_rollbacks"] == 1
+    assert summary["cascade_summary"]["cascade_rescued_blocks"] == 2
+
+
 def test_successful_retry_without_failure_reason_does_not_increment_unknown():
     record = BlockLifecycleRecord(
         sample_id="HumanEval/3",
