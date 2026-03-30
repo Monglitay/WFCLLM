@@ -1,5 +1,7 @@
 """Unit tests for route-one diagnostics primitives."""
 
+import json
+
 from wfcllm.watermark.diagnostics import (
     BlockLifecycleRecord,
     FailureReason,
@@ -60,6 +62,11 @@ def test_block_lifecycle_record_to_dict_serializes_nested_retry_data():
     assert serialized["cascade_events"][0]["triggered"] is True
 
 
+def test_block_lifecycle_record_to_dict_is_json_serializable():
+    record = _example_record()
+    json.dumps(record.to_dict())
+
+
 def test_summarize_sample_diagnostics_counts_rescued_rollups():
     retry_rescue = BlockLifecycleRecord(
         sample_id="HumanEval/2",
@@ -85,6 +92,37 @@ def test_summarize_sample_diagnostics_counts_rescued_rollups():
     assert summary["rescued_blocks"] == 2
 
 
+def test_rescued_blocks_counts_each_record_only_once():
+    dual_rescue = BlockLifecycleRecord(
+        sample_id="HumanEval/4",
+        block_ordinal=5,
+        initial_verify={"failure_reason": FailureReason.signature_and_margin_miss},
+        final_outcome={
+            "embedded": True,
+            "rescued_by_retry": True,
+            "rescued_by_cascade": True,
+        },
+    )
+    summary = summarize_sample_diagnostics([dual_rescue])
+    assert summary["rescued_blocks"] == 1
+    assert summary["retry_summary"]["retry_rescued_blocks"] == 1
+    assert summary["cascade_summary"]["cascade_rescued_blocks"] == 1
+
+
+def test_cascade_replaced_failure_reason_counts():
+    record = BlockLifecycleRecord(
+        sample_id="HumanEval/5",
+        block_ordinal=6,
+        initial_verify={},
+        final_outcome={
+            "embedded": False,
+            "failure_reason": FailureReason.cascade_replaced,
+        },
+    )
+    summary = summarize_sample_diagnostics([record])
+    assert summary["failure_reason_counts"]["cascade_replaced"] == 1
+
+
 def test_successful_retry_without_failure_reason_does_not_increment_unknown():
     record = BlockLifecycleRecord(
         sample_id="HumanEval/3",
@@ -95,6 +133,17 @@ def test_successful_retry_without_failure_reason_does_not_increment_unknown():
     )
     summary = summarize_sample_diagnostics([record])
     assert summary["failure_reason_counts"]["unknown"] == 0
+
+
+def test_retry_attempt_missing_produced_block_counts_no_block():
+    record = BlockLifecycleRecord(
+        sample_id="HumanEval/6",
+        block_ordinal=7,
+        initial_verify={},
+        retry_attempts=[{"attempt_index": 0}],
+    )
+    summary = summarize_sample_diagnostics([record])
+    assert summary["retry_summary"]["attempts_no_block"] == 1
 
 
 def test_summarize_sample_diagnostics_counts():
