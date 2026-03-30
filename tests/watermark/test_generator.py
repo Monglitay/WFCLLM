@@ -1,5 +1,6 @@
 """Tests for wfcllm.watermark.generator — thin orchestrator."""
 
+import hashlib
 from dataclasses import asdict
 import json
 import logging
@@ -715,10 +716,18 @@ class TestWatermarkGeneratorInit:
                 return None
 
             def run(self, checkpoint, original_event):
+                replacement_event = InterceptEvent(
+                    block_text="return x",
+                    block_type="simple",
+                    node_type="return_statement",
+                    parent_node_type="function_definition",
+                    token_start_idx=0,
+                    token_count=1,
+                )
                 return RetryResult(
                     success=True,
                     attempts=1,
-                    final_event=original_event,
+                    final_event=replacement_event,
                     diagnostics=RetryDiagnostics(
                         per_attempt=[
                             AttemptInfo(
@@ -765,6 +774,217 @@ class TestWatermarkGeneratorInit:
         assert result.block_ledgers[0]["retry_attempts"][0]["produced_block"] is True
         assert result.block_ledgers[0]["final_outcome"]["embedded"] is True
         assert result.block_ledgers[0]["final_outcome"]["rescued_by_retry"] is True
+        assert result.block_ledgers[0]["node_type"] == "return_statement"
+        assert result.block_ledgers[0]["parent_node_type"] == "function_definition"
+        assert result.block_ledgers[0]["block_text_hash"] == hashlib.sha256(
+            "return x".encode("utf-8")
+        ).hexdigest()
+
+    def test_generate_retry_failure_uses_last_produced_retry_identity(
+        self,
+        config,
+        mock_components,
+        monkeypatch,
+    ):
+        model, tokenizer, encoder, enc_tok = mock_components
+
+        class FakeContext:
+            def __init__(self, model, tokenizer, config):
+                self.generated_text = ""
+                self.generated_ids = []
+                self.last_event = None
+                self.last_block_checkpoint = None
+                self._steps = 0
+
+            @property
+            def eos_id(self):
+                return -1
+
+            def prefill(self, prompt):
+                return None
+
+            def forward_and_sample(self, penalty_ids=None):
+                self._steps += 1
+                if self._steps == 1:
+                    self.generated_text = "x = 1\n"
+                    self.generated_ids.append(101)
+                    self.last_event = InterceptEvent(
+                        block_text="x = 1",
+                        block_type="simple",
+                        node_type="expression_statement",
+                        parent_node_type="module",
+                        token_start_idx=0,
+                        token_count=1,
+                    )
+                    self.last_block_checkpoint = SimpleNamespace(
+                        generated_ids=[],
+                        generated_text="",
+                    )
+                    return 101
+                self.last_event = None
+                return self.eos_id
+
+            def is_finished(self):
+                return self._steps >= 2
+
+        class FakeRetryLoop:
+            def __init__(self, **kwargs):
+                return None
+
+            def run(self, checkpoint, original_event):
+                replacement_event = InterceptEvent(
+                    block_text="return fallback",
+                    block_type="simple",
+                    node_type="return_statement",
+                    parent_node_type="function_definition",
+                    token_start_idx=0,
+                    token_count=1,
+                )
+                return RetryResult(
+                    success=False,
+                    attempts=1,
+                    final_event=replacement_event,
+                    diagnostics=RetryDiagnostics(
+                        per_attempt=[
+                            AttemptInfo(
+                                passed=False,
+                                no_block=False,
+                                failure_reason="signature_miss",
+                            )
+                        ]
+                    ),
+                )
+
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.GenerationContext",
+            FakeContext,
+        )
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.RetryLoop",
+            FakeRetryLoop,
+        )
+
+        gen = WatermarkGenerator(
+            model=model, tokenizer=tokenizer,
+            encoder=encoder, encoder_tokenizer=enc_tok, config=config,
+        )
+        gen._verify_block = MagicMock(
+            return_value=VerifyResult(
+                passed=False,
+                min_margin=0.0,
+                lsh_signature=(1, 1, 1),
+                in_valid_set=False,
+            )
+        )
+
+        result = gen.generate("prompt")
+
+        assert result.block_ledgers[0]["final_outcome"]["embedded"] is False
+        assert result.block_ledgers[0]["final_outcome"]["exhausted_retries"] is True
+        assert result.block_ledgers[0]["retry_attempts"][0]["produced_block"] is True
+        assert result.block_ledgers[0]["node_type"] == "return_statement"
+        assert result.block_ledgers[0]["parent_node_type"] == "function_definition"
+        assert result.block_ledgers[0]["block_text_hash"] == hashlib.sha256(
+            "return fallback".encode("utf-8")
+        ).hexdigest()
+
+    def test_generate_retry_no_block_keeps_original_identity(
+        self,
+        config,
+        mock_components,
+        monkeypatch,
+    ):
+        model, tokenizer, encoder, enc_tok = mock_components
+
+        class FakeContext:
+            def __init__(self, model, tokenizer, config):
+                self.generated_text = ""
+                self.generated_ids = []
+                self.last_event = None
+                self.last_block_checkpoint = None
+                self._steps = 0
+
+            @property
+            def eos_id(self):
+                return -1
+
+            def prefill(self, prompt):
+                return None
+
+            def forward_and_sample(self, penalty_ids=None):
+                self._steps += 1
+                if self._steps == 1:
+                    self.generated_text = "x = 1\n"
+                    self.generated_ids.append(101)
+                    self.last_event = InterceptEvent(
+                        block_text="x = 1",
+                        block_type="simple",
+                        node_type="expression_statement",
+                        parent_node_type="module",
+                        token_start_idx=0,
+                        token_count=1,
+                    )
+                    self.last_block_checkpoint = SimpleNamespace(
+                        generated_ids=[],
+                        generated_text="",
+                    )
+                    return 101
+                self.last_event = None
+                return self.eos_id
+
+            def is_finished(self):
+                return self._steps >= 2
+
+        class FakeRetryLoop:
+            def __init__(self, **kwargs):
+                return None
+
+            def run(self, checkpoint, original_event):
+                return RetryResult(
+                    success=False,
+                    attempts=1,
+                    final_event=None,
+                    diagnostics=RetryDiagnostics(
+                        per_attempt=[
+                            AttemptInfo(
+                                passed=False,
+                                no_block=True,
+                                failure_reason="no_block_generated",
+                            )
+                        ]
+                    ),
+                )
+
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.GenerationContext",
+            FakeContext,
+        )
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.RetryLoop",
+            FakeRetryLoop,
+        )
+
+        gen = WatermarkGenerator(
+            model=model, tokenizer=tokenizer,
+            encoder=encoder, encoder_tokenizer=enc_tok, config=config,
+        )
+        gen._verify_block = MagicMock(
+            return_value=VerifyResult(
+                passed=False,
+                min_margin=0.0,
+                lsh_signature=(1, 1, 1),
+                in_valid_set=False,
+            )
+        )
+
+        result = gen.generate("prompt")
+
+        assert result.block_ledgers[0]["retry_attempts"][0]["produced_block"] is False
+        assert result.block_ledgers[0]["node_type"] == "expression_statement"
+        assert result.block_ledgers[0]["parent_node_type"] == "module"
+        assert result.block_ledgers[0]["block_text_hash"] == hashlib.sha256(
+            "x = 1".encode("utf-8")
+        ).hexdigest()
 
     def test_generate_failure_uses_terminal_retry_identity_when_final_attempt_produces_block(
         self,
