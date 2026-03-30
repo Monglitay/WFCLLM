@@ -274,6 +274,60 @@ def test_load_detail_artifact_rejects_duplicate_ids(tmp_path):
 
 
 
+def test_load_watermarked_artifact_preserves_optional_route_one_summary(tmp_path):
+    offline_analysis = _load_module()
+
+    watermarked_path = tmp_path / "watermarked.jsonl"
+    _write_jsonl(
+        watermarked_path,
+        [
+            {
+                "id": "HumanEval/0",
+                "total_blocks": 8,
+                "embedded_blocks": 6,
+                "failed_blocks": 2,
+                "fallback_blocks": 0,
+                "embed_rate": 0.75,
+                "diagnostics_version": 1,
+                "retry_summary": {"blocks_with_retry": 2, "retry_exhausted_blocks": 1},
+                "cascade_summary": {"cascade_triggers": 1, "cascade_rescued_blocks": 0},
+                "failure_reason_counts": {"signature_miss": 3},
+                "rescued_blocks": 1,
+                "unrescued_blocks": 0,
+            }
+        ],
+    )
+
+    artifact = offline_analysis.load_watermarked_artifact(watermarked_path)
+
+    record = artifact.records["HumanEval/0"]
+    assert record["retry_summary"]["blocks_with_retry"] == 2
+    assert record["cascade_summary"]["cascade_triggers"] == 1
+    assert record["failure_reason_counts"]["signature_miss"] == 3
+
+
+def test_load_watermarked_artifact_keeps_older_rows_compatible(tmp_path):
+    offline_analysis = _load_module()
+
+    legacy_path = tmp_path / "legacy.jsonl"
+    _write_jsonl(
+        legacy_path,
+        [
+            {
+                "id": "HumanEval/1",
+                "total_blocks": 4,
+                "embedded_blocks": 3,
+                "failed_blocks": 1,
+                "fallback_blocks": 0,
+                "embed_rate": 0.75,
+            }
+        ],
+    )
+
+    artifact = offline_analysis.load_watermarked_artifact(legacy_path)
+
+    assert artifact.records["HumanEval/1"]["embed_rate"] == 0.75
+
 
 
 def test_build_offline_regression_report_includes_regression_classification_keys(tmp_path):
