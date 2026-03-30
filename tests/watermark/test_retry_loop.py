@@ -1,5 +1,6 @@
 """Tests for wfcllm.watermark.retry_loop — rejection sampling retry logic."""
 
+import hashlib
 import logging
 import pytest
 from unittest.mock import MagicMock, patch
@@ -264,3 +265,130 @@ class TestRetryLoopUnit:
         assert "gamma_target=" in caplog.text
         assert "gamma_effective=" in caplog.text
         assert "k=" in caplog.text
+
+    def test_retry_records_signature_miss_with_hash_and_in_valid_set(
+        self,
+        config,
+        mock_ctx,
+        mock_verifier,
+        mock_keying,
+        mock_entropy,
+    ):
+        config.max_retries = 1
+        event = InterceptEvent(
+            block_text="x = 1", block_type="simple",
+            node_type="expression_statement", parent_node_type="module",
+            token_start_idx=0, token_count=2,
+        )
+        mock_ctx.last_event = event
+        mock_ctx.eos_id = 2
+        mock_ctx.forward_and_sample.return_value = 5
+        mock_ctx.generated_ids = [5]
+
+        mock_verifier.verify.return_value = VerifyResult(
+            passed=False,
+            min_margin=0.2,
+            lsh_signature=(1, 1),
+            in_valid_set=False,
+        )
+        mock_keying.derive.return_value = frozenset({(9, 9)})
+        mock_entropy.estimate_block_entropy.return_value = 1.0
+        mock_entropy.compute_margin.return_value = 0.1
+
+        loop = RetryLoop(
+            ctx=mock_ctx, config=config,
+            verifier=mock_verifier, keying=mock_keying,
+            entropy_est=mock_entropy, structural_token_ids=set(),
+        )
+        cp = MagicMock(spec=Checkpoint)
+        cp.generated_ids = []
+        original_event = MagicMock(spec=InterceptEvent)
+        original_event.parent_node_type = "module"
+
+        result = loop.run(cp, original_event)
+        attempt = result.diagnostics.per_attempt[0]
+        assert attempt.failure_reason == "signature_miss"
+        assert attempt.in_valid_set is False
+        assert attempt.block_text_hash == hashlib.sha256(
+            event.block_text.encode("utf-8")
+        ).hexdigest()
+
+    def test_retry_records_no_block_generated_attempts(
+        self,
+        config,
+        mock_ctx,
+        mock_verifier,
+        mock_keying,
+        mock_entropy,
+    ):
+        config.max_retries = 2
+        loop = RetryLoop(
+            ctx=mock_ctx, config=config,
+            verifier=mock_verifier, keying=mock_keying,
+            entropy_est=mock_entropy, structural_token_ids=set(),
+        )
+        cp = MagicMock(spec=Checkpoint)
+        cp.generated_ids = []
+        original_event = MagicMock(spec=InterceptEvent)
+        original_event.parent_node_type = "module"
+
+        with patch.object(loop, "_generate_until_block", return_value=None):
+            result = loop.run(cp, original_event)
+
+        assert len(result.diagnostics.per_attempt) == 2
+        for attempt in result.diagnostics.per_attempt:
+            assert attempt.no_block is True
+            assert attempt.failure_reason == "no_block_generated"
+
+    def test_retry_classifies_margin_and_dual_miss_reasons(
+        self,
+        config,
+        mock_ctx,
+        mock_verifier,
+        mock_keying,
+        mock_entropy,
+    ):
+        config.max_retries = 2
+        event = InterceptEvent(
+            block_text="x = 1", block_type="simple",
+            node_type="expression_statement", parent_node_type="module",
+            token_start_idx=0, token_count=2,
+        )
+        mock_ctx.last_event = event
+        mock_ctx.eos_id = 2
+        mock_ctx.forward_and_sample.return_value = 5
+        mock_ctx.generated_ids = [5]
+
+        mock_verifier.verify.side_effect = [
+            VerifyResult(
+                passed=False,
+                min_margin=0.01,
+                lsh_signature=(1, 1),
+                in_valid_set=True,
+            ),
+            VerifyResult(
+                passed=False,
+                min_margin=0.01,
+                lsh_signature=(0, 0),
+                in_valid_set=False,
+            ),
+        ]
+        mock_keying.derive.return_value = frozenset()
+        mock_entropy.estimate_block_entropy.return_value = 1.0
+        mock_entropy.compute_margin.return_value = 0.1
+
+        loop = RetryLoop(
+            ctx=mock_ctx, config=config,
+            verifier=mock_verifier, keying=mock_keying,
+            entropy_est=mock_entropy, structural_token_ids=set(),
+        )
+        cp = MagicMock(spec=Checkpoint)
+        cp.generated_ids = []
+        original_event = MagicMock(spec=InterceptEvent)
+        original_event.parent_node_type = "module"
+
+        result = loop.run(cp, original_event)
+        reasons = [attempt.failure_reason for attempt in result.diagnostics.per_attempt]
+        in_valid_values = [attempt.in_valid_set for attempt in result.diagnostics.per_attempt]
+        assert reasons == ["margin_miss", "signature_and_margin_miss"]
+        assert in_valid_values == [True, False]

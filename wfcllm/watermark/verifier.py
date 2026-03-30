@@ -16,6 +16,7 @@ class VerifyResult:
     passed: bool
     min_margin: float
     lsh_signature: tuple[int, ...] = ()
+    in_valid_set: bool = False
 
 
 class ProjectionVerifier:
@@ -58,5 +59,11 @@ class ProjectionVerifier:
         sig = self._lsh_space.sign(u)
         mm = self._lsh_space.min_margin(u)
 
-        passed = (sig in valid_set) and (mm > margin)
-        return VerifyResult(passed=passed, min_margin=mm, lsh_signature=sig)
+        in_valid_set = sig in valid_set
+        passed = in_valid_set and (mm > margin)
+        return VerifyResult(
+            passed=passed,
+            min_margin=mm,
+            lsh_signature=sig,
+            in_valid_set=in_valid_set,
+        )
