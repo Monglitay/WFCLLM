@@ -339,6 +339,7 @@ class TestRetryLoopUnit:
         for attempt in result.diagnostics.per_attempt:
             assert attempt.no_block is True
             assert attempt.failure_reason == "no_block_generated"
+            assert attempt.block_text_hash is None
 
     def test_retry_classifies_margin_and_dual_miss_reasons(
         self,
@@ -392,3 +393,46 @@ class TestRetryLoopUnit:
         in_valid_values = [attempt.in_valid_set for attempt in result.diagnostics.per_attempt]
         assert reasons == ["margin_miss", "signature_and_margin_miss"]
         assert in_valid_values == [True, False]
+
+    def test_retry_classifies_missing_membership_as_unknown(
+        self,
+        config,
+        mock_ctx,
+        mock_verifier,
+        mock_keying,
+        mock_entropy,
+    ):
+        config.max_retries = 1
+        event = InterceptEvent(
+            block_text="x = 1", block_type="simple",
+            node_type="expression_statement", parent_node_type="module",
+            token_start_idx=0, token_count=2,
+        )
+        mock_ctx.last_event = event
+        mock_ctx.eos_id = 2
+        mock_ctx.forward_and_sample.return_value = 5
+        mock_ctx.generated_ids = [5]
+
+        mock_verifier.verify.return_value = VerifyResult(
+            passed=False,
+            min_margin=0.2,
+            lsh_signature=(1, 1),
+        )
+        mock_keying.derive.return_value = frozenset({(1, 1)})
+        mock_entropy.estimate_block_entropy.return_value = 1.0
+        mock_entropy.compute_margin.return_value = 0.1
+
+        loop = RetryLoop(
+            ctx=mock_ctx, config=config,
+            verifier=mock_verifier, keying=mock_keying,
+            entropy_est=mock_entropy, structural_token_ids=set(),
+        )
+        cp = MagicMock(spec=Checkpoint)
+        cp.generated_ids = []
+        original_event = MagicMock(spec=InterceptEvent)
+        original_event.parent_node_type = "module"
+
+        result = loop.run(cp, original_event)
+        attempt = result.diagnostics.per_attempt[0]
+        assert attempt.in_valid_set is None
+        assert attempt.failure_reason == "unknown"

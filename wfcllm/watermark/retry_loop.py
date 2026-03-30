@@ -218,10 +218,12 @@ class RetryLoop:
 
     @staticmethod
     def _classify_failure_reason(
-        in_valid_set: bool,
+        in_valid_set: bool | None,
         min_margin: float,
         margin_threshold: float,
     ) -> str:
+        if in_valid_set is None:
+            return FailureReason.unknown.value
         margin_passed = min_margin > margin_threshold
         if not in_valid_set and margin_passed:
             return FailureReason.signature_miss.value

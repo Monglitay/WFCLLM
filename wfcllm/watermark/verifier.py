@@ -16,7 +16,7 @@ class VerifyResult:
     passed: bool
     min_margin: float
     lsh_signature: tuple[int, ...] = ()
-    in_valid_set: bool = False
+    in_valid_set: bool | None = None
 
 
 class ProjectionVerifier:
