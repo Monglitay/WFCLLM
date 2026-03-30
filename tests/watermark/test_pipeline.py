@@ -464,6 +464,76 @@ class TestWatermarkPipelineRun:
         )
         assert not wrong_ledger_path.exists()
 
+    def test_run_legacy_resume_without_route_one_fields_skips_sidecar_validation(
+        self,
+        tmp_path,
+    ):
+        configured_output_dir = tmp_path / "configured" / "watermarked"
+        actual_resume_dir = tmp_path / "actual" / "watermarked"
+        actual_resume_dir.mkdir(parents=True)
+        resume_path = actual_resume_dir / "humaneval_20260101_010101.jsonl"
+        resume_path.write_text(
+            json.dumps(
+                {
+                    "id": "HumanEval/0",
+                    "total_blocks": 1,
+                    "embedded_blocks": 1,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        cfg = WatermarkPipelineConfig(
+            dataset="humaneval",
+            output_dir=str(configured_output_dir),
+            dataset_path="data/datasets",
+            resume=str(resume_path),
+        )
+        block_ledgers = [
+            {
+                "sample_id": "HumanEval/1",
+                "block_ordinal": 0,
+                "initial_verify": {"passed": True},
+                "retry_attempts": [],
+                "cascade_events": [],
+                "final_outcome": {"embedded": True},
+            }
+        ]
+        generator = self._build_generator(GenerateResult(
+            code="def bar():\n    return 2\n",
+            stats=EmbedStats(
+                total_blocks=1,
+                embedded_blocks=1,
+                failed_blocks=0,
+                fallback_blocks=0,
+            ),
+            diagnostic_summary={
+                "diagnostics_version": 1,
+                "retry_summary": {},
+                "cascade_summary": {},
+            },
+            block_ledgers=block_ledgers,
+        ))
+        pipeline = WatermarkPipeline(generator=generator, config=cfg)
+        with patch.object(pipeline, "_load_prompts", return_value=[
+            {"id": "HumanEval/0", "prompt": "def foo():\n"},
+            {"id": "HumanEval/1", "prompt": "def bar():\n"},
+        ]):
+            output_path = Path(pipeline.run())
+
+        assert output_path == resume_path
+        diagnostics_path = (
+            resume_path.parent.parent
+            / "diagnostics"
+            / f"{resume_path.stem}_block_ledger.jsonl"
+        )
+        assert diagnostics_path.exists()
+        ledger_rows = [
+            json.loads(line)
+            for line in diagnostics_path.read_text(encoding="utf-8").splitlines()
+        ]
+        assert ledger_rows == block_ledgers
+
     def test_run_resume_requires_aligned_diagnostics_sidecar(self, tmp_path):
         configured_output_dir = tmp_path / "configured" / "watermarked"
         actual_resume_dir = tmp_path / "actual" / "watermarked"
