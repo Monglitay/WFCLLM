@@ -762,6 +762,56 @@ class TestWatermarkPipelineRun:
             with pytest.raises(ValueError, match="diagnostics"):
                 pipeline.run()
 
+    def test_run_resume_requires_complete_sidecar_for_feature_zero_total_blocks(self, tmp_path):
+        configured_output_dir = tmp_path / "configured" / "watermarked"
+        actual_resume_dir = tmp_path / "actual" / "watermarked"
+        actual_resume_dir.mkdir(parents=True)
+        resume_path = actual_resume_dir / "humaneval_20260101_010101.jsonl"
+        resume_path.write_text(
+            json.dumps(
+                {
+                    "id": "HumanEval/0",
+                    "total_blocks": 0,
+                    "embedded_blocks": 0,
+                    "diagnostics_version": 1,
+                    "retry_summary": {},
+                    "cascade_summary": {},
+                    "alignment_summary": {
+                        "final_block_count": 0,
+                        "generator_total_blocks": 2,
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        diagnostics_dir = resume_path.parent.parent / "diagnostics"
+        diagnostics_dir.mkdir(parents=True)
+        diagnostics_path = diagnostics_dir / f"{resume_path.stem}_block_ledger.jsonl"
+        diagnostics_path.write_text(
+            json.dumps(
+                {
+                    "sample_id": "HumanEval/0",
+                    "block_ordinal": 0,
+                    "initial_verify": {"passed": True},
+                    "retry_attempts": [],
+                    "cascade_events": [],
+                    "final_outcome": {"embedded": False},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        cfg = WatermarkPipelineConfig(
+            dataset="humaneval",
+            output_dir=str(configured_output_dir),
+            dataset_path="data/datasets",
+            resume=str(resume_path),
+        )
+        pipeline = WatermarkPipeline(generator=MagicMock(), config=cfg)
+        with pytest.raises(ValueError, match="incomplete"):
+            pipeline.run()
+
     def test_run_persists_only_allowlisted_diagnostic_summary_fields(self, tmp_path):
         cfg = WatermarkPipelineConfig(
             dataset="humaneval",
@@ -802,6 +852,7 @@ class TestWatermarkPipelineRun:
         assert row["unrescued_blocks"] == 0
         assert "debug_blob" not in row
         assert "trace_id" not in row
+
     def test_run_returns_output_path(self, mock_result):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = WatermarkPipelineConfig(

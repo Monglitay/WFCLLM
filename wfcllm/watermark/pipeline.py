@@ -140,7 +140,14 @@ class WatermarkPipeline:
     def _sample_requires_ledger(payload: dict[str, object]) -> bool:
         total_blocks = payload.get("total_blocks")
         if isinstance(total_blocks, int):
-            return total_blocks > 0
+            if total_blocks > 0:
+                return True
+            alignment_summary = payload.get("alignment_summary")
+            if isinstance(alignment_summary, dict):
+                generator_total_blocks = alignment_summary.get("generator_total_blocks")
+                if isinstance(generator_total_blocks, int):
+                    return generator_total_blocks > 0
+            return False
         return True
 
     @classmethod
@@ -216,8 +223,11 @@ class WatermarkPipeline:
         alignment_summary = payload.get("alignment_summary")
         if isinstance(alignment_summary, dict):
             final_block_count = alignment_summary.get("final_block_count")
-            if isinstance(final_block_count, int):
+            generator_total_blocks = alignment_summary.get("generator_total_blocks")
+            if isinstance(final_block_count, int) and final_block_count > 0:
                 return final_block_count
+            if isinstance(generator_total_blocks, int) and generator_total_blocks > 0:
+                return generator_total_blocks
         blocks = payload.get("blocks")
         if isinstance(blocks, list):
             return len(blocks)
