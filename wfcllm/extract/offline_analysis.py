@@ -21,6 +21,15 @@ EMBEDDING_FIELDS = (
     "fallback_blocks",
     "embed_rate",
 )
+ROUTE_ONE_COUNT_FIELDS = (
+    "retry_summary",
+    "cascade_summary",
+    "failure_reason_counts",
+)
+ROUTE_ONE_SCALAR_FIELDS = (
+    "rescued_blocks",
+    "unrescued_blocks",
+)
 
 
 @dataclass(frozen=True)
@@ -253,6 +262,7 @@ class EmbeddingDelta:
     failed_blocks_delta: int
     fallback_blocks_delta: int
     embed_rate_delta: float
+    route_one_summary: dict[str, Any] | None = None
 
 
 def build_offline_regression_report(
@@ -354,21 +364,28 @@ def _build_embedding_delta_report(
         right_record = right.records[sample_id]
         if any(field not in left_record or field not in right_record for field in EMBEDDING_FIELDS):
             continue
+        route_one_summary = _build_route_one_summary(left_record, right_record)
         delta = EmbeddingDelta(
             sample_id=sample_id,
             total_blocks_delta=int(right_record["total_blocks"]) - int(left_record["total_blocks"]),
-            embedded_blocks_delta=int(right_record["embedded_blocks"]) - int(left_record["embedded_blocks"]),
+            embedded_blocks_delta=int(right_record["embedded_blocks"])
+            - int(left_record["embedded_blocks"]),
             failed_blocks_delta=int(right_record["failed_blocks"]) - int(left_record["failed_blocks"]),
-            fallback_blocks_delta=int(right_record["fallback_blocks"]) - int(left_record["fallback_blocks"]),
+            fallback_blocks_delta=int(right_record["fallback_blocks"])
+            - int(left_record["fallback_blocks"]),
             embed_rate_delta=float(right_record["embed_rate"]) - float(left_record["embed_rate"]),
+            route_one_summary=route_one_summary,
         )
-        samples[sample_id] = {
+        sample_report = {
             "total_blocks_delta": delta.total_blocks_delta,
             "embedded_blocks_delta": delta.embedded_blocks_delta,
             "failed_blocks_delta": delta.failed_blocks_delta,
             "fallback_blocks_delta": delta.fallback_blocks_delta,
             "embed_rate_delta": delta.embed_rate_delta,
         }
+        if delta.route_one_summary is not None:
+            sample_report["route_one_summary"] = delta.route_one_summary
+        samples[sample_id] = sample_report
 
     return {
         "comparable": True,
@@ -396,9 +413,38 @@ def _build_anomalies(
         if sample_flags:
             embedding_flags[sample_id] = sample_flags
 
+    route_one_flags: dict[str, list[str]] = {}
+    for sample_id, sample_delta in embedding_delta.get("samples", {}).items():
+        route_one_summary = sample_delta.get("route_one_summary") or {}
+        right_summary = route_one_summary.get("right") or {}
+        retry_summary = right_summary.get("retry_summary") or {}
+        cascade_summary = right_summary.get("cascade_summary") or {}
+        sample_flags: list[str] = []
+
+        detail_delta = detail_delta_report.deltas.get(sample_id)
+        if (
+            detail_delta is not None
+            and detail_delta.flip_direction == "true_to_false"
+            and retry_summary.get("retry_exhausted_blocks", 0) > 0
+        ):
+            sample_flags.append("near_miss_with_exhausted_retry")
+
+        if (
+            _is_cascade_no_recovery(right_summary)
+            and (
+                not _is_cascade_no_recovery(route_one_summary.get("left") or {})
+                or _cascade_no_recovery_worsened(route_one_summary.get("delta") or {})
+            )
+        ):
+            sample_flags.append("cascade_no_recovery")
+
+        if sample_flags:
+            route_one_flags[sample_id] = sample_flags
+
     return {
         "detail": detail_flags,
         "embedding": embedding_flags,
+        "route_one": route_one_flags,
     }
 
 
@@ -514,3 +560,128 @@ def _require_boolean_field(record: dict[str, Any], field_name: str) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"{field_name} must be a boolean")
     return value
+
+
+def _build_route_one_summary(
+    left_record: dict[str, Any],
+    right_record: dict[str, Any],
+) -> dict[str, Any] | None:
+    left_summary = _extract_route_one_record_summary(left_record)
+    right_summary = _extract_route_one_record_summary(right_record)
+    if left_summary is None and right_summary is None:
+        return None
+
+    delta: dict[str, Any] = {}
+    for field_name in ROUTE_ONE_SCALAR_FIELDS:
+        if field_name in (left_summary or {}) or field_name in (right_summary or {}):
+            delta[f"{field_name}_delta"] = int((right_summary or {}).get(field_name, 0)) - int(
+                (left_summary or {}).get(field_name, 0)
+            )
+
+    retry_delta = _build_route_one_count_delta(
+        (left_summary or {}).get("retry_summary"),
+        (right_summary or {}).get("retry_summary"),
+        suffix_keys=True,
+    )
+    if retry_delta:
+        delta["retry_summary"] = retry_delta
+
+    cascade_delta = _build_route_one_count_delta(
+        (left_summary or {}).get("cascade_summary"),
+        (right_summary or {}).get("cascade_summary"),
+        suffix_keys=True,
+    )
+    if cascade_delta:
+        delta["cascade_summary"] = cascade_delta
+
+    failure_reason_delta = _build_route_one_count_delta(
+        (left_summary or {}).get("failure_reason_counts"),
+        (right_summary or {}).get("failure_reason_counts"),
+        suffix_keys=False,
+    )
+    if failure_reason_delta:
+        delta["failure_reason_counts"] = failure_reason_delta
+
+    return {
+        "left": left_summary or {},
+        "right": right_summary or {},
+        "delta": delta,
+    }
+
+
+def _extract_route_one_record_summary(record: dict[str, Any]) -> dict[str, Any] | None:
+    summary: dict[str, Any] = {}
+    if "diagnostics_version" in record:
+        summary["diagnostics_version"] = record["diagnostics_version"]
+
+    for field_name in ROUTE_ONE_COUNT_FIELDS:
+        counts = _extract_count_mapping(record.get(field_name))
+        if counts is not None:
+            summary[field_name] = counts
+
+    for field_name in ROUTE_ONE_SCALAR_FIELDS:
+        value = _extract_optional_int(record, field_name)
+        if value is not None:
+            summary[field_name] = value
+
+    return summary or None
+
+
+def _extract_count_mapping(value: Any) -> dict[str, int] | None:
+    if not isinstance(value, dict):
+        return None
+
+    counts: dict[str, int] = {}
+    for key, count in value.items():
+        if not isinstance(key, str):
+            continue
+        try:
+            counts[key] = int(count)
+        except (TypeError, ValueError):
+            continue
+    return counts
+
+
+def _extract_optional_int(record: dict[str, Any], field_name: str) -> int | None:
+    if field_name not in record:
+        return None
+    try:
+        return int(record[field_name])
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_route_one_count_delta(
+    left_counts: dict[str, int] | None,
+    right_counts: dict[str, int] | None,
+    *,
+    suffix_keys: bool,
+) -> dict[str, int]:
+    if left_counts is None and right_counts is None:
+        return {}
+
+    delta: dict[str, int] = {}
+    for key in sorted(set(left_counts or {}) | set(right_counts or {})):
+        output_key = f"{key}_delta" if suffix_keys else key
+        delta[output_key] = int((right_counts or {}).get(key, 0)) - int(
+            (left_counts or {}).get(key, 0)
+        )
+    return delta
+
+
+def _is_cascade_no_recovery(summary: dict[str, Any]) -> bool:
+    cascade_summary = summary.get("cascade_summary") or {}
+    return (
+        cascade_summary.get("cascade_triggers", 0) > 0
+        and cascade_summary.get("cascade_rescued_blocks", 0) == 0
+        and summary.get("unrescued_blocks", 0) > 0
+    )
+
+
+def _cascade_no_recovery_worsened(delta: dict[str, Any]) -> bool:
+    cascade_delta = delta.get("cascade_summary") or {}
+    return (
+        delta.get("unrescued_blocks_delta", 0) > 0
+        or cascade_delta.get("cascade_triggers_delta", 0) > 0
+        or delta.get("rescued_blocks_delta", 0) < 0
+    )

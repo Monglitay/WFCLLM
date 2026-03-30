@@ -274,6 +274,76 @@ def test_load_detail_artifact_rejects_duplicate_ids(tmp_path):
 
 
 
+def test_load_watermarked_artifact_preserves_optional_route_one_summary(tmp_path):
+    offline_analysis = _load_module()
+
+    watermarked_path = tmp_path / "watermarked.jsonl"
+    _write_jsonl(
+        watermarked_path,
+        [
+            {
+                "id": "HumanEval/0",
+                "total_blocks": 8,
+                "embedded_blocks": 6,
+                "failed_blocks": 2,
+                "fallback_blocks": 0,
+                "embed_rate": 0.75,
+                "diagnostics_version": 1,
+                "retry_summary": {"blocks_with_retry": 2, "retry_exhausted_blocks": 1},
+                "cascade_summary": {"cascade_triggers": 1, "cascade_rescued_blocks": 0},
+                "failure_reason_counts": {"signature_miss": 3},
+                "rescued_blocks": 1,
+                "unrescued_blocks": 0,
+            }
+        ],
+    )
+
+    artifact = offline_analysis.load_watermarked_artifact(watermarked_path)
+
+    record = artifact.records["HumanEval/0"]
+    assert record["diagnostics_version"] == 1
+    assert record["retry_summary"] == {
+        "blocks_with_retry": 2,
+        "retry_exhausted_blocks": 1,
+    }
+    assert record["cascade_summary"] == {
+        "cascade_triggers": 1,
+        "cascade_rescued_blocks": 0,
+    }
+    assert record["failure_reason_counts"] == {"signature_miss": 3}
+    assert record["rescued_blocks"] == 1
+    assert record["unrescued_blocks"] == 0
+
+
+def test_load_watermarked_artifact_keeps_older_rows_compatible(tmp_path):
+    offline_analysis = _load_module()
+
+    legacy_path = tmp_path / "legacy.jsonl"
+    _write_jsonl(
+        legacy_path,
+        [
+            {
+                "id": "HumanEval/1",
+                "total_blocks": 4,
+                "embedded_blocks": 3,
+                "failed_blocks": 1,
+                "fallback_blocks": 0,
+                "embed_rate": 0.75,
+            }
+        ],
+    )
+
+    artifact = offline_analysis.load_watermarked_artifact(legacy_path)
+
+    record = artifact.records["HumanEval/1"]
+    assert record["embed_rate"] == 0.75
+    assert "diagnostics_version" not in record
+    assert "retry_summary" not in record
+    assert "cascade_summary" not in record
+    assert "failure_reason_counts" not in record
+    assert "rescued_blocks" not in record
+    assert "unrescued_blocks" not in record
+
 
 
 def test_build_offline_regression_report_includes_regression_classification_keys(tmp_path):
@@ -527,3 +597,292 @@ def test_build_offline_regression_report_marks_incompatible_comparison_unresolve
 
     assert report["compatibility"]["is_compatible"] is False
     assert report["regression_classification"]["recommended_branch"] == "stop"
+
+
+def test_build_offline_regression_report_surfaces_route_one_anomalies_and_deltas(tmp_path):
+    offline_analysis = _load_module()
+
+    left_summary_path = tmp_path / "left_summary.json"
+    right_summary_path = tmp_path / "right_summary.json"
+    left_details_path = tmp_path / "left_details.jsonl"
+    right_details_path = tmp_path / "right_details.jsonl"
+    left_watermarked_path = tmp_path / "left_watermarked.jsonl"
+    right_watermarked_path = tmp_path / "right_watermarked.jsonl"
+
+    _write_json(left_summary_path, {"dataset": "HumanEval", "summary": {"watermark_rate": 1.0}})
+    _write_json(right_summary_path, {"dataset": "HumanEval", "summary": {"watermark_rate": 0.0}})
+    _write_jsonl(
+        left_details_path,
+        [
+            {
+                "id": "HumanEval/0",
+                "is_watermarked": True,
+                "z_score": 2.5,
+                "p_value": 0.02,
+                "independent_blocks": 8,
+                "hits": 6,
+            }
+        ],
+    )
+    _write_jsonl(
+        right_details_path,
+        [
+            {
+                "id": "HumanEval/0",
+                "is_watermarked": False,
+                "z_score": 1.2,
+                "p_value": 0.16,
+                "independent_blocks": 8,
+                "hits": 5,
+            }
+        ],
+    )
+    _write_jsonl(
+        left_watermarked_path,
+        [
+            {
+                "id": "HumanEval/0",
+                "total_blocks": 8,
+                "embedded_blocks": 6,
+                "failed_blocks": 0,
+                "fallback_blocks": 0,
+                "embed_rate": 0.75,
+                "diagnostics_version": 1,
+                "retry_summary": {
+                    "blocks_with_retry": 1,
+                    "retry_rescued_blocks": 1,
+                    "retry_exhausted_blocks": 0,
+                },
+                "cascade_summary": {
+                    "cascade_triggers": 0,
+                    "cascade_rescued_blocks": 0,
+                },
+                "failure_reason_counts": {},
+                "rescued_blocks": 1,
+                "unrescued_blocks": 0,
+            }
+        ],
+    )
+    _write_jsonl(
+        right_watermarked_path,
+        [
+            {
+                "id": "HumanEval/0",
+                "total_blocks": 8,
+                "embedded_blocks": 4,
+                "failed_blocks": 2,
+                "fallback_blocks": 0,
+                "embed_rate": 0.5,
+                "diagnostics_version": 2,
+                "retry_summary": {
+                    "blocks_with_retry": 2,
+                    "retry_rescued_blocks": 0,
+                    "retry_exhausted_blocks": 1,
+                },
+                "cascade_summary": {
+                    "cascade_triggers": 1,
+                    "cascade_rescued_blocks": 0,
+                },
+                "failure_reason_counts": {"signature_miss": 3},
+                "rescued_blocks": 0,
+                "unrescued_blocks": 2,
+            }
+        ],
+    )
+
+    report = offline_analysis.build_offline_regression_report(
+        left_summary=offline_analysis.load_summary_artifact(left_summary_path),
+        left_details=offline_analysis.load_detail_artifact(left_details_path),
+        left_watermarked=offline_analysis.load_watermarked_artifact(left_watermarked_path),
+        right_summary=offline_analysis.load_summary_artifact(right_summary_path),
+        right_details=offline_analysis.load_detail_artifact(right_details_path),
+        right_watermarked=offline_analysis.load_watermarked_artifact(right_watermarked_path),
+    )
+
+    sample = report["embedding_delta"]["samples"]["HumanEval/0"]
+
+    assert sample["route_one_summary"]["left"]["diagnostics_version"] == 1
+    assert sample["route_one_summary"]["right"]["diagnostics_version"] == 2
+    assert sample["route_one_summary"]["delta"]["retry_summary"]["retry_exhausted_blocks_delta"] == 1
+    assert sample["route_one_summary"]["delta"]["cascade_summary"]["cascade_triggers_delta"] == 1
+    assert sample["route_one_summary"]["delta"]["failure_reason_counts"] == {"signature_miss": 3}
+    assert sample["route_one_summary"]["delta"]["rescued_blocks_delta"] == -1
+    assert sample["route_one_summary"]["delta"]["unrescued_blocks_delta"] == 2
+    assert report["anomalies"]["route_one"]["HumanEval/0"] == [
+        "near_miss_with_exhausted_retry",
+        "cascade_no_recovery",
+    ]
+
+
+def test_build_offline_regression_report_keeps_legacy_watermarked_rows_compatible(tmp_path):
+    offline_analysis = _load_module()
+
+    left_summary_path = tmp_path / "left_summary.json"
+    right_summary_path = tmp_path / "right_summary.json"
+    left_details_path = tmp_path / "left_details.jsonl"
+    right_details_path = tmp_path / "right_details.jsonl"
+    left_watermarked_path = tmp_path / "left_watermarked.jsonl"
+    right_watermarked_path = tmp_path / "right_watermarked.jsonl"
+
+    _write_json(left_summary_path, {"dataset": "HumanEval", "summary": {"watermark_rate": 1.0}})
+    _write_json(right_summary_path, {"dataset": "HumanEval", "summary": {"watermark_rate": 1.0}})
+    _write_jsonl(
+        left_details_path,
+        [
+            {
+                "id": "HumanEval/1",
+                "is_watermarked": True,
+                "z_score": 2.1,
+                "p_value": 0.03,
+                "independent_blocks": 8,
+                "hits": 6,
+            }
+        ],
+    )
+    _write_jsonl(
+        right_details_path,
+        [
+            {
+                "id": "HumanEval/1",
+                "is_watermarked": True,
+                "z_score": 2.0,
+                "p_value": 0.04,
+                "independent_blocks": 8,
+                "hits": 6,
+            }
+        ],
+    )
+    _write_jsonl(
+        left_watermarked_path,
+        [
+            {
+                "id": "HumanEval/1",
+                "total_blocks": 8,
+                "embedded_blocks": 6,
+                "failed_blocks": 0,
+                "fallback_blocks": 0,
+                "embed_rate": 0.75,
+            }
+        ],
+    )
+    _write_jsonl(
+        right_watermarked_path,
+        [
+            {
+                "id": "HumanEval/1",
+                "total_blocks": 8,
+                "embedded_blocks": 6,
+                "failed_blocks": 0,
+                "fallback_blocks": 0,
+                "embed_rate": 0.75,
+            }
+        ],
+    )
+
+    report = offline_analysis.build_offline_regression_report(
+        left_summary=offline_analysis.load_summary_artifact(left_summary_path),
+        left_details=offline_analysis.load_detail_artifact(left_details_path),
+        left_watermarked=offline_analysis.load_watermarked_artifact(left_watermarked_path),
+        right_summary=offline_analysis.load_summary_artifact(right_summary_path),
+        right_details=offline_analysis.load_detail_artifact(right_details_path),
+        right_watermarked=offline_analysis.load_watermarked_artifact(right_watermarked_path),
+    )
+
+    sample = report["embedding_delta"]["samples"]["HumanEval/1"]
+
+    assert "route_one_summary" not in sample
+    assert report["anomalies"]["route_one"] == {}
+
+
+def test_build_offline_regression_report_does_not_flag_unchanged_cascade_no_recovery(tmp_path):
+    offline_analysis = _load_module()
+
+    left_summary_path = tmp_path / "left_summary.json"
+    right_summary_path = tmp_path / "right_summary.json"
+    left_details_path = tmp_path / "left_details.jsonl"
+    right_details_path = tmp_path / "right_details.jsonl"
+    left_watermarked_path = tmp_path / "left_watermarked.jsonl"
+    right_watermarked_path = tmp_path / "right_watermarked.jsonl"
+
+    _write_json(left_summary_path, {"dataset": "HumanEval", "summary": {"watermark_rate": 1.0}})
+    _write_json(right_summary_path, {"dataset": "HumanEval", "summary": {"watermark_rate": 1.0}})
+    _write_jsonl(
+        left_details_path,
+        [
+            {
+                "id": "HumanEval/2",
+                "is_watermarked": True,
+                "z_score": 2.2,
+                "p_value": 0.03,
+                "independent_blocks": 8,
+                "hits": 6,
+            }
+        ],
+    )
+    _write_jsonl(
+        right_details_path,
+        [
+            {
+                "id": "HumanEval/2",
+                "is_watermarked": True,
+                "z_score": 2.1,
+                "p_value": 0.04,
+                "independent_blocks": 8,
+                "hits": 6,
+            }
+        ],
+    )
+    identical_route_one = {
+        "diagnostics_version": 2,
+        "retry_summary": {
+            "blocks_with_retry": 1,
+            "retry_rescued_blocks": 0,
+            "retry_exhausted_blocks": 0,
+        },
+        "cascade_summary": {
+            "cascade_triggers": 2,
+            "cascade_rescued_blocks": 0,
+        },
+        "failure_reason_counts": {"signature_miss": 2},
+        "rescued_blocks": 0,
+        "unrescued_blocks": 2,
+    }
+    _write_jsonl(
+        left_watermarked_path,
+        [
+            {
+                "id": "HumanEval/2",
+                "total_blocks": 8,
+                "embedded_blocks": 5,
+                "failed_blocks": 1,
+                "fallback_blocks": 0,
+                "embed_rate": 0.625,
+                **identical_route_one,
+            }
+        ],
+    )
+    _write_jsonl(
+        right_watermarked_path,
+        [
+            {
+                "id": "HumanEval/2",
+                "total_blocks": 8,
+                "embedded_blocks": 5,
+                "failed_blocks": 1,
+                "fallback_blocks": 0,
+                "embed_rate": 0.625,
+                **identical_route_one,
+            }
+        ],
+    )
+
+    report = offline_analysis.build_offline_regression_report(
+        left_summary=offline_analysis.load_summary_artifact(left_summary_path),
+        left_details=offline_analysis.load_detail_artifact(left_details_path),
+        left_watermarked=offline_analysis.load_watermarked_artifact(left_watermarked_path),
+        right_summary=offline_analysis.load_summary_artifact(right_summary_path),
+        right_details=offline_analysis.load_detail_artifact(right_details_path),
+        right_watermarked=offline_analysis.load_watermarked_artifact(right_watermarked_path),
+    )
+
+    assert report["anomalies"]["route_one"] == {}

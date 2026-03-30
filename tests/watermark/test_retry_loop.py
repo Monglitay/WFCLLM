@@ -1,5 +1,6 @@
 """Tests for wfcllm.watermark.retry_loop — rejection sampling retry logic."""
 
+import hashlib
 import logging
 import pytest
 from unittest.mock import MagicMock, patch
@@ -264,3 +265,351 @@ class TestRetryLoopUnit:
         assert "gamma_target=" in caplog.text
         assert "gamma_effective=" in caplog.text
         assert "k=" in caplog.text
+
+    def test_retry_records_signature_miss_with_hash_and_in_valid_set(
+        self,
+        config,
+        mock_ctx,
+        mock_verifier,
+        mock_keying,
+        mock_entropy,
+    ):
+        config.max_retries = 1
+        event = InterceptEvent(
+            block_text="x = 1", block_type="simple",
+            node_type="expression_statement", parent_node_type="module",
+            token_start_idx=0, token_count=2,
+        )
+        mock_ctx.last_event = event
+        mock_ctx.eos_id = 2
+        mock_ctx.forward_and_sample.return_value = 5
+        mock_ctx.generated_ids = [5]
+
+        mock_verifier.verify.return_value = VerifyResult(
+            passed=False,
+            min_margin=0.2,
+            lsh_signature=(1, 1),
+            in_valid_set=False,
+        )
+        mock_keying.derive.return_value = frozenset({(9, 9)})
+        mock_entropy.estimate_block_entropy.return_value = 1.0
+        mock_entropy.compute_margin.return_value = 0.1
+
+        loop = RetryLoop(
+            ctx=mock_ctx, config=config,
+            verifier=mock_verifier, keying=mock_keying,
+            entropy_est=mock_entropy, structural_token_ids=set(),
+        )
+        cp = MagicMock(spec=Checkpoint)
+        cp.generated_ids = []
+        original_event = MagicMock(spec=InterceptEvent)
+        original_event.parent_node_type = "module"
+
+        result = loop.run(cp, original_event)
+        attempt = result.diagnostics.per_attempt[0]
+        assert attempt.failure_reason == "signature_miss"
+        assert attempt.in_valid_set is False
+        assert attempt.block_text_hash == hashlib.sha256(
+            event.block_text.encode("utf-8")
+        ).hexdigest()
+
+    def test_retry_records_no_block_generated_attempts(
+        self,
+        config,
+        mock_ctx,
+        mock_verifier,
+        mock_keying,
+        mock_entropy,
+    ):
+        config.max_retries = 2
+        loop = RetryLoop(
+            ctx=mock_ctx, config=config,
+            verifier=mock_verifier, keying=mock_keying,
+            entropy_est=mock_entropy, structural_token_ids=set(),
+        )
+        cp = MagicMock(spec=Checkpoint)
+        cp.generated_ids = []
+        original_event = MagicMock(spec=InterceptEvent)
+        original_event.parent_node_type = "module"
+
+        with patch.object(loop, "_generate_until_block", return_value=None):
+            result = loop.run(cp, original_event)
+
+        assert len(result.diagnostics.per_attempt) == 2
+        for attempt in result.diagnostics.per_attempt:
+            assert attempt.no_block is True
+            assert attempt.failure_reason == "no_block_generated"
+            assert attempt.block_text_hash is None
+
+    def test_retry_failure_retains_terminal_produced_event_identity(
+        self,
+        config,
+        mock_ctx,
+        mock_verifier,
+        mock_keying,
+        mock_entropy,
+    ):
+        config.max_retries = 2
+        first_event = InterceptEvent(
+            block_text="x = 1", block_type="simple",
+            node_type="expression_statement", parent_node_type="module",
+            token_start_idx=0, token_count=2,
+        )
+        final_event = InterceptEvent(
+            block_text="return x", block_type="simple",
+            node_type="return_statement", parent_node_type="module",
+            token_start_idx=0, token_count=2,
+        )
+        mock_ctx.generated_ids = [5]
+
+        mock_verifier.verify.side_effect = [
+            VerifyResult(passed=False, min_margin=0.01, in_valid_set=False),
+            VerifyResult(passed=False, min_margin=0.01, in_valid_set=False),
+        ]
+        mock_keying.derive.return_value = frozenset()
+        mock_entropy.estimate_block_entropy.return_value = 1.0
+        mock_entropy.compute_margin.return_value = 0.1
+
+        loop = RetryLoop(
+            ctx=mock_ctx, config=config,
+            verifier=mock_verifier, keying=mock_keying,
+            entropy_est=mock_entropy, structural_token_ids=set(),
+        )
+        cp = MagicMock(spec=Checkpoint)
+        cp.generated_ids = []
+        original_event = MagicMock(spec=InterceptEvent)
+        original_event.parent_node_type = "module"
+
+        with patch.object(
+            loop,
+            "_generate_until_block",
+            side_effect=[first_event, final_event],
+        ):
+            result = loop.run(cp, original_event)
+
+        assert result.success is False
+        assert result.final_event is final_event
+
+    def test_retry_failure_clears_stale_produced_identity_after_terminal_no_block(
+        self,
+        config,
+        mock_ctx,
+        mock_verifier,
+        mock_keying,
+        mock_entropy,
+    ):
+        config.max_retries = 2
+        produced_event = InterceptEvent(
+            block_text="x = 1", block_type="simple",
+            node_type="expression_statement", parent_node_type="module",
+            token_start_idx=0, token_count=2,
+        )
+        mock_ctx.generated_ids = [5]
+
+        mock_verifier.verify.return_value = VerifyResult(
+            passed=False,
+            min_margin=0.01,
+            in_valid_set=False,
+        )
+        mock_keying.derive.return_value = frozenset()
+        mock_entropy.estimate_block_entropy.return_value = 1.0
+        mock_entropy.compute_margin.return_value = 0.1
+
+        loop = RetryLoop(
+            ctx=mock_ctx, config=config,
+            verifier=mock_verifier, keying=mock_keying,
+            entropy_est=mock_entropy, structural_token_ids=set(),
+        )
+        cp = MagicMock(spec=Checkpoint)
+        cp.generated_ids = []
+        original_event = MagicMock(spec=InterceptEvent)
+        original_event.parent_node_type = "module"
+
+        with patch.object(
+            loop,
+            "_generate_until_block",
+            side_effect=[produced_event, None],
+        ):
+            result = loop.run(cp, original_event)
+
+        assert result.success is False
+        assert result.final_event is None
+        assert result.diagnostics.per_attempt[0].block_text_hash == hashlib.sha256(
+            produced_event.block_text.encode("utf-8")
+        ).hexdigest()
+        assert result.diagnostics.per_attempt[1].no_block is True
+
+    def test_retry_classifies_margin_and_dual_miss_reasons(
+        self,
+        config,
+        mock_ctx,
+        mock_verifier,
+        mock_keying,
+        mock_entropy,
+    ):
+        config.max_retries = 2
+        event = InterceptEvent(
+            block_text="x = 1", block_type="simple",
+            node_type="expression_statement", parent_node_type="module",
+            token_start_idx=0, token_count=2,
+        )
+        mock_ctx.last_event = event
+        mock_ctx.eos_id = 2
+        mock_ctx.forward_and_sample.return_value = 5
+        mock_ctx.generated_ids = [5]
+
+        mock_verifier.verify.side_effect = [
+            VerifyResult(
+                passed=False,
+                min_margin=0.01,
+                lsh_signature=(1, 1),
+                in_valid_set=True,
+            ),
+            VerifyResult(
+                passed=False,
+                min_margin=0.01,
+                lsh_signature=(0, 0),
+                in_valid_set=False,
+            ),
+        ]
+        mock_keying.derive.return_value = frozenset()
+        mock_entropy.estimate_block_entropy.return_value = 1.0
+        mock_entropy.compute_margin.return_value = 0.1
+
+        loop = RetryLoop(
+            ctx=mock_ctx, config=config,
+            verifier=mock_verifier, keying=mock_keying,
+            entropy_est=mock_entropy, structural_token_ids=set(),
+        )
+        cp = MagicMock(spec=Checkpoint)
+        cp.generated_ids = []
+        original_event = MagicMock(spec=InterceptEvent)
+        original_event.parent_node_type = "module"
+
+        result = loop.run(cp, original_event)
+        reasons = [attempt.failure_reason for attempt in result.diagnostics.per_attempt]
+        in_valid_values = [attempt.in_valid_set for attempt in result.diagnostics.per_attempt]
+        assert reasons == ["margin_miss", "signature_and_margin_miss"]
+        assert in_valid_values == [True, False]
+
+    def test_retry_classifies_missing_membership_as_unknown(
+        self,
+        config,
+        mock_ctx,
+        mock_verifier,
+        mock_keying,
+        mock_entropy,
+    ):
+        config.max_retries = 1
+        event = InterceptEvent(
+            block_text="x = 1", block_type="simple",
+            node_type="expression_statement", parent_node_type="module",
+            token_start_idx=0, token_count=2,
+        )
+        mock_ctx.last_event = event
+        mock_ctx.eos_id = 2
+        mock_ctx.forward_and_sample.return_value = 5
+        mock_ctx.generated_ids = [5]
+
+        mock_verifier.verify.return_value = VerifyResult(
+            passed=False,
+            min_margin=0.2,
+            lsh_signature=(1, 1),
+        )
+        mock_keying.derive.return_value = frozenset({(1, 1)})
+        mock_entropy.estimate_block_entropy.return_value = 1.0
+        mock_entropy.compute_margin.return_value = 0.1
+
+        loop = RetryLoop(
+            ctx=mock_ctx, config=config,
+            verifier=mock_verifier, keying=mock_keying,
+            entropy_est=mock_entropy, structural_token_ids=set(),
+        )
+        cp = MagicMock(spec=Checkpoint)
+        cp.generated_ids = []
+        original_event = MagicMock(spec=InterceptEvent)
+        original_event.parent_node_type = "module"
+
+        result = loop.run(cp, original_event)
+        attempt = result.diagnostics.per_attempt[0]
+        assert attempt.in_valid_set is None
+        assert attempt.failure_reason == "unknown"
+
+    def test_retry_failure_returns_last_produced_block(self, config, mock_ctx, mock_verifier, mock_keying, mock_entropy):
+        config.max_retries = 2
+        first_event = InterceptEvent(
+            block_text="x = 1", block_type="simple",
+            node_type="expression_statement", parent_node_type="module",
+            token_start_idx=0, token_count=2,
+        )
+        second_event = InterceptEvent(
+            block_text="return y", block_type="simple",
+            node_type="return_statement", parent_node_type="function_definition",
+            token_start_idx=0, token_count=2,
+        )
+
+        mock_ctx.eos_id = 2
+        mock_ctx.generated_ids = [5, 6]
+        mock_ctx.forward_and_sample.return_value = 5
+        mock_verifier.verify.side_effect = [
+            VerifyResult(
+                passed=False,
+                min_margin=0.01,
+                lsh_signature=(1, 1),
+                in_valid_set=False,
+            ),
+            VerifyResult(
+                passed=False,
+                min_margin=0.01,
+                lsh_signature=(2, 2),
+                in_valid_set=False,
+            ),
+        ]
+        mock_keying.derive.return_value = frozenset()
+        mock_entropy.estimate_block_entropy.return_value = 1.0
+        mock_entropy.compute_margin.return_value = 0.1
+
+        loop = RetryLoop(
+            ctx=mock_ctx, config=config,
+            verifier=mock_verifier, keying=mock_keying,
+            entropy_est=mock_entropy, structural_token_ids=set(),
+        )
+        cp = MagicMock(spec=Checkpoint)
+        cp.generated_ids = []
+        original_event = MagicMock(spec=InterceptEvent)
+        original_event.parent_node_type = "module"
+
+        with patch.object(
+            loop,
+            "_generate_until_block",
+            side_effect=[first_event, second_event],
+        ):
+            result = loop.run(cp, original_event)
+
+        assert result.success is False
+        assert result.final_event == second_event
+
+    def test_retry_no_block_only_failure_keeps_final_event_none(
+        self,
+        config,
+        mock_ctx,
+        mock_verifier,
+        mock_keying,
+        mock_entropy,
+    ):
+        config.max_retries = 2
+        loop = RetryLoop(
+            ctx=mock_ctx, config=config,
+            verifier=mock_verifier, keying=mock_keying,
+            entropy_est=mock_entropy, structural_token_ids=set(),
+        )
+        cp = MagicMock(spec=Checkpoint)
+        cp.generated_ids = []
+        original_event = MagicMock(spec=InterceptEvent)
+        original_event.parent_node_type = "module"
+
+        with patch.object(loop, "_generate_until_block", return_value=None):
+            result = loop.run(cp, original_event)
+
+        assert result.success is False
+        assert result.final_event is None

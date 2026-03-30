@@ -1,5 +1,6 @@
 """Tests for wfcllm.watermark.cascade — compound block cascade fallback."""
 
+import json
 import pytest
 from unittest.mock import MagicMock
 
@@ -67,7 +68,12 @@ class TestCascadeEnabled:
         event = MagicMock(spec=InterceptEvent)
         mgr.on_compound_block_start(ctx, event)
         mgr.on_simple_block_failed("x = 1")
-        assert mgr._stack[-1].failed_simple_blocks == ["x = 1"]
+        assert mgr._stack[-1].failed_simple_blocks == [
+            {
+                "block_text": "x = 1",
+                "block_ordinal": None,
+            }
+        ]
 
     def test_should_cascade_true_after_failure(self, mgr):
         ctx = MagicMock(spec=GenerationContext)
@@ -97,6 +103,50 @@ class TestCascadeEnabled:
         assert isinstance(result, CascadeCheckpoint)
         ctx.rollback.assert_called_once_with(cp)
         assert len(mgr._stack) == 0
+
+    def test_cascade_exposes_serializable_replacement_metadata(self, mgr):
+        ctx = MagicMock(spec=GenerationContext)
+        cp = MagicMock(spec=Checkpoint)
+        ctx.last_block_checkpoint = cp
+        event = MagicMock(spec=InterceptEvent)
+        event.node_type = "if_statement"
+        event.parent_node_type = None
+        mgr.on_compound_block_start(
+            ctx,
+            event,
+            stats_snapshot={
+                "total_blocks": 1,
+                "embedded_blocks": 0,
+                "failed_blocks": 1,
+            },
+        )
+        mgr.on_simple_block_failed("x = 1", block_ordinal=3)
+
+        result = mgr.cascade(ctx)
+
+        metadata = result.build_diagnostic_metadata(
+            restored_stats={
+                "total_blocks": 0,
+                "embedded_blocks": 0,
+                "failed_blocks": 0,
+            }
+        )
+
+        assert metadata == {
+            "triggered": True,
+            "compound_node_type": "if_statement",
+            "failed_simple_count_before_cascade": 1,
+            "replaced_block_ordinals": [3],
+            "restored_total_blocks": 0,
+            "restored_embedded_blocks": 0,
+            "restored_failed_blocks": 0,
+        }
+        json.dumps(metadata)
+
+        scope = result.build_replacement_scope()
+        assert scope["compound_node_type"] == "if_statement"
+        assert scope["compound_parent_node_type"] == "module"
+        assert scope["replaced_block_ordinals"] == [3]
 
     def test_max_depth_evicts_oldest(self, mgr):
         """Exceeding max_depth drops the oldest checkpoint."""

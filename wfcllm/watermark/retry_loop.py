@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 
 from wfcllm.watermark.config import WatermarkConfig
 from wfcllm.watermark.context import GenerationContext, Checkpoint
+from wfcllm.watermark.diagnostics import FailureReason, hash_block_text
 from wfcllm.watermark.entropy import NodeEntropyEstimator
 from wfcllm.watermark.gamma_schedule import GammaResolution, quantize_gamma
 from wfcllm.watermark.interceptor import InterceptEvent
@@ -23,7 +24,10 @@ class AttemptInfo:
 
     sig: tuple[int, ...] | None = None
     min_margin: float = 0.0
+    in_valid_set: bool | None = None
     passed: bool = False
+    failure_reason: str | None = None
+    block_text_hash: str | None = None
     text: str = ""
     no_block: bool = False
 
@@ -100,6 +104,7 @@ class RetryLoop:
         prev_retry_ids: list[int] | None = None
         sigs_seen: set[tuple] = set()
         texts_seen: set[str] = set()
+        last_produced_event: InterceptEvent | None = None
 
         for attempt_i in range(self._config.max_retries):
             # Atomically restore all state
@@ -111,12 +116,20 @@ class RetryLoop:
             )
 
             if event is None:
-                diagnostics.per_attempt.append(AttemptInfo(no_block=True))
+                last_produced_event = None
+                diagnostics.per_attempt.append(
+                    AttemptInfo(
+                        no_block=True,
+                        failure_reason=FailureReason.no_block_generated.value,
+                    )
+                )
                 logger.debug(
                     "  [retry %d/%d] sub-loop ended without block",
                     attempt_i + 1, self._config.max_retries,
                 )
                 continue
+
+            last_produced_event = event
 
             # Verify
             block_entropy = self._entropy_est.estimate_block_entropy(event.block_text)
@@ -124,11 +137,21 @@ class RetryLoop:
             gamma_resolution = self._resolve_gamma(event.block_text)
             valid_set = self._keying.derive(parent, k=gamma_resolution.k)
             result = self._verifier.verify(event.block_text, valid_set, margin)
+            failure_reason = None
+            if not result.passed:
+                failure_reason = self._classify_failure_reason(
+                    in_valid_set=result.in_valid_set,
+                    min_margin=result.min_margin,
+                    margin_threshold=margin,
+                )
 
             info = AttemptInfo(
                 sig=result.lsh_signature if result.lsh_signature else None,
                 min_margin=result.min_margin,
+                in_valid_set=result.in_valid_set,
                 passed=result.passed,
+                failure_reason=failure_reason,
+                block_text_hash=hash_block_text(event.block_text),
                 text=event.block_text[:80],
             )
             diagnostics.per_attempt.append(info)
@@ -146,7 +169,7 @@ class RetryLoop:
                 gamma_resolution.k,
                 gamma_resolution.gamma_effective,
                 result.lsh_signature,
-                result.lsh_signature in valid_set,
+                result.in_valid_set,
                 result.min_margin, result.passed,
                 event.block_text[:80],
             )
@@ -174,7 +197,7 @@ class RetryLoop:
         return RetryResult(
             success=False,
             attempts=self._config.max_retries,
-            final_event=None,
+            final_event=last_produced_event,
             diagnostics=diagnostics,
         )
 
@@ -196,3 +219,20 @@ class RetryLoop:
         if self._gamma_resolver is not None:
             return self._gamma_resolver(block_text)
         return quantize_gamma(self._config.lsh_gamma, self._config.lsh_d)
+
+    @staticmethod
+    def _classify_failure_reason(
+        in_valid_set: bool | None,
+        min_margin: float,
+        margin_threshold: float,
+    ) -> str:
+        if in_valid_set is None:
+            return FailureReason.unknown.value
+        margin_passed = min_margin > margin_threshold
+        if not in_valid_set and margin_passed:
+            return FailureReason.signature_miss.value
+        if in_valid_set and not margin_passed:
+            return FailureReason.margin_miss.value
+        if not in_valid_set and not margin_passed:
+            return FailureReason.signature_and_margin_miss.value
+        return FailureReason.unknown.value

@@ -20,7 +20,39 @@ class CascadeCheckpoint:
     compound_event: InterceptEvent
     checkpoint_key: tuple
     stats_snapshot: object | None = None
-    failed_simple_blocks: list[str] = field(default_factory=list)
+    failed_simple_blocks: list[dict[str, object]] = field(default_factory=list)
+
+    def build_diagnostic_metadata(
+        self,
+        restored_stats: object | None = None,
+    ) -> dict[str, object]:
+        metadata: dict[str, object] = {
+            "triggered": True,
+            "compound_node_type": self.compound_event.node_type,
+            "failed_simple_count_before_cascade": len(self.failed_simple_blocks),
+            "replaced_block_ordinals": [
+                item["block_ordinal"]
+                for item in self.failed_simple_blocks
+                if isinstance(item.get("block_ordinal"), int)
+            ],
+        }
+        if isinstance(restored_stats, dict):
+            metadata["restored_total_blocks"] = int(restored_stats.get("total_blocks", 0))
+            metadata["restored_embedded_blocks"] = int(restored_stats.get("embedded_blocks", 0))
+            metadata["restored_failed_blocks"] = int(restored_stats.get("failed_blocks", 0))
+        return metadata
+
+    def build_replacement_scope(self) -> dict[str, object]:
+        return {
+            "checkpoint_key": list(self.checkpoint_key),
+            "compound_node_type": self.compound_event.node_type,
+            "compound_parent_node_type": self.compound_event.parent_node_type or "module",
+            "replaced_block_ordinals": [
+                item["block_ordinal"]
+                for item in self.failed_simple_blocks
+                if isinstance(item.get("block_ordinal"), int)
+            ],
+        }
 
 
 class CascadeManager:
@@ -86,10 +118,19 @@ class CascadeManager:
         if len(self._stack) > self._max_depth:
             self._stack.pop(0)
 
-    def on_simple_block_failed(self, block_text: str) -> None:
+    def on_simple_block_failed(
+        self,
+        block_text: str,
+        block_ordinal: int | None = None,
+    ) -> None:
         """Record a retry-failed simple block."""
         if self._enabled and self._stack:
-            self._stack[-1].failed_simple_blocks.append(block_text)
+            self._stack[-1].failed_simple_blocks.append(
+                {
+                    "block_text": block_text,
+                    "block_ordinal": block_ordinal,
+                }
+            )
 
     def should_cascade(self) -> bool:
         """Check if cascade fallback should trigger."""
