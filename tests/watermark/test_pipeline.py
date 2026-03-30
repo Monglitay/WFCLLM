@@ -340,6 +340,133 @@ class TestWatermarkPipelineRun:
         ]
         assert ledger_rows == block_ledgers
 
+    def test_run_keeps_retry_rescue_rollups_in_sync_with_block_ledger(self, tmp_path):
+        watermarked_dir = tmp_path / "watermarked"
+        cfg = WatermarkPipelineConfig(
+            dataset="humaneval",
+            output_dir=str(watermarked_dir),
+            dataset_path="data/datasets",
+        )
+        diagnostic_summary = {
+            "diagnostics_version": 1,
+            "retry_summary": {
+                "blocks_with_retry": 2,
+                "attempts_total": 2,
+                "attempts_no_block": 1,
+                "retry_rescued_blocks": 1,
+                "retry_exhausted_blocks": 1,
+            },
+            "cascade_summary": {
+                "cascade_triggers": 0,
+                "cascade_rollbacks": 0,
+                "cascade_rescued_blocks": 0,
+            },
+            "failure_reason_counts": {"signature_miss": 2},
+            "rescued_blocks": 1,
+            "unrescued_blocks": 1,
+        }
+        block_ledgers = [
+            {
+                "sample_id": "HumanEval/0",
+                "block_ordinal": 0,
+                "initial_verify": {"passed": False, "failure_reason": "signature_miss"},
+                "retry_attempts": [{"attempt_index": 1, "produced_block": True}],
+                "cascade_events": [],
+                "final_outcome": {"embedded": True, "rescued_by_retry": True},
+            },
+            {
+                "sample_id": "HumanEval/0",
+                "block_ordinal": 1,
+                "initial_verify": {"passed": False, "failure_reason": "signature_miss"},
+                "retry_attempts": [{"attempt_index": 1, "produced_block": False}],
+                "cascade_events": [],
+                "final_outcome": {"embedded": False, "failure_reason": "signature_miss"},
+            },
+            {
+                "sample_id": "HumanEval/0",
+                "block_ordinal": 2,
+                "initial_verify": {"passed": True},
+                "retry_attempts": [],
+                "cascade_events": [],
+                "final_outcome": {"embedded": True},
+            },
+        ]
+        generator = self._build_generator(GenerateResult(
+            code="def foo():\n    return 1\n",
+            stats=EmbedStats(
+                total_blocks=3,
+                embedded_blocks=2,
+                failed_blocks=1,
+                fallback_blocks=0,
+            ),
+            diagnostic_summary=diagnostic_summary,
+            block_ledgers=block_ledgers,
+        ))
+        pipeline = WatermarkPipeline(generator=generator, config=cfg)
+        with patch.object(pipeline, "_load_prompts", return_value=[
+            {"id": "HumanEval/0", "prompt": "def foo():\n"}
+        ]):
+            output_path = Path(pipeline.run())
+
+        row = json.loads(output_path.read_text(encoding="utf-8").splitlines()[0])
+        diagnostics_path = (
+            output_path.parent.parent
+            / "diagnostics"
+            / f"{output_path.stem}_block_ledger.jsonl"
+        )
+        ledger_rows = [
+            json.loads(line)
+            for line in diagnostics_path.read_text(encoding="utf-8").splitlines()
+        ]
+        retry_blocks_with_attempts = sum(
+            1 for ledger in ledger_rows if ledger.get("retry_attempts")
+        )
+        retry_attempts_total = sum(
+            len(ledger.get("retry_attempts", [])) for ledger in ledger_rows
+        )
+        retry_attempts_no_block = sum(
+            1
+            for ledger in ledger_rows
+            for attempt in ledger.get("retry_attempts", [])
+            if attempt.get("produced_block") is False
+        )
+        retry_rescued_blocks = sum(
+            1
+            for ledger in ledger_rows
+            if ledger.get("final_outcome", {}).get("rescued_by_retry") is True
+        )
+        retry_exhausted_blocks = sum(
+            1
+            for ledger in ledger_rows
+            if ledger.get("retry_attempts")
+            and ledger.get("final_outcome", {}).get("embedded") is not True
+        )
+        rescued_blocks = sum(
+            1
+            for ledger in ledger_rows
+            if (
+                ledger.get("final_outcome", {}).get("rescued_by_retry") is True
+                or ledger.get("final_outcome", {}).get("rescued_by_cascade") is True
+            )
+        )
+        unrescued_blocks = sum(
+            1
+            for ledger in ledger_rows
+            if (
+                ledger.get("initial_verify", {}).get("passed") is False
+                and ledger.get("final_outcome", {}).get("embedded") is not True
+            )
+        )
+
+        assert retry_rescued_blocks > 0
+        assert row["retry_summary"]["blocks_with_retry"] == retry_blocks_with_attempts
+        assert row["retry_summary"]["attempts_total"] == retry_attempts_total
+        assert row["retry_summary"]["attempts_no_block"] == retry_attempts_no_block
+        assert row["retry_summary"]["retry_rescued_blocks"] == retry_rescued_blocks
+        assert row["retry_summary"]["retry_exhausted_blocks"] == retry_exhausted_blocks
+        assert row["rescued_blocks"] == rescued_blocks
+        assert row["unrescued_blocks"] == unrescued_blocks
+
     def test_run_persists_cascade_visibility_without_fallback_blocks(self, tmp_path):
         watermarked_dir = tmp_path / "watermarked"
         cfg = WatermarkPipelineConfig(
