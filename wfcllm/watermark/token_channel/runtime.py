@@ -59,6 +59,7 @@ class TokenChannelRuntime:
         features: TokenChannelFeatures,
     ) -> TokenChannelDecision:
         normalized_prefix = _normalize_prefix_ids(prefix_ids)
+        _validate_prefix_token_range(normalized_prefix, vocab_size=self._model.vocab_size)
         truncated_prefix = normalized_prefix[-self._context_width :]
         prefix_tensor = torch.tensor(
             truncated_prefix,
@@ -126,3 +127,11 @@ def _coerce_token_id(token_id: object) -> int:
     if not isinstance(token_id, int) or isinstance(token_id, bool):
         raise ValueError("prefix token ids must be integers")
     return token_id
+
+
+def _validate_prefix_token_range(prefix_ids: tuple[int, ...], vocab_size: int) -> None:
+    for token_id in prefix_ids:
+        if token_id < 0 or token_id >= vocab_size:
+            raise ValueError(
+                f"prefix token ids must be between 0 and {vocab_size - 1}"
+            )

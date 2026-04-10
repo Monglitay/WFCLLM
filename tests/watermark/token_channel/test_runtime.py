@@ -149,3 +149,14 @@ def test_runtime_rejects_non_integer_prefix_ids(prefix_ids) -> None:
 
     with pytest.raises(ValueError, match="token"):
         runtime.score_prefix(prefix_ids=prefix_ids, features=_features())
+
+
+@pytest.mark.parametrize("prefix_ids", [[1, -1], [1, 8], torch.tensor([1, -1])])
+def test_runtime_rejects_negative_and_out_of_vocab_prefix_ids(prefix_ids) -> None:
+    runtime = TokenChannelRuntime(
+        model=TokenChannelModel(vocab_size=8, context_width=4, hidden_size=12),
+        config=TokenChannelConfig(context_width=4),
+    )
+
+    with pytest.raises(ValueError, match="token"):
+        runtime.score_prefix(prefix_ids=prefix_ids, features=_features())

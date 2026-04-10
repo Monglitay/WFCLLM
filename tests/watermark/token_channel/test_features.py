@@ -120,3 +120,15 @@ def test_token_channel_features_reject_non_mapping_payload_and_bad_direct_types(
             in_code_body=1,
             structure_mask=True,
         )
+
+
+def test_token_channel_features_reject_missing_required_keys() -> None:
+    with pytest.raises(ValueError, match="Missing required TokenChannelFeatures keys"):
+        TokenChannelFeatures.from_mapping(
+            {
+                "node_type": "if_statement",
+                "parent_node_type": "block",
+                "in_code_body": True,
+                "structure_mask": True,
+            }
+        )

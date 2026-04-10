@@ -51,6 +51,18 @@ class TokenChannelFeatures:
     def from_mapping(cls, payload: dict[str, Any]) -> TokenChannelFeatures:
         if not isinstance(payload, Mapping):
             raise ValueError("TokenChannelFeatures payload must be a mapping")
+        required_keys = {
+            "node_type",
+            "parent_node_type",
+            "block_relative_offset",
+            "in_code_body",
+            "structure_mask",
+        }
+        missing_keys = sorted(required_keys - payload.keys())
+        if missing_keys:
+            raise ValueError(
+                "Missing required TokenChannelFeatures keys: " + ", ".join(missing_keys)
+            )
         return cls(
             node_type=_coerce_string(payload["node_type"], "node_type"),
             parent_node_type=_coerce_string(payload["parent_node_type"], "parent_node_type"),
