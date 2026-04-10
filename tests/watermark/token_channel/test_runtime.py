@@ -13,6 +13,7 @@ from wfcllm.watermark.token_channel.features import TokenChannelFeatures
 from wfcllm.watermark.token_channel.model import TokenChannelArtifactMetadata
 from wfcllm.watermark.token_channel.model import TokenChannelModel
 from wfcllm.watermark.token_channel.model import TokenChannelModelOutput
+from wfcllm.watermark.token_channel.protocol import build_partition
 from wfcllm.watermark.token_channel.runtime import TokenChannelRuntime
 
 
@@ -43,6 +44,7 @@ def test_runtime_returns_gate_and_partition_logits() -> None:
     runtime = TokenChannelRuntime(
         model=TokenChannelModel(vocab_size=8, context_width=4, hidden_size=12),
         config=TokenChannelConfig(context_width=4, switch_threshold=0.0),
+        secret_key="shared-key",
     )
 
     decision = runtime.score_prefix(prefix_ids=[1, 2, 3, 4, 5], features=_features())
@@ -50,7 +52,25 @@ def test_runtime_returns_gate_and_partition_logits() -> None:
     assert decision.truncated_prefix_ids == (2, 3, 4, 5)
     assert isinstance(decision.switch_logit, float)
     assert decision.preference_logits.shape == (8,)
+    assert decision.partition.prefix_key == (1, 2, 3, 4, 5)
+    assert decision.partition.green_token_ids | decision.partition.red_token_ids == set(range(8))
     assert decision.should_switch is True or decision.should_switch is False
+
+
+def test_runtime_partition_matches_protocol_for_prefix_and_secret() -> None:
+    runtime = TokenChannelRuntime(
+        model=TokenChannelModel(vocab_size=8, context_width=4, hidden_size=12),
+        config=TokenChannelConfig(context_width=4),
+        secret_key="shared-key",
+    )
+
+    decision = runtime.score_prefix(prefix_ids=[1, 2, 3], features=_features())
+
+    assert decision.partition == build_partition(
+        logits=decision.preference_logits,
+        prefix_ids=(1, 2, 3),
+        secret_key="shared-key",
+    )
 
 
 def test_runtime_rejects_incompatible_artifact_metadata() -> None:
@@ -98,11 +118,27 @@ def test_runtime_rejects_same_name_but_different_tokenizer_vocab() -> None:
         )
 
 
+def test_runtime_prefers_explicit_tokenizer_name_override() -> None:
+    runtime = TokenChannelRuntime(
+        model=TokenChannelModel(vocab_size=8, context_width=4, hidden_size=12),
+        config=TokenChannelConfig(context_width=4),
+        artifact_metadata=_metadata(),
+        tokenizer=SimpleNamespace(name_or_path="other-runtime-tokenizer", vocab_size=8),
+        tokenizer_name="offline-tokenizer",
+        secret_key="shared-key",
+    )
+
+    decision = runtime.score_prefix(prefix_ids=[1, 2], features=_features())
+
+    assert decision.partition.prefix_key == (1, 2)
+
+
 def test_runtime_accepts_tensor_prefix_ids() -> None:
     runtime = TokenChannelRuntime(
         model=TokenChannelModel(vocab_size=8, context_width=4, hidden_size=12),
         config=TokenChannelConfig(context_width=4),
         artifact_metadata=_metadata(),
+        secret_key="shared-key",
     )
 
     decision = runtime.score_prefix(prefix_ids=torch.tensor([3, 4, 5]), features=_features())
@@ -132,7 +168,11 @@ def test_runtime_places_prefix_tensor_on_model_device() -> None:
             )
 
     model = MetaDeviceModel()
-    runtime = TokenChannelRuntime(model=model, config=TokenChannelConfig(context_width=4))
+    runtime = TokenChannelRuntime(
+        model=model,
+        config=TokenChannelConfig(context_width=4),
+        secret_key="shared-key",
+    )
 
     decision = runtime.score_prefix(prefix_ids=[1, 2, 3], features=_features())
 
@@ -145,6 +185,7 @@ def test_runtime_rejects_non_integer_prefix_ids(prefix_ids) -> None:
     runtime = TokenChannelRuntime(
         model=TokenChannelModel(vocab_size=8, context_width=4, hidden_size=12),
         config=TokenChannelConfig(context_width=4),
+        secret_key="shared-key",
     )
 
     with pytest.raises(ValueError, match="token"):
@@ -156,6 +197,7 @@ def test_runtime_rejects_negative_and_out_of_vocab_prefix_ids(prefix_ids) -> Non
     runtime = TokenChannelRuntime(
         model=TokenChannelModel(vocab_size=8, context_width=4, hidden_size=12),
         config=TokenChannelConfig(context_width=4),
+        secret_key="shared-key",
     )
 
     with pytest.raises(ValueError, match="token"):

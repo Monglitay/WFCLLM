@@ -13,6 +13,8 @@ from wfcllm.watermark.token_channel.features import TokenChannelFeatures
 from wfcllm.watermark.token_channel.model import TokenChannelArtifactMetadata
 from wfcllm.watermark.token_channel.model import TokenChannelModel
 from wfcllm.watermark.token_channel.model import require_token_channel_compatibility
+from wfcllm.watermark.token_channel.protocol import PartitionResult
+from wfcllm.watermark.token_channel.protocol import build_partition
 
 
 @dataclass(frozen=True)
@@ -24,6 +26,7 @@ class TokenChannelDecision:
     features: TokenChannelFeatures
     switch_logit: float
     preference_logits: torch.Tensor
+    partition: PartitionResult
     should_switch: bool
 
 
@@ -37,10 +40,12 @@ class TokenChannelRuntime:
         artifact_metadata: TokenChannelArtifactMetadata | None = None,
         tokenizer: object | None = None,
         tokenizer_name: str | None = None,
+        secret_key: str = "token-channel",
     ) -> None:
         self._model = model
         self._config = config
         self._context_width = config.context_width
+        self._secret_key = secret_key
         self._model.eval()
 
         if artifact_metadata is not None:
@@ -72,12 +77,18 @@ class TokenChannelRuntime:
 
         switch_logit = float(output.switch_logit.item())
         preference_logits = output.preference_logits.detach().cpu()
+        partition = build_partition(
+            logits=preference_logits,
+            prefix_ids=normalized_prefix,
+            secret_key=self._secret_key,
+        )
         return TokenChannelDecision(
             prefix_ids=normalized_prefix,
             truncated_prefix_ids=truncated_prefix,
             features=features,
             switch_logit=switch_logit,
             preference_logits=preference_logits,
+            partition=partition,
             should_switch=switch_logit >= self._config.switch_threshold,
         )
 
@@ -93,12 +104,14 @@ def _normalize_prefix_ids(prefix_ids: Sequence[int] | torch.Tensor) -> tuple[int
 
 
 def _resolve_tokenizer_name(tokenizer: object | None, tokenizer_name: str | None) -> str | None:
+    if tokenizer_name is not None:
+        return tokenizer_name
     if tokenizer is not None:
         name_or_path = getattr(tokenizer, "name_or_path", None)
         if isinstance(name_or_path, str) and name_or_path:
             return name_or_path
         return tokenizer.__class__.__name__
-    return tokenizer_name
+    return None
 
 
 def _get_model_device(model: torch.nn.Module) -> torch.device:
