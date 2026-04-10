@@ -256,6 +256,222 @@ def test_run_extract_uses_resolved_gamma_for_calibration(monkeypatch, tmp_path):
     assert 0.5 < resolved_threshold < 2.5
 
 
+def test_run_watermark_parses_token_channel_from_config(monkeypatch, tmp_path):
+    import run as run_module
+
+    captured: dict = {}
+
+    config_file = tmp_path / "cfg.json"
+    config_file.write_text(
+        json.dumps(
+            {
+                "watermark": {
+                    "secret_key": "k",
+                    "lm_model_path": "local-model",
+                    "token_channel": {
+                        "enabled": True,
+                        "channel_mode": "lexical-only",
+                        "model_path": "data/models/token-channel-demo",
+                        "context_width": 64,
+                        "delta": 1.5,
+                        "lexical_min_block_tokens": 12,
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeState:
+        @staticmethod
+        def is_done(phase: str) -> bool:
+            return phase == "encoder"
+
+        @staticmethod
+        def get(phase: str, key: str):
+            return None
+
+        @staticmethod
+        def mark_done(*args, **kwargs):
+            return None
+
+    class FakeEncoder:
+        def __init__(self, config):
+            self.config = config
+
+        def load_state_dict(self, state):
+            return None
+
+        def to(self, device):
+            return self
+
+    class FakeGenerator:
+        def __init__(self, lm_model, lm_tokenizer, encoder, encoder_tokenizer, config):
+            captured["token_channel"] = config.token_channel
+
+    class FakePipeline:
+        def __init__(self, generator, config):
+            return None
+
+        def run(self) -> str:
+            return str(tmp_path / "watermarked.jsonl")
+
+    monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+    monkeypatch.setattr("transformers.AutoTokenizer.from_pretrained", lambda _: object())
+    monkeypatch.setattr("transformers.AutoModelForCausalLM.from_pretrained", lambda *args, **kwargs: object())
+    monkeypatch.setattr("transformers.BitsAndBytesConfig", lambda **kwargs: SimpleNamespace(**kwargs))
+    monkeypatch.setattr("wfcllm.encoder.model.SemanticEncoder", FakeEncoder)
+    monkeypatch.setattr("wfcllm.watermark.generator.WatermarkGenerator", FakeGenerator)
+    monkeypatch.setattr("wfcllm.watermark.pipeline.WatermarkPipeline", FakePipeline)
+    monkeypatch.setattr("wfcllm.watermark.pipeline.WatermarkPipelineConfig", lambda **kwargs: SimpleNamespace(**kwargs))
+
+    args = SimpleNamespace(
+        dataset=None,
+        dataset_path=None,
+        output_dir=None,
+        sample_limit=None,
+        embed_dim=None,
+        secret_key=None,
+        lm_model_path=None,
+        resume=None,
+        config=config_file,
+        gamma_strategy=None,
+        entropy_profile=None,
+        profile_id=None,
+    )
+
+    rc = run_module.run_watermark(args, FakeState())
+    assert rc == 0
+    assert captured["token_channel"].enabled is True
+    assert captured["token_channel"].mode == "lexical-only"
+    assert captured["token_channel"].model_path == "data/models/token-channel-demo"
+    assert captured["token_channel"].context_width == 64
+    assert captured["token_channel"].delta == 1.5
+    assert captured["token_channel"].lexical_min_block_tokens == 12
+
+
+def test_run_extract_parses_token_channel_from_config(monkeypatch, tmp_path):
+    import run as run_module
+
+    captured: dict = {}
+
+    input_file = tmp_path / "input.jsonl"
+    input_file.write_text(
+        json.dumps(
+            {
+                "id": "HumanEval/0",
+                "generated_code": "x = 1\n",
+                "watermark_params": {"lsh_d": 3, "lsh_gamma": 0.5},
+            }
+        ) + "\n",
+        encoding="utf-8",
+    )
+    config_file = tmp_path / "cfg.json"
+    config_file.write_text(
+        json.dumps(
+            {
+                "extract": {
+                    "secret_key": "k",
+                    "input_file": str(input_file),
+                    "token_channel": {
+                        "enabled": True,
+                        "channel_mode": "lexical-only",
+                        "joint": {
+                            "threshold": 5.0,
+                        },
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeState:
+        @staticmethod
+        def is_done(phase: str) -> bool:
+            return phase == "encoder"
+
+        @staticmethod
+        def get(phase: str, key: str):
+            return None
+
+        @staticmethod
+        def mark_done(*args, **kwargs):
+            return None
+
+    class FakeEncoder:
+        def __init__(self, config):
+            self.config = config
+
+        def load_state_dict(self, state):
+            return None
+
+        def to(self, device):
+            return self
+
+    class FakeDetector:
+        def __init__(self, config, encoder, tokenizer, device):
+            captured["token_channel"] = config.token_channel
+
+    class FakePipeline:
+        def __init__(self, detector, config):
+            self._details = tmp_path / "sample_details.jsonl"
+            self._summary = tmp_path / "sample_summary.json"
+
+        @staticmethod
+        def summary_path_for_details(details_path: Path) -> Path:
+            return Path(details_path).parent / "sample_summary.json"
+
+        def run(self) -> str:
+            self._details.write_text("{}", encoding="utf-8")
+            self._summary.write_text(
+                json.dumps(
+                    {
+                        "meta": {"total_samples": 1},
+                        "summary": {
+                            "watermark_rate": 1.0,
+                            "watermark_rate_ci_95": [1.0, 1.0],
+                            "mean_z_score": 1.0,
+                            "std_z_score": 0.0,
+                            "mean_p_value": 0.1,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return str(self._details)
+
+    monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+    monkeypatch.setattr("transformers.AutoTokenizer.from_pretrained", lambda _: object())
+    monkeypatch.setattr("wfcllm.encoder.model.SemanticEncoder", FakeEncoder)
+    monkeypatch.setattr("wfcllm.extract.detector.WatermarkDetector", FakeDetector)
+    monkeypatch.setattr("wfcllm.extract.pipeline.ExtractPipeline", FakePipeline)
+    monkeypatch.setattr("wfcllm.extract.pipeline.ExtractPipelineConfig", lambda **kwargs: SimpleNamespace(**kwargs))
+
+    args = SimpleNamespace(
+        secret_key=None,
+        input_file=str(input_file),
+        extract_output_dir=None,
+        embed_dim=None,
+        fpr_threshold=None,
+        resume=None,
+        calibration_corpus=None,
+        fpr=None,
+        config=config_file,
+        adaptive_detection_mode=None,
+        strict_contract=False,
+        gamma_strategy=None,
+        entropy_profile=None,
+        profile_id=None,
+    )
+
+    rc = run_module.run_extract(args, FakeState())
+    assert rc == 0
+    assert captured["token_channel"].enabled is True
+    assert captured["token_channel"].mode == "lexical-only"
+    assert captured["token_channel"].joint_threshold == 5.0
+
+
 def test_run_extract_uses_adaptive_calibration_when_adaptive_detection_enabled(
     monkeypatch,
     tmp_path,

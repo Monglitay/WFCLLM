@@ -135,6 +135,13 @@ def resolve_extract_adaptive_gamma_config(args: argparse.Namespace, cfg: dict):
     return resolve_adaptive_gamma_config(args, cfg.get("watermark", {}))
 
 
+def resolve_token_channel_config(section: dict | None):
+    from wfcllm.watermark.token_channel.config import TokenChannelConfig
+
+    configured = section if isinstance(section, dict) else {}
+    return TokenChannelConfig.from_mapping(configured)
+
+
 def build_extract_calibration_contract_builder(
     adaptive_detection_config,
     adaptive_gamma_config,
@@ -700,6 +707,7 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
         lsh_d=wm_cfg.get("lsh_d", 3),
         lsh_gamma=wm_cfg.get("lsh_gamma", 0.5),
         adaptive_gamma=resolve_adaptive_gamma_config(args, wm_cfg),
+        token_channel=resolve_token_channel_config(wm_cfg.get("token_channel")),
     )
     generator = WatermarkGenerator(lm_model, lm_tokenizer, encoder, encoder_tokenizer, wm_config)
 
@@ -929,6 +937,7 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
         lsh_gamma=lsh_gamma,
         adaptive_detection=adaptive_detection_config,
         adaptive_gamma=adaptive_gamma_config,
+        token_channel=resolve_token_channel_config(ext_cfg.get("token_channel")),
     )
     detector = WatermarkDetector(extract_config, encoder, tokenizer, device=device)
 
