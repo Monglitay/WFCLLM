@@ -49,6 +49,11 @@ class TokenChannelArtifactMetadata:
     def __post_init__(self) -> None:
         if not self.schema_version:
             raise ValueError("schema_version must be a non-empty string")
+        if self.schema_version != TOKEN_CHANNEL_SCHEMA_VERSION:
+            raise ValueError(
+                "schema_version must be "
+                f"{TOKEN_CHANNEL_SCHEMA_VERSION!r}, got {self.schema_version!r}"
+            )
         if not self.tokenizer_name:
             raise ValueError("tokenizer_name must be a non-empty string")
         if self.tokenizer_vocab_size <= 0:
@@ -207,6 +212,11 @@ def check_token_channel_compatibility(
     feature_version: str = FEATURE_VERSION,
 ) -> TokenChannelCompatibility:
     reasons: list[str] = []
+    if metadata.schema_version != TOKEN_CHANNEL_SCHEMA_VERSION:
+        reasons.append(
+            "schema_version mismatch: "
+            f"expected {TOKEN_CHANNEL_SCHEMA_VERSION!r}, got {metadata.schema_version!r}"
+        )
     if metadata.tokenizer_name != tokenizer_name:
         reasons.append(
             f"tokenizer_name mismatch: expected {tokenizer_name!r}, got {metadata.tokenizer_name!r}"

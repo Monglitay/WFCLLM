@@ -82,6 +82,17 @@ def test_load_metadata_rejects_missing_required_keys(tmp_path: Path) -> None:
         load_token_channel_artifact_metadata(metadata_path)
 
 
+def test_load_metadata_rejects_unexpected_schema_version(tmp_path: Path) -> None:
+    metadata_path = tmp_path / "metadata.json"
+    invalid = _metadata()
+    invalid["schema_version"] = "token-channel/v2"
+
+    save_token_channel_artifact_metadata(metadata_path, invalid)
+
+    with pytest.raises(ValueError, match="schema_version"):
+        load_token_channel_artifact_metadata(metadata_path)
+
+
 def test_compatibility_check_reports_mismatched_context_width() -> None:
     compatibility = check_token_channel_compatibility(
         TokenChannelArtifactMetadata.from_mapping(_metadata()),
@@ -93,6 +104,27 @@ def test_compatibility_check_reports_mismatched_context_width() -> None:
 
     assert compatibility.is_compatible is False
     assert any("context_width" in reason for reason in compatibility.reasons)
+
+
+def test_compatibility_check_reports_mismatched_schema_version() -> None:
+    metadata = object.__new__(TokenChannelArtifactMetadata)
+    object.__setattr__(metadata, "schema_version", "token-channel/v2")
+    object.__setattr__(metadata, "tokenizer_name", "offline-tokenizer")
+    object.__setattr__(metadata, "tokenizer_vocab_size", 8)
+    object.__setattr__(metadata, "context_width", 4)
+    object.__setattr__(metadata, "feature_version", "token-channel-features/v1")
+    object.__setattr__(metadata, "training_config", {"dropout": 0.0})
+
+    compatibility = check_token_channel_compatibility(
+        metadata,
+        tokenizer_name="offline-tokenizer",
+        tokenizer_vocab_size=8,
+        context_width=4,
+        feature_version="token-channel-features/v1",
+    )
+
+    assert compatibility.is_compatible is False
+    assert any("schema_version" in reason for reason in compatibility.reasons)
 
 
 def test_load_token_channel_artifact_restores_model_and_metadata(tmp_path: Path) -> None:
