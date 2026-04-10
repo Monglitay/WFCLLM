@@ -35,6 +35,7 @@ class TokenChannelRuntime:
         model: TokenChannelModel,
         config: TokenChannelConfig,
         artifact_metadata: TokenChannelArtifactMetadata | None = None,
+        tokenizer_name: str | None = None,
     ) -> None:
         self._model = model
         self._config = config
@@ -44,7 +45,7 @@ class TokenChannelRuntime:
         if artifact_metadata is not None:
             require_token_channel_compatibility(
                 artifact_metadata,
-                tokenizer_name=artifact_metadata.tokenizer_name,
+                tokenizer_name=tokenizer_name or artifact_metadata.tokenizer_name,
                 tokenizer_vocab_size=model.vocab_size,
                 context_width=config.context_width,
                 feature_version=FEATURE_VERSION,

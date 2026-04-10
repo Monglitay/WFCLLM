@@ -63,6 +63,18 @@ def test_runtime_rejects_incompatible_artifact_metadata() -> None:
         TokenChannelRuntime(model=runtime_model, config=config, artifact_metadata=metadata)
 
 
+def test_runtime_rejects_mismatched_runtime_tokenizer_name() -> None:
+    runtime_model = TokenChannelModel(vocab_size=8, context_width=4, hidden_size=12)
+
+    with pytest.raises(ValueError, match="tokenizer_name"):
+        TokenChannelRuntime(
+            model=runtime_model,
+            config=TokenChannelConfig(context_width=4),
+            artifact_metadata=_metadata(),
+            tokenizer_name="other-runtime-tokenizer",
+        )
+
+
 def test_runtime_accepts_tensor_prefix_ids() -> None:
     runtime = TokenChannelRuntime(
         model=TokenChannelModel(vocab_size=8, context_width=4, hidden_size=12),
