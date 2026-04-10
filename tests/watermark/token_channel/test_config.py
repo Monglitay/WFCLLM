@@ -81,3 +81,13 @@ def test_from_mapping_rejects_invalid_channel_mode():
 def test_from_mapping_rejects_fractional_integer_fields():
     with pytest.raises(ValueError, match="context_width"):
         TokenChannelConfig.from_mapping({"context_width": 1.5})
+
+
+def test_from_mapping_rejects_non_object_joint_section():
+    with pytest.raises(ValueError, match="joint"):
+        TokenChannelConfig.from_mapping({"joint": True})
+
+
+def test_from_mapping_rejects_non_string_model_path():
+    with pytest.raises(ValueError, match="model_path"):
+        TokenChannelConfig.from_mapping({"model_path": 123})

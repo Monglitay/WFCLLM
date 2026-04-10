@@ -95,7 +95,13 @@ class TokenChannelConfig:
                 "channel_mode must be one of ['dual-channel', 'lexical-only', 'semantic-only']"
             )
 
-        joint_section = configured.get("joint") if isinstance(configured.get("joint"), dict) else {}
+        raw_joint_section = configured.get("joint")
+        if raw_joint_section is None:
+            joint_section = {}
+        elif isinstance(raw_joint_section, dict):
+            joint_section = raw_joint_section
+        else:
+            raise ValueError("joint must be a JSON object")
         joint = TokenChannelJointConfig.from_mapping(
             {
                 **joint_section,
@@ -121,7 +127,10 @@ class TokenChannelConfig:
         return cls(
             enabled=_coerce_bool(configured.get("enabled", defaults.enabled), "enabled"),
             mode=raw_mode,
-            model_path=str(configured.get("model_path", defaults.model_path)),
+            model_path=_coerce_optional_string(
+                configured.get("model_path", defaults.model_path),
+                "model_path",
+            ),
             context_width=_coerce_int(
                 _coalesce(configured.get("context_width"), defaults.context_width),
                 "context_width",
@@ -254,6 +263,14 @@ def _coerce_bool(value: Any, field_name: str) -> bool:
     if isinstance(value, bool):
         return value
     raise ValueError(f"{field_name} must be a boolean")
+
+
+def _coerce_optional_string(value: Any, field_name: str) -> str:
+    if isinstance(value, str):
+        return value
+    if value is None:
+        raise ValueError(f"{field_name} must be a string")
+    raise ValueError(f"{field_name} must be a string")
 
 
 def _coalesce(*values: Any) -> Any:
