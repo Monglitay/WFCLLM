@@ -1,0 +1,1 @@
+{"sample_id": "HumanEval/0", "block_ordinal": 0, "initial_verify": {"passed": true}, "retry_attempts": [], "cascade_events": [], "final_outcome": {"embedded": true, "rescued_by_retry": false, "rescued_by_cascade": false}, "node_type": "pass_statement", "parent_node_type": "module", "block_text_hash": "d74ff0ee8da3b9806b18c877dbf29bbde50b5bd8e4dad7a3a725000feb82e8f1"}

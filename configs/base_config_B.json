@@ -46,7 +46,7 @@
     "eos_token_id": null,
     "enable_cascade": true,
     "cascade_max_depth": 1,
-    "repetition_penalty": 1.05,
+    "repetition_penalty": 1.07,
     "lsh_d": 4,
     "lsh_gamma": 0.75,
     "adaptive_gamma": {
@@ -58,9 +58,9 @@
       "gamma_max": 0.75,
       "anchors": {
         "p10": 0.75,
-        "p50": 0.75,
+        "p50": 0.50,
         "p75": 0.50,
-        "p90": 0.50,
+        "p90": 0.25,
         "p95": 0.25
       }
     }
