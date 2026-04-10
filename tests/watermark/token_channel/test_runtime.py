@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 import torch
+from torch import nn
 
 from wfcllm.watermark.token_channel.config import TokenChannelConfig
 from wfcllm.watermark.token_channel.features import TokenChannelFeatures
 from wfcllm.watermark.token_channel.model import TokenChannelArtifactMetadata
 from wfcllm.watermark.token_channel.model import TokenChannelModel
+from wfcllm.watermark.token_channel.model import TokenChannelModelOutput
 from wfcllm.watermark.token_channel.runtime import TokenChannelRuntime
 
 
@@ -71,7 +75,7 @@ def test_runtime_rejects_mismatched_runtime_tokenizer_name() -> None:
             model=runtime_model,
             config=TokenChannelConfig(context_width=4),
             artifact_metadata=_metadata(),
-            tokenizer_name="other-runtime-tokenizer",
+            tokenizer=SimpleNamespace(name_or_path="other-runtime-tokenizer"),
         )
 
 
@@ -85,3 +89,33 @@ def test_runtime_accepts_tensor_prefix_ids() -> None:
     decision = runtime.score_prefix(prefix_ids=torch.tensor([3, 4, 5]), features=_features())
 
     assert decision.prefix_ids == (3, 4, 5)
+
+
+def test_runtime_places_prefix_tensor_on_model_device() -> None:
+    class MetaDeviceModel(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.anchor = nn.Parameter(torch.empty(0, device="meta"))
+            self.vocab_size = 8
+            self.seen_device: torch.device | None = None
+
+        def forward(
+            self,
+            prefix_ids: torch.Tensor,
+            features: TokenChannelFeatures,
+        ) -> TokenChannelModelOutput:
+            self.seen_device = prefix_ids.device
+            if prefix_ids.device != self.anchor.device:
+                raise ValueError("prefix_ids device mismatch")
+            return TokenChannelModelOutput(
+                switch_logit=torch.zeros(()),
+                preference_logits=torch.zeros(self.vocab_size),
+            )
+
+    model = MetaDeviceModel()
+    runtime = TokenChannelRuntime(model=model, config=TokenChannelConfig(context_width=4))
+
+    decision = runtime.score_prefix(prefix_ids=[1, 2, 3], features=_features())
+
+    assert model.seen_device == torch.device("meta")
+    assert decision.prefix_ids == (1, 2, 3)

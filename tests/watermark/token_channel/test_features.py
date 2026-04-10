@@ -29,3 +29,27 @@ def test_token_channel_features_reject_negative_block_offset() -> None:
             in_code_body=True,
             structure_mask=True,
         )
+
+
+def test_token_channel_features_reject_non_bool_mapping_fields() -> None:
+    with pytest.raises(ValueError, match="in_code_body"):
+        TokenChannelFeatures.from_mapping(
+            {
+                "node_type": "if_statement",
+                "parent_node_type": "block",
+                "block_relative_offset": 0,
+                "in_code_body": "yes",
+                "structure_mask": True,
+            }
+        )
+
+    with pytest.raises(ValueError, match="structure_mask"):
+        TokenChannelFeatures.from_mapping(
+            {
+                "node_type": "if_statement",
+                "parent_node_type": "block",
+                "block_relative_offset": 0,
+                "in_code_body": True,
+                "structure_mask": 1,
+            }
+        )

@@ -35,6 +35,7 @@ class TokenChannelRuntime:
         model: TokenChannelModel,
         config: TokenChannelConfig,
         artifact_metadata: TokenChannelArtifactMetadata | None = None,
+        tokenizer: object | None = None,
         tokenizer_name: str | None = None,
     ) -> None:
         self._model = model
@@ -45,7 +46,8 @@ class TokenChannelRuntime:
         if artifact_metadata is not None:
             require_token_channel_compatibility(
                 artifact_metadata,
-                tokenizer_name=tokenizer_name or artifact_metadata.tokenizer_name,
+                tokenizer_name=_resolve_tokenizer_name(tokenizer, tokenizer_name)
+                or artifact_metadata.tokenizer_name,
                 tokenizer_vocab_size=model.vocab_size,
                 context_width=config.context_width,
                 feature_version=FEATURE_VERSION,
@@ -58,7 +60,11 @@ class TokenChannelRuntime:
     ) -> TokenChannelDecision:
         normalized_prefix = _normalize_prefix_ids(prefix_ids)
         truncated_prefix = normalized_prefix[-self._context_width :]
-        prefix_tensor = torch.tensor(truncated_prefix, dtype=torch.long)
+        prefix_tensor = torch.tensor(
+            truncated_prefix,
+            dtype=torch.long,
+            device=_get_model_device(self._model),
+        )
 
         with torch.no_grad():
             output = self._model(prefix_tensor, features)
@@ -81,3 +87,22 @@ def _normalize_prefix_ids(prefix_ids: Sequence[int] | torch.Tensor) -> tuple[int
             raise ValueError("prefix_ids tensor must be 1D")
         return tuple(int(token_id) for token_id in prefix_ids.tolist())
     return tuple(int(token_id) for token_id in prefix_ids)
+
+
+def _resolve_tokenizer_name(tokenizer: object | None, tokenizer_name: str | None) -> str | None:
+    if tokenizer is not None:
+        name_or_path = getattr(tokenizer, "name_or_path", None)
+        if isinstance(name_or_path, str) and name_or_path:
+            return name_or_path
+        return tokenizer.__class__.__name__
+    return tokenizer_name
+
+
+def _get_model_device(model: torch.nn.Module) -> torch.device:
+    parameter = next(model.parameters(), None)
+    if parameter is not None:
+        return parameter.device
+    buffer = next(model.buffers(), None)
+    if buffer is not None:
+        return buffer.device
+    return torch.device("cpu")

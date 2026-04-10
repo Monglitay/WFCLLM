@@ -46,7 +46,13 @@ class TokenChannelFeatures:
             node_type=str(payload["node_type"]),
             parent_node_type=str(payload["parent_node_type"]),
             block_relative_offset=int(payload["block_relative_offset"]),
-            in_code_body=bool(payload["in_code_body"]),
-            structure_mask=bool(payload["structure_mask"]),
+            in_code_body=_coerce_bool(payload["in_code_body"], "in_code_body"),
+            structure_mask=_coerce_bool(payload["structure_mask"], "structure_mask"),
             language=str(payload.get("language", PYTHON_LANGUAGE)),
         )
+
+
+def _coerce_bool(value: Any, field_name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a boolean")
+    return value

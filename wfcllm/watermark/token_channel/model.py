@@ -6,6 +6,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 
 import torch
@@ -265,7 +266,9 @@ def load_token_channel_artifact(path: str | Path, map_location: str | torch.devi
     model_path = artifact_dir / TOKEN_CHANNEL_MODEL_FILENAME
 
     metadata = TokenChannelArtifactMetadata.from_mapping(load_token_channel_artifact_metadata(metadata_path))
-    state_dict = torch.load(model_path, map_location=map_location)
+    state_dict = torch.load(model_path, map_location=map_location, weights_only=True)
+    if not isinstance(state_dict, Mapping):
+        raise ValueError("Token-channel checkpoint must contain a state_dict mapping")
     hidden_size = _infer_hidden_size_from_state_dict(state_dict)
     model = TokenChannelModel(
         vocab_size=metadata.tokenizer_vocab_size,
@@ -289,7 +292,7 @@ def _stable_feature_index(value: str, modulo: int, device: torch.device) -> torc
     return torch.tensor(index, dtype=torch.long, device=device)
 
 
-def _infer_hidden_size_from_state_dict(state_dict: dict[str, torch.Tensor]) -> int:
+def _infer_hidden_size_from_state_dict(state_dict: Mapping[str, torch.Tensor]) -> int:
     embedding = state_dict.get("token_embedding.weight")
     if embedding is None or embedding.ndim != 2:
         raise ValueError("Token-channel checkpoint is missing token_embedding.weight")

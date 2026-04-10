@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import torch
@@ -143,3 +144,33 @@ def test_load_token_channel_artifact_restores_model_and_metadata(tmp_path: Path)
     assert artifact.metadata_path == metadata_path
     assert artifact.metadata.tokenizer_name == "offline-tokenizer"
     assert artifact.model.context_width == 4
+
+
+def test_load_token_channel_artifact_uses_weights_only(tmp_path: Path) -> None:
+    artifact_dir = tmp_path / "artifact"
+    artifact_dir.mkdir()
+    metadata_path = artifact_dir / "metadata.json"
+    model_path = artifact_dir / "model.pt"
+
+    model = TokenChannelModel(vocab_size=8, context_width=4, hidden_size=12)
+    save_token_channel_artifact_metadata(metadata_path, _metadata())
+    torch.save(model.state_dict(), model_path)
+
+    with patch("wfcllm.watermark.token_channel.model.torch.load") as load_mock:
+        load_mock.return_value = model.state_dict()
+        load_token_channel_artifact(artifact_dir)
+
+    assert load_mock.call_args.kwargs["weights_only"] is True
+
+
+def test_load_token_channel_artifact_rejects_non_state_dict_payload(tmp_path: Path) -> None:
+    artifact_dir = tmp_path / "artifact"
+    artifact_dir.mkdir()
+    metadata_path = artifact_dir / "metadata.json"
+    model_path = artifact_dir / "model.pt"
+
+    save_token_channel_artifact_metadata(metadata_path, _metadata())
+    torch.save([1, 2, 3], model_path)
+
+    with pytest.raises(ValueError, match="state_dict"):
+        load_token_channel_artifact(artifact_dir)
