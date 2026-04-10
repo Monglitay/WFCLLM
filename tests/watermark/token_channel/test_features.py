@@ -53,3 +53,38 @@ def test_token_channel_features_reject_non_bool_mapping_fields() -> None:
                 "structure_mask": 1,
             }
         )
+
+
+def test_token_channel_features_reject_malformed_string_and_integer_fields() -> None:
+    with pytest.raises(ValueError, match="node_type"):
+        TokenChannelFeatures.from_mapping(
+            {
+                "node_type": None,
+                "parent_node_type": "block",
+                "block_relative_offset": 0,
+                "in_code_body": True,
+                "structure_mask": True,
+            }
+        )
+
+    with pytest.raises(ValueError, match="parent_node_type"):
+        TokenChannelFeatures.from_mapping(
+            {
+                "node_type": "if_statement",
+                "parent_node_type": True,
+                "block_relative_offset": 0,
+                "in_code_body": True,
+                "structure_mask": True,
+            }
+        )
+
+    with pytest.raises(ValueError, match="block_relative_offset"):
+        TokenChannelFeatures.from_mapping(
+            {
+                "node_type": "if_statement",
+                "parent_node_type": "block",
+                "block_relative_offset": "0",
+                "in_code_body": True,
+                "structure_mask": True,
+            }
+        )

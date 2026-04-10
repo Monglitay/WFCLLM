@@ -94,6 +94,38 @@ def test_load_metadata_rejects_unexpected_schema_version(tmp_path: Path) -> None
         load_token_channel_artifact_metadata(metadata_path)
 
 
+@pytest.mark.parametrize(
+    ("field_name", "field_value"),
+    [
+        ("schema_version", None),
+        ("schema_version", True),
+        ("tokenizer_name", None),
+        ("tokenizer_name", False),
+        ("tokenizer_vocab_size", None),
+        ("tokenizer_vocab_size", True),
+        ("tokenizer_vocab_size", "8"),
+        ("context_width", None),
+        ("context_width", False),
+        ("context_width", "4"),
+        ("feature_version", None),
+        ("feature_version", 1),
+    ],
+)
+def test_load_metadata_rejects_malformed_scalar_field_types(
+    tmp_path: Path,
+    field_name: str,
+    field_value: object,
+) -> None:
+    metadata_path = tmp_path / "metadata.json"
+    invalid = _metadata()
+    invalid[field_name] = field_value
+
+    save_token_channel_artifact_metadata(metadata_path, invalid)
+
+    with pytest.raises(ValueError, match=field_name):
+        load_token_channel_artifact_metadata(metadata_path)
+
+
 def test_compatibility_check_reports_mismatched_context_width() -> None:
     compatibility = check_token_channel_compatibility(
         TokenChannelArtifactMetadata.from_mapping(_metadata()),

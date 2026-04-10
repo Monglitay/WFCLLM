@@ -85,11 +85,14 @@ class TokenChannelArtifactMetadata:
             raise ValueError("training_config must be a JSON object")
 
         return cls(
-            schema_version=str(payload["schema_version"]),
-            tokenizer_name=str(payload["tokenizer_name"]),
-            tokenizer_vocab_size=int(payload["tokenizer_vocab_size"]),
-            context_width=int(payload["context_width"]),
-            feature_version=str(payload["feature_version"]),
+            schema_version=_coerce_string(payload["schema_version"], "schema_version"),
+            tokenizer_name=_coerce_string(payload["tokenizer_name"], "tokenizer_name"),
+            tokenizer_vocab_size=_coerce_int(
+                payload["tokenizer_vocab_size"],
+                "tokenizer_vocab_size",
+            ),
+            context_width=_coerce_int(payload["context_width"], "context_width"),
+            feature_version=_coerce_string(payload["feature_version"], "feature_version"),
             training_config=dict(training_config),
         )
 
@@ -297,3 +300,15 @@ def _infer_hidden_size_from_state_dict(state_dict: Mapping[str, torch.Tensor]) -
     if embedding is None or embedding.ndim != 2:
         raise ValueError("Token-channel checkpoint is missing token_embedding.weight")
     return int(embedding.shape[1])
+
+
+def _coerce_string(value: Any, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string")
+    return value
+
+
+def _coerce_int(value: Any, field_name: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"{field_name} must be an integer")
+    return value

@@ -79,6 +79,25 @@ def test_runtime_rejects_mismatched_runtime_tokenizer_name() -> None:
         )
 
 
+def test_runtime_rejects_same_name_but_different_tokenizer_vocab() -> None:
+    runtime_model = TokenChannelModel(vocab_size=8, context_width=4, hidden_size=12)
+
+    class MatchingNameTokenizer:
+        name_or_path = "offline-tokenizer"
+        vocab_size = 9
+
+        def __len__(self) -> int:
+            return 9
+
+    with pytest.raises(ValueError, match="tokenizer_vocab_size"):
+        TokenChannelRuntime(
+            model=runtime_model,
+            config=TokenChannelConfig(context_width=4),
+            artifact_metadata=_metadata(),
+            tokenizer=MatchingNameTokenizer(),
+        )
+
+
 def test_runtime_accepts_tensor_prefix_ids() -> None:
     runtime = TokenChannelRuntime(
         model=TokenChannelModel(vocab_size=8, context_width=4, hidden_size=12),

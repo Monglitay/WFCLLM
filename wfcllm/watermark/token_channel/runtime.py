@@ -48,7 +48,7 @@ class TokenChannelRuntime:
                 artifact_metadata,
                 tokenizer_name=_resolve_tokenizer_name(tokenizer, tokenizer_name)
                 or artifact_metadata.tokenizer_name,
-                tokenizer_vocab_size=model.vocab_size,
+                tokenizer_vocab_size=_resolve_tokenizer_vocab_size(tokenizer) or model.vocab_size,
                 context_width=config.context_width,
                 feature_version=FEATURE_VERSION,
             )
@@ -106,3 +106,15 @@ def _get_model_device(model: torch.nn.Module) -> torch.device:
     if buffer is not None:
         return buffer.device
     return torch.device("cpu")
+
+
+def _resolve_tokenizer_vocab_size(tokenizer: object | None) -> int | None:
+    if tokenizer is None:
+        return None
+    try:
+        return len(tokenizer)
+    except (TypeError, AttributeError):
+        vocab_size = getattr(tokenizer, "vocab_size", None)
+        if isinstance(vocab_size, int) and not isinstance(vocab_size, bool):
+            return vocab_size
+    return None
