@@ -76,3 +76,8 @@ def test_from_mapping_accepts_channel_mode_alias():
 def test_from_mapping_rejects_invalid_channel_mode():
     with pytest.raises(ValueError, match="channel_mode"):
         TokenChannelConfig.from_mapping({"channel_mode": "invalid"})
+
+
+def test_from_mapping_rejects_fractional_integer_fields():
+    with pytest.raises(ValueError, match="context_width"):
+        TokenChannelConfig.from_mapping({"context_width": 1.5})

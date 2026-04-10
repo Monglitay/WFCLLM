@@ -224,10 +224,17 @@ class TokenChannelConfig:
 def _coerce_int(value: Any, field_name: str) -> int:
     if isinstance(value, bool):
         raise ValueError(f"{field_name} must be an integer")
+    if isinstance(value, float):
+        if not value.is_integer():
+            raise ValueError(f"{field_name} must be an integer")
     try:
         coerced = int(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{field_name} must be an integer") from exc
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped and any(char in stripped for char in ".eE"):
+            raise ValueError(f"{field_name} must be an integer")
     return coerced
 
 

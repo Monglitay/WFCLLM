@@ -138,7 +138,12 @@ def resolve_extract_adaptive_gamma_config(args: argparse.Namespace, cfg: dict):
 def resolve_token_channel_config(section: dict | None):
     from wfcllm.watermark.token_channel.config import TokenChannelConfig
 
-    configured = section if isinstance(section, dict) else {}
+    if section is None:
+        configured = {}
+    elif isinstance(section, dict):
+        configured = section
+    else:
+        raise ValueError("token_channel must be a JSON object")
     return TokenChannelConfig.from_mapping(configured)
 
 
@@ -637,6 +642,12 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
     secret_key = args.secret_key or wm_cfg.get("secret_key", "")
     lm_model_path = args.lm_model_path or wm_cfg.get("lm_model_path", "")
 
+    try:
+        token_channel_config = resolve_token_channel_config(wm_cfg.get("token_channel"))
+    except ValueError as exc:
+        print(f"[错误] token_channel 配置无效：{exc}", file=sys.stderr)
+        return 1
+
     if not secret_key:
         print("[错误] --secret-key 为必填参数", file=sys.stderr)
         return 1
@@ -707,7 +718,7 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
         lsh_d=wm_cfg.get("lsh_d", 3),
         lsh_gamma=wm_cfg.get("lsh_gamma", 0.5),
         adaptive_gamma=resolve_adaptive_gamma_config(args, wm_cfg),
-        token_channel=resolve_token_channel_config(wm_cfg.get("token_channel")),
+        token_channel=token_channel_config,
     )
     generator = WatermarkGenerator(lm_model, lm_tokenizer, encoder, encoder_tokenizer, wm_config)
 
@@ -808,6 +819,12 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
     resume = args.resume if args.resume is not None else ext_cfg.get("resume")
     adaptive_detection_config = resolve_adaptive_detection_config(args, ext_cfg)
     adaptive_gamma_config = resolve_extract_adaptive_gamma_config(args, cfg)
+
+    try:
+        token_channel_config = resolve_token_channel_config(ext_cfg.get("token_channel"))
+    except ValueError as exc:
+        print(f"[错误] token_channel 配置无效：{exc}", file=sys.stderr)
+        return 1
 
     try:
         with open(input_file, encoding="utf-8") as f:
@@ -937,7 +954,7 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
         lsh_gamma=lsh_gamma,
         adaptive_detection=adaptive_detection_config,
         adaptive_gamma=adaptive_gamma_config,
-        token_channel=resolve_token_channel_config(ext_cfg.get("token_channel")),
+        token_channel=token_channel_config,
     )
     detector = WatermarkDetector(extract_config, encoder, tokenizer, device=device)
 

@@ -472,6 +472,53 @@ def test_run_extract_parses_token_channel_from_config(monkeypatch, tmp_path):
     assert captured["token_channel"].joint_threshold == 5.0
 
 
+def test_run_watermark_rejects_non_object_token_channel_config(tmp_path, capsys):
+    import run as run_module
+
+    config_file = tmp_path / "cfg.json"
+    config_file.write_text(
+        json.dumps(
+            {
+                "watermark": {
+                    "secret_key": "k",
+                    "lm_model_path": "local-model",
+                    "token_channel": True,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeState:
+        @staticmethod
+        def is_done(phase: str) -> bool:
+            return phase == "encoder"
+
+        @staticmethod
+        def get(phase: str, key: str):
+            return None
+
+    args = SimpleNamespace(
+        dataset=None,
+        dataset_path=None,
+        output_dir=None,
+        sample_limit=None,
+        embed_dim=None,
+        secret_key=None,
+        lm_model_path=None,
+        resume=None,
+        config=config_file,
+        gamma_strategy=None,
+        entropy_profile=None,
+        profile_id=None,
+    )
+
+    rc = run_module.run_watermark(args, FakeState())
+
+    assert rc == 1
+    assert "token_channel" in capsys.readouterr().err
+
+
 def test_run_extract_uses_adaptive_calibration_when_adaptive_detection_enabled(
     monkeypatch,
     tmp_path,
