@@ -8,6 +8,7 @@ from wfcllm.extract.config import (
     DetectionResult,
     ExtractConfig,
 )
+from wfcllm.watermark.token_channel.config import TokenChannelConfig
 
 
 class TestExtractConfig:
@@ -30,6 +31,19 @@ class TestExtractConfig:
     def test_custom_threshold(self):
         cfg = ExtractConfig(secret_key="k", fpr_threshold=2.5)
         assert cfg.fpr_threshold == 2.5
+
+    def test_token_channel_defaults(self):
+        cfg = ExtractConfig(secret_key="test-key")
+        token_channel = cfg.token_channel
+        assert isinstance(token_channel, TokenChannelConfig)
+        assert token_channel.mode == "dual-channel"
+        assert token_channel.joint_threshold == 4.0
+
+    def test_token_channel_can_be_overridden(self):
+        token_channel = TokenChannelConfig(enabled=True, mode="semantic-only")
+        cfg = ExtractConfig(secret_key="test-key", token_channel=token_channel)
+        assert cfg.token_channel is token_channel
+        assert cfg.token_channel.mode == "semantic-only"
 
 
 class TestBlockScore:

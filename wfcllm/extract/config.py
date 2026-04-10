@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from wfcllm.watermark.config import AdaptiveGammaConfig
+from wfcllm.watermark.token_channel.config import TokenChannelConfig
 
 if TYPE_CHECKING:
     from wfcllm.extract.alignment import AlignmentReport
@@ -42,6 +43,7 @@ class ExtractConfig:
     lsh_gamma: float = 0.5
     adaptive_detection: AdaptiveDetectionConfig = field(default_factory=AdaptiveDetectionConfig)
     adaptive_gamma: AdaptiveGammaConfig = field(default_factory=AdaptiveGammaConfig)
+    token_channel: TokenChannelConfig = field(default_factory=TokenChannelConfig)
 
 
 @dataclass

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from wfcllm.watermark.token_channel.config import TokenChannelConfig
+
 
 @dataclass
 class AdaptiveGammaConfig:
@@ -59,6 +61,7 @@ class WatermarkConfig:
     lsh_d: int = 3
     lsh_gamma: float = 0.5
     adaptive_gamma: AdaptiveGammaConfig = field(default_factory=AdaptiveGammaConfig)
+    token_channel: TokenChannelConfig = field(default_factory=TokenChannelConfig)
 
     # Cascade fallback (compound block re-generation)
     enable_cascade: bool = True

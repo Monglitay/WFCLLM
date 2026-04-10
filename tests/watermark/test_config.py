@@ -1,6 +1,7 @@
 """Tests for wfcllm.watermark.config."""
 
 from wfcllm.watermark.config import AdaptiveGammaConfig, WatermarkConfig
+from wfcllm.watermark.token_channel.config import TokenChannelConfig
 
 
 class TestWatermarkConfig:
@@ -100,3 +101,23 @@ def test_adaptive_gamma_defaults():
         "p90": 0.35,
         "p95": 0.25,
     }
+
+
+def test_token_channel_defaults():
+    cfg = WatermarkConfig(secret_key="k")
+    token_channel = cfg.token_channel
+    assert isinstance(token_channel, TokenChannelConfig)
+    assert token_channel.mode == "dual-channel"
+    assert token_channel.lexical_min_block_tokens == 8
+    assert token_channel.lexical_retry_decay_start == 2
+    assert token_channel.lexical_retry_disable_after == 4
+    assert token_channel.lexical_gate_probe_tokens == 16
+    assert token_channel.lexical_gate_min_fraction == 0.10
+
+
+def test_token_channel_can_be_overridden():
+    token_channel = TokenChannelConfig(enabled=True, mode="lexical-only")
+    cfg = WatermarkConfig(secret_key="k", token_channel=token_channel)
+    assert cfg.token_channel is token_channel
+    assert cfg.token_channel.enabled is True
+    assert cfg.token_channel.mode == "lexical-only"
