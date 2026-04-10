@@ -29,3 +29,5 @@ __pycache__/
 # Logs
 logs/
 .worktrees/
+logs_config_B_watermark_*.log
+nohup_config_B_watermark.log
