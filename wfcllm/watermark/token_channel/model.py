@@ -156,6 +156,14 @@ class TokenChannelModel(nn.Module):
     ) -> TokenChannelModelOutput:
         if prefix_ids.ndim != 1:
             raise ValueError("prefix_ids must be a 1D tensor")
+        if prefix_ids.dtype not in {
+            torch.int8,
+            torch.int16,
+            torch.int32,
+            torch.int64,
+            torch.uint8,
+        }:
+            raise ValueError("prefix_ids must use an integer tensor dtype")
 
         prefix_ids = prefix_ids.to(dtype=torch.long)
         device = prefix_ids.device
@@ -278,7 +286,7 @@ def load_token_channel_artifact(path: str | Path, map_location: str | torch.devi
     model_path = artifact_dir / TOKEN_CHANNEL_MODEL_FILENAME
 
     metadata = TokenChannelArtifactMetadata.from_mapping(load_token_channel_artifact_metadata(metadata_path))
-    state_dict = torch.load(model_path, map_location=map_location, weights_only=True)
+    state_dict = _load_checkpoint_state_dict(model_path, map_location=map_location)
     if not isinstance(state_dict, Mapping):
         raise ValueError("Token-channel checkpoint must contain a state_dict mapping")
     hidden_size = _infer_hidden_size_from_state_dict(state_dict)
@@ -309,6 +317,18 @@ def _infer_hidden_size_from_state_dict(state_dict: Mapping[str, torch.Tensor]) -
     if embedding is None or embedding.ndim != 2:
         raise ValueError("Token-channel checkpoint is missing token_embedding.weight")
     return int(embedding.shape[1])
+
+
+def _load_checkpoint_state_dict(
+    model_path: Path,
+    map_location: str | torch.device,
+) -> object:
+    try:
+        return torch.load(model_path, map_location=map_location, weights_only=True)
+    except TypeError as exc:
+        if "weights_only" not in str(exc):
+            raise
+        return torch.load(model_path, map_location=map_location)
 
 
 def _coerce_string(value: Any, field_name: str) -> str:

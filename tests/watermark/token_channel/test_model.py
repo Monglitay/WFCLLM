@@ -58,6 +58,20 @@ def test_token_channel_model_returns_switch_and_preference_logits() -> None:
     assert output.preference_logits.shape == (8,)
 
 
+def test_token_channel_model_rejects_non_integer_prefix_tensor() -> None:
+    model = TokenChannelModel(vocab_size=8, context_width=4, hidden_size=12)
+    features = TokenChannelFeatures(
+        node_type="if_statement",
+        parent_node_type="block",
+        block_relative_offset=1,
+        in_code_body=True,
+        structure_mask=True,
+    )
+
+    with pytest.raises(ValueError, match="integer"):
+        model(torch.tensor([1.0, 2.0]), features)
+
+
 def test_metadata_save_load_and_dataclass_roundtrip(tmp_path: Path) -> None:
     metadata_path = tmp_path / "metadata.json"
     metadata = _metadata()
@@ -193,6 +207,27 @@ def test_load_token_channel_artifact_uses_weights_only(tmp_path: Path) -> None:
         load_token_channel_artifact(artifact_dir)
 
     assert load_mock.call_args.kwargs["weights_only"] is True
+
+
+def test_load_token_channel_artifact_falls_back_without_weights_only(tmp_path: Path) -> None:
+    artifact_dir = tmp_path / "artifact"
+    artifact_dir.mkdir()
+    metadata_path = artifact_dir / "metadata.json"
+    model_path = artifact_dir / "model.pt"
+
+    model = TokenChannelModel(vocab_size=8, context_width=4, hidden_size=12)
+    save_token_channel_artifact_metadata(metadata_path, _metadata())
+    torch.save(model.state_dict(), model_path)
+
+    with patch("wfcllm.watermark.token_channel.model.torch.load") as load_mock:
+        load_mock.side_effect = [TypeError("weights_only"), model.state_dict()]
+
+        artifact = load_token_channel_artifact(artifact_dir)
+
+    assert load_mock.call_count == 2
+    assert load_mock.call_args_list[0].kwargs["weights_only"] is True
+    assert "weights_only" not in load_mock.call_args_list[1].kwargs
+    assert artifact.model.context_width == 4
 
 
 def test_load_token_channel_artifact_rejects_non_state_dict_payload(tmp_path: Path) -> None:
