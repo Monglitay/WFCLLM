@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Mapping
 from typing import Any
 
 FEATURE_VERSION = "token-channel-features/v1"
@@ -21,6 +22,12 @@ class TokenChannelFeatures:
     language: str = PYTHON_LANGUAGE
 
     def __post_init__(self) -> None:
+        _coerce_string(self.node_type, "node_type")
+        _coerce_string(self.parent_node_type, "parent_node_type")
+        _coerce_int(self.block_relative_offset, "block_relative_offset")
+        _coerce_bool(self.in_code_body, "in_code_body")
+        _coerce_bool(self.structure_mask, "structure_mask")
+        _coerce_string(self.language, "language")
         if not self.node_type:
             raise ValueError("node_type must be a non-empty string")
         if not self.parent_node_type:
@@ -42,6 +49,8 @@ class TokenChannelFeatures:
 
     @classmethod
     def from_mapping(cls, payload: dict[str, Any]) -> TokenChannelFeatures:
+        if not isinstance(payload, Mapping):
+            raise ValueError("TokenChannelFeatures payload must be a mapping")
         return cls(
             node_type=_coerce_string(payload["node_type"], "node_type"),
             parent_node_type=_coerce_string(payload["parent_node_type"], "parent_node_type"),

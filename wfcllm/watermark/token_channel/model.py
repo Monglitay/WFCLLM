@@ -48,6 +48,13 @@ class TokenChannelArtifactMetadata:
     training_config: dict[str, Any]
 
     def __post_init__(self) -> None:
+        _coerce_string(self.schema_version, "schema_version")
+        _coerce_string(self.tokenizer_name, "tokenizer_name")
+        _coerce_int(self.tokenizer_vocab_size, "tokenizer_vocab_size")
+        _coerce_int(self.context_width, "context_width")
+        _coerce_string(self.feature_version, "feature_version")
+        if not isinstance(self.training_config, dict):
+            raise ValueError("training_config must be a JSON object")
         if not self.schema_version:
             raise ValueError("schema_version must be a non-empty string")
         if self.schema_version != TOKEN_CHANNEL_SCHEMA_VERSION:
@@ -76,6 +83,8 @@ class TokenChannelArtifactMetadata:
 
     @classmethod
     def from_mapping(cls, payload: dict[str, Any]) -> TokenChannelArtifactMetadata:
+        if not isinstance(payload, Mapping):
+            raise ValueError("TokenChannelArtifactMetadata payload must be a mapping")
         missing_keys = sorted(TOKEN_CHANNEL_METADATA_REQUIRED_KEYS - payload.keys())
         if missing_keys:
             raise ValueError(f"Missing required token-channel metadata keys: {', '.join(missing_keys)}")

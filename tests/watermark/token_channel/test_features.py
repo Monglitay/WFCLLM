@@ -88,3 +88,35 @@ def test_token_channel_features_reject_malformed_string_and_integer_fields() -> 
                 "structure_mask": True,
             }
         )
+
+
+def test_token_channel_features_reject_non_mapping_payload_and_bad_direct_types() -> None:
+    with pytest.raises(ValueError, match="mapping"):
+        TokenChannelFeatures.from_mapping([1, 2, 3])
+
+    with pytest.raises(ValueError, match="node_type"):
+        TokenChannelFeatures(
+            node_type=None,
+            parent_node_type="block",
+            block_relative_offset=0,
+            in_code_body=True,
+            structure_mask=True,
+        )
+
+    with pytest.raises(ValueError, match="block_relative_offset"):
+        TokenChannelFeatures(
+            node_type="if_statement",
+            parent_node_type="block",
+            block_relative_offset="0",
+            in_code_body=True,
+            structure_mask=True,
+        )
+
+    with pytest.raises(ValueError, match="in_code_body"):
+        TokenChannelFeatures(
+            node_type="if_statement",
+            parent_node_type="block",
+            block_relative_offset=0,
+            in_code_body=1,
+            structure_mask=True,
+        )

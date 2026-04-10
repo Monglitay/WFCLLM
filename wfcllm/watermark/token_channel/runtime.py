@@ -85,8 +85,10 @@ def _normalize_prefix_ids(prefix_ids: Sequence[int] | torch.Tensor) -> tuple[int
     if isinstance(prefix_ids, torch.Tensor):
         if prefix_ids.ndim != 1:
             raise ValueError("prefix_ids tensor must be 1D")
-        return tuple(int(token_id) for token_id in prefix_ids.tolist())
-    return tuple(int(token_id) for token_id in prefix_ids)
+        values = prefix_ids.tolist()
+    else:
+        values = prefix_ids
+    return tuple(_coerce_token_id(token_id) for token_id in values)
 
 
 def _resolve_tokenizer_name(tokenizer: object | None, tokenizer_name: str | None) -> str | None:
@@ -118,3 +120,9 @@ def _resolve_tokenizer_vocab_size(tokenizer: object | None) -> int | None:
         if isinstance(vocab_size, int) and not isinstance(vocab_size, bool):
             return vocab_size
     return None
+
+
+def _coerce_token_id(token_id: object) -> int:
+    if not isinstance(token_id, int) or isinstance(token_id, bool):
+        raise ValueError("prefix token ids must be integers")
+    return token_id

@@ -206,3 +206,28 @@ def test_load_token_channel_artifact_rejects_non_state_dict_payload(tmp_path: Pa
 
     with pytest.raises(ValueError, match="state_dict"):
         load_token_channel_artifact(artifact_dir)
+
+
+def test_metadata_rejects_non_mapping_payload_and_bad_direct_types() -> None:
+    with pytest.raises(ValueError, match="mapping"):
+        TokenChannelArtifactMetadata.from_mapping([1, 2, 3])
+
+    with pytest.raises(ValueError, match="tokenizer_name"):
+        TokenChannelArtifactMetadata(
+            schema_version="token-channel/v1",
+            tokenizer_name=None,
+            tokenizer_vocab_size=8,
+            context_width=4,
+            feature_version="token-channel-features/v1",
+            training_config={"dropout": 0.0},
+        )
+
+    with pytest.raises(ValueError, match="tokenizer_vocab_size"):
+        TokenChannelArtifactMetadata(
+            schema_version="token-channel/v1",
+            tokenizer_name="offline-tokenizer",
+            tokenizer_vocab_size="8",
+            context_width=4,
+            feature_version="token-channel-features/v1",
+            training_config={"dropout": 0.0},
+        )

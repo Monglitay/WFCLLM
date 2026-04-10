@@ -138,3 +138,14 @@ def test_runtime_places_prefix_tensor_on_model_device() -> None:
 
     assert model.seen_device == torch.device("meta")
     assert decision.prefix_ids == (1, 2, 3)
+
+
+@pytest.mark.parametrize("prefix_ids", [[1, 2.5], [1, "2"], [1, True], torch.tensor([1.0, 2.0])])
+def test_runtime_rejects_non_integer_prefix_ids(prefix_ids) -> None:
+    runtime = TokenChannelRuntime(
+        model=TokenChannelModel(vocab_size=8, context_width=4, hidden_size=12),
+        config=TokenChannelConfig(context_width=4),
+    )
+
+    with pytest.raises(ValueError, match="token"):
+        runtime.score_prefix(prefix_ids=prefix_ids, features=_features())
