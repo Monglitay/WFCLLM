@@ -329,6 +329,15 @@ class TestCLI:
         assert "--corpus-cache" in result.stdout
         assert "--teacher-cache" in result.stdout
 
+    def test_readme_describes_flattened_dual_channel_extract_fields(self):
+        readme_text = README_MD.read_text(encoding="utf-8")
+
+        assert "semantic_result / lexical_result / joint_result" not in readme_text
+        assert "semantic_prediction" in readme_text
+        assert "lexical_z_score" in readme_text
+        assert "joint_score" in readme_text
+        assert "joint_prediction" in readme_text
+
     def test_status_exits_zero(self):
         result = subprocess.run(
             ["conda", "run", "-n", "WFCLLM", "python", str(RUN_PY), "--status"],

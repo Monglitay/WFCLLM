@@ -327,7 +327,8 @@ HF_HUB_OFFLINE=1 conda run -n WFCLLM python run.py --phase extract \
     --token-channel-model-path data/models/token-channel \
     --token-channel-ignore-repeated-prefixes true
 
-# 4. 双通道联合检测：保留 semantic_result / lexical_result / joint_result
+# 4. 双通道联合检测：details / CLI 摘要使用扁平字段输出，
+#    例如 semantic_prediction、lexical_z_score、joint_score、joint_prediction
 HF_HUB_OFFLINE=1 conda run -n WFCLLM python run.py --phase extract \
     --config configs/base_config.json \
     --secret-key mysecret \
