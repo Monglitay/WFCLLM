@@ -168,7 +168,37 @@ class TestExtractPipelineStatistics:
             assert first["num_green_hits"] == 4
             assert first["lexical_z_score"] == 1.5
             assert first["joint_score"] == pytest.approx(5.25)
-            assert first["prediction"] is True
+            assert first["semantic_prediction"] is True
+            assert first["joint_prediction"] is True
+
+    def test_run_names_semantic_and_joint_predictions_explicitly(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            jsonl_path = self._make_jsonl(tmpdir, n=1)
+            cfg = ExtractPipelineConfig(input_file=jsonl_path, output_dir=tmpdir)
+            detector = MagicMock()
+            semantic_only = DetectionResult(
+                is_watermarked=True,
+                z_score=4.5,
+                p_value=0.001,
+                total_blocks=10,
+                independent_blocks=8,
+                hit_blocks=7,
+                block_details=[],
+            )
+            semantic_only.semantic_result = semantic_only
+            detector.detect.return_value = semantic_only
+
+            pipeline = ExtractPipeline(detector=detector, config=cfg)
+            details_path = pipeline.run()
+            row = json.loads(Path(details_path).read_text(encoding="utf-8").splitlines()[0])
+            summary = json.loads(
+                Path(details_path).with_name("test_summary.json").read_text(encoding="utf-8")
+            )
+
+            assert row["semantic_prediction"] is True
+            assert "joint_prediction" not in row
+            assert summary["summary"]["watermark_rate"] == 1.0
+            assert summary["summary"]["joint_prediction_rate"] == 0.0
 
     def test_run_uses_spec_required_lexical_count_field_names(self):
         with tempfile.TemporaryDirectory() as tmpdir:

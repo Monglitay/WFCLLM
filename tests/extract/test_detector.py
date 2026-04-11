@@ -313,6 +313,28 @@ class TestWatermarkDetector:
                 },
             )
 
+    def test_detect_allows_token_altering_postprocess_in_semantic_only_mode(
+        self, config, mock_encoder, mock_tokenizer
+    ):
+        config.token_channel.enabled = True
+        config.token_channel.mode = "semantic-only"
+        detector = WatermarkDetector(config, mock_encoder, mock_tokenizer, device="cpu")
+
+        result = detector.detect(
+            "x = 1\n",
+            watermark_metadata={
+                "token_channel": {
+                    "enabled": True,
+                    "token_altering_postprocess": True,
+                }
+            },
+        )
+
+        assert isinstance(result, DetectionResult)
+        assert result.semantic_result is not None
+        assert result.lexical_result is None
+        assert result.joint_result is None
+
     def test_detect_lazily_initializes_real_lexical_detector_path(
         self, config, mock_encoder, mock_tokenizer
     ):

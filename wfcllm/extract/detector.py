@@ -147,14 +147,14 @@ class WatermarkDetector:
     def _is_dual_channel_mode(self) -> bool:
         return self._config.token_channel.enabled and self._config.token_channel.mode == "dual-channel"
 
-    @staticmethod
-    def _validate_token_channel_metadata(watermark_metadata: dict | None) -> None:
+    def _validate_token_channel_metadata(self, watermark_metadata: dict | None) -> None:
         if watermark_metadata is None:
             return
         token_channel = watermark_metadata.get("token_channel")
         if not isinstance(token_channel, dict):
             return
-        if token_channel.get("token_altering_postprocess"):
+        lexical_detection_enabled = self._config.token_channel.enabled and self._config.token_channel.mode != "semantic-only"
+        if lexical_detection_enabled and token_channel.get("token_altering_postprocess"):
             raise ValueError("token-channel detection requires tokenizer-visible final code")
 
     def _with_alignment(

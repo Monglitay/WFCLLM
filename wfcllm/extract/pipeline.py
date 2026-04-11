@@ -75,7 +75,7 @@ class ExtractPipeline:
         if self._exclude_invalid_samples():
             scored_rows = [row for row in rows if row.get("contract_valid") is not False]
 
-        watermarked = sum(1 for row in scored_rows if row["is_watermarked"])
+        watermarked = sum(1 for row in scored_rows if row.get("semantic_prediction", row["is_watermarked"]))
         z_scores = [row["z_score"] for row in scored_rows]
         p_values = [row["p_value"] for row in scored_rows]
         block_counts = [row["independent_blocks"] for row in scored_rows]
@@ -83,7 +83,7 @@ class ExtractPipeline:
         lexical_z_scores = [row["lexical_z_score"] for row in scored_rows if "lexical_z_score" in row]
         green_fractions = [row["green_fraction"] for row in scored_rows if "green_fraction" in row]
         joint_scores = [row["joint_score"] for row in scored_rows if "joint_score" in row]
-        joint_predictions = [row["prediction"] for row in scored_rows if "prediction" in row]
+        joint_predictions = [row["joint_prediction"] for row in scored_rows if "joint_prediction" in row]
 
         summary = {
             "meta": {
@@ -205,6 +205,7 @@ class ExtractPipeline:
                     "id": item["id"],
                     "mode": result.mode,
                     "is_watermarked": result.is_watermarked,
+                    "semantic_prediction": result.is_watermarked,
                     "z_score": result.z_score,
                     "p_value": result.p_value,
                     "independent_blocks": result.independent_blocks,
@@ -226,7 +227,7 @@ class ExtractPipeline:
                 if joint_result is not None:
                     row["joint_score"] = joint_result.joint_score
                     row["p_joint"] = joint_result.p_joint
-                    row["prediction"] = joint_result.prediction
+                    row["joint_prediction"] = joint_result.prediction
                     row["confidence"] = joint_result.confidence
                     row["rationale"] = joint_result.rationale
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
