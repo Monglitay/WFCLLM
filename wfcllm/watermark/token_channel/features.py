@@ -263,12 +263,18 @@ def is_structure_safe_span(
 
     if start >= end:
         return False
+    saw_non_whitespace = False
+    whitespace_safe = True
     for index in range(start, end):
         if source_code is not None and source_code[index].isspace():
+            whitespace_safe = whitespace_safe and structure_masks[index]
             continue
+        saw_non_whitespace = True
         if not structure_masks[index]:
             return False
-    return True
+    if saw_non_whitespace:
+        return True
+    return whitespace_safe
 
 
 def _collect_decorator_spans(

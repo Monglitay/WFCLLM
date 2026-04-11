@@ -141,3 +141,10 @@ def test_is_structure_safe_span_ignores_masked_whitespace_prefix() -> None:
     masks = [False, True, True, True, True, True]
 
     assert is_structure_safe_span(masks, 0, len(source), source) is True
+
+
+def test_is_structure_safe_span_rejects_whitespace_only_masked_span() -> None:
+    source = " "
+    masks = [False]
+
+    assert is_structure_safe_span(masks, 0, len(source), source) is False
