@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import pickle
+import json
 from pathlib import Path
 
 import torch
@@ -51,16 +51,15 @@ def save_teacher_cache(path: str | Path, rows: list[dict[str, object]]) -> None:
         "schema_version": TEACHER_CACHE_SCHEMA_VERSION,
         "rows": rows,
     }
-    with cache_path.open("wb") as handle:
-        pickle.dump(payload, handle)
+    cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def load_teacher_cache(path: str | Path) -> list[dict[str, object]]:
     cache_path = Path(path)
-    with cache_path.open("rb") as handle:
-        payload = pickle.load(handle)
-    if isinstance(payload, list):
-        return payload
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError("teacher cache must be valid JSON") from exc
     if not isinstance(payload, dict):
         raise ValueError("teacher cache must contain a payload dictionary")
     if payload.get("schema_version") != TEACHER_CACHE_SCHEMA_VERSION:

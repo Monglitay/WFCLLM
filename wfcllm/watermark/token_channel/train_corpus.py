@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import json
 from pathlib import Path
-import pickle
 
 from wfcllm.common.transform.engine import TransformEngine
 from wfcllm.common.transform.positive import get_all_positive_rules
@@ -125,19 +125,17 @@ def save_training_cache(path: str | Path, rows: list[dict[str, object]]) -> None
         "schema_version": TRAINING_CACHE_SCHEMA_VERSION,
         "rows": rows,
     }
-    with cache_path.open("wb") as handle:
-        pickle.dump(payload, handle)
+    cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def load_training_cache(path: str | Path) -> list[dict[str, object]]:
     """Load persisted corpus rows."""
 
     cache_path = Path(path)
-    with cache_path.open("rb") as handle:
-        payload = pickle.load(handle)
-
-    if isinstance(payload, list):
-        return payload
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError("training cache must be valid JSON") from exc
     if not isinstance(payload, dict):
         raise ValueError("training cache must contain a payload dictionary")
     if payload.get("schema_version") != TRAINING_CACHE_SCHEMA_VERSION:

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import ast
+import json
 
 import pytest
 import torch
@@ -334,14 +335,67 @@ def test_build_training_rows_reuses_precomputed_variant_parse_state(monkeypatch)
 def test_training_and_teacher_cache_round_trip(tmp_path: Path) -> None:
     training_rows = [{"prefix_tokens": [1, 2], "next_token": 3, "switch_target": 1}]
     teacher_rows = [{"prefix_tokens": [1], "entropy": 1.2, "teacher_logits": [0.1, 0.9]}]
-    training_path = tmp_path / "corpus.pkl"
-    teacher_path = tmp_path / "teacher.pkl"
+    training_path = tmp_path / "corpus.json"
+    teacher_path = tmp_path / "teacher.json"
 
     save_training_cache(training_path, training_rows)
     save_teacher_cache(teacher_path, teacher_rows)
 
     assert load_training_cache(training_path) == training_rows
     assert load_teacher_cache(teacher_path) == teacher_rows
+
+
+def test_load_training_cache_rejects_schema_mismatch(tmp_path: Path) -> None:
+    path = tmp_path / "corpus.json"
+    path.write_text(
+        json.dumps({"schema_version": "wrong", "rows": []}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="schema_version"):
+        load_training_cache(path)
+
+
+def test_load_training_cache_rejects_non_dict_payload(tmp_path: Path) -> None:
+    path = tmp_path / "corpus.json"
+    path.write_text(json.dumps([{"prefix_tokens": [1]}]), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="payload dictionary"):
+        load_training_cache(path)
+
+
+def test_load_training_cache_rejects_non_list_rows(tmp_path: Path) -> None:
+    path = tmp_path / "corpus.json"
+    path.write_text(
+        json.dumps({"schema_version": "token-channel-training-corpus/v1", "rows": {}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="rows must be a list"):
+        load_training_cache(path)
+
+
+def test_load_teacher_cache_rejects_invalid_payloads(tmp_path: Path) -> None:
+    schema_path = tmp_path / "teacher-schema.json"
+    schema_path.write_text(
+        json.dumps({"schema_version": "wrong", "rows": []}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="schema_version"):
+        load_teacher_cache(schema_path)
+
+    payload_path = tmp_path / "teacher-payload.json"
+    payload_path.write_text(json.dumps([{"prefix_tokens": [1]}]), encoding="utf-8")
+    with pytest.raises(ValueError, match="payload dictionary"):
+        load_teacher_cache(payload_path)
+
+    rows_path = tmp_path / "teacher-rows.json"
+    rows_path.write_text(
+        json.dumps({"schema_version": "token-channel-teacher-cache/v1", "rows": {}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="rows must be a list"):
+        load_teacher_cache(rows_path)
 
 
 def test_extract_teacher_rows_collects_entropy_and_logits() -> None:
@@ -437,7 +491,7 @@ def test_extract_teacher_rows_uses_eval_and_no_grad_for_module_teachers() -> Non
 
 
 def test_train_entry_loads_cached_rows_without_running_training(tmp_path: Path, capsys) -> None:
-    cache_path = tmp_path / "corpus.pkl"
+    cache_path = tmp_path / "corpus.json"
     save_training_cache(cache_path, [{"prefix_tokens": [1], "next_token": 2, "switch_target": 0}])
 
     exit_code = main(["--corpus-cache", str(cache_path)])
