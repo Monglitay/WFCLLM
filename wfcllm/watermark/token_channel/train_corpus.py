@@ -8,7 +8,8 @@ import pickle
 
 from wfcllm.common.transform.engine import TransformEngine
 from wfcllm.common.transform.positive import get_all_positive_rules
-from wfcllm.watermark.token_channel.features import build_token_channel_features
+from wfcllm.watermark.token_channel.features import build_token_channel_features_from_context
+from wfcllm.watermark.token_channel.features import prepare_token_channel_feature_context
 from wfcllm.watermark.token_channel.teacher import extract_teacher_rows
 
 TRAINING_CACHE_SCHEMA_VERSION = "token-channel-training-corpus/v1"
@@ -67,6 +68,7 @@ def build_training_rows(
             source_code,
             transform_engine=transform_engine,
         ):
+            feature_context = prepare_token_channel_feature_context(variant_source)
             teacher_rows = extract_teacher_rows(
                 tokenizer=tokenizer,
                 model=teacher_model,
@@ -78,8 +80,8 @@ def build_training_rows(
                 token_end = teacher_row["token_end"]
                 if not isinstance(token_start, int) or not isinstance(token_end, int):
                     raise ValueError("teacher rows must include integer token spans")
-                features = build_token_channel_features(
-                    variant_source,
+                features = build_token_channel_features_from_context(
+                    feature_context,
                     token_start=token_start,
                     token_end=token_end,
                 )

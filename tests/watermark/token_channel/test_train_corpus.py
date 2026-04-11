@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import ast
+
+import pytest
 import torch
 
 from wfcllm.watermark.token_channel.features import build_structure_masks
@@ -120,6 +123,28 @@ class PretokenizedTokenizer:
 
     def __len__(self) -> int:
         return len(self._token_text)
+
+
+class NonAdvancingTokenizer:
+    def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+        del add_special_tokens
+        if text != "ab":
+            raise AssertionError(text)
+        return [1, 2]
+
+    def convert_ids_to_tokens(self, ids):
+        mapping = {1: "", 2: "ab"}
+        if isinstance(ids, int):
+            return mapping[ids]
+        return [mapping[token_id] for token_id in ids]
+
+    def convert_tokens_to_string(self, tokens) -> str:
+        if isinstance(tokens, str):
+            return tokens
+        return "".join(tokens)
+
+    def __len__(self) -> int:
+        return 2
 
 
 class FakeTransformEngine:
@@ -240,6 +265,33 @@ def test_build_training_rows_collects_prefix_entropy_and_next_token(tmp_path: Pa
     assert target_row["switch_target"] == 1
 
 
+def test_build_training_rows_reuses_precomputed_variant_parse_state(monkeypatch) -> None:
+    tokenizer = CharacterTokenizer()
+    tokenizer.register_text("value = a\n")
+    tokenizer.register_text("value = b\n")
+    parse_calls = 0
+    original_parse = ast.parse
+
+    def counting_parse(*args, **kwargs):
+        nonlocal parse_calls
+        parse_calls += 1
+        return original_parse(*args, **kwargs)
+
+    monkeypatch.setattr("wfcllm.watermark.token_channel.features.ast.parse", counting_parse)
+
+    build_training_rows(
+        samples=[{"source_code": "value = a\n"}],
+        tokenizer=tokenizer,
+        teacher_model=FakeTeacherModel(tokenizer),
+        context_width=4,
+        transform_engine=FakeTransformEngine("value = b\n"),
+        entropy_threshold=1.0,
+        diversity_threshold=2,
+    )
+
+    assert parse_calls <= 2
+
+
 def test_training_and_teacher_cache_round_trip(tmp_path: Path) -> None:
     training_rows = [{"prefix_tokens": [1, 2], "next_token": 3, "switch_target": 1}]
     teacher_rows = [{"prefix_tokens": [1], "entropy": 1.2, "teacher_logits": [0.1, 0.9]}]
@@ -313,6 +365,16 @@ def test_extract_teacher_rows_aligns_with_tokenizer_token_strings() -> None:
     )
 
     assert [(row["token_start"], row["token_end"]) for row in rows] == [(0, 1), (1, 2)]
+
+
+def test_extract_teacher_rows_rejects_zero_length_aligned_spans() -> None:
+    with pytest.raises(ValueError, match="zero-length"):
+        extract_teacher_rows(
+            tokenizer=NonAdvancingTokenizer(),
+            model=RecordingTeacherModel(),
+            text="ab",
+            context_width=2,
+        )
 
 
 def test_train_entry_loads_cached_rows_without_running_training(tmp_path: Path, capsys) -> None:

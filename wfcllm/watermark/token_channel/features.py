@@ -30,6 +30,17 @@ class ExcludedSpan:
 
 
 @dataclass(frozen=True)
+class TokenChannelFeatureContext:
+    """Precomputed source state reused across token rows."""
+
+    source_code: str
+    tree: ast.AST
+    line_starts: list[int]
+    parent_map: dict[ast.AST, ast.AST]
+    structure_masks: list[bool]
+
+
+@dataclass(frozen=True)
 class TokenChannelFeatures:
     """Stable structural features passed into the token-channel model."""
 
@@ -115,6 +126,35 @@ def collect_excluded_token_spans(source_code: str) -> tuple[ExcludedSpan, ...]:
 
     tree = ast.parse(source_code)
     line_starts = _build_line_starts(source_code)
+    return _collect_excluded_token_spans_from_tree(source_code, tree, line_starts)
+
+
+def prepare_token_channel_feature_context(source_code: str) -> TokenChannelFeatureContext:
+    """Precompute reusable AST and structure-mask state for one source variant."""
+
+    tree = ast.parse(source_code)
+    line_starts = _build_line_starts(source_code)
+    parent_map = {
+        child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)
+    }
+    structure_masks = [True] * len(source_code)
+    for span in _collect_excluded_token_spans_from_tree(source_code, tree, line_starts):
+        for index in range(max(0, span.start), min(len(source_code), span.end)):
+            structure_masks[index] = False
+    return TokenChannelFeatureContext(
+        source_code=source_code,
+        tree=tree,
+        line_starts=line_starts,
+        parent_map=parent_map,
+        structure_masks=structure_masks,
+    )
+
+
+def _collect_excluded_token_spans_from_tree(
+    source_code: str,
+    tree: ast.AST,
+    line_starts: list[int],
+) -> tuple[ExcludedSpan, ...]:
     spans: list[ExcludedSpan] = []
 
     for node in ast.walk(tree):
@@ -164,11 +204,7 @@ def collect_excluded_token_spans(source_code: str) -> tuple[ExcludedSpan, ...]:
 def build_structure_masks(source_code: str) -> list[bool]:
     """Return a per-character structure mask for source reconstruction."""
 
-    masks = [True] * len(source_code)
-    for span in collect_excluded_token_spans(source_code):
-        for index in range(max(0, span.start), min(len(source_code), span.end)):
-            masks[index] = False
-    return masks
+    return prepare_token_channel_feature_context(source_code).structure_masks.copy()
 
 
 def build_token_channel_features(
@@ -178,30 +214,41 @@ def build_token_channel_features(
 ) -> TokenChannelFeatures:
     """Build structural token features for one token span."""
 
-    if token_start < 0 or token_end < token_start or token_end > len(source_code):
+    context = prepare_token_channel_feature_context(source_code)
+    return build_token_channel_features_from_context(
+        context,
+        token_start=token_start,
+        token_end=token_end,
+    )
+
+
+def build_token_channel_features_from_context(
+    context: TokenChannelFeatureContext,
+    token_start: int,
+    token_end: int,
+) -> TokenChannelFeatures:
+    """Build structural token features from precomputed source state."""
+
+    if token_start < 0 or token_end < token_start or token_end > len(context.source_code):
         raise ValueError("token span is out of range")
 
-    tree = ast.parse(source_code)
-    line_starts = _build_line_starts(source_code)
-    span_nodes = _find_nodes_covering_span(tree, line_starts, token_start, token_end)
+    span_nodes = _find_nodes_covering_span(context.tree, context.line_starts, token_start, token_end)
     selected_node = _resolve_selected_node(span_nodes)
-    parent_map = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
-    statement_node = _nearest_statement(selected_node, parent_map)
-    parent_node = parent_map.get(statement_node)
+    statement_node = _nearest_statement(selected_node, context.parent_map)
+    parent_node = context.parent_map.get(statement_node)
     block_relative_offset = _resolve_block_relative_offset(statement_node, parent_node)
-    structure_masks = build_structure_masks(source_code)
     structure_mask = is_structure_safe_span(
-        structure_masks,
+        context.structure_masks,
         token_start,
         token_end,
-        source_code,
+        context.source_code,
     )
 
     return TokenChannelFeatures(
         node_type=_to_snake_case(type(statement_node).__name__),
         parent_node_type=_to_snake_case(type(parent_node).__name__) if parent_node is not None else "module",
         block_relative_offset=block_relative_offset,
-        in_code_body=structure_mask and bool(source_code[token_start:token_end].strip()),
+        in_code_body=structure_mask and bool(context.source_code[token_start:token_end].strip()),
         structure_mask=structure_mask,
     )
 

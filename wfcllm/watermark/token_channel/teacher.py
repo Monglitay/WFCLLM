@@ -95,9 +95,7 @@ def _align_token_spans(text: str, token_ids: list[int], tokenizer: object) -> li
         if end < start:
             raise ValueError("token alignment prefix lengths must be non-decreasing")
         if start == end:
-            spans.append((start, end))
-            previous_prefix = rendered_prefix
-            continue
+            raise ValueError("zero-length aligned token spans are not supported")
         spans.append((start, end))
         previous_prefix = rendered_prefix
     return spans
