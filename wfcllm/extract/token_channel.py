@@ -58,7 +58,7 @@ class ReplayTokenChannelDetector:
                 continue
 
             features = self._build_features(feature_context, code, row.start, row.end)
-            if not features.structure_mask:
+            if features is None or not features.structure_mask:
                 prefix_ids.append(row.token_id)
                 continue
 
@@ -138,7 +138,7 @@ class ReplayTokenChannelDetector:
         code: str,
         start: int,
         end: int,
-    ) -> TokenChannelFeatures:
+    ) -> TokenChannelFeatures | None:
         if feature_context is not None:
             try:
                 return build_token_channel_features_from_context(
@@ -147,17 +147,8 @@ class ReplayTokenChannelDetector:
                     token_end=end,
                 )
             except ValueError:
-                pass
-
-        token_text = code[start:end]
-        structure_mask = bool(token_text.strip())
-        return TokenChannelFeatures(
-            node_type="module",
-            parent_node_type="module",
-            block_relative_offset=0,
-            in_code_body=structure_mask,
-            structure_mask=structure_mask,
-        )
+                return None
+        return None
 
     def _make_ngram_key(self, prefix_ids: list[int], token_id: int) -> tuple[int, ...]:
         width = max(1, self._config.context_width)

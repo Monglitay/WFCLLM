@@ -217,8 +217,8 @@ class ExtractPipeline:
                     row["contract_alignment"] = result.alignment_report.to_dict()
                 lexical_result = getattr(result, "lexical_result", None)
                 if lexical_result is not None:
-                    row["lexical_num_positions_scored"] = lexical_result.num_positions_scored
-                    row["lexical_num_green_hits"] = lexical_result.num_green_hits
+                    row["num_positions_scored"] = lexical_result.num_positions_scored
+                    row["num_green_hits"] = lexical_result.num_green_hits
                     row["green_fraction"] = lexical_result.green_fraction
                     row["lexical_z_score"] = lexical_result.lexical_z_score
                     row["lexical_p_value"] = lexical_result.lexical_p_value

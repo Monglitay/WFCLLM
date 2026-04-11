@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -103,7 +104,46 @@ def test_replay_detector_skips_structure_masked_tokens() -> None:
         config=TokenChannelConfig(enabled=True, mode="dual-channel", context_width=2),
     )
 
-    result = detector.detect("a b")
+    allowed = TokenChannelFeatures(
+        node_type="module",
+        parent_node_type="module",
+        block_relative_offset=0,
+        in_code_body=True,
+        structure_mask=True,
+    )
+    masked = TokenChannelFeatures(
+        node_type="module",
+        parent_node_type="module",
+        block_relative_offset=0,
+        in_code_body=False,
+        structure_mask=False,
+    )
+
+    with patch.object(
+        detector,
+        "_build_features",
+        side_effect=[allowed, masked, allowed],
+    ):
+        result = detector.detect("aba")
 
     assert result.num_positions_scored == 2
-    assert result.num_green_hits == 2
+    assert len(detector._runtime.calls) == 2
+
+
+def test_replay_detector_fails_closed_when_ast_feature_prep_fails() -> None:
+    runtime = FakeRuntime()
+    detector = ReplayTokenChannelDetector(
+        runtime=runtime,
+        tokenizer=SimpleTokenizer(),
+        config=TokenChannelConfig(enabled=True, mode="dual-channel", context_width=2),
+    )
+
+    with patch(
+        "wfcllm.extract.token_channel.prepare_token_channel_feature_context",
+        side_effect=SyntaxError("broken parse"),
+    ):
+        result = detector.detect("ab")
+
+    assert result.num_positions_scored == 0
+    assert result.num_green_hits == 0
+    assert runtime.calls == []

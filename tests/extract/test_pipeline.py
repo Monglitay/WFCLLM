@@ -164,10 +164,27 @@ class TestExtractPipelineStatistics:
             assert "p_value" in first
             assert "independent_blocks" in first
             assert "hits" in first
-            assert first["lexical_num_positions_scored"] == 6
+            assert first["num_positions_scored"] == 6
+            assert first["num_green_hits"] == 4
             assert first["lexical_z_score"] == 1.5
             assert first["joint_score"] == pytest.approx(5.25)
             assert first["prediction"] is True
+
+    def test_run_uses_spec_required_lexical_count_field_names(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            jsonl_path = self._make_jsonl(tmpdir, n=1)
+            cfg = ExtractPipelineConfig(input_file=jsonl_path, output_dir=tmpdir)
+            detector = MagicMock()
+            detector.detect.return_value = _make_detection_result(True, 4.5)
+
+            pipeline = ExtractPipeline(detector=detector, config=cfg)
+            details_path = pipeline.run()
+            row = json.loads(Path(details_path).read_text(encoding="utf-8").splitlines()[0])
+
+            assert row["num_positions_scored"] == 6
+            assert row["num_green_hits"] == 4
+            assert "lexical_num_positions_scored" not in row
+            assert "lexical_num_green_hits" not in row
 
     def test_summary_includes_declared_calibration_regime(self):
         with tempfile.TemporaryDirectory() as tmpdir:
