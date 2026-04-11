@@ -2719,6 +2719,132 @@ class TestTokenChannelGeneration:
         assert result.diagnostic_summary["token_channel_enabled"] is True
         assert result.diagnostic_summary["generation_mode"] == "lexical-only"
 
+    def test_lexical_only_short_block_is_regenerated_without_token_channel_bias(
+        self,
+        monkeypatch,
+        mock_components,
+    ):
+        model, tokenizer, encoder, enc_tok = mock_components
+        config = WatermarkConfig(
+            secret_key="test-key",
+            max_new_tokens=16,
+            encoder_device="cpu",
+            token_channel=TokenChannelConfig(
+                enabled=True,
+                mode="lexical-only",
+                lexical_min_block_tokens=2,
+            ),
+        )
+
+        class FakeContext:
+            def __init__(self, model, tokenizer, config):
+                self.generated_text = ""
+                self.generated_ids = []
+                self.last_event = None
+                self.last_block_checkpoint = None
+                self._phase = "initial"
+                self.rollback_calls = 0
+
+            @property
+            def eos_id(self):
+                return -1
+
+            def prefill(self, prompt):
+                return None
+
+            def rollback(self, checkpoint):
+                self.rollback_calls += 1
+                self.generated_ids = list(checkpoint.generated_ids)
+                self.generated_text = checkpoint.generated_text
+                self.last_event = None
+                self.last_block_checkpoint = None
+                self._phase = "retry"
+
+            def forward_and_sample(self, penalty_ids=None):
+                if self._phase == "initial":
+                    self._phase = "initial-eos"
+                    self.generated_text = "x = 1\n"
+                    self.generated_ids.append(101)
+                    self.last_event = InterceptEvent(
+                        block_text="x = 1",
+                        block_type="simple",
+                        node_type="expression_statement",
+                        parent_node_type="module",
+                        token_start_idx=0,
+                        token_count=1,
+                    )
+                    self.last_block_checkpoint = SimpleNamespace(
+                        generated_ids=[],
+                        generated_text="",
+                    )
+                    return 101
+                if self._phase == "retry":
+                    self._phase = "retry-eos"
+                    self.generated_text = "y = 2\n"
+                    self.generated_ids.append(202)
+                    self.last_event = InterceptEvent(
+                        block_text="y = 2",
+                        block_type="simple",
+                        node_type="expression_statement",
+                        parent_node_type="module",
+                        token_start_idx=0,
+                        token_count=1,
+                    )
+                    self.last_block_checkpoint = SimpleNamespace(
+                        generated_ids=[],
+                        generated_text="",
+                    )
+                    return 202
+                self.last_event = None
+                return self.eos_id
+
+            def is_finished(self):
+                return self._phase in {"initial-eos", "retry-eos"}
+
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.GenerationContext",
+            FakeContext,
+        )
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.load_token_channel_artifact",
+            lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
+        )
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.TokenChannelRuntime",
+            lambda **kwargs: MagicMock(),
+        )
+
+        gen = WatermarkGenerator(
+            model=model,
+            tokenizer=tokenizer,
+            encoder=encoder,
+            encoder_tokenizer=enc_tok,
+            config=config,
+        )
+        gen._token_channel_runtime = MagicMock()
+        gen._token_channel_runtime.score_prefix.return_value = SimpleNamespace(
+            should_switch=True,
+            partition=SimpleNamespace(green_token_ids=[1]),
+        )
+        gen._build_runtime_token_features = MagicMock(
+            return_value=TokenChannelFeatures(
+                node_type="expression_statement",
+                parent_node_type="module",
+                block_relative_offset=0,
+                in_code_body=True,
+                structure_mask=True,
+            )
+        )
+        gen._verify_block = MagicMock(side_effect=AssertionError("should not verify"))
+
+        result = gen.generate("prompt")
+
+        assert result.code == "y = 2\n"
+        assert result.total_blocks == 1
+        assert result.diagnostic_summary["generation_mode"] == "lexical-only"
+        assert any(call.args[0] == [101] for call in gen._token_channel_runtime.score_prefix.call_args_list)
+        assert all(call.args[0] != [202] for call in gen._token_channel_runtime.score_prefix.call_args_list)
+
     def test_token_channel_retry_rules_decay_then_disable_bias(self, monkeypatch, mock_components):
         model, tokenizer, encoder, enc_tok = mock_components
         config = WatermarkConfig(

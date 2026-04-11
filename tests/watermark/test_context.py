@@ -277,6 +277,37 @@ class TestForwardAndSample:
             "rollback 到 later checkpoint 后应复用 checkpoint 保存的 next logits"
         )
 
+    def test_step_history_does_not_store_full_next_logits_tensors_per_token(self):
+        """Per-token history should stay sparse even when next logits exist."""
+        config = WatermarkConfig(
+            secret_key="test-key",
+            max_new_tokens=50,
+            encoder_device="cpu",
+            temperature=0.0,
+        )
+        model = MagicMock()
+        tokenizer = MagicMock()
+
+        prefill_output = MagicMock()
+        prefill_output.logits = torch.tensor([[[0.0, 8.0, 0.0, 0.0, 0.0]]])
+        prefill_output.past_key_values = (
+            (torch.zeros(1, 1, 3, 2), torch.zeros(1, 1, 3, 2)),
+        )
+        model.return_value = prefill_output
+        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+
+        tokenizer.encode.return_value = torch.tensor([[11, 22, 33]])
+        tokenizer.decode.return_value = "T"
+        tokenizer.eos_token_id = 4
+
+        ctx = GenerationContext(model=model, tokenizer=tokenizer, config=config)
+        ctx.prefill("prompt")
+        ctx._next_logits = torch.tensor([[0.0, 0.0, 5.0, 0.0, 0.0]])
+
+        ctx.forward_and_sample()
+
+        assert not isinstance(ctx._step_history[0][4], torch.Tensor)
+
 
 class TestMemorySafety:
     @pytest.fixture

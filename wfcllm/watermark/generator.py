@@ -196,6 +196,10 @@ class WatermarkGenerator:
                 continue
 
             if not self._semantic_channel_enabled():
+                self._regenerate_short_lexical_only_block(
+                    ctx,
+                    token_channel_state,
+                )
                 stats.total_blocks += 1
                 self._reset_token_channel_state(token_channel_state)
                 continue
@@ -242,6 +246,10 @@ class WatermarkGenerator:
                     stats,
                 )
             else:
+                self._regenerate_short_lexical_only_block(
+                    ctx,
+                    token_channel_state,
+                )
                 stats.total_blocks += 1
                 self._reset_token_channel_state(token_channel_state)
             active_cascade_scope = self._last_active_cascade_scope
@@ -456,6 +464,35 @@ class WatermarkGenerator:
         if state.biased_tokens == 0:
             return False
         return state.scorable_tokens < self._config.token_channel.lexical_min_block_tokens
+
+    def _regenerate_short_lexical_only_block(
+        self,
+        ctx,
+        state: TokenChannelRuntimeState,
+    ) -> None:
+        if self._semantic_channel_enabled():
+            return
+        if not self._is_short_token_channel_block(state):
+            return
+        block_cp = ctx.last_block_checkpoint
+        if block_cp is None:
+            return
+
+        ctx.rollback(block_cp)
+        retry_budget = (
+            self._config.retry_token_budget
+            if self._config.retry_token_budget is not None
+            else self._config.max_new_tokens // 2
+        )
+        for _ in range(retry_budget):
+            next_id = ctx.forward_and_sample()
+            if next_id == ctx.eos_id:
+                return
+            event = ctx.last_event
+            if event is None:
+                continue
+            if event.block_type == "simple":
+                return
 
     def _verify_block(self, event):
         """Verify a single block against LSH criteria."""

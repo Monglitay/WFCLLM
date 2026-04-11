@@ -60,9 +60,9 @@ class GenerationContext:
         # Per-step history for block-start checkpoint reconstruction.
         # Entry i = state just before the i-th generated token was sampled.
         # Stored as (generated_ids_snapshot, text, kv_seq_len,
-        # interceptor_state, next_logits_snapshot).
+        # interceptor_state, use_prefill_logits).
         self._step_history: list[
-            tuple[list[int], str, int, InterceptorState, torch.Tensor | None]
+            tuple[list[int], str, int, InterceptorState, bool]
         ] = []
 
         self._eos_id: int | None = None
@@ -143,10 +143,10 @@ class GenerationContext:
             self.past_kv[0][0].shape[2] if self.past_kv is not None else 0
         )
         pre_forward_interceptor_state = self.interceptor.checkpoint()
-        pre_forward_next_logits = (
-            self._next_logits.detach().clone()
-            if self._next_logits is not None
-            else None
+        pre_forward_use_prefill_logits = (
+            len(self.generated_ids) == 0
+            and self._next_logits is not None
+            and self._prefill_logits is not None
         )
 
         # Record this step's pre-forward state in history
@@ -155,7 +155,7 @@ class GenerationContext:
             pre_forward_text,
             pre_forward_kv_seq_len,
             pre_forward_interceptor_state,
-            pre_forward_next_logits,
+            pre_forward_use_prefill_logits,
         ))
 
         # Model forward
@@ -202,7 +202,11 @@ class GenerationContext:
                     generated_text=frame[1],
                     kv_snapshot=CacheSnapshot(seq_len=frame[2]),
                     interceptor_state=frame[3],
-                    next_logits=frame[4].detach().clone() if frame[4] is not None else None,
+                    next_logits=(
+                        self._prefill_logits.clone()
+                        if frame[4] and self._prefill_logits is not None
+                        else None
+                    ),
                 )
             else:
                 # Fallback: use pre-forward state (old behaviour)
@@ -212,8 +216,8 @@ class GenerationContext:
                     kv_snapshot=CacheSnapshot(seq_len=pre_forward_kv_seq_len),
                     interceptor_state=pre_feed_interceptor_state,
                     next_logits=(
-                        pre_forward_next_logits.detach().clone()
-                        if pre_forward_next_logits is not None
+                        self._prefill_logits.clone()
+                        if pre_forward_use_prefill_logits and self._prefill_logits is not None
                         else None
                     ),
                 )
@@ -246,7 +250,11 @@ class GenerationContext:
                 generated_text=frame[1],
                 kv_snapshot=CacheSnapshot(seq_len=frame[2]),
                 interceptor_state=frame[3],
-                next_logits=frame[4].detach().clone() if frame[4] is not None else None,
+                next_logits=(
+                    self._prefill_logits.clone()
+                    if frame[4] and self._prefill_logits is not None
+                    else None
+                ),
             )
         else:
             self.last_block_checkpoint = self.checkpoint()
