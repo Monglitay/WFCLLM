@@ -266,6 +266,49 @@ class TestRetryLoopUnit:
         assert "gamma_effective=" in caplog.text
         assert "k=" in caplog.text
 
+    def test_retry_generation_runs_pre_sample_hook_before_sampling(
+        self,
+        config,
+        mock_ctx,
+        mock_verifier,
+        mock_keying,
+        mock_entropy,
+    ):
+        event = InterceptEvent(
+            block_text="x = 1", block_type="simple",
+            node_type="expression_statement", parent_node_type="module",
+            token_start_idx=0, token_count=2,
+        )
+        call_order = []
+        hook = MagicMock()
+        hook.side_effect = lambda ctx: call_order.append("hook")
+
+        mock_ctx.last_event = event
+        mock_ctx.eos_id = 2
+        mock_ctx.is_finished.return_value = False
+        mock_ctx.forward_and_sample.side_effect = lambda penalty_ids=None: call_order.append("sample") or 5
+
+        mock_verifier.verify.return_value = VerifyResult(passed=True, min_margin=0.1)
+        mock_keying.derive.return_value = frozenset()
+        mock_entropy.estimate_block_entropy.return_value = 1.0
+        mock_entropy.compute_margin.return_value = 0.001
+
+        loop = RetryLoop(
+            ctx=mock_ctx, config=config,
+            verifier=mock_verifier, keying=mock_keying,
+            entropy_est=mock_entropy, structural_token_ids=set(),
+            pre_sample_hook=hook,
+        )
+        cp = MagicMock(spec=Checkpoint)
+        original_event = MagicMock(spec=InterceptEvent)
+        original_event.parent_node_type = "module"
+
+        result = loop.run(cp, original_event)
+
+        assert result.success is True
+        hook.assert_called_once_with(mock_ctx)
+        assert call_order == ["hook", "sample"]
+
     def test_retry_records_signature_miss_with_hash_and_in_valid_set(
         self,
         config,

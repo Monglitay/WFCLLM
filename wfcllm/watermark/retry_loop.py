@@ -70,6 +70,7 @@ class RetryLoop:
         entropy_est: NodeEntropyEstimator,
         structural_token_ids: set[int],
         gamma_resolver: Callable[[str], GammaResolution] | None = None,
+        pre_sample_hook: Callable[[GenerationContext], None] | None = None,
     ):
         self._ctx = ctx
         self._config = config
@@ -78,6 +79,7 @@ class RetryLoop:
         self._entropy_est = entropy_est
         self._structural_token_ids = structural_token_ids
         self._gamma_resolver = gamma_resolver
+        self._pre_sample_hook = pre_sample_hook
         self._retry_budget = (
             config.retry_token_budget
             if config.retry_token_budget is not None
@@ -88,6 +90,7 @@ class RetryLoop:
         self,
         checkpoint: Checkpoint,
         original_event: InterceptEvent,
+        attempt_pre_sample_hook_factory: Callable[[int], Callable[[GenerationContext], None] | None] | None = None,
     ) -> RetryResult:
         """Run the retry loop from checkpoint.
 
@@ -111,8 +114,12 @@ class RetryLoop:
             self._ctx.rollback(checkpoint)
 
             # Free-generate until a new simple block
+            pre_sample_hook = self._pre_sample_hook
+            if attempt_pre_sample_hook_factory is not None:
+                pre_sample_hook = attempt_pre_sample_hook_factory(attempt_i + 1)
             event = self._generate_until_block(
                 penalty_ids=prev_retry_ids,
+                pre_sample_hook=pre_sample_hook,
             )
 
             if event is None:
@@ -204,9 +211,12 @@ class RetryLoop:
     def _generate_until_block(
         self,
         penalty_ids: list[int] | None,
+        pre_sample_hook: Callable[[GenerationContext], None] | None = None,
     ) -> InterceptEvent | None:
         """Free-generate tokens until a simple block is detected or budget exhausted."""
         for _ in range(self._retry_budget):
+            if pre_sample_hook is not None:
+                pre_sample_hook(self._ctx)
             next_id = self._ctx.forward_and_sample(penalty_ids=penalty_ids)
             if next_id == self._ctx.eos_id:
                 return None

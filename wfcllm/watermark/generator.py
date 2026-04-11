@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 from dataclasses import dataclass, field
 
@@ -326,7 +327,7 @@ class WatermarkGenerator:
         state: TokenChannelRuntimeState,
         stats: EmbedStats,
     ) -> None:
-        state.semantic_failure_count = stats.failed_blocks
+        state.semantic_failure_count = 0
         self._reset_token_channel_state(state)
 
     def _resolve_token_channel_delta(self, state: TokenChannelRuntimeState) -> float:
@@ -389,8 +390,6 @@ class WatermarkGenerator:
     ) -> bool:
         if not self._lexical_channel_enabled() or state.disabled_for_block:
             return False
-        if state.current_block_tokens < self._config.token_channel.lexical_min_block_tokens:
-            return False
 
         features = self._build_runtime_token_features(ctx)
         if not features.structure_mask:
@@ -421,6 +420,30 @@ class WatermarkGenerator:
             return False
         ctx._next_logits[:, green_token_ids] += delta
         return True
+
+    def _build_retry_token_channel_hook(
+        self,
+        semantic_failure_count: int,
+    ):
+        if not self._lexical_channel_enabled():
+            return None
+
+        lexical_state = self._create_token_channel_state()
+        lexical_state.semantic_failure_count = semantic_failure_count
+
+        def hook(ctx) -> None:
+            self._apply_token_channel_bias(ctx, lexical_state)
+
+        return hook
+
+    def _build_retry_token_channel_hook_factory(self):
+        if not self._lexical_channel_enabled():
+            return None
+
+        def factory(semantic_failure_count: int):
+            return self._build_retry_token_channel_hook(semantic_failure_count)
+
+        return factory
 
     def _verify_block(self, event):
         """Verify a single block against LSH criteria."""
@@ -616,7 +639,14 @@ class WatermarkGenerator:
             )
             return
 
-        retry_result = retry_loop.run(block_cp, event)
+        retry_run_kwargs = {}
+        retry_hook_factory = self._build_retry_token_channel_hook_factory()
+        if (
+            retry_hook_factory is not None
+            and "attempt_pre_sample_hook_factory" in inspect.signature(retry_loop.run).parameters
+        ):
+            retry_run_kwargs["attempt_pre_sample_hook_factory"] = retry_hook_factory
+        retry_result = retry_loop.run(block_cp, event, **retry_run_kwargs)
         stats.retry_diagnostics.append(retry_result.diagnostics)
         self._append_retry_attempts(record, retry_result.diagnostics)
         self._sync_retry_terminal_identity(

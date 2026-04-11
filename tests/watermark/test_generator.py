@@ -2511,6 +2511,132 @@ class TestTokenChannelGeneration:
         assert applied is False
         gen._token_channel_runtime.score_prefix.assert_not_called()
 
+    def test_apply_token_channel_bias_scores_first_scorable_token_without_min_block_delay(
+        self,
+        monkeypatch,
+        mock_components,
+    ):
+        model, tokenizer, encoder, enc_tok = mock_components
+        config = WatermarkConfig(
+            secret_key="test-key",
+            encoder_device="cpu",
+            token_channel=TokenChannelConfig(
+                enabled=True,
+                mode="dual-channel",
+                lexical_min_block_tokens=8,
+                delta=1.5,
+            ),
+        )
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.load_token_channel_artifact",
+            lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
+        )
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.TokenChannelRuntime",
+            lambda **kwargs: MagicMock(),
+        )
+        gen = WatermarkGenerator(
+            model=model,
+            tokenizer=tokenizer,
+            encoder=encoder,
+            encoder_tokenizer=enc_tok,
+            config=config,
+        )
+        partition = SimpleNamespace(green_token_ids=[1, 3])
+        gen._token_channel_runtime = MagicMock()
+        gen._token_channel_runtime.score_prefix.return_value = SimpleNamespace(
+            should_switch=True,
+            partition=partition,
+        )
+        gen._build_runtime_token_features = MagicMock(
+            return_value=TokenChannelFeatures(
+                node_type="expression_statement",
+                parent_node_type="module",
+                block_relative_offset=0,
+                in_code_body=True,
+                structure_mask=True,
+            )
+        )
+        ctx = SimpleNamespace(
+            generated_ids=[1, 2, 3],
+            generated_text="x = ",
+            _next_logits=torch.zeros(1, 8),
+        )
+        lexical_state = gen._create_token_channel_state()
+
+        applied = gen._apply_token_channel_bias(ctx, lexical_state)
+
+        assert applied is True
+        gen._token_channel_runtime.score_prefix.assert_called_once_with(
+            ctx.generated_ids,
+            features=gen._build_runtime_token_features.return_value,
+        )
+        assert ctx._next_logits[0, 1].item() == pytest.approx(1.5)
+        assert ctx._next_logits[0, 3].item() == pytest.approx(1.5)
+
+    def test_token_channel_low_gate_fraction_probe_starts_from_first_scorable_token(
+        self,
+        monkeypatch,
+        mock_components,
+    ):
+        model, tokenizer, encoder, enc_tok = mock_components
+        config = WatermarkConfig(
+            secret_key="test-key",
+            encoder_device="cpu",
+            token_channel=TokenChannelConfig(
+                enabled=True,
+                mode="dual-channel",
+                lexical_min_block_tokens=8,
+                lexical_gate_probe_tokens=2,
+                lexical_gate_min_fraction=0.75,
+            ),
+        )
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.load_token_channel_artifact",
+            lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
+        )
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.TokenChannelRuntime",
+            lambda **kwargs: MagicMock(),
+        )
+        gen = WatermarkGenerator(
+            model=model,
+            tokenizer=tokenizer,
+            encoder=encoder,
+            encoder_tokenizer=enc_tok,
+            config=config,
+        )
+        gen._token_channel_runtime = MagicMock()
+        gen._token_channel_runtime.score_prefix.return_value = SimpleNamespace(
+            should_switch=False,
+            partition=SimpleNamespace(green_token_ids=[1]),
+        )
+        gen._build_runtime_token_features = MagicMock(
+            return_value=TokenChannelFeatures(
+                node_type="expression_statement",
+                parent_node_type="module",
+                block_relative_offset=0,
+                in_code_body=True,
+                structure_mask=True,
+            )
+        )
+        ctx = SimpleNamespace(
+            generated_ids=[1, 2, 3],
+            generated_text="x = ",
+            _next_logits=torch.zeros(1, 8),
+        )
+        lexical_state = gen._create_token_channel_state()
+
+        assert gen._apply_token_channel_bias(ctx, lexical_state) is False
+        assert lexical_state.disabled_for_block is False
+
+        lexical_state.current_block_tokens += 1
+        assert gen._apply_token_channel_bias(ctx, lexical_state) is False
+        assert lexical_state.disabled_for_block is True
+        assert lexical_state.low_gate_fraction_shutdown is True
+        assert lexical_state.scorable_tokens == 2
+        assert gen._token_channel_runtime.score_prefix.call_count == 2
+
     def test_lexical_only_generation_skips_semantic_verification_and_retry(
         self,
         monkeypatch,
@@ -2631,6 +2757,176 @@ class TestTokenChannelGeneration:
 
         lexical_state.semantic_failure_count = 4
         assert gen._resolve_token_channel_delta(lexical_state) == 0.0
+
+    def test_token_channel_state_resets_block_failure_count_after_simple_block(
+        self,
+        monkeypatch,
+        mock_components,
+    ):
+        model, tokenizer, encoder, enc_tok = mock_components
+        config = WatermarkConfig(
+            secret_key="test-key",
+            encoder_device="cpu",
+            token_channel=TokenChannelConfig(enabled=True, mode="dual-channel"),
+        )
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.load_token_channel_artifact",
+            lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
+        )
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.TokenChannelRuntime",
+            lambda **kwargs: MagicMock(),
+        )
+        gen = WatermarkGenerator(
+            model=model,
+            tokenizer=tokenizer,
+            encoder=encoder,
+            encoder_tokenizer=enc_tok,
+            config=config,
+        )
+        lexical_state = gen._create_token_channel_state()
+        lexical_state.semantic_failure_count = 3
+        stats = EmbedStats(failed_blocks=9)
+
+        gen._update_token_channel_state_after_simple_block(lexical_state, stats)
+
+        assert lexical_state.semantic_failure_count == 0
+
+    def test_retry_generation_uses_token_channel_bias_when_lexical_mode_is_enabled(
+        self,
+        monkeypatch,
+        mock_components,
+    ):
+        model, tokenizer, encoder, enc_tok = mock_components
+        config = WatermarkConfig(
+            secret_key="test-key",
+            max_new_tokens=16,
+            encoder_device="cpu",
+            token_channel=TokenChannelConfig(enabled=True, mode="dual-channel"),
+        )
+
+        class FakeContext:
+            def __init__(self, model, tokenizer, config):
+                self.generated_text = ""
+                self.generated_ids = []
+                self.last_event = None
+                self.last_block_checkpoint = None
+                self._steps = 0
+
+            @property
+            def eos_id(self):
+                return -1
+
+            def prefill(self, prompt):
+                return None
+
+            def forward_and_sample(self, penalty_ids=None):
+                self._steps += 1
+                if self._steps == 1:
+                    self.generated_text = "x = 1\n"
+                    self.generated_ids.append(101)
+                    self.last_event = InterceptEvent(
+                        block_text="x = 1",
+                        block_type="simple",
+                        node_type="expression_statement",
+                        parent_node_type="module",
+                        token_start_idx=0,
+                        token_count=1,
+                    )
+                    self.last_block_checkpoint = SimpleNamespace(
+                        generated_ids=[],
+                        generated_text="",
+                    )
+                    return 101
+                self.last_event = None
+                return self.eos_id
+
+            def is_finished(self):
+                return self._steps >= 2
+
+        class FakeRetryLoop:
+            def __init__(self, **kwargs):
+                return None
+
+            def run(self, checkpoint, original_event, attempt_pre_sample_hook_factory=None):
+                retry_ctx = SimpleNamespace(
+                    generated_ids=[11, 12],
+                    generated_text="retry = ",
+                    _next_logits=torch.zeros(1, 8),
+                )
+                hook = attempt_pre_sample_hook_factory(1)
+                hook(retry_ctx)
+                replacement_event = InterceptEvent(
+                    block_text="retry = 1",
+                    block_type="simple",
+                    node_type="expression_statement",
+                    parent_node_type="module",
+                    token_start_idx=0,
+                    token_count=1,
+                )
+                return RetryResult(
+                    success=True,
+                    attempts=1,
+                    final_event=replacement_event,
+                    diagnostics=RetryDiagnostics(
+                        per_attempt=[AttemptInfo(passed=True, no_block=False)]
+                    ),
+                )
+
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.GenerationContext",
+            FakeContext,
+        )
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.RetryLoop",
+            FakeRetryLoop,
+        )
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.load_token_channel_artifact",
+            lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
+        )
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.TokenChannelRuntime",
+            lambda **kwargs: MagicMock(),
+        )
+
+        gen = WatermarkGenerator(
+            model=model,
+            tokenizer=tokenizer,
+            encoder=encoder,
+            encoder_tokenizer=enc_tok,
+            config=config,
+        )
+        gen._token_channel_runtime = MagicMock()
+        gen._token_channel_runtime.score_prefix.return_value = SimpleNamespace(
+            should_switch=True,
+            partition=SimpleNamespace(green_token_ids=[1]),
+        )
+        gen._build_runtime_token_features = MagicMock(
+            return_value=TokenChannelFeatures(
+                node_type="expression_statement",
+                parent_node_type="module",
+                block_relative_offset=0,
+                in_code_body=True,
+                structure_mask=True,
+            )
+        )
+        gen._verify_block = MagicMock(
+            return_value=VerifyResult(
+                passed=False,
+                min_margin=0.0,
+                lsh_signature=(1, 1, 1),
+                in_valid_set=False,
+            )
+        )
+
+        result = gen.generate("prompt")
+
+        assert result.block_ledgers[0]["final_outcome"]["rescued_by_retry"] is True
+        assert any(
+            call.args[0] == [11, 12]
+            for call in gen._token_channel_runtime.score_prefix.call_args_list
+        )
 
     def test_token_channel_low_gate_fraction_shutdown_uses_early_scorable_window(
         self,
