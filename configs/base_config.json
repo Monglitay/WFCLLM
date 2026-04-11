@@ -86,6 +86,19 @@
       "fail_on_structure_mismatch": true,
       "warn_on_numeric_mismatch": true,
       "exclude_invalid_samples": true
+    },
+    "token_channel": {
+      "enabled": false,
+      "channel_mode": "semantic-only",
+      "model_path": "data/models/token-channel",
+      "ignore_repeated_ngrams": false,
+      "ignore_repeated_prefixes": false,
+      "joint": {
+        "semantic_weight": 1.0,
+        "lexical_weight": 0.75,
+        "lexical_full_weight_min_positions": 32,
+        "threshold": 4.0
+      }
     }
   },
   "generate_negative": {

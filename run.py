@@ -59,6 +59,17 @@ DEFAULT_STATE_FILE = Path("data/run_state.json")
 DEFAULT_CONFIG_FILE = Path("configs/base_config.json")
 
 
+def parse_optional_bool(raw_value: str) -> bool:
+    """Parse a CLI boolean value using explicit true/false strings."""
+
+    value = raw_value.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise argparse.ArgumentTypeError("expected one of: true, false, 1, 0, yes, no, on, off")
+
+
 def load_config(config_path: Path) -> dict:
     """读取 JSON 配置文件，返回按阶段分组的 dict。"""
     if not config_path.exists():
@@ -135,7 +146,10 @@ def resolve_extract_adaptive_gamma_config(args: argparse.Namespace, cfg: dict):
     return resolve_adaptive_gamma_config(args, cfg.get("watermark", {}))
 
 
-def resolve_token_channel_config(section: dict | None):
+def resolve_token_channel_config(
+    section: dict | None,
+    args: argparse.Namespace | None = None,
+):
     from wfcllm.watermark.token_channel.config import TokenChannelConfig
 
     if section is None:
@@ -144,7 +158,65 @@ def resolve_token_channel_config(section: dict | None):
         configured = section
     else:
         raise ValueError("token_channel must be a JSON object")
+
+    if args is not None:
+        configured = _apply_token_channel_cli_overrides(configured, args)
+
     return TokenChannelConfig.from_mapping(configured)
+
+
+def _apply_token_channel_cli_overrides(
+    configured: dict[str, object],
+    args: argparse.Namespace,
+) -> dict[str, object]:
+    merged: dict[str, object] = dict(configured)
+    joint_section = dict(merged.get("joint") or {})
+
+    scalar_overrides = {
+        "enabled": getattr(args, "token_channel_enabled", None),
+        "channel_mode": getattr(args, "token_channel_mode", None),
+        "model_path": getattr(args, "token_channel_model_path", None),
+        "context_width": getattr(args, "token_channel_context_width", None),
+        "switch_threshold": getattr(args, "token_channel_switch_threshold", None),
+        "delta": getattr(args, "token_channel_delta", None),
+        "ignore_repeated_ngrams": getattr(args, "token_channel_ignore_repeated_ngrams", None),
+        "ignore_repeated_prefixes": getattr(args, "token_channel_ignore_repeated_prefixes", None),
+        "debug_mode": getattr(args, "token_channel_debug_mode", None),
+        "lexical_min_block_tokens": getattr(args, "token_channel_lexical_min_block_tokens", None),
+        "lexical_retry_decay_start": getattr(args, "token_channel_lexical_retry_decay_start", None),
+        "lexical_retry_disable_after": getattr(args, "token_channel_lexical_retry_disable_after", None),
+        "lexical_gate_probe_tokens": getattr(args, "token_channel_lexical_gate_probe_tokens", None),
+        "lexical_gate_min_fraction": getattr(args, "token_channel_lexical_gate_min_fraction", None),
+        "joint_semantic_weight": getattr(args, "token_channel_joint_semantic_weight", None),
+        "joint_lexical_weight": getattr(args, "token_channel_joint_lexical_weight", None),
+        "lexical_full_weight_min_positions": getattr(
+            args,
+            "token_channel_lexical_full_weight_min_positions",
+            None,
+        ),
+        "joint_threshold": getattr(args, "token_channel_joint_threshold", None),
+    }
+    for key, value in scalar_overrides.items():
+        if value is not None:
+            merged[key] = value
+
+    joint_overrides = {
+        "semantic_weight": getattr(args, "token_channel_joint_semantic_weight", None),
+        "lexical_weight": getattr(args, "token_channel_joint_lexical_weight", None),
+        "lexical_full_weight_min_positions": getattr(
+            args,
+            "token_channel_lexical_full_weight_min_positions",
+            None,
+        ),
+        "threshold": getattr(args, "token_channel_joint_threshold", None),
+    }
+    for key, value in joint_overrides.items():
+        if value is not None:
+            joint_section[key] = value
+    if joint_section:
+        merged["joint"] = joint_section
+
+    return merged
 
 
 def build_extract_calibration_contract_builder(
@@ -349,6 +421,113 @@ def build_parser() -> argparse.ArgumentParser:
         "--profile-id",
         default=None,
         help="输出 watermark metadata 时使用的 entropy profile 标识",
+    )
+    parser.add_argument(
+        "--token-channel-enabled",
+        type=parse_optional_bool,
+        default=None,
+        help="是否启用 token 级词法通道（true/false）",
+    )
+    parser.add_argument(
+        "--token-channel-mode",
+        choices=["semantic-only", "lexical-only", "dual-channel"],
+        default=None,
+        help="token 通道运行模式",
+    )
+    parser.add_argument(
+        "--token-channel-model-path",
+        default=None,
+        help="token 通道模型产物路径",
+    )
+    parser.add_argument(
+        "--token-channel-context-width",
+        type=int,
+        default=None,
+        help="token 通道上下文宽度",
+    )
+    parser.add_argument(
+        "--token-channel-switch-threshold",
+        type=float,
+        default=None,
+        help="token 通道 gate 阈值",
+    )
+    parser.add_argument(
+        "--token-channel-delta",
+        type=float,
+        default=None,
+        help="token 通道 green 集偏置强度",
+    )
+    parser.add_argument(
+        "--token-channel-ignore-repeated-ngrams",
+        type=parse_optional_bool,
+        default=None,
+        help="提取阶段是否忽略重复 n-gram 位置（true/false）",
+    )
+    parser.add_argument(
+        "--token-channel-ignore-repeated-prefixes",
+        type=parse_optional_bool,
+        default=None,
+        help="提取阶段是否忽略重复 prefix 位置（true/false）",
+    )
+    parser.add_argument(
+        "--token-channel-debug-mode",
+        type=parse_optional_bool,
+        default=None,
+        help="是否启用 token 通道调试模式（true/false）",
+    )
+    parser.add_argument(
+        "--token-channel-lexical-min-block-tokens",
+        type=int,
+        default=None,
+        help="短 block 关闭规则的最小 token 数",
+    )
+    parser.add_argument(
+        "--token-channel-lexical-retry-decay-start",
+        type=int,
+        default=None,
+        help="词法通道重试衰减起始轮次",
+    )
+    parser.add_argument(
+        "--token-channel-lexical-retry-disable-after",
+        type=int,
+        default=None,
+        help="词法通道在多次重试后关闭的轮次",
+    )
+    parser.add_argument(
+        "--token-channel-lexical-gate-probe-tokens",
+        type=int,
+        default=None,
+        help="词法 gate 探针窗口大小",
+    )
+    parser.add_argument(
+        "--token-channel-lexical-gate-min-fraction",
+        type=float,
+        default=None,
+        help="词法 gate 最低命中比例",
+    )
+    parser.add_argument(
+        "--token-channel-joint-semantic-weight",
+        type=float,
+        default=None,
+        help="联合检测中的语义通道权重",
+    )
+    parser.add_argument(
+        "--token-channel-joint-lexical-weight",
+        type=float,
+        default=None,
+        help="联合检测中的词法通道权重",
+    )
+    parser.add_argument(
+        "--token-channel-lexical-full-weight-min-positions",
+        type=int,
+        default=None,
+        help="词法联合权重达到满额所需的最少计分位置数",
+    )
+    parser.add_argument(
+        "--token-channel-joint-threshold",
+        type=float,
+        default=None,
+        help="联合检测判决阈值",
     )
     # Extract 参数
     parser.add_argument(
@@ -643,7 +822,7 @@ def run_watermark(args: argparse.Namespace, state: RunState) -> int:
     lm_model_path = args.lm_model_path or wm_cfg.get("lm_model_path", "")
 
     try:
-        token_channel_config = resolve_token_channel_config(wm_cfg.get("token_channel"))
+        token_channel_config = resolve_token_channel_config(wm_cfg.get("token_channel"), args)
     except ValueError as exc:
         print(f"[错误] token_channel 配置无效：{exc}", file=sys.stderr)
         return 1
@@ -821,7 +1000,7 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
     adaptive_gamma_config = resolve_extract_adaptive_gamma_config(args, cfg)
 
     try:
-        token_channel_config = resolve_token_channel_config(ext_cfg.get("token_channel"))
+        token_channel_config = resolve_token_channel_config(ext_cfg.get("token_channel"), args)
     except ValueError as exc:
         print(f"[错误] token_channel 配置无效：{exc}", file=sys.stderr)
         return 1

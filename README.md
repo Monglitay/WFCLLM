@@ -297,6 +297,46 @@ python run.py --phase extract \
 - `adaptive_contract_invalid`：adaptive metadata 的数值字段（如 `entropy_units`、`gamma_effective`）与重建结果不一致。
 - `mode_counts.fixed` / `mode_counts.adaptive`：用于区分本批样本里 fixed 与 adaptive 两条检测路径的占比。
 
+### Token-Channel Commands
+
+```bash
+# 1. 检查 token-channel 离线训练缓存 / teacher cache
+HF_HUB_OFFLINE=1 conda run -n WFCLLM python -m wfcllm.watermark.token_channel.train \
+    --corpus-cache data/token_channel/train_corpus.json \
+    --teacher-cache data/token_channel/teacher_cache.json
+
+# 2. 双通道生成：开启 token 级词法通道并指定模型产物
+HF_HUB_OFFLINE=1 conda run -n WFCLLM python run.py --phase watermark \
+    --config configs/base_config.json \
+    --lm-model-path data/models/deepseek-coder-7b-base \
+    --secret-key mysecret \
+    --dataset humaneval \
+    --token-channel-enabled true \
+    --token-channel-mode dual-channel \
+    --token-channel-model-path data/models/token-channel \
+    --token-channel-delta 2.0
+
+# 3. 仅词法通道检测：关闭语义联合，只输出 lexical 判决
+HF_HUB_OFFLINE=1 conda run -n WFCLLM python run.py --phase extract \
+    --config configs/base_config.json \
+    --secret-key mysecret \
+    --input-file data/watermarked/humaneval_20260309_120000.jsonl \
+    --token-channel-enabled true \
+    --token-channel-mode lexical-only \
+    --token-channel-model-path data/models/token-channel \
+    --token-channel-ignore-repeated-prefixes true
+
+# 4. 双通道联合检测：保留 semantic_result / lexical_result / joint_result
+HF_HUB_OFFLINE=1 conda run -n WFCLLM python run.py --phase extract \
+    --config configs/base_config.json \
+    --secret-key mysecret \
+    --input-file data/watermarked/humaneval_20260309_120000.jsonl \
+    --token-channel-enabled true \
+    --token-channel-mode dual-channel \
+    --token-channel-model-path data/models/token-channel \
+    --token-channel-joint-threshold 4.0
+```
+
 ---
 
 ## 各模块说明

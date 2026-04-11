@@ -12,7 +12,7 @@ RUN_PY = PROJECT_ROOT / "run.py"
 # ── 将项目根目录加入 sys.path（如果需要）
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from run import RunState, PHASES, ALL_PHASES
+from run import ALL_PHASES, PHASES, RunState
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -185,6 +185,84 @@ class TestCLI:
 
         args = build_parser().parse_args(["--phase", "extract", "--resume", "latest"])
         assert args.resume == "latest"
+
+    def test_build_parser_accepts_token_channel_flags(self):
+        from run import build_parser
+
+        args = build_parser().parse_args(
+            [
+                "--phase",
+                "watermark",
+                "--token-channel-enabled",
+                "true",
+                "--token-channel-mode",
+                "dual-channel",
+                "--token-channel-model-path",
+                "data/models/token-channel-demo",
+                "--token-channel-delta",
+                "1.5",
+                "--token-channel-joint-threshold",
+                "5.0",
+            ]
+        )
+
+        assert args.token_channel_enabled is True
+        assert args.token_channel_mode == "dual-channel"
+        assert args.token_channel_model_path == "data/models/token-channel-demo"
+        assert args.token_channel_delta == pytest.approx(1.5)
+        assert args.token_channel_joint_threshold == pytest.approx(5.0)
+
+    def test_resolve_token_channel_config_applies_cli_overrides(self):
+        from run import resolve_token_channel_config
+
+        args = argparse.Namespace(
+            token_channel_enabled=True,
+            token_channel_mode="lexical-only",
+            token_channel_model_path="data/models/token-channel-demo",
+            token_channel_context_width=64,
+            token_channel_switch_threshold=0.25,
+            token_channel_delta=1.5,
+            token_channel_ignore_repeated_ngrams=True,
+            token_channel_ignore_repeated_prefixes=True,
+            token_channel_debug_mode=True,
+            token_channel_lexical_min_block_tokens=12,
+            token_channel_lexical_retry_decay_start=3,
+            token_channel_lexical_retry_disable_after=5,
+            token_channel_lexical_gate_probe_tokens=20,
+            token_channel_lexical_gate_min_fraction=0.2,
+            token_channel_joint_semantic_weight=1.25,
+            token_channel_joint_lexical_weight=0.6,
+            token_channel_lexical_full_weight_min_positions=48,
+            token_channel_joint_threshold=5.0,
+        )
+
+        resolved = resolve_token_channel_config(
+            {
+                "enabled": False,
+                "channel_mode": "semantic-only",
+                "delta": 2.0,
+            },
+            args,
+        )
+
+        assert resolved.enabled is True
+        assert resolved.mode == "lexical-only"
+        assert resolved.model_path == "data/models/token-channel-demo"
+        assert resolved.context_width == 64
+        assert resolved.switch_threshold == pytest.approx(0.25)
+        assert resolved.delta == pytest.approx(1.5)
+        assert resolved.ignore_repeated_ngrams is True
+        assert resolved.ignore_repeated_prefixes is True
+        assert resolved.debug_mode is True
+        assert resolved.lexical_min_block_tokens == 12
+        assert resolved.lexical_retry_decay_start == 3
+        assert resolved.lexical_retry_disable_after == 5
+        assert resolved.lexical_gate_probe_tokens == 20
+        assert resolved.lexical_gate_min_fraction == pytest.approx(0.2)
+        assert resolved.joint_semantic_weight == pytest.approx(1.25)
+        assert resolved.joint_lexical_weight == pytest.approx(0.6)
+        assert resolved.lexical_full_weight_min_positions == 48
+        assert resolved.joint_threshold == pytest.approx(5.0)
 
     def test_status_exits_zero(self):
         result = subprocess.run(
