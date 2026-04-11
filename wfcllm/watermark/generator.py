@@ -24,7 +24,7 @@ from wfcllm.watermark.entropy_profile import EntropyProfile
 from wfcllm.watermark.gamma_schedule import GammaResolution, PiecewiseQuantileSchedule, quantize_gamma
 from wfcllm.watermark.keying import WatermarkKeying
 from wfcllm.watermark.lsh_space import LSHSpace
-from wfcllm.watermark.retry_loop import RetryLoop, RetryDiagnostics
+from wfcllm.watermark.retry_loop import RetryLoop, RetryDiagnostics, RetryResult
 from wfcllm.watermark.token_channel.features import TokenChannelFeatures
 from wfcllm.watermark.token_channel.features import build_token_channel_features
 from wfcllm.watermark.token_channel.model import load_token_channel_artifact
@@ -196,10 +196,24 @@ class WatermarkGenerator:
                 continue
 
             if not self._semantic_channel_enabled():
-                self._regenerate_short_lexical_only_block(
+                regenerated_event = self._regenerate_short_lexical_only_block(
                     ctx,
                     token_channel_state,
                 )
+                if regenerated_event is not None:
+                    event = regenerated_event
+                    if event.block_type == "compound":
+                        self._reset_token_channel_state(token_channel_state)
+                        active_cascade_scope = self._update_active_cascade_scope_for_compound(
+                            active_cascade_scope,
+                            event,
+                        )
+                        cascade_mgr.on_compound_block_start(
+                            ctx,
+                            event,
+                            stats_snapshot=self._snapshot_runtime_stats(stats),
+                        )
+                        continue
                 stats.total_blocks += 1
                 self._reset_token_channel_state(token_channel_state)
                 continue
@@ -246,12 +260,30 @@ class WatermarkGenerator:
                     stats,
                 )
             else:
-                self._regenerate_short_lexical_only_block(
+                regenerated_event = self._regenerate_short_lexical_only_block(
                     ctx,
                     token_channel_state,
                 )
-                stats.total_blocks += 1
-                self._reset_token_channel_state(token_channel_state)
+                if regenerated_event is not None:
+                    final_event = regenerated_event
+                    if final_event.block_type == "compound":
+                        self._reset_token_channel_state(token_channel_state)
+                        active_cascade_scope = self._update_active_cascade_scope_for_compound(
+                            active_cascade_scope,
+                            final_event,
+                        )
+                        cascade_mgr.on_compound_block_start(
+                            ctx,
+                            final_event,
+                            stats_snapshot=self._snapshot_runtime_stats(stats),
+                        )
+                        active_cascade_scope = self._last_active_cascade_scope
+                    else:
+                        stats.total_blocks += 1
+                        self._reset_token_channel_state(token_channel_state)
+                else:
+                    stats.total_blocks += 1
+                    self._reset_token_channel_state(token_channel_state)
             active_cascade_scope = self._last_active_cascade_scope
 
         final_code = ctx.generated_text
@@ -463,12 +495,23 @@ class WatermarkGenerator:
 
         return hook
 
-    def _build_retry_token_channel_hook_factory(self):
+    def _build_retry_token_channel_hook_factory(
+        self,
+        state_registry: dict[int, TokenChannelRuntimeState] | None = None,
+    ):
         if not self._lexical_channel_enabled():
             return None
 
         def factory(semantic_failure_count: int):
-            return self._build_retry_token_channel_hook(semantic_failure_count)
+            lexical_state = self._create_token_channel_state()
+            lexical_state.semantic_failure_count = semantic_failure_count
+            if state_registry is not None:
+                state_registry[semantic_failure_count] = lexical_state
+
+            def hook(ctx) -> None:
+                self._apply_token_channel_bias(ctx, lexical_state)
+
+            return hook
 
         return factory
 
@@ -483,7 +526,7 @@ class WatermarkGenerator:
         self,
         ctx,
         state: TokenChannelRuntimeState,
-    ) -> None:
+    ):
         if self._semantic_channel_enabled():
             return
         if not self._is_short_token_channel_block(state):
@@ -505,8 +548,45 @@ class WatermarkGenerator:
             event = ctx.last_event
             if event is None:
                 continue
-            if event.block_type == "simple":
-                return
+            return event
+
+    @staticmethod
+    def _merge_retry_diagnostics(
+        primary: RetryDiagnostics,
+        secondary: RetryDiagnostics,
+    ) -> RetryDiagnostics:
+        per_attempt = list(primary.per_attempt) + list(secondary.per_attempt)
+        sigs_seen = {
+            attempt.sig
+            for attempt in per_attempt
+            if attempt.sig is not None
+        }
+        texts_seen = {
+            attempt.text
+            for attempt in per_attempt
+            if attempt.text
+        }
+        return RetryDiagnostics(
+            per_attempt=per_attempt,
+            unique_signatures=len(sigs_seen),
+            unique_texts=len(texts_seen),
+        )
+
+    @classmethod
+    def _merge_retry_results(
+        cls,
+        primary: RetryResult,
+        secondary: RetryResult,
+    ) -> RetryResult:
+        return RetryResult(
+            success=secondary.success,
+            attempts=primary.attempts + secondary.attempts,
+            final_event=secondary.final_event,
+            diagnostics=cls._merge_retry_diagnostics(
+                primary.diagnostics,
+                secondary.diagnostics,
+            ),
+        )
 
     def _verify_block(self, event):
         """Verify a single block against LSH criteria."""
@@ -706,14 +786,25 @@ class WatermarkGenerator:
 
         retry_run_kwargs = {}
         retry_hook_factory = None
+        retry_state_registry: dict[int, TokenChannelRuntimeState] = {}
         if not short_token_channel_block:
-            retry_hook_factory = self._build_retry_token_channel_hook_factory()
+            retry_hook_factory = self._build_retry_token_channel_hook_factory(retry_state_registry)
         if (
             retry_hook_factory is not None
             and "attempt_pre_sample_hook_factory" in inspect.signature(retry_loop.run).parameters
         ):
             retry_run_kwargs["attempt_pre_sample_hook_factory"] = retry_hook_factory
         retry_result = retry_loop.run(block_cp, event, **retry_run_kwargs)
+        retry_state = retry_state_registry.get(retry_result.attempts)
+        if (
+            retry_result.success
+            and retry_state is not None
+            and self._is_short_token_channel_block(retry_state)
+        ):
+            retry_result = self._merge_retry_results(
+                retry_result,
+                retry_loop.run(block_cp, event),
+            )
         stats.retry_diagnostics.append(retry_result.diagnostics)
         self._append_retry_attempts(record, retry_result.diagnostics)
         self._sync_retry_terminal_identity(
