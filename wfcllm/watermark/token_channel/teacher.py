@@ -138,7 +138,11 @@ def _score_next(model: object, prefix_tokens: list[int], *, tokenizer: object) -
             )
         input_tokens = [bos_token_id]
 
-    input_ids = torch.tensor([input_tokens], dtype=torch.long)
+    input_ids = torch.tensor(
+        [input_tokens],
+        dtype=torch.long,
+        device=_resolve_module_device(model),
+    )
     was_training = getattr(model, "training", None)
     eval_method = getattr(model, "eval", None)
     train_method = getattr(model, "train", None)
@@ -158,6 +162,17 @@ def _score_next(model: object, prefix_tokens: list[int], *, tokenizer: object) -
     if not isinstance(logits, torch.Tensor) or logits.ndim != 3:
         raise ValueError("teacher model must expose 3D logits output")
     return logits[0, -1].detach().cpu().to(dtype=torch.float32)
+
+
+def _resolve_module_device(model: object) -> torch.device:
+    if isinstance(model, torch.nn.Module):
+        parameter = next(model.parameters(), None)
+        if parameter is not None:
+            return parameter.device
+        buffer = next(model.buffers(), None)
+        if buffer is not None:
+            return buffer.device
+    return torch.device("cpu")
 
 
 def _compute_entropy(logits: torch.Tensor) -> float:

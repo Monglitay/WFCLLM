@@ -100,6 +100,17 @@ class DropoutTeacherModule(torch.nn.Module):
         return {"logits": logits}
 
 
+class MetaDeviceTeacherModule(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.register_buffer("anchor", torch.empty(0, device="meta"))
+        self.seen_devices: list[str] = []
+
+    def forward(self, input_ids: torch.Tensor):
+        self.seen_devices.append(str(input_ids.device))
+        return {"logits": torch.ones((1, input_ids.shape[-1], 2), dtype=torch.float32)}
+
+
 class BosTokenizer(CharacterTokenizer):
     def __init__(self) -> None:
         super().__init__()
@@ -488,6 +499,22 @@ def test_extract_teacher_rows_uses_eval_and_no_grad_for_module_teachers() -> Non
     assert model.grad_enabled_states == [False, False]
     assert model.training is True
     assert rows[0]["teacher_logits"] == [1.0, 1.0]
+
+
+def test_extract_teacher_rows_moves_module_inputs_to_model_device() -> None:
+    tokenizer = BosTokenizer()
+    tokenizer.register_text("ab")
+    model = MetaDeviceTeacherModule()
+
+    rows = extract_teacher_rows(
+        tokenizer=tokenizer,
+        model=model,
+        text="ab",
+        context_width=2,
+    )
+
+    assert len(rows) == 2
+    assert model.seen_devices == ["meta", "meta"]
 
 
 def test_train_entry_loads_cached_rows_without_running_training(tmp_path: Path, capsys) -> None:
