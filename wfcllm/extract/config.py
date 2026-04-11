@@ -10,6 +10,9 @@ from wfcllm.watermark.token_channel.config import TokenChannelConfig
 
 if TYPE_CHECKING:
     from wfcllm.extract.alignment import AlignmentReport
+    from wfcllm.extract.hypothesis import JointDetectionResult
+    from wfcllm.extract.hypothesis import LexicalDetectionResult
+    from wfcllm.extract.hypothesis import SemanticDetectionResult
 
 
 @dataclass
@@ -73,6 +76,9 @@ class DetectionResult:
     block_details: list[BlockScore] = field(default_factory=list)
     alignment_report: AlignmentReport | None = None
     contract_valid: bool | None = None
+    semantic_result: SemanticDetectionResult | None = None
+    lexical_result: LexicalDetectionResult | None = None
+    joint_result: JointDetectionResult | None = None
 
     @property
     def mode(self) -> Literal["fixed", "adaptive"]:

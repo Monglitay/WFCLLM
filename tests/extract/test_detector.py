@@ -67,6 +67,20 @@ class TestWatermarkDetector:
         assert isinstance(result.z_score, float)
         assert isinstance(result.p_value, float)
 
+    def test_detection_result_exposes_typed_channel_fields_by_default(self):
+        result = DetectionResult(
+            is_watermarked=False,
+            z_score=0.0,
+            p_value=1.0,
+            total_blocks=0,
+            independent_blocks=0,
+            hit_blocks=0,
+        )
+
+        assert result.semantic_result is None
+        assert result.lexical_result is None
+        assert result.joint_result is None
+
     def test_detect_empty_code(self, config, mock_encoder, mock_tokenizer):
         detector = WatermarkDetector(config, mock_encoder, mock_tokenizer, device="cpu")
         result = detector.detect("")
@@ -280,3 +294,70 @@ class TestWatermarkDetector:
         )
         assert result.is_watermarked is True
         assert result.z_score == pytest.approx(4.5)
+
+    def test_detect_rejects_token_altering_postprocess_metadata(
+        self, config, mock_encoder, mock_tokenizer
+    ):
+        config.token_channel.enabled = True
+        config.token_channel.mode = "dual-channel"
+        detector = WatermarkDetector(config, mock_encoder, mock_tokenizer, device="cpu")
+
+        with pytest.raises(ValueError, match="tokenizer-visible final code"):
+            detector.detect(
+                "x = 1\n",
+                watermark_metadata={
+                    "token_channel": {
+                        "enabled": True,
+                        "token_altering_postprocess": True,
+                    }
+                },
+            )
+
+    def test_detect_lazily_initializes_real_lexical_detector_path(
+        self, config, mock_encoder, mock_tokenizer
+    ):
+        config.token_channel.enabled = True
+        config.token_channel.mode = "dual-channel"
+        detector = WatermarkDetector(config, mock_encoder, mock_tokenizer, device="cpu")
+
+        lexical_result = LexicalDetectionResult(
+            num_positions_scored=5,
+            num_green_hits=4,
+            green_fraction=0.8,
+            lexical_z_score=2.5,
+            lexical_p_value=0.05,
+        )
+        artifact = MagicMock(model=object(), metadata=object())
+        replay_instance = MagicMock()
+        replay_instance.detect.return_value = lexical_result
+
+        with patch.object(detector._scorer, "score_all", return_value=[]), patch(
+            "wfcllm.extract.detector.load_token_channel_artifact",
+            return_value=artifact,
+        ) as load_artifact, patch(
+            "wfcllm.extract.detector.TokenChannelRuntime",
+            return_value="runtime",
+        ) as runtime_cls, patch(
+            "wfcllm.extract.detector.ReplayTokenChannelDetector",
+            return_value=replay_instance,
+        ) as replay_cls:
+            first = detector.detect("x = 1\n")
+            second = detector.detect("x = 1\n")
+
+        load_artifact.assert_called_once_with(config.token_channel.model_path)
+        runtime_cls.assert_called_once_with(
+            model=artifact.model,
+            config=config.token_channel,
+            artifact_metadata=artifact.metadata,
+            tokenizer=mock_tokenizer,
+            secret_key=config.secret_key,
+        )
+        replay_cls.assert_called_once_with(
+            runtime="runtime",
+            tokenizer=mock_tokenizer,
+            config=config.token_channel,
+        )
+        assert replay_instance.detect.call_count == 2
+        assert detector._lexical_detector is replay_instance
+        assert first.lexical_result is lexical_result
+        assert second.lexical_result is lexical_result
