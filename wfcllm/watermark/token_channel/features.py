@@ -2,12 +2,31 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from collections.abc import Mapping
+from dataclasses import dataclass
+import ast
 from typing import Any
 
 FEATURE_VERSION = "token-channel-features/v1"
 PYTHON_LANGUAGE = "python"
+FORMAL_EXCLUSION_NODE_TYPES = frozenset(
+    {
+        "import_statement",
+        "import_from_statement",
+        "decorator",
+        "function_signature",
+        "class_header",
+    }
+)
+
+
+@dataclass(frozen=True)
+class ExcludedSpan:
+    """Source span that should not participate in lexical switching."""
+
+    label: str
+    start: int
+    end: int
 
 
 @dataclass(frozen=True)
@@ -89,3 +108,217 @@ def _coerce_bool(value: Any, field_name: str) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"{field_name} must be a boolean")
     return value
+
+
+def collect_excluded_token_spans(source_code: str) -> tuple[ExcludedSpan, ...]:
+    """Collect formal exclusion spans from Python source."""
+
+    tree = ast.parse(source_code)
+    line_starts = _build_line_starts(source_code)
+    spans: list[ExcludedSpan] = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            spans.append(
+                ExcludedSpan(
+                    label="import_statement",
+                    start=_offset(line_starts, node.lineno, node.col_offset),
+                    end=_offset(line_starts, node.end_lineno, node.end_col_offset),
+                )
+            )
+            continue
+        if isinstance(node, ast.ImportFrom):
+            spans.append(
+                ExcludedSpan(
+                    label="import_from_statement",
+                    start=_offset(line_starts, node.lineno, node.col_offset),
+                    end=_offset(line_starts, node.end_lineno, node.end_col_offset),
+                )
+            )
+            continue
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            spans.extend(_collect_decorator_spans(source_code, line_starts, node))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            signature_end = _find_header_end(source_code, line_starts, node)
+            spans.append(
+                ExcludedSpan(
+                    label="function_signature",
+                    start=_offset(line_starts, node.lineno, node.col_offset),
+                    end=signature_end,
+                )
+            )
+            continue
+        if isinstance(node, ast.ClassDef):
+            header_end = _find_header_end(source_code, line_starts, node)
+            spans.append(
+                ExcludedSpan(
+                    label="class_header",
+                    start=_offset(line_starts, node.lineno, node.col_offset),
+                    end=header_end,
+                )
+            )
+
+    return tuple(sorted(spans, key=lambda span: (span.start, span.end, span.label)))
+
+
+def build_structure_masks(source_code: str) -> list[bool]:
+    """Return a per-character structure mask for source reconstruction."""
+
+    masks = [True] * len(source_code)
+    for span in collect_excluded_token_spans(source_code):
+        for index in range(max(0, span.start), min(len(source_code), span.end)):
+            masks[index] = False
+    return masks
+
+
+def build_token_channel_features(
+    source_code: str,
+    token_start: int,
+    token_end: int,
+) -> TokenChannelFeatures:
+    """Build structural token features for one token span."""
+
+    if token_start < 0 or token_end < token_start or token_end > len(source_code):
+        raise ValueError("token span is out of range")
+
+    tree = ast.parse(source_code)
+    line_starts = _build_line_starts(source_code)
+    span_nodes = _find_nodes_covering_span(tree, line_starts, token_start, token_end)
+    selected_node = _resolve_selected_node(span_nodes)
+    parent_map = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    statement_node = _nearest_statement(selected_node, parent_map)
+    parent_node = parent_map.get(statement_node)
+    block_relative_offset = _resolve_block_relative_offset(statement_node, parent_node)
+    structure_masks = build_structure_masks(source_code)
+    structure_mask = is_structure_safe_span(structure_masks, token_start, token_end)
+
+    return TokenChannelFeatures(
+        node_type=_to_snake_case(type(statement_node).__name__),
+        parent_node_type=_to_snake_case(type(parent_node).__name__) if parent_node is not None else "module",
+        block_relative_offset=block_relative_offset,
+        in_code_body=structure_mask and bool(source_code[token_start:token_end].strip()),
+        structure_mask=structure_mask,
+    )
+
+
+def is_structure_safe_span(structure_masks: list[bool], start: int, end: int) -> bool:
+    """Return whether all non-whitespace characters in the span are safe."""
+
+    if start >= end:
+        return False
+    for index in range(start, end):
+        if not structure_masks[index]:
+            return False
+    return True
+
+
+def _collect_decorator_spans(
+    source_code: str,
+    line_starts: list[int],
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
+) -> list[ExcludedSpan]:
+    spans: list[ExcludedSpan] = []
+    for decorator in node.decorator_list:
+        line_text = source_code.splitlines(keepends=True)[decorator.lineno - 1]
+        at_column = line_text.rfind("@", 0, decorator.col_offset + 1)
+        if at_column < 0:
+            at_column = decorator.col_offset
+        spans.append(
+            ExcludedSpan(
+                label="decorator",
+                start=_offset(line_starts, decorator.lineno, at_column),
+                end=_offset(line_starts, decorator.end_lineno, decorator.end_col_offset),
+            )
+        )
+    return spans
+
+
+def _build_line_starts(source_code: str) -> list[int]:
+    line_starts = [0]
+    for index, ch in enumerate(source_code):
+        if ch == "\n":
+            line_starts.append(index + 1)
+    return line_starts
+
+
+def _offset(line_starts: list[int], lineno: int | None, col_offset: int | None) -> int:
+    if lineno is None or col_offset is None:
+        raise ValueError("AST node is missing source position metadata")
+    return line_starts[lineno - 1] + col_offset
+
+
+def _find_header_end(
+    source_code: str,
+    line_starts: list[int],
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
+) -> int:
+    if node.body:
+        search_end = _offset(line_starts, node.body[0].lineno, node.body[0].col_offset)
+    else:
+        search_end = _offset(line_starts, node.end_lineno, node.end_col_offset)
+
+    header_start = _offset(line_starts, node.lineno, node.col_offset)
+    header_text = source_code[header_start:search_end]
+    colon_index = header_text.rfind(":")
+    if colon_index < 0:
+        return search_end
+    return header_start + colon_index + 1
+
+
+def _find_nodes_covering_span(
+    tree: ast.AST,
+    line_starts: list[int],
+    start: int,
+    end: int,
+) -> list[ast.AST]:
+    nodes: list[ast.AST] = []
+    for node in ast.walk(tree):
+        if not hasattr(node, "lineno") or not hasattr(node, "end_lineno"):
+            continue
+        node_start = _offset(line_starts, getattr(node, "lineno"), getattr(node, "col_offset"))
+        node_end = _offset(
+            line_starts,
+            getattr(node, "end_lineno"),
+            getattr(node, "end_col_offset"),
+        )
+        if node_start <= start and node_end >= end:
+            nodes.append(node)
+    return nodes
+
+
+def _resolve_selected_node(span_nodes: list[ast.AST]) -> ast.AST:
+    if not span_nodes:
+        return ast.Module(body=[], type_ignores=[])
+    return min(
+        span_nodes,
+        key=lambda node: (
+            getattr(node, "end_lineno", 0) - getattr(node, "lineno", 0),
+            getattr(node, "end_col_offset", 0) - getattr(node, "col_offset", 0),
+            len(list(ast.iter_child_nodes(node))),
+        ),
+    )
+
+
+def _nearest_statement(node: ast.AST, parent_map: dict[ast.AST, ast.AST]) -> ast.AST:
+    current = node
+    while current is not None and not isinstance(current, ast.stmt):
+        current = parent_map.get(current)
+    return current or ast.Module(body=[], type_ignores=[])
+
+
+def _resolve_block_relative_offset(statement_node: ast.AST, parent_node: ast.AST | None) -> int:
+    if parent_node is None:
+        return 0
+    for _, value in ast.iter_fields(parent_node):
+        if isinstance(value, list) and statement_node in value:
+            return value.index(statement_node)
+    return 0
+
+
+def _to_snake_case(name: str) -> str:
+    result: list[str] = []
+    for index, ch in enumerate(name):
+        if ch.isupper() and index > 0:
+            result.append("_")
+        result.append(ch.lower())
+    return "".join(result)
