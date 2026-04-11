@@ -8,6 +8,7 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RUN_PY = PROJECT_ROOT / "run.py"
+README_MD = PROJECT_ROOT / "README.md"
 
 # ── 将项目根目录加入 sys.path（如果需要）
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -302,6 +303,31 @@ class TestCLI:
         assert "--token-channel-enabled" in result.stdout
         assert "--token-channel-model-path" in result.stdout
         assert "--token-channel-joint-threshold" in result.stdout
+
+    def test_token_channel_train_help_matches_documented_loader_state(self):
+        readme_text = README_MD.read_text(encoding="utf-8")
+
+        assert "当前入口仅用于加载离线训练缓存 / teacher cache 并校验参数" in readme_text
+
+        result = subprocess.run(
+            [
+                "conda",
+                "run",
+                "-n",
+                "WFCLLM",
+                "python",
+                "-m",
+                "wfcllm.watermark.token_channel.train",
+                "--help",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0
+        assert "Offline token-channel training loader" in result.stdout
+        assert "--corpus-cache" in result.stdout
+        assert "--teacher-cache" in result.stdout
 
     def test_status_exits_zero(self):
         result = subprocess.run(

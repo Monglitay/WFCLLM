@@ -300,7 +300,8 @@ python run.py --phase extract \
 ### Token-Channel Commands
 
 ```bash
-# 1. 检查 token-channel 离线训练缓存 / teacher cache
+# 1. 当前入口仅用于加载离线训练缓存 / teacher cache 并校验参数
+#    （训练循环与产物导出能力尚未在 CLI 中串成完整 workflow）
 HF_HUB_OFFLINE=1 conda run -n WFCLLM python -m wfcllm.watermark.token_channel.train \
     --corpus-cache data/token_channel/train_corpus.json \
     --teacher-cache data/token_channel/teacher_cache.json
