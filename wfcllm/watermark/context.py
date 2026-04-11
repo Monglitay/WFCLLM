@@ -133,12 +133,16 @@ class GenerationContext:
         self.last_event = None
         self.last_block_checkpoint = None
 
-    def store_current_step_checkpoint_logits(self) -> None:
-        """Persist current step logits for a future block-start checkpoint."""
+    def store_step_checkpoint_logits(self, step_index: int) -> None:
+        """Persist current logits for a future block-start checkpoint."""
         if self._next_logits is None:
-            self._step_checkpoint_logits.pop(len(self.generated_ids), None)
+            self._step_checkpoint_logits.pop(step_index, None)
             return
-        self._step_checkpoint_logits[len(self.generated_ids)] = self._next_logits.detach().clone()
+        self._step_checkpoint_logits[step_index] = self._next_logits.detach().clone()
+
+    def store_current_step_checkpoint_logits(self) -> None:
+        """Persist current step logits for the current generated_ids boundary."""
+        self.store_step_checkpoint_logits(len(self.generated_ids))
 
     def forward_and_sample(self, penalty_ids: list[int] | None = None) -> int:
         """Single-step forward + sample, atomically updating all state.

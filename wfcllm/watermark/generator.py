@@ -429,11 +429,14 @@ class WatermarkGenerator:
 
     @staticmethod
     def _store_block_start_checkpoint_logits_if_supported(ctx, state: TokenChannelRuntimeState) -> None:
-        if state.current_block_tokens != 0:
-            return
         store = getattr(ctx, "store_current_step_checkpoint_logits", None)
         if callable(store):
-            store()
+            block_start_idx = max(len(getattr(ctx, "generated_ids", [])) - state.current_block_tokens, 0)
+            explicit_store = getattr(ctx, "store_step_checkpoint_logits", None)
+            if callable(explicit_store):
+                explicit_store(block_start_idx)
+            else:
+                store()
 
     def _apply_token_channel_bias(
         self,
