@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 from wfcllm.watermark.context import GenerationContext, Checkpoint
 from wfcllm.watermark.config import WatermarkConfig
-from wfcllm.watermark.interceptor import InterceptorState
+from wfcllm.watermark.interceptor import InterceptorState, InterceptEvent
 
 
 class TestCheckpointRollback:
@@ -307,6 +307,58 @@ class TestForwardAndSample:
         ctx.forward_and_sample()
 
         assert not isinstance(ctx._step_history[0][4], torch.Tensor)
+
+    def test_last_block_checkpoint_restores_sparse_non_prefill_logits(self):
+        """Block-start checkpoints should preserve token-channel logits without per-step tensor history."""
+        config = WatermarkConfig(
+            secret_key="test-key",
+            max_new_tokens=50,
+            encoder_device="cpu",
+            temperature=0.0,
+        )
+        model = MagicMock()
+        tokenizer = MagicMock()
+
+        prefill_output = MagicMock()
+        prefill_output.logits = torch.tensor([[[0.0, 9.0, 0.0, 0.0, 0.0]]])
+        prefill_output.past_key_values = (
+            (torch.zeros(1, 1, 3, 2), torch.zeros(1, 1, 3, 2)),
+        )
+        model.return_value = prefill_output
+        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+
+        tokenizer.encode.return_value = torch.tensor([[11, 22, 33]])
+        tokenizer.decode.return_value = "U"
+        tokenizer.eos_token_id = 4
+
+        ctx = GenerationContext(model=model, tokenizer=tokenizer, config=config)
+        ctx.prefill("prompt")
+        assert ctx.forward_and_sample() == 1
+
+        token_channel_logits = torch.tensor([[0.0, 0.0, 7.0, 0.0, 0.0]])
+        ctx._next_logits = token_channel_logits.clone()
+        ctx.store_current_step_checkpoint_logits()
+        ctx.interceptor.feed_token = MagicMock(
+            return_value=InterceptEvent(
+                block_text="u = 1",
+                block_type="simple",
+                node_type="expression_statement",
+                parent_node_type="module",
+                token_start_idx=1,
+                token_count=1,
+            )
+        )
+
+        ctx.forward_and_sample()
+        block_cp = ctx.last_block_checkpoint
+        assert block_cp is not None
+        assert torch.equal(block_cp.next_logits, token_channel_logits)
+
+        ctx.rollback(block_cp)
+        rolled_back_id = ctx.forward_and_sample()
+
+        assert rolled_back_id == 2
+        assert model.call_count == 1
 
 
 class TestMemorySafety:

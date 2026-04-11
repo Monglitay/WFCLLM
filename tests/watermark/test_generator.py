@@ -2637,6 +2637,74 @@ class TestTokenChannelGeneration:
         assert lexical_state.scorable_tokens == 2
         assert gen._token_channel_runtime.score_prefix.call_count == 2
 
+    def test_low_gate_fraction_disables_only_after_probe_closing_token(
+        self,
+        monkeypatch,
+        mock_components,
+    ):
+        model, tokenizer, encoder, enc_tok = mock_components
+        config = WatermarkConfig(
+            secret_key="test-key",
+            encoder_device="cpu",
+            token_channel=TokenChannelConfig(
+                enabled=True,
+                mode="dual-channel",
+                lexical_gate_probe_tokens=2,
+                lexical_gate_min_fraction=0.75,
+                delta=1.5,
+            ),
+        )
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.load_token_channel_artifact",
+            lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
+        )
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.TokenChannelRuntime",
+            lambda **kwargs: MagicMock(),
+        )
+        gen = WatermarkGenerator(
+            model=model,
+            tokenizer=tokenizer,
+            encoder=encoder,
+            encoder_tokenizer=enc_tok,
+            config=config,
+        )
+        gen._token_channel_runtime = MagicMock()
+        gen._token_channel_runtime.score_prefix.side_effect = [
+            SimpleNamespace(
+                should_switch=False,
+                partition=SimpleNamespace(green_token_ids=[1]),
+            ),
+            SimpleNamespace(
+                should_switch=True,
+                partition=SimpleNamespace(green_token_ids=[1]),
+            ),
+        ]
+        gen._build_runtime_token_features = MagicMock(
+            return_value=TokenChannelFeatures(
+                node_type="expression_statement",
+                parent_node_type="module",
+                block_relative_offset=0,
+                in_code_body=True,
+                structure_mask=True,
+            )
+        )
+        ctx = SimpleNamespace(
+            generated_ids=[1, 2, 3],
+            generated_text="x = ",
+            _next_logits=torch.zeros(1, 8),
+        )
+        lexical_state = gen._create_token_channel_state()
+
+        assert gen._apply_token_channel_bias(ctx, lexical_state) is False
+        assert lexical_state.disabled_for_block is False
+
+        ctx._next_logits.zero_()
+        assert gen._apply_token_channel_bias(ctx, lexical_state) is True
+        assert ctx._next_logits[0, 1].item() == pytest.approx(1.5)
+        assert lexical_state.disabled_for_block is True
+        assert lexical_state.low_gate_fraction_shutdown is True
+
     def test_lexical_only_generation_skips_semantic_verification_and_retry(
         self,
         monkeypatch,

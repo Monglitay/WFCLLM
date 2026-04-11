@@ -56,6 +56,7 @@ class GenerationContext:
         # Event tracking
         self.last_event: InterceptEvent | None = None
         self.last_block_checkpoint: Checkpoint | None = None
+        self._step_checkpoint_logits: dict[int, torch.Tensor] = {}
 
         # Per-step history for block-start checkpoint reconstruction.
         # Entry i = state just before the i-th generated token was sampled.
@@ -124,10 +125,20 @@ class GenerationContext:
         rollback_len = len(cp.generated_ids)
         if len(self._step_history) > rollback_len:
             self._step_history = self._step_history[:rollback_len]
+        stale_indices = [idx for idx in self._step_checkpoint_logits if idx >= rollback_len]
+        for idx in stale_indices:
+            del self._step_checkpoint_logits[idx]
 
         # Reset event state
         self.last_event = None
         self.last_block_checkpoint = None
+
+    def store_current_step_checkpoint_logits(self) -> None:
+        """Persist current step logits for a future block-start checkpoint."""
+        if self._next_logits is None:
+            self._step_checkpoint_logits.pop(len(self.generated_ids), None)
+            return
+        self._step_checkpoint_logits[len(self.generated_ids)] = self._next_logits.detach().clone()
 
     def forward_and_sample(self, penalty_ids: list[int] | None = None) -> int:
         """Single-step forward + sample, atomically updating all state.
@@ -202,11 +213,7 @@ class GenerationContext:
                     generated_text=frame[1],
                     kv_snapshot=CacheSnapshot(seq_len=frame[2]),
                     interceptor_state=frame[3],
-                    next_logits=(
-                        self._prefill_logits.clone()
-                        if frame[4] and self._prefill_logits is not None
-                        else None
-                    ),
+                    next_logits=self._materialize_step_checkpoint_logits(block_start, frame[4]),
                 )
             else:
                 # Fallback: use pre-forward state (old behaviour)
@@ -250,15 +257,23 @@ class GenerationContext:
                 generated_text=frame[1],
                 kv_snapshot=CacheSnapshot(seq_len=frame[2]),
                 interceptor_state=frame[3],
-                next_logits=(
-                    self._prefill_logits.clone()
-                    if frame[4] and self._prefill_logits is not None
-                    else None
-                ),
+                next_logits=self._materialize_step_checkpoint_logits(block_start, frame[4]),
             )
         else:
             self.last_block_checkpoint = self.checkpoint()
         return event
+
+    def _materialize_step_checkpoint_logits(
+        self,
+        step_index: int,
+        use_prefill_logits: bool,
+    ) -> torch.Tensor | None:
+        checkpoint_logits = self._step_checkpoint_logits.get(step_index)
+        if checkpoint_logits is not None:
+            return checkpoint_logits.detach().clone()
+        if use_prefill_logits and self._prefill_logits is not None:
+            return self._prefill_logits.clone()
+        return None
 
     def _sample(
         self,
