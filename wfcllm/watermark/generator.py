@@ -24,6 +24,10 @@ from wfcllm.watermark.gamma_schedule import GammaResolution, PiecewiseQuantileSc
 from wfcllm.watermark.keying import WatermarkKeying
 from wfcllm.watermark.lsh_space import LSHSpace
 from wfcllm.watermark.retry_loop import RetryLoop, RetryDiagnostics
+from wfcllm.watermark.token_channel.features import TokenChannelFeatures
+from wfcllm.watermark.token_channel.features import build_token_channel_features
+from wfcllm.watermark.token_channel.model import load_token_channel_artifact
+from wfcllm.watermark.token_channel.runtime import TokenChannelRuntime
 from wfcllm.watermark.verifier import ProjectionVerifier
 
 logger = logging.getLogger(__name__)
@@ -72,6 +76,18 @@ class GenerateResult:
         return self.stats.fallback_blocks
 
 
+@dataclass
+class TokenChannelRuntimeState:
+    """Mutable lexical-channel state for one in-flight simple block."""
+
+    current_block_tokens: int = 0
+    semantic_failure_count: int = 0
+    scorable_tokens: int = 0
+    gated_tokens: int = 0
+    disabled_for_block: bool = False
+    low_gate_fraction_shutdown: bool = False
+
+
 class WatermarkGenerator:
     """Code generator with watermark embedding via rejection sampling."""
 
@@ -103,6 +119,7 @@ class WatermarkGenerator:
         self._gamma_schedule: PiecewiseQuantileSchedule | None = None
         self._initialize_adaptive_gamma()
         self._cascade_rollback_counter = 0
+        self._token_channel_runtime = self._initialize_token_channel_runtime()
 
         _STRUCTURAL_KEYWORDS = [
             "import", "return", "def", "class", "if", "else", "elif",
@@ -148,18 +165,23 @@ class WatermarkGenerator:
         ledger_by_ordinal: dict[int, dict[str, object]] = {}
         active_cascade_scope: dict[str, object] | None = None
         self._last_active_cascade_scope = None
+        token_channel_state = self._create_token_channel_state()
 
         while not ctx.is_finished():
+            self._apply_token_channel_bias(ctx, token_channel_state)
             next_id = ctx.forward_and_sample()
 
             if next_id == ctx.eos_id:
                 break
+
+            token_channel_state.current_block_tokens += 1
 
             event = ctx.last_event
             if event is None:
                 continue
 
             if event.block_type == "compound":
+                self._reset_token_channel_state(token_channel_state)
                 active_cascade_scope = self._update_active_cascade_scope_for_compound(
                     active_cascade_scope,
                     event,
@@ -169,6 +191,11 @@ class WatermarkGenerator:
                     event,
                     stats_snapshot=self._snapshot_runtime_stats(stats),
                 )
+                continue
+
+            if not self._semantic_channel_enabled():
+                stats.total_blocks += 1
+                self._reset_token_channel_state(token_channel_state)
                 continue
 
             self._process_simple_block(
@@ -184,23 +211,35 @@ class WatermarkGenerator:
                 active_cascade_scope=active_cascade_scope,
                 allow_cascade=True,
             )
+            self._update_token_channel_state_after_simple_block(
+                token_channel_state,
+                stats,
+            )
             active_cascade_scope = self._last_active_cascade_scope
 
         final_event = getattr(ctx, "flush_final_event", lambda: None)()
         if final_event is not None and final_event.block_type == "simple":
-            self._process_simple_block(
-                event=final_event,
-                ctx=ctx,
-                stats=stats,
-                cascade_mgr=cascade_mgr,
-                retry_loop=retry_loop,
-                pending_fallbacks=pending_fallbacks,
-                sample_id=sample_id,
-                ledger_entries=ledger_entries,
-                ledger_by_ordinal=ledger_by_ordinal,
-                active_cascade_scope=active_cascade_scope,
-                allow_cascade=False,
-            )
+            if self._semantic_channel_enabled():
+                self._process_simple_block(
+                    event=final_event,
+                    ctx=ctx,
+                    stats=stats,
+                    cascade_mgr=cascade_mgr,
+                    retry_loop=retry_loop,
+                    pending_fallbacks=pending_fallbacks,
+                    sample_id=sample_id,
+                    ledger_entries=ledger_entries,
+                    ledger_by_ordinal=ledger_by_ordinal,
+                    active_cascade_scope=active_cascade_scope,
+                    allow_cascade=False,
+                )
+                self._update_token_channel_state_after_simple_block(
+                    token_channel_state,
+                    stats,
+                )
+            else:
+                stats.total_blocks += 1
+                self._reset_token_channel_state(token_channel_state)
             active_cascade_scope = self._last_active_cascade_scope
 
         final_code = ctx.generated_text
@@ -223,6 +262,14 @@ class WatermarkGenerator:
             if isinstance(entry.get("record"), BlockLifecycleRecord)
         ]
 
+        diagnostic_summary = summarize_sample_diagnostics(lifecycle_records)
+        diagnostic_summary.update(
+            {
+                "token_channel_enabled": self._lexical_channel_enabled(),
+                "generation_mode": self._generation_mode(),
+            }
+        )
+
         return GenerateResult(
             code=final_code,
             stats=stats,
@@ -233,9 +280,147 @@ class WatermarkGenerator:
                 runtime_total_blocks,
                 block_contracts,
             ),
-            diagnostic_summary=summarize_sample_diagnostics(lifecycle_records),
+            diagnostic_summary=diagnostic_summary,
             block_ledgers=self._serialize_block_ledgers(ledger_entries),
         )
+
+    def _initialize_token_channel_runtime(self) -> TokenChannelRuntime | None:
+        token_channel_config = self._config.token_channel
+        if not token_channel_config.enabled or token_channel_config.mode == "semantic-only":
+            return None
+        artifact = load_token_channel_artifact(token_channel_config.model_path)
+        return TokenChannelRuntime(
+            model=artifact.model,
+            config=token_channel_config,
+            artifact_metadata=artifact.metadata,
+            tokenizer=self._tokenizer,
+            secret_key=self._config.secret_key,
+        )
+
+    def _generation_mode(self) -> str:
+        token_channel_config = self._config.token_channel
+        if token_channel_config.enabled:
+            return token_channel_config.mode
+        return "semantic-only"
+
+    def _semantic_channel_enabled(self) -> bool:
+        return self._generation_mode() != "lexical-only"
+
+    def _lexical_channel_enabled(self) -> bool:
+        return self._token_channel_runtime is not None
+
+    @staticmethod
+    def _create_token_channel_state() -> TokenChannelRuntimeState:
+        return TokenChannelRuntimeState()
+
+    @staticmethod
+    def _reset_token_channel_state(state: TokenChannelRuntimeState) -> None:
+        state.current_block_tokens = 0
+        state.scorable_tokens = 0
+        state.gated_tokens = 0
+        state.disabled_for_block = False
+        state.low_gate_fraction_shutdown = False
+
+    def _update_token_channel_state_after_simple_block(
+        self,
+        state: TokenChannelRuntimeState,
+        stats: EmbedStats,
+    ) -> None:
+        state.semantic_failure_count = stats.failed_blocks
+        self._reset_token_channel_state(state)
+
+    def _resolve_token_channel_delta(self, state: TokenChannelRuntimeState) -> float:
+        token_channel_config = self._config.token_channel
+        if state.semantic_failure_count >= token_channel_config.lexical_retry_disable_after:
+            return 0.0
+        if state.semantic_failure_count >= token_channel_config.lexical_retry_decay_start:
+            return token_channel_config.delta * 0.5
+        return token_channel_config.delta
+
+    def _should_disable_token_channel_for_low_gate_fraction(
+        self,
+        state: TokenChannelRuntimeState,
+    ) -> bool:
+        token_channel_config = self._config.token_channel
+        if state.scorable_tokens < token_channel_config.lexical_gate_probe_tokens:
+            return False
+        if state.scorable_tokens == 0:
+            return False
+        gate_fraction = state.gated_tokens / state.scorable_tokens
+        return gate_fraction < token_channel_config.lexical_gate_min_fraction
+
+    def _build_runtime_token_features(self, ctx) -> TokenChannelFeatures:
+        source_code = f"{ctx.generated_text}x"
+        token_start = len(ctx.generated_text)
+        token_end = token_start + 1
+        try:
+            return build_token_channel_features(
+                source_code,
+                token_start=token_start,
+                token_end=token_end,
+            )
+        except (SyntaxError, ValueError):
+            return TokenChannelFeatures(
+                node_type="module",
+                parent_node_type="module",
+                block_relative_offset=0,
+                in_code_body=False,
+                structure_mask=False,
+            )
+
+    def _ensure_next_logits(self, ctx) -> None:
+        if getattr(ctx, "_next_logits", None) is not None:
+            return
+        model_device = next(self._model.parameters()).device
+        last_id = ctx.generated_ids[-1] if ctx.generated_ids else 0
+        input_ids = torch.tensor([[last_id]], dtype=torch.long, device=model_device)
+        output = self._model(
+            input_ids=input_ids,
+            past_key_values=getattr(ctx, "past_kv", None),
+            use_cache=True,
+        )
+        ctx._next_logits = output.logits[:, -1, :].detach().clone()
+        ctx.past_kv = output.past_key_values
+
+    def _apply_token_channel_bias(
+        self,
+        ctx,
+        state: TokenChannelRuntimeState,
+    ) -> bool:
+        if not self._lexical_channel_enabled() or state.disabled_for_block:
+            return False
+        if state.current_block_tokens < self._config.token_channel.lexical_min_block_tokens:
+            return False
+
+        features = self._build_runtime_token_features(ctx)
+        if not features.structure_mask:
+            return False
+
+        self._ensure_next_logits(ctx)
+        decision = self._token_channel_runtime.score_prefix(
+            ctx.generated_ids,
+            features=features,
+        )
+        state.scorable_tokens += 1
+        if decision.should_switch:
+            state.gated_tokens += 1
+        if self._should_disable_token_channel_for_low_gate_fraction(state):
+            state.disabled_for_block = True
+            state.low_gate_fraction_shutdown = True
+            return False
+
+        delta = self._resolve_token_channel_delta(state)
+        if delta <= 0:
+            state.disabled_for_block = True
+            return False
+        if not decision.should_switch:
+            return False
+
+        green_token_ids = list(decision.partition.green_token_ids)
+        if not green_token_ids:
+            return False
+        ctx._next_logits[:, green_token_ids] += delta
+        return True
 
     def _verify_block(self, event):
         """Verify a single block against LSH criteria."""
@@ -789,6 +974,8 @@ class WatermarkGenerator:
         simple_blocks = [block for block in all_blocks if block.block_type == "simple"]
         if not simple_blocks:
             return 0, 0
+        if not self._semantic_channel_enabled():
+            return len(simple_blocks), 0
 
         block_by_id = {block.block_id: block for block in all_blocks}
         embedded_blocks = 0

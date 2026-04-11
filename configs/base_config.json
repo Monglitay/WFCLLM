@@ -49,6 +49,10 @@
     "repetition_penalty": 1.05,
     "lsh_d": 4,
     "lsh_gamma": 0.75,
+    "token_channel": {
+      "enabled": false,
+      "channel_mode": "semantic-only"
+    },
     "adaptive_gamma": {
       "enabled": true,
       "strategy": "piecewise_quantile",

@@ -95,6 +95,15 @@ class TestBaseConfigFallbackCascade:
         cfg = json.loads((CONFIGS_DIR / "base_config.json").read_text())
         assert cfg.get("watermark", {}).get("enable_cascade") is True
 
+    def test_base_config_exposes_semantic_only_token_channel_defaults(self):
+        cfg = json.loads((CONFIGS_DIR / "base_config.json").read_text(encoding="utf-8"))
+        token_channel = cfg.get("watermark", {}).get("token_channel")
+
+        assert token_channel == {
+            "enabled": False,
+            "channel_mode": "semantic-only",
+        }
+
 def test_base_config_b_restores_humaneval_best_known_region():
     cfg_path = CONFIGS_DIR / "base_config_B.json"
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))

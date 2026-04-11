@@ -86,6 +86,16 @@ class WatermarkPipeline:
         adaptive_gamma = WatermarkPipeline._build_public_adaptive_gamma_params(generator)
         if adaptive_gamma is not None:
             params["adaptive_gamma"] = adaptive_gamma
+        token_channel = getattr(generator_config, "token_channel", None)
+        if token_channel is not None and getattr(token_channel, "enabled", False):
+            params["token_channel"] = {
+                "enabled": True,
+                "mode": getattr(token_channel, "mode", "semantic-only"),
+                "context_width": getattr(token_channel, "context_width", 0),
+                "switch_threshold": getattr(token_channel, "switch_threshold", 0.0),
+                "delta": getattr(token_channel, "delta", 0.0),
+                "token_altering_postprocess": False,
+            }
         return params
 
     @staticmethod

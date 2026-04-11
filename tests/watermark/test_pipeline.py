@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import asdict, replace
 import pytest
 from wfcllm.common.block_contract import build_block_contracts
+from wfcllm.watermark.token_channel.config import TokenChannelConfig
 from wfcllm.watermark.pipeline import WatermarkPipelineConfig
 
 
@@ -264,6 +265,36 @@ class TestWatermarkPipelineRun:
             },
         }
         assert "profile_path" not in row["watermark_params"]["adaptive_gamma"]
+
+    def test_pipeline_writes_public_token_channel_metadata(self, tmp_path, mock_result):
+        cfg = WatermarkPipelineConfig(
+            dataset="humaneval",
+            output_dir=str(tmp_path),
+            dataset_path="data/datasets",
+        )
+        generator = self._build_generator(mock_result)
+        generator.config.token_channel = TokenChannelConfig(
+            enabled=True,
+            mode="lexical-only",
+            context_width=64,
+            delta=1.5,
+        )
+        pipeline = WatermarkPipeline(generator=generator, config=cfg)
+
+        with patch.object(pipeline, "_load_prompts", return_value=[
+            {"id": "HumanEval/0", "prompt": "def foo():\n"},
+        ]):
+            output_path = pipeline.run()
+
+        row = json.loads(Path(output_path).read_text(encoding="utf-8").splitlines()[0])
+        assert row["watermark_params"]["token_channel"] == {
+            "enabled": True,
+            "mode": "lexical-only",
+            "context_width": 64,
+            "switch_threshold": 0.0,
+            "delta": 1.5,
+            "token_altering_postprocess": False,
+        }
 
     def test_run_persists_diagnostic_summary_and_block_ledger(self, tmp_path):
         watermarked_dir = tmp_path / "watermarked"
