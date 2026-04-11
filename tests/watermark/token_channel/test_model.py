@@ -41,6 +41,22 @@ def _metadata() -> dict[str, object]:
     }
 
 
+def _training_row(**overrides: object) -> dict[str, object]:
+    row: dict[str, object] = {
+        "prefix_tokens": [1, 2],
+        "next_token": 3,
+        "teacher_logits": [0.1] * 8,
+        "switch_target": 1,
+        "node_type": "if_statement",
+        "parent_node_type": "block",
+        "block_relative_offset": 1,
+        "in_code_body": True,
+        "structure_mask": True,
+    }
+    row.update(overrides)
+    return row
+
+
 def test_metadata_contract_lists_required_keys() -> None:
     assert TOKEN_CHANNEL_METADATA_REQUIRED_KEYS == {
         "schema_version",
@@ -125,18 +141,8 @@ def test_switch_loss_uses_precomputed_switch_target() -> None:
 def test_build_token_channel_batch_converts_rows_to_tensors() -> None:
     batch = build_token_channel_batch(
         [
-            {
-                "prefix_tokens": [1, 2],
-                "next_token": 3,
-                "teacher_logits": [0.1] * 8,
-                "switch_target": 1,
-            },
-            {
-                "prefix_tokens": [4],
-                "next_token": 2,
-                "teacher_logits": [0.2] * 8,
-                "switch_target": 0,
-            },
+            _training_row(),
+            _training_row(prefix_tokens=[4], next_token=2, teacher_logits=[0.2] * 8, switch_target=0),
         ],
         context_width=4,
     )
@@ -149,11 +155,12 @@ def test_build_token_channel_batch_converts_rows_to_tensors() -> None:
 @pytest.mark.parametrize(
     ("row", "message"),
     [
-        ({"prefix_tokens": [1, "2"], "next_token": 3, "teacher_logits": [0.1] * 8, "switch_target": 1}, "prefix_tokens"),
-        ({"prefix_tokens": [1, 2], "next_token": True, "teacher_logits": [0.1] * 8, "switch_target": 1}, "next_token"),
-        ({"prefix_tokens": [1, 2], "next_token": 3, "teacher_logits": [0.1, "0.2"], "switch_target": 1}, "teacher_logits"),
-        ({"prefix_tokens": [1, 2], "next_token": 3, "teacher_logits": [0.1] * 8, "switch_target": "1"}, "switch_target"),
-        ({"prefix_tokens": [1, 2], "next_token": 3, "teacher_logits": [0.1] * 8, "switch_target": 1, "in_code_body": 1}, "in_code_body"),
+        (_training_row(prefix_tokens=[1, "2"]), "prefix_tokens"),
+        (_training_row(next_token=True), "next_token"),
+        (_training_row(teacher_logits=[0.1, "0.2"]), "teacher_logits"),
+        (_training_row(switch_target="1"), "switch_target"),
+        (_training_row(in_code_body=1), "in_code_body"),
+        (_training_row(node_type=None), "node_type"),
     ],
 )
 def test_build_token_channel_batch_rejects_malformed_row_types(
@@ -176,12 +183,11 @@ def test_run_training_step_returns_loss_terms() -> None:
     )
     batch = build_token_channel_batch(
         [
-            {
-                "prefix_tokens": [1, 2, 3],
-                "next_token": 4,
-                "teacher_logits": [0.1, 0.2, 0.3, 0.4, 0.7, 0.1, -0.2, -0.4],
-                "switch_target": 1,
-            }
+            _training_row(
+                prefix_tokens=[1, 2, 3],
+                next_token=4,
+                teacher_logits=[0.1, 0.2, 0.3, 0.4, 0.7, 0.1, -0.2, -0.4],
+            )
         ],
         context_width=4,
     )
@@ -205,11 +211,34 @@ def test_run_training_step_requires_feature_rows_when_features_missing() -> None
         run_training_step(model=model, optimizer=optimizer, batch=batch)
 
 
+def test_run_training_step_rejects_short_feature_rows() -> None:
+    model = TokenChannelModel(vocab_size=8, context_width=4, hidden_size=12)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    batch = {
+        "prefix_tokens": torch.tensor([[1, 2, 3, 4], [2, 3, 4, 5]], dtype=torch.long),
+        "next_token": torch.tensor([2, 3], dtype=torch.long),
+        "teacher_logits": torch.zeros((2, 8), dtype=torch.float32),
+        "switch_target": torch.tensor([1.0, 0.0], dtype=torch.float32),
+        "feature_rows": [
+            {
+                "node_type": "if_statement",
+                "parent_node_type": "block",
+                "block_relative_offset": 1,
+                "in_code_body": True,
+                "structure_mask": True,
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="feature_rows"):
+        run_training_step(model=model, optimizer=optimizer, batch=batch)
+
+
 def test_train_one_epoch_rejects_empty_train_batches() -> None:
     model = TokenChannelModel(vocab_size=8, context_width=4, hidden_size=12)
     optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
     validation_batch = build_token_channel_batch(
-        [{"prefix_tokens": [1], "next_token": 2, "teacher_logits": [0.1] * 8, "switch_target": 1}],
+        [_training_row(prefix_tokens=[1], next_token=2)],
         context_width=4,
     )
 
@@ -227,7 +256,7 @@ def test_train_one_epoch_rejects_empty_validation_batches() -> None:
     model = TokenChannelModel(vocab_size=8, context_width=4, hidden_size=12)
     optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
     train_batch = build_token_channel_batch(
-        [{"prefix_tokens": [1], "next_token": 2, "teacher_logits": [0.1] * 8, "switch_target": 1}],
+        [_training_row(prefix_tokens=[1], next_token=2)],
         context_width=4,
     )
 

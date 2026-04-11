@@ -87,25 +87,7 @@ def build_token_channel_batch(
         next_tokens.append(_require_int(row.get("next_token"), "next_token"))
         teacher_logits.append(_require_numeric_list(row.get("teacher_logits"), "teacher_logits"))
         switch_targets.append(float(_require_binary_int(row.get("switch_target"), "switch_target")))
-        feature_rows.append(
-            {
-                "node_type": _require_string(row.get("node_type", "module"), "node_type"),
-                "parent_node_type": _require_string(
-                    row.get("parent_node_type", "module"),
-                    "parent_node_type",
-                ),
-                "block_relative_offset": _require_int(
-                    row.get("block_relative_offset", 0),
-                    "block_relative_offset",
-                ),
-                "in_code_body": _require_bool(row.get("in_code_body", False), "in_code_body"),
-                "structure_mask": _require_bool(
-                    row.get("structure_mask", False),
-                    "structure_mask",
-                ),
-                "language": _require_string(row.get("language", "python"), "language"),
-            }
-        )
+        feature_rows.append(TokenChannelFeatures.from_mapping(row).to_dict())
 
     return {
         "prefix_tokens": torch.tensor(prefix_tokens, dtype=torch.long, device=device),
@@ -319,6 +301,8 @@ def _forward_batch(
 def _feature_for_batch_row(feature_rows: object, index: int) -> TokenChannelFeatures:
     if not isinstance(feature_rows, list):
         raise ValueError("batch must include feature_rows when features are not provided")
+    if index >= len(feature_rows):
+        raise ValueError("feature_rows must match prefix_tokens batch size")
     return TokenChannelFeatures.from_mapping(feature_rows[index])
 
 
