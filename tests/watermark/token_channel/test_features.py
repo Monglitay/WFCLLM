@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from wfcllm.watermark.token_channel.features import build_structure_masks
+from wfcllm.watermark.token_channel.features import is_structure_safe_span
 from wfcllm.watermark.token_channel.features import TokenChannelFeatures
 
 
@@ -132,3 +134,10 @@ def test_token_channel_features_reject_missing_required_keys() -> None:
                 "structure_mask": True,
             }
         )
+
+
+def test_is_structure_safe_span_ignores_masked_whitespace_prefix() -> None:
+    source = " value"
+    masks = [False, True, True, True, True, True]
+
+    assert is_structure_safe_span(masks, 0, len(source), source) is True

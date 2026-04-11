@@ -190,7 +190,12 @@ def build_token_channel_features(
     parent_node = parent_map.get(statement_node)
     block_relative_offset = _resolve_block_relative_offset(statement_node, parent_node)
     structure_masks = build_structure_masks(source_code)
-    structure_mask = is_structure_safe_span(structure_masks, token_start, token_end)
+    structure_mask = is_structure_safe_span(
+        structure_masks,
+        token_start,
+        token_end,
+        source_code,
+    )
 
     return TokenChannelFeatures(
         node_type=_to_snake_case(type(statement_node).__name__),
@@ -201,12 +206,19 @@ def build_token_channel_features(
     )
 
 
-def is_structure_safe_span(structure_masks: list[bool], start: int, end: int) -> bool:
+def is_structure_safe_span(
+    structure_masks: list[bool],
+    start: int,
+    end: int,
+    source_code: str | None = None,
+) -> bool:
     """Return whether all non-whitespace characters in the span are safe."""
 
     if start >= end:
         return False
     for index in range(start, end):
+        if source_code is not None and source_code[index].isspace():
+            continue
         if not structure_masks[index]:
             return False
     return True
