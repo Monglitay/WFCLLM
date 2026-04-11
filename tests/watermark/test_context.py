@@ -2,11 +2,14 @@
 
 import pytest
 import torch
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from wfcllm.watermark.context import GenerationContext, Checkpoint
-from wfcllm.watermark.config import WatermarkConfig
+from wfcllm.watermark.config import WatermarkConfig, TokenChannelConfig
+from wfcllm.watermark.generator import WatermarkGenerator
 from wfcllm.watermark.interceptor import InterceptorState, InterceptEvent
+from wfcllm.watermark.token_channel.features import TokenChannelFeatures
 
 
 class TestCheckpointRollback:
@@ -410,6 +413,94 @@ class TestForwardAndSample:
         rolled_back_id = ctx.forward_and_sample()
 
         assert rolled_back_id == 2
+        assert model.call_count == 1
+
+    def test_last_block_checkpoint_restores_final_biased_logits_from_real_bias_path(self, monkeypatch):
+        """Block-start checkpoint must keep the final biased logits that governed sampling."""
+        config = WatermarkConfig(
+            secret_key="test-key",
+            max_new_tokens=50,
+            encoder_device="cpu",
+            temperature=0.0,
+            token_channel=TokenChannelConfig(
+                enabled=True,
+                mode="dual-channel",
+                delta=2.0,
+            ),
+        )
+        model = MagicMock()
+        tokenizer = MagicMock()
+
+        prefill_output = MagicMock()
+        prefill_output.logits = torch.tensor([[[0.0, 0.0, 0.0, 9.0, 0.0]]])
+        prefill_output.past_key_values = (
+            (torch.zeros(1, 1, 3, 2), torch.zeros(1, 1, 3, 2)),
+        )
+        model.return_value = prefill_output
+        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+
+        tokenizer.encode.return_value = torch.tensor([[11, 22, 33]])
+        tokenizer.decode.return_value = "W"
+        tokenizer.eos_token_id = 4
+
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.load_token_channel_artifact",
+            lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
+        )
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.TokenChannelRuntime",
+            lambda **kwargs: MagicMock(),
+        )
+
+        gen = WatermarkGenerator(
+            model=model,
+            tokenizer=tokenizer,
+            encoder=MagicMock(),
+            encoder_tokenizer=MagicMock(),
+            config=config,
+        )
+        gen._token_channel_runtime = MagicMock()
+        gen._token_channel_runtime.score_prefix.return_value = SimpleNamespace(
+            should_switch=True,
+            partition=SimpleNamespace(green_token_ids=[1]),
+        )
+        gen._build_runtime_token_features = MagicMock(
+            return_value=TokenChannelFeatures(
+                node_type="expression_statement",
+                parent_node_type="module",
+                block_relative_offset=0,
+                in_code_body=True,
+                structure_mask=True,
+            )
+        )
+
+        ctx = GenerationContext(model=model, tokenizer=tokenizer, config=config)
+        ctx.prefill("prompt")
+        ctx._next_logits = torch.tensor([[0.0, 4.0, 0.0, 5.0, 0.0]])
+        ctx.interceptor.feed_token = MagicMock(
+            return_value=InterceptEvent(
+                block_text="w = 1",
+                block_type="simple",
+                node_type="expression_statement",
+                parent_node_type="module",
+                token_start_idx=0,
+                token_count=1,
+            )
+        )
+        lexical_state = gen._create_token_channel_state()
+
+        assert gen._apply_token_channel_bias(ctx, lexical_state) is True
+        assert torch.equal(ctx._next_logits, torch.tensor([[0.0, 6.0, 0.0, 5.0, 0.0]]))
+
+        assert ctx.forward_and_sample() == 1
+        block_cp = ctx.last_block_checkpoint
+        assert block_cp is not None
+        assert torch.equal(block_cp.next_logits, torch.tensor([[0.0, 6.0, 0.0, 5.0, 0.0]]))
+
+        ctx.rollback(block_cp)
+        rolled_back_id = ctx.forward_and_sample()
+
+        assert rolled_back_id == 1
         assert model.call_count == 1
 
 

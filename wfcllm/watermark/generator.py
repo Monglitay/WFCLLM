@@ -451,7 +451,6 @@ class WatermarkGenerator:
             return False
 
         self._ensure_next_logits(ctx)
-        self._store_block_start_checkpoint_logits_if_supported(ctx, state)
         decision = self._token_channel_runtime.score_prefix(
             ctx.generated_ids,
             features=features,
@@ -462,9 +461,11 @@ class WatermarkGenerator:
 
         delta = self._resolve_token_channel_delta(state)
         if delta <= 0:
+            self._store_block_start_checkpoint_logits_if_supported(ctx, state)
             state.disabled_for_block = True
             return False
         if not decision.should_switch:
+            self._store_block_start_checkpoint_logits_if_supported(ctx, state)
             if self._should_disable_token_channel_for_low_gate_fraction(state):
                 state.disabled_for_block = True
                 state.low_gate_fraction_shutdown = True
@@ -472,12 +473,14 @@ class WatermarkGenerator:
 
         green_token_ids = list(decision.partition.green_token_ids)
         if not green_token_ids:
+            self._store_block_start_checkpoint_logits_if_supported(ctx, state)
             if self._should_disable_token_channel_for_low_gate_fraction(state):
                 state.disabled_for_block = True
                 state.low_gate_fraction_shutdown = True
             return False
         ctx._next_logits[:, green_token_ids] += delta
         state.biased_tokens += 1
+        self._store_block_start_checkpoint_logits_if_supported(ctx, state)
         if self._should_disable_token_channel_for_low_gate_fraction(state):
             state.disabled_for_block = True
             state.low_gate_fraction_shutdown = True
