@@ -78,23 +78,32 @@ def build_token_channel_batch(
     feature_rows: list[dict[str, object]] = []
 
     for row in rows:
-        prefix = row.get("prefix_tokens")
-        if not isinstance(prefix, list):
-            raise ValueError("prefix_tokens must be a list")
-        trimmed_prefix = [int(token) for token in prefix[-context_width:]]
+        if not isinstance(row, dict):
+            raise ValueError("row must be a mapping")
+        prefix = _require_int_list(row.get("prefix_tokens"), "prefix_tokens")
+        trimmed_prefix = prefix[-context_width:]
         padded_prefix = [0] * (context_width - len(trimmed_prefix)) + trimmed_prefix
         prefix_tokens.append(padded_prefix)
-        next_tokens.append(int(row["next_token"]))
-        teacher_logits.append([float(value) for value in row["teacher_logits"]])
-        switch_targets.append(float(row["switch_target"]))
+        next_tokens.append(_require_int(row.get("next_token"), "next_token"))
+        teacher_logits.append(_require_numeric_list(row.get("teacher_logits"), "teacher_logits"))
+        switch_targets.append(float(_require_binary_int(row.get("switch_target"), "switch_target")))
         feature_rows.append(
             {
-                "node_type": row.get("node_type", "module"),
-                "parent_node_type": row.get("parent_node_type", "module"),
-                "block_relative_offset": int(row.get("block_relative_offset", 0)),
-                "in_code_body": bool(row.get("in_code_body", False)),
-                "structure_mask": bool(row.get("structure_mask", False)),
-                "language": row.get("language", "python"),
+                "node_type": _require_string(row.get("node_type", "module"), "node_type"),
+                "parent_node_type": _require_string(
+                    row.get("parent_node_type", "module"),
+                    "parent_node_type",
+                ),
+                "block_relative_offset": _require_int(
+                    row.get("block_relative_offset", 0),
+                    "block_relative_offset",
+                ),
+                "in_code_body": _require_bool(row.get("in_code_body", False), "in_code_body"),
+                "structure_mask": _require_bool(
+                    row.get("structure_mask", False),
+                    "structure_mask",
+                ),
+                "language": _require_string(row.get("language", "python"), "language"),
             }
         )
 
@@ -182,8 +191,16 @@ def build_training_evidence(
     epoch_metrics = tuple(epochs)
     if not epoch_metrics:
         raise ValueError("epochs must not be empty")
-    positive_count = sum(1 for row in rows if int(row.get("switch_target", 0)) == 1)
-    negative_count = sum(1 for row in rows if int(row.get("switch_target", 0)) == 0)
+    positive_count = 0
+    negative_count = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("row must be a mapping")
+        switch_target = _require_binary_int(row.get("switch_target", 0), "switch_target")
+        if switch_target == 1:
+            positive_count += 1
+        else:
+            negative_count += 1
     last_epoch = epoch_metrics[-1]
     return TokenChannelTrainingEvidence(
         switch_target_positive_count=positive_count,
@@ -301,6 +318,51 @@ def _feature_for_batch_row(feature_rows: object, index: int) -> TokenChannelFeat
     if not isinstance(feature_rows, list):
         raise ValueError("batch must include feature_rows when features are not provided")
     return TokenChannelFeatures.from_mapping(feature_rows[index])
+
+
+def _require_int_list(value: object, field_name: str) -> list[int]:
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list of integers")
+    result: list[int] = []
+    for item in value:
+        result.append(_require_int(item, field_name))
+    return result
+
+
+def _require_numeric_list(value: object, field_name: str) -> list[float]:
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list of numbers")
+    result: list[float] = []
+    for item in value:
+        if not isinstance(item, (int, float)) or isinstance(item, bool):
+            raise ValueError(f"{field_name} must be a list of numbers")
+        result.append(float(item))
+    return result
+
+
+def _require_int(value: object, field_name: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"{field_name} must be an integer")
+    return value
+
+
+def _require_binary_int(value: object, field_name: str) -> int:
+    integer_value = _require_int(value, field_name)
+    if integer_value not in {0, 1}:
+        raise ValueError(f"{field_name} must be 0 or 1")
+    return integer_value
+
+
+def _require_bool(value: object, field_name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a boolean")
+    return value
+
+
+def _require_string(value: object, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string")
+    return value
 
 
 if __name__ == "__main__":

@@ -24,6 +24,7 @@ from wfcllm.watermark.token_channel.train import (
     TokenChannelTrainingEvidence,
     build_training_evidence,
     build_token_channel_batch,
+    train_one_epoch,
     run_training_step,
     save_token_channel_training_artifacts,
 )
@@ -145,6 +146,24 @@ def test_build_token_channel_batch_converts_rows_to_tensors() -> None:
     assert batch["switch_target"].tolist() == [1.0, 0.0]
 
 
+@pytest.mark.parametrize(
+    ("row", "message"),
+    [
+        ({"prefix_tokens": [1, "2"], "next_token": 3, "teacher_logits": [0.1] * 8, "switch_target": 1}, "prefix_tokens"),
+        ({"prefix_tokens": [1, 2], "next_token": True, "teacher_logits": [0.1] * 8, "switch_target": 1}, "next_token"),
+        ({"prefix_tokens": [1, 2], "next_token": 3, "teacher_logits": [0.1, "0.2"], "switch_target": 1}, "teacher_logits"),
+        ({"prefix_tokens": [1, 2], "next_token": 3, "teacher_logits": [0.1] * 8, "switch_target": "1"}, "switch_target"),
+        ({"prefix_tokens": [1, 2], "next_token": 3, "teacher_logits": [0.1] * 8, "switch_target": 1, "in_code_body": 1}, "in_code_body"),
+    ],
+)
+def test_build_token_channel_batch_rejects_malformed_row_types(
+    row: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        build_token_channel_batch([row], context_width=4)
+
+
 def test_run_training_step_returns_loss_terms() -> None:
     model = TokenChannelModel(vocab_size=8, context_width=4, hidden_size=12)
     optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
@@ -170,6 +189,56 @@ def test_run_training_step_returns_loss_terms() -> None:
     losses = run_training_step(model=model, optimizer=optimizer, batch=batch, features=features)
 
     assert set(losses) >= {"total_loss", "distillation_loss", "ce_loss", "switch_loss"}
+
+
+def test_run_training_step_requires_feature_rows_when_features_missing() -> None:
+    model = TokenChannelModel(vocab_size=8, context_width=4, hidden_size=12)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    batch = {
+        "prefix_tokens": torch.tensor([[1, 2, 3, 4]], dtype=torch.long),
+        "next_token": torch.tensor([2], dtype=torch.long),
+        "teacher_logits": torch.zeros((1, 8), dtype=torch.float32),
+        "switch_target": torch.tensor([1.0], dtype=torch.float32),
+    }
+
+    with pytest.raises(ValueError, match="feature_rows"):
+        run_training_step(model=model, optimizer=optimizer, batch=batch)
+
+
+def test_train_one_epoch_rejects_empty_train_batches() -> None:
+    model = TokenChannelModel(vocab_size=8, context_width=4, hidden_size=12)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    validation_batch = build_token_channel_batch(
+        [{"prefix_tokens": [1], "next_token": 2, "teacher_logits": [0.1] * 8, "switch_target": 1}],
+        context_width=4,
+    )
+
+    with pytest.raises(ValueError, match="train_batches"):
+        train_one_epoch(
+            model=model,
+            optimizer=optimizer,
+            train_batches=[],
+            validation_batches=[validation_batch],
+            epoch=1,
+        )
+
+
+def test_train_one_epoch_rejects_empty_validation_batches() -> None:
+    model = TokenChannelModel(vocab_size=8, context_width=4, hidden_size=12)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    train_batch = build_token_channel_batch(
+        [{"prefix_tokens": [1], "next_token": 2, "teacher_logits": [0.1] * 8, "switch_target": 1}],
+        context_width=4,
+    )
+
+    with pytest.raises(ValueError, match="validation_batches"):
+        train_one_epoch(
+            model=model,
+            optimizer=optimizer,
+            train_batches=[train_batch],
+            validation_batches=[],
+            epoch=1,
+        )
 
 
 def test_export_checkpoint_saves_model_and_metadata(tmp_path: Path) -> None:
@@ -225,6 +294,14 @@ def test_build_training_evidence_counts_switch_targets() -> None:
     assert evidence.switch_target_negative_count == 1
     assert evidence.train_loss == pytest.approx(0.7)
     assert evidence.validation_loss == pytest.approx(0.5)
+
+
+def test_build_training_evidence_rejects_malformed_switch_target() -> None:
+    with pytest.raises(ValueError, match="switch_target"):
+        build_training_evidence(
+            rows=[{"switch_target": "1"}],
+            epochs=[TokenChannelEpochMetrics(epoch=1, train_loss=0.7, validation_loss=0.5, switch_loss=0.2)],
+        )
 
 
 def test_save_token_channel_training_artifacts_writes_evidence(tmp_path: Path) -> None:
