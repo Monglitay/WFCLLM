@@ -80,6 +80,10 @@ class ExtractPipeline:
         p_values = [row["p_value"] for row in scored_rows]
         block_counts = [row["independent_blocks"] for row in scored_rows]
         embed_rates = [embed_rate_by_id.get(row["id"], 0.0) for row in scored_rows]
+        lexical_z_scores = [row["lexical_z_score"] for row in scored_rows if "lexical_z_score" in row]
+        green_fractions = [row["green_fraction"] for row in scored_rows if "green_fraction" in row]
+        joint_scores = [row["joint_score"] for row in scored_rows if "joint_score" in row]
+        joint_predictions = [row["prediction"] for row in scored_rows if "prediction" in row]
 
         summary = {
             "meta": {
@@ -97,6 +101,14 @@ class ExtractPipeline:
                 "mean_p_value": _mean(p_values),
                 "mean_blocks": _mean(block_counts),
                 "embed_rate_distribution": _distribution_stats(embed_rates),
+                "mean_lexical_z_score": _mean(lexical_z_scores),
+                "mean_green_fraction": _mean(green_fractions),
+                "mean_joint_score": _mean(joint_scores),
+                "joint_prediction_rate": (
+                    sum(1 for prediction in joint_predictions if prediction) / len(joint_predictions)
+                    if joint_predictions
+                    else 0.0
+                ),
                 "mode_counts": self._mode_counts(rows),
                 "invalid_reason_counts": self._invalid_reason_counts(rows),
             },
@@ -203,6 +215,20 @@ class ExtractPipeline:
                 if result.alignment_report is not None:
                     row["alignment_ok"] = result.alignment_ok
                     row["contract_alignment"] = result.alignment_report.to_dict()
+                lexical_result = getattr(result, "lexical_result", None)
+                if lexical_result is not None:
+                    row["lexical_num_positions_scored"] = lexical_result.num_positions_scored
+                    row["lexical_num_green_hits"] = lexical_result.num_green_hits
+                    row["green_fraction"] = lexical_result.green_fraction
+                    row["lexical_z_score"] = lexical_result.lexical_z_score
+                    row["lexical_p_value"] = lexical_result.lexical_p_value
+                joint_result = getattr(result, "joint_result", None)
+                if joint_result is not None:
+                    row["joint_score"] = joint_result.joint_score
+                    row["p_joint"] = joint_result.p_joint
+                    row["prediction"] = joint_result.prediction
+                    row["confidence"] = joint_result.confidence
+                    row["rationale"] = joint_result.rationale
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
                 f.flush()
 

@@ -15,6 +15,8 @@ from wfcllm.extract.alignment import compare_block_contracts
 from wfcllm.extract.pipeline import ExtractPipeline, ExtractPipelineConfig
 from wfcllm.extract.config import DetectionResult
 from wfcllm.extract.calibrator import ThresholdCalibrator
+from wfcllm.extract.hypothesis import JointDetectionResult
+from wfcllm.extract.hypothesis import LexicalDetectionResult
 
 
 def _contract(
@@ -50,7 +52,7 @@ class TestExtractPipelineConfig:
 
 
 def _make_detection_result(is_watermarked: bool, z_score: float) -> DetectionResult:
-    return DetectionResult(
+    result = DetectionResult(
         is_watermarked=is_watermarked,
         z_score=z_score,
         p_value=0.001 if is_watermarked else 0.5,
@@ -59,6 +61,24 @@ def _make_detection_result(is_watermarked: bool, z_score: float) -> DetectionRes
         hit_blocks=7 if is_watermarked else 4,
         block_details=[],
     )
+    result.lexical_result = LexicalDetectionResult(
+        num_positions_scored=6,
+        num_green_hits=4,
+        green_fraction=4 / 6,
+        lexical_z_score=1.5,
+        lexical_p_value=0.2,
+    )
+    result.joint_result = JointDetectionResult(
+        semantic_z=z_score,
+        lexical_z=1.5,
+        joint_score=z_score + 0.75,
+        p_joint=0.05,
+        prediction=is_watermarked,
+        confidence=0.95,
+        rationale="semantic borderline, lexical supportive",
+    )
+    result.semantic_result = result
+    return result
 
 
 class TestExtractPipelineStatistics:
@@ -144,6 +164,10 @@ class TestExtractPipelineStatistics:
             assert "p_value" in first
             assert "independent_blocks" in first
             assert "hits" in first
+            assert first["lexical_num_positions_scored"] == 6
+            assert first["lexical_z_score"] == 1.5
+            assert first["joint_score"] == pytest.approx(5.25)
+            assert first["prediction"] is True
 
     def test_summary_includes_declared_calibration_regime(self):
         with tempfile.TemporaryDirectory() as tmpdir:

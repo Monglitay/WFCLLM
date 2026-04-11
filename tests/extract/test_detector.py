@@ -10,6 +10,8 @@ import torch
 from wfcllm.common.block_contract import build_block_contracts
 from wfcllm.extract.config import BlockScore, DetectionResult, ExtractConfig
 from wfcllm.extract.detector import WatermarkDetector
+from wfcllm.extract.hypothesis import JointDetectionResult
+from wfcllm.extract.hypothesis import LexicalDetectionResult
 
 
 def _contract(*, entropy_units: int) -> dict:
@@ -227,3 +229,54 @@ class TestWatermarkDetector:
 
         derive_calls = detector._scorer._keying.derive.call_args_list
         assert [call.kwargs["k"] for call in derive_calls] == [3, 9]
+
+    def test_detect_attaches_lexical_and_joint_results(self, config, mock_encoder, mock_tokenizer):
+        config.token_channel.enabled = True
+        config.token_channel.mode = "dual-channel"
+        config.token_channel.joint.lexical_full_weight_min_positions = 4
+        detector = WatermarkDetector(config, mock_encoder, mock_tokenizer, device="cpu")
+
+        lexical_result = LexicalDetectionResult(
+            num_positions_scored=4,
+            num_green_hits=3,
+            green_fraction=0.75,
+            lexical_z_score=2.0,
+            lexical_p_value=0.1,
+        )
+
+        with patch.object(detector, "_detect_lexical", return_value=lexical_result):
+            result = detector.detect("x = 1\n")
+
+        assert result.lexical_result is lexical_result
+        assert result.joint_result.joint_score == pytest.approx(result.z_score + (0.75 * 2.0))
+        assert result.semantic_result.z_score == result.z_score
+
+    def test_detect_uses_lexical_only_mode_without_semantic_scores(
+        self, config, mock_encoder, mock_tokenizer
+    ):
+        config.token_channel.enabled = True
+        config.token_channel.mode = "lexical-only"
+        detector = WatermarkDetector(config, mock_encoder, mock_tokenizer, device="cpu")
+
+        lexical_result = LexicalDetectionResult(
+            num_positions_scored=10,
+            num_green_hits=8,
+            green_fraction=0.8,
+            lexical_z_score=4.5,
+            lexical_p_value=0.001,
+        )
+
+        with patch.object(detector, "_detect_lexical", return_value=lexical_result), patch.object(
+            detector._scorer,
+            "score_all",
+        ) as score_all:
+            result = detector.detect("x = 1\n")
+
+        score_all.assert_not_called()
+        assert result.semantic_result is None
+        assert result.lexical_result is lexical_result
+        assert result.joint_result == lexical_result.to_joint_equivalent(
+            threshold=config.token_channel.joint_threshold
+        )
+        assert result.is_watermarked is True
+        assert result.z_score == pytest.approx(4.5)
