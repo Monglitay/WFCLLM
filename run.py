@@ -170,7 +170,13 @@ def _apply_token_channel_cli_overrides(
     args: argparse.Namespace,
 ) -> dict[str, object]:
     merged: dict[str, object] = dict(configured)
-    joint_section = dict(merged.get("joint") or {})
+    raw_joint_section = merged.get("joint")
+    if raw_joint_section is None:
+        joint_section: dict[str, object] = {}
+    elif isinstance(raw_joint_section, dict):
+        joint_section = dict(raw_joint_section)
+    else:
+        raise ValueError("joint must be a JSON object")
 
     scalar_overrides = {
         "enabled": getattr(args, "token_channel_enabled", None),

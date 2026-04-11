@@ -264,6 +264,45 @@ class TestCLI:
         assert resolved.lexical_full_weight_min_positions == 48
         assert resolved.joint_threshold == pytest.approx(5.0)
 
+    def test_resolve_token_channel_config_preserves_value_error_for_invalid_joint_config(self):
+        from run import resolve_token_channel_config
+
+        args = argparse.Namespace(
+            token_channel_enabled=True,
+            token_channel_mode=None,
+            token_channel_model_path=None,
+            token_channel_context_width=None,
+            token_channel_switch_threshold=None,
+            token_channel_delta=None,
+            token_channel_ignore_repeated_ngrams=None,
+            token_channel_ignore_repeated_prefixes=None,
+            token_channel_debug_mode=None,
+            token_channel_lexical_min_block_tokens=None,
+            token_channel_lexical_retry_decay_start=None,
+            token_channel_lexical_retry_disable_after=None,
+            token_channel_lexical_gate_probe_tokens=None,
+            token_channel_lexical_gate_min_fraction=None,
+            token_channel_joint_semantic_weight=None,
+            token_channel_joint_lexical_weight=None,
+            token_channel_lexical_full_weight_min_positions=None,
+            token_channel_joint_threshold=None,
+        )
+
+        with pytest.raises(ValueError, match="joint must be a JSON object"):
+            resolve_token_channel_config({"joint": 1}, args)
+
+    def test_help_lists_token_channel_flags(self):
+        result = subprocess.run(
+            ["conda", "run", "-n", "WFCLLM", "python", str(RUN_PY), "--help"],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0
+        assert "--token-channel-enabled" in result.stdout
+        assert "--token-channel-model-path" in result.stdout
+        assert "--token-channel-joint-threshold" in result.stdout
+
     def test_status_exits_zero(self):
         result = subprocess.run(
             ["conda", "run", "-n", "WFCLLM", "python", str(RUN_PY), "--status"],
