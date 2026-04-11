@@ -106,6 +106,8 @@ def build_training_rows(
             continuation_diversity = len(continuation_sets[tuple(row["prefix_tokens"])])
             row["continuation_diversity"] = continuation_diversity
             row["switch_target"] = int(
+                bool(row["in_code_body"])
+                and
                 bool(row["structure_mask"])
                 and float(row["entropy"]) >= entropy_threshold
                 and continuation_diversity >= diversity_threshold

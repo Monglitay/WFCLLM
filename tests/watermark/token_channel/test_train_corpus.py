@@ -281,6 +281,29 @@ def test_build_training_rows_collects_prefix_entropy_and_next_token(tmp_path: Pa
     assert target_row["switch_target"] == 1
 
 
+def test_build_training_rows_does_not_switch_whitespace_only_positions() -> None:
+    tokenizer = CharacterTokenizer()
+    tokenizer.register_text("value = a\n")
+
+    rows = build_training_rows(
+        samples=[{"source_code": "value = a\n"}],
+        tokenizer=tokenizer,
+        teacher_model=FakeTeacherModel(tokenizer),
+        context_width=4,
+        transform_engine=FakeTransformEngine("value = a\n"),
+        entropy_threshold=0.0,
+        diversity_threshold=1,
+    )
+
+    newline_row = next(
+        row for row in rows if tokenizer.decode(row["next_token"]) == "\n"
+    )
+
+    assert newline_row["structure_mask"] is True
+    assert newline_row["in_code_body"] is False
+    assert newline_row["switch_target"] == 0
+
+
 def test_build_training_rows_reuses_precomputed_variant_parse_state(monkeypatch) -> None:
     tokenizer = CharacterTokenizer()
     tokenizer.register_text("value = a\n")
