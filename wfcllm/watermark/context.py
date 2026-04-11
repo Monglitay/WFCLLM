@@ -135,6 +135,8 @@ class GenerationContext:
 
     def store_step_checkpoint_logits(self, step_index: int) -> None:
         """Persist current logits for a future block-start checkpoint."""
+        if step_index in self._step_checkpoint_logits:
+            return
         if self._next_logits is None:
             self._step_checkpoint_logits.pop(step_index, None)
             return
