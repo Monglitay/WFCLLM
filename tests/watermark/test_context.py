@@ -228,6 +228,55 @@ class TestForwardAndSample:
             "rollback 回到 prefill 状态后，首次采样仍应复用 prefill logits"
         )
 
+    def test_rollback_to_later_checkpoint_restores_checkpoint_logits_not_prefill_logits(self):
+        """Later block-boundary rollback must restore the checkpointed next logits."""
+        config = WatermarkConfig(
+            secret_key="test-key",
+            max_new_tokens=50,
+            encoder_device="cpu",
+            temperature=0.0,
+        )
+        model = MagicMock()
+        tokenizer = MagicMock()
+
+        prefill_output = MagicMock()
+        prefill_output.logits = torch.tensor([[[0.0, 9.0, 0.0, 0.0, 0.0]]])
+        prefill_output.past_key_values = (
+            (torch.zeros(1, 1, 3, 2), torch.zeros(1, 1, 3, 2)),
+        )
+        second_output = MagicMock()
+        second_output.logits = torch.tensor([[[0.0, 0.0, 0.0, 4.0, 0.0]]])
+        second_output.past_key_values = (
+            (torch.zeros(1, 1, 4, 2), torch.zeros(1, 1, 4, 2)),
+        )
+        model.side_effect = [prefill_output, second_output]
+        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+
+        tokenizer.encode.return_value = torch.tensor([[11, 22, 33]])
+        tokenizer.decode.return_value = "Z"
+        tokenizer.eos_token_id = 4
+
+        ctx = GenerationContext(model=model, tokenizer=tokenizer, config=config)
+        ctx.prefill("prompt")
+        assert ctx.forward_and_sample() == 1
+        assert model.call_count == 1
+
+        ctx.forward_and_sample()
+        assert model.call_count == 2
+
+        token_channel_logits = torch.tensor([[0.0, 0.0, 8.0, 0.0, 0.0]])
+        ctx._next_logits = token_channel_logits.clone()
+        cp = ctx.checkpoint()
+
+        ctx.forward_and_sample()
+        ctx.rollback(cp)
+        rolled_back_id = ctx.forward_and_sample()
+
+        assert rolled_back_id == 2
+        assert model.call_count == 2, (
+            "rollback 到 later checkpoint 后应复用 checkpoint 保存的 next logits"
+        )
+
 
 class TestMemorySafety:
     @pytest.fixture

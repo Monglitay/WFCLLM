@@ -23,7 +23,7 @@ class Checkpoint:
     generated_text: str
     kv_snapshot: CacheSnapshot
     interceptor_state: InterceptorState
-    use_prefill_logits: bool = False
+    next_logits: torch.Tensor | None = None
 
 
 class GenerationContext:
@@ -60,9 +60,9 @@ class GenerationContext:
         # Per-step history for block-start checkpoint reconstruction.
         # Entry i = state just before the i-th generated token was sampled.
         # Stored as (generated_ids_snapshot, text, kv_seq_len,
-        # interceptor_state, use_prefill_logits).
+        # interceptor_state, next_logits_snapshot).
         self._step_history: list[
-            tuple[list[int], str, int, InterceptorState, bool]
+            tuple[list[int], str, int, InterceptorState, torch.Tensor | None]
         ] = []
 
         self._eos_id: int | None = None
@@ -100,7 +100,7 @@ class GenerationContext:
             generated_text=self.generated_text,
             kv_snapshot=self._cache_mgr.snapshot(self.past_kv),
             interceptor_state=self.interceptor.checkpoint(),
-            use_prefill_logits=self._next_logits is not None,
+            next_logits=(self._next_logits.detach().clone() if self._next_logits is not None else None),
         )
 
     def rollback(self, cp: Checkpoint) -> None:
@@ -118,10 +118,7 @@ class GenerationContext:
         self.generated_ids = list(cp.generated_ids)
         self.generated_text = cp.generated_text
         self.interceptor.rollback(cp.interceptor_state)
-        if cp.use_prefill_logits and self._prefill_logits is not None:
-            self._next_logits = self._prefill_logits.clone()
-        else:
-            self._next_logits = None
+        self._next_logits = cp.next_logits.detach().clone() if cp.next_logits is not None else None
 
         # Trim step history to match rolled-back length
         rollback_len = len(cp.generated_ids)
@@ -146,7 +143,11 @@ class GenerationContext:
             self.past_kv[0][0].shape[2] if self.past_kv is not None else 0
         )
         pre_forward_interceptor_state = self.interceptor.checkpoint()
-        pre_forward_use_prefill_logits = self._next_logits is not None
+        pre_forward_next_logits = (
+            self._next_logits.detach().clone()
+            if self._next_logits is not None
+            else None
+        )
 
         # Record this step's pre-forward state in history
         self._step_history.append((
@@ -154,7 +155,7 @@ class GenerationContext:
             pre_forward_text,
             pre_forward_kv_seq_len,
             pre_forward_interceptor_state,
-            pre_forward_use_prefill_logits,
+            pre_forward_next_logits,
         ))
 
         # Model forward
@@ -201,7 +202,7 @@ class GenerationContext:
                     generated_text=frame[1],
                     kv_snapshot=CacheSnapshot(seq_len=frame[2]),
                     interceptor_state=frame[3],
-                    use_prefill_logits=frame[4],
+                    next_logits=frame[4].detach().clone() if frame[4] is not None else None,
                 )
             else:
                 # Fallback: use pre-forward state (old behaviour)
@@ -210,7 +211,11 @@ class GenerationContext:
                     generated_text=pre_forward_text,
                     kv_snapshot=CacheSnapshot(seq_len=pre_forward_kv_seq_len),
                     interceptor_state=pre_feed_interceptor_state,
-                    use_prefill_logits=pre_forward_use_prefill_logits,
+                    next_logits=(
+                        pre_forward_next_logits.detach().clone()
+                        if pre_forward_next_logits is not None
+                        else None
+                    ),
                 )
         else:
             self.last_block_checkpoint = None
@@ -241,7 +246,7 @@ class GenerationContext:
                 generated_text=frame[1],
                 kv_snapshot=CacheSnapshot(seq_len=frame[2]),
                 interceptor_state=frame[3],
-                use_prefill_logits=frame[4],
+                next_logits=frame[4].detach().clone() if frame[4] is not None else None,
             )
         else:
             self.last_block_checkpoint = self.checkpoint()

@@ -85,6 +85,7 @@ class TokenChannelRuntimeState:
     semantic_failure_count: int = 0
     scorable_tokens: int = 0
     gated_tokens: int = 0
+    biased_tokens: int = 0
     disabled_for_block: bool = False
     low_gate_fraction_shutdown: bool = False
 
@@ -205,6 +206,7 @@ class WatermarkGenerator:
                 stats=stats,
                 cascade_mgr=cascade_mgr,
                 retry_loop=retry_loop,
+                token_channel_state=token_channel_state,
                 pending_fallbacks=pending_fallbacks,
                 sample_id=sample_id,
                 ledger_entries=ledger_entries,
@@ -227,6 +229,7 @@ class WatermarkGenerator:
                     stats=stats,
                     cascade_mgr=cascade_mgr,
                     retry_loop=retry_loop,
+                    token_channel_state=token_channel_state,
                     pending_fallbacks=pending_fallbacks,
                     sample_id=sample_id,
                     ledger_entries=ledger_entries,
@@ -319,6 +322,7 @@ class WatermarkGenerator:
         state.current_block_tokens = 0
         state.scorable_tokens = 0
         state.gated_tokens = 0
+        state.biased_tokens = 0
         state.disabled_for_block = False
         state.low_gate_fraction_shutdown = False
 
@@ -419,6 +423,7 @@ class WatermarkGenerator:
         if not green_token_ids:
             return False
         ctx._next_logits[:, green_token_ids] += delta
+        state.biased_tokens += 1
         return True
 
     def _build_retry_token_channel_hook(
@@ -444,6 +449,13 @@ class WatermarkGenerator:
             return self._build_retry_token_channel_hook(semantic_failure_count)
 
         return factory
+
+    def _is_short_token_channel_block(self, state: TokenChannelRuntimeState) -> bool:
+        if not self._lexical_channel_enabled():
+            return False
+        if state.biased_tokens == 0:
+            return False
+        return state.scorable_tokens < self._config.token_channel.lexical_min_block_tokens
 
     def _verify_block(self, event):
         """Verify a single block against LSH criteria."""
@@ -589,6 +601,7 @@ class WatermarkGenerator:
         stats: EmbedStats,
         cascade_mgr: CascadeManager,
         retry_loop: RetryLoop,
+        token_channel_state: TokenChannelRuntimeState,
         pending_fallbacks: list[str],
         sample_id: str,
         ledger_entries: list[dict[str, object]],
@@ -609,6 +622,7 @@ class WatermarkGenerator:
         self._capture_block_identity(ledger_entry, event)
 
         verify_result = self._verify_block(event)
+        short_token_channel_block = self._is_short_token_channel_block(token_channel_state)
         if not reused_from_cascade and not record.initial_verify:
             record.initial_verify = {"passed": verify_result.passed}
             if not verify_result.passed:
@@ -617,7 +631,7 @@ class WatermarkGenerator:
                     verify_result,
                 )
 
-        if verify_result.passed:
+        if verify_result.passed and not short_token_channel_block:
             stats.embedded_blocks += 1
             pending_fallbacks.clear()
             self._mark_block_success(
@@ -640,7 +654,9 @@ class WatermarkGenerator:
             return
 
         retry_run_kwargs = {}
-        retry_hook_factory = self._build_retry_token_channel_hook_factory()
+        retry_hook_factory = None
+        if not short_token_channel_block:
+            retry_hook_factory = self._build_retry_token_channel_hook_factory()
         if (
             retry_hook_factory is not None
             and "attempt_pre_sample_hook_factory" in inspect.signature(retry_loop.run).parameters
