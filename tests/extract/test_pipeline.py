@@ -200,6 +200,43 @@ class TestExtractPipelineStatistics:
             assert summary["summary"]["watermark_rate"] == 1.0
             assert summary["summary"]["joint_prediction_rate"] == 0.0
 
+    def test_run_keeps_semantic_prediction_absent_in_lexical_only_mode(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            jsonl_path = self._make_jsonl(tmpdir, n=1)
+            cfg = ExtractPipelineConfig(input_file=jsonl_path, output_dir=tmpdir)
+            detector = MagicMock()
+            lexical_only = DetectionResult(
+                is_watermarked=True,
+                z_score=4.2,
+                p_value=0.000013,
+                total_blocks=0,
+                independent_blocks=0,
+                hit_blocks=0,
+                block_details=[],
+            )
+            lexical_only.semantic_result = None
+            lexical_only.lexical_result = LexicalDetectionResult(
+                num_positions_scored=12,
+                num_green_hits=10,
+                green_fraction=10 / 12,
+                lexical_z_score=4.2,
+                lexical_p_value=0.000013,
+            )
+            lexical_only.joint_result = lexical_only.lexical_result.to_joint_equivalent(threshold=4.0)
+            detector.detect.return_value = lexical_only
+
+            pipeline = ExtractPipeline(detector=detector, config=cfg)
+            details_path = pipeline.run()
+            row = json.loads(Path(details_path).read_text(encoding="utf-8").splitlines()[0])
+            summary = json.loads(
+                Path(details_path).with_name("test_summary.json").read_text(encoding="utf-8")
+            )
+
+            assert "semantic_prediction" not in row
+            assert row["joint_prediction"] is True
+            assert summary["summary"]["watermark_rate"] == 0.0
+            assert summary["summary"]["joint_prediction_rate"] == 1.0
+
     def test_run_uses_spec_required_lexical_count_field_names(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             jsonl_path = self._make_jsonl(tmpdir, n=1)
@@ -376,37 +413,38 @@ class TestExtractPipelineStatistics:
             )
 
             detector = MagicMock()
+            valid_result = DetectionResult(
+                is_watermarked=True,
+                z_score=4.0,
+                p_value=0.001,
+                total_blocks=1,
+                independent_blocks=1,
+                hit_blocks=1,
+                block_details=[],
+                contract_valid=True,
+                alignment_report=compare_block_contracts(
+                    [_contract(ordinal=0, block_id="0")],
+                    [_contract(ordinal=0, block_id="0")],
+                ),
+            )
+            valid_result.semantic_result = valid_result
+            invalid_result = DetectionResult(
+                is_watermarked=False,
+                z_score=0.5,
+                p_value=0.6,
+                total_blocks=1,
+                independent_blocks=1,
+                hit_blocks=0,
+                block_details=[],
+                contract_valid=False,
+                alignment_report=compare_block_contracts(
+                    [_contract(ordinal=0, block_id="0"), _contract(ordinal=1, block_id="1")],
+                    [_contract(ordinal=0, block_id="0")],
+                ),
+            )
+            invalid_result.semantic_result = invalid_result
             detector._config.adaptive_detection.exclude_invalid_samples = True
-            detector.detect.side_effect = [
-                DetectionResult(
-                    is_watermarked=True,
-                    z_score=4.0,
-                    p_value=0.001,
-                    total_blocks=1,
-                    independent_blocks=1,
-                    hit_blocks=1,
-                    block_details=[],
-                    contract_valid=True,
-                    alignment_report=compare_block_contracts(
-                        [_contract(ordinal=0, block_id="0")],
-                        [_contract(ordinal=0, block_id="0")],
-                    ),
-                ),
-                DetectionResult(
-                    is_watermarked=False,
-                    z_score=0.5,
-                    p_value=0.6,
-                    total_blocks=1,
-                    independent_blocks=1,
-                    hit_blocks=0,
-                    block_details=[],
-                    contract_valid=False,
-                    alignment_report=compare_block_contracts(
-                        [_contract(ordinal=0, block_id="0"), _contract(ordinal=1, block_id="1")],
-                        [_contract(ordinal=0, block_id="0")],
-                    ),
-                ),
-            ]
+            detector.detect.side_effect = [valid_result, invalid_result]
 
             pipeline = ExtractPipeline(
                 detector=detector,

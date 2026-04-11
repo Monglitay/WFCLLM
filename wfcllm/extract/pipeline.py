@@ -75,7 +75,7 @@ class ExtractPipeline:
         if self._exclude_invalid_samples():
             scored_rows = [row for row in rows if row.get("contract_valid") is not False]
 
-        watermarked = sum(1 for row in scored_rows if row.get("semantic_prediction", row["is_watermarked"]))
+        watermarked = sum(1 for row in scored_rows if row.get("semantic_prediction", False))
         z_scores = [row["z_score"] for row in scored_rows]
         p_values = [row["p_value"] for row in scored_rows]
         block_counts = [row["independent_blocks"] for row in scored_rows]
@@ -205,12 +205,13 @@ class ExtractPipeline:
                     "id": item["id"],
                     "mode": result.mode,
                     "is_watermarked": result.is_watermarked,
-                    "semantic_prediction": result.is_watermarked,
                     "z_score": result.z_score,
                     "p_value": result.p_value,
                     "independent_blocks": result.independent_blocks,
                     "hits": result.hit_blocks,
                 }
+                if result.semantic_result is not None:
+                    row["semantic_prediction"] = result.semantic_result.is_watermarked
                 if result.contract_valid is not None:
                     row["contract_valid"] = result.contract_valid
                 if result.alignment_report is not None:
