@@ -25,6 +25,8 @@ def build_augmented_variants(
     generated_variants = engine.generate_variants(source_code)
     seen_sources = {source_code}
     for variant in generated_variants:
+        if variant.get("sample_type") != "positive":
+            continue
         transformed_source = variant.get("transformed_source")
         if not isinstance(transformed_source, str):
             continue

@@ -76,8 +76,16 @@ class RecordingForwardTeacherModel:
         self.calls: list[torch.Tensor] = []
 
     def __call__(self, input_ids: torch.Tensor):
+        if input_ids.shape[-1] == 0:
+            raise RuntimeError("empty prefixes are unsupported")
         self.calls.append(input_ids.clone())
         return {"logits": torch.tensor([[[1.0, 0.0]]], dtype=torch.float32)}
+
+
+class BosTokenizer(CharacterTokenizer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.bos_token_id = self._ensure_char("^")
 
 
 class PretokenizedTokenizer:
@@ -129,6 +137,31 @@ class FakeTransformEngine:
         ]
 
 
+class MixedTransformEngine:
+    def generate_variants(self, source: str) -> list[dict[str, object]]:
+        del source
+        return [
+            {
+                "variant_id": 0,
+                "rules_applied": ["rename"],
+                "transformed_source": "value = b\n",
+                "sample_type": "positive",
+            },
+            {
+                "variant_id": 1,
+                "rules_applied": ["break"],
+                "transformed_source": "raise ValueError()\n",
+                "sample_type": "negative",
+            },
+            {
+                "variant_id": 2,
+                "rules_applied": ["unknown"],
+                "transformed_source": "value = c\n",
+                "sample_type": "other",
+            },
+        ]
+
+
 def test_structure_mask_excludes_imports_signatures_and_decorators() -> None:
     source = (
         "import os\n"
@@ -163,6 +196,15 @@ def test_build_augmented_variants_includes_base_and_positive_transforms() -> Non
     variants = build_augmented_variants(
         source,
         transform_engine=FakeTransformEngine("value = b\n"),
+    )
+
+    assert variants == ["value = a\n", "value = b\n"]
+
+
+def test_build_augmented_variants_filters_non_positive_variants() -> None:
+    variants = build_augmented_variants(
+        "value = a\n",
+        transform_engine=MixedTransformEngine(),
     )
 
     assert variants == ["value = a\n", "value = b\n"]
@@ -244,19 +286,20 @@ def test_extract_teacher_rows_preserves_explicit_empty_prefix() -> None:
     assert model.prefixes[0] == ()
 
 
-def test_extract_teacher_rows_does_not_fabricate_prefix_token_for_forward_models() -> None:
+def test_extract_teacher_rows_uses_bos_token_for_empty_forward_prefix() -> None:
     model = RecordingForwardTeacherModel()
-    tokenizer = CharacterTokenizer()
+    tokenizer = BosTokenizer()
     tokenizer.register_text("ab")
 
-    extract_teacher_rows(
+    rows = extract_teacher_rows(
         tokenizer=tokenizer,
         model=model,
         text="ab",
         context_width=2,
     )
 
-    assert model.calls[0].shape == (1, 0)
+    assert rows[0]["prefix_tokens"] == []
+    assert model.calls[0].tolist() == [[tokenizer.bos_token_id]]
 
 
 def test_extract_teacher_rows_aligns_with_tokenizer_token_strings() -> None:

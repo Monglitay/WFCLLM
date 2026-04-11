@@ -27,7 +27,7 @@ def extract_teacher_rows(
     rows: list[dict[str, object]] = []
     for index, token_id in enumerate(token_ids):
         prefix_tokens = token_ids[max(0, index - context_width) : index]
-        teacher_logits = _score_next(model, prefix_tokens)
+        teacher_logits = _score_next(model, prefix_tokens, tokenizer=tokenizer)
         token_start, token_end = token_spans[index]
         rows.append(
             {
@@ -124,14 +124,23 @@ def _render_token_prefix(tokenizer: object, token_ids: list[int]) -> str:
     return rendered
 
 
-def _score_next(model: object, prefix_tokens: list[int]) -> torch.Tensor:
+def _score_next(model: object, prefix_tokens: list[int], *, tokenizer: object) -> torch.Tensor:
     if hasattr(model, "score_next"):
         logits = model.score_next(tuple(prefix_tokens))
         if not isinstance(logits, torch.Tensor) or logits.ndim != 1:
             raise ValueError("model.score_next() must return a 1D tensor")
         return logits.detach().cpu().to(dtype=torch.float32)
 
-    input_ids = torch.tensor([prefix_tokens], dtype=torch.long)
+    input_tokens = prefix_tokens
+    if not input_tokens:
+        bos_token_id = getattr(tokenizer, "bos_token_id", None)
+        if not isinstance(bos_token_id, int) or isinstance(bos_token_id, bool):
+            raise ValueError(
+                "forward teacher models require tokenizer.bos_token_id for empty prefixes"
+            )
+        input_tokens = [bos_token_id]
+
+    input_ids = torch.tensor([input_tokens], dtype=torch.long)
     output = model(input_ids)
     logits = getattr(output, "logits", None)
     if logits is None and isinstance(output, dict):
