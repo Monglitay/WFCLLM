@@ -94,7 +94,9 @@ def build_training_rows(
                     "node_type": features.node_type,
                     "parent_node_type": features.parent_node_type,
                     "block_relative_offset": features.block_relative_offset,
+                    "in_code_body": features.in_code_body,
                     "structure_mask": features.structure_mask,
+                    "language": features.language,
                     "switch_target": 0,
                 }
                 sample_rows.append(row)

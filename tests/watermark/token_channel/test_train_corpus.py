@@ -85,6 +85,20 @@ class RecordingForwardTeacherModel:
         return {"logits": torch.tensor([[[1.0, 0.0]]], dtype=torch.float32)}
 
 
+class DropoutTeacherModule(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.dropout = torch.nn.Dropout(p=1.0)
+        self.training_states: list[bool] = []
+        self.grad_enabled_states: list[bool] = []
+
+    def forward(self, input_ids: torch.Tensor):
+        self.training_states.append(self.training)
+        self.grad_enabled_states.append(torch.is_grad_enabled())
+        logits = self.dropout(torch.ones((1, input_ids.shape[-1], 2), dtype=torch.float32))
+        return {"logits": logits}
+
+
 class BosTokenizer(CharacterTokenizer):
     def __init__(self) -> None:
         super().__init__()
@@ -261,6 +275,8 @@ def test_build_training_rows_collects_prefix_entropy_and_next_token(tmp_path: Pa
     assert target_row["node_type"]
     assert target_row["parent_node_type"]
     assert target_row["block_relative_offset"] == 0
+    assert target_row["in_code_body"] is True
+    assert target_row["language"] == "python"
     assert target_row["structure_mask"] is True
     assert target_row["switch_target"] == 1
 
@@ -375,6 +391,26 @@ def test_extract_teacher_rows_rejects_zero_length_aligned_spans() -> None:
             text="ab",
             context_width=2,
         )
+
+
+def test_extract_teacher_rows_uses_eval_and_no_grad_for_module_teachers() -> None:
+    tokenizer = BosTokenizer()
+    tokenizer.register_text("ab")
+    model = DropoutTeacherModule()
+    model.train()
+
+    rows = extract_teacher_rows(
+        tokenizer=tokenizer,
+        model=model,
+        text="ab",
+        context_width=2,
+    )
+
+    assert len(rows) == 2
+    assert model.training_states == [False, False]
+    assert model.grad_enabled_states == [False, False]
+    assert model.training is True
+    assert rows[0]["teacher_logits"] == [1.0, 1.0]
 
 
 def test_train_entry_loads_cached_rows_without_running_training(tmp_path: Path, capsys) -> None:

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import pickle
+from pathlib import Path
 
 import torch
 
@@ -124,7 +124,8 @@ def _render_token_prefix(tokenizer: object, token_ids: list[int]) -> str:
 
 def _score_next(model: object, prefix_tokens: list[int], *, tokenizer: object) -> torch.Tensor:
     if hasattr(model, "score_next"):
-        logits = model.score_next(tuple(prefix_tokens))
+        with torch.no_grad():
+            logits = model.score_next(tuple(prefix_tokens))
         if not isinstance(logits, torch.Tensor) or logits.ndim != 1:
             raise ValueError("model.score_next() must return a 1D tensor")
         return logits.detach().cpu().to(dtype=torch.float32)
@@ -139,7 +140,17 @@ def _score_next(model: object, prefix_tokens: list[int], *, tokenizer: object) -
         input_tokens = [bos_token_id]
 
     input_ids = torch.tensor([input_tokens], dtype=torch.long)
-    output = model(input_ids)
+    was_training = getattr(model, "training", None)
+    eval_method = getattr(model, "eval", None)
+    train_method = getattr(model, "train", None)
+    if callable(eval_method):
+        eval_method()
+    try:
+        with torch.no_grad():
+            output = model(input_ids)
+    finally:
+        if was_training is not None and callable(train_method):
+            train_method(was_training)
     logits = getattr(output, "logits", None)
     if logits is None and isinstance(output, dict):
         logits = output.get("logits")
