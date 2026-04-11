@@ -62,6 +62,58 @@ class FakeTeacherModel:
         return logits
 
 
+class RecordingTeacherModel:
+    def __init__(self) -> None:
+        self.prefixes: list[tuple[int, ...]] = []
+
+    def score_next(self, prefix_ids: tuple[int, ...]) -> torch.Tensor:
+        self.prefixes.append(prefix_ids)
+        return torch.tensor([1.0, 0.0], dtype=torch.float32)
+
+
+class RecordingForwardTeacherModel:
+    def __init__(self) -> None:
+        self.calls: list[torch.Tensor] = []
+
+    def __call__(self, input_ids: torch.Tensor):
+        self.calls.append(input_ids.clone())
+        return {"logits": torch.tensor([[[1.0, 0.0]]], dtype=torch.float32)}
+
+
+class PretokenizedTokenizer:
+    def __init__(self) -> None:
+        self._tokens = {
+            "ab": [10, 11],
+        }
+        self._token_text = {
+            10: "a",
+            11: "b",
+        }
+
+    def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+        del add_special_tokens
+        return list(self._tokens[text])
+
+    def decode(self, ids, skip_special_tokens: bool = True) -> str:
+        del skip_special_tokens
+        if isinstance(ids, int):
+            ids = [ids]
+        return "".join(f"<{self._token_text[token_id]}>" for token_id in ids)
+
+    def convert_ids_to_tokens(self, ids):
+        if isinstance(ids, int):
+            return self._token_text[ids]
+        return [self._token_text[token_id] for token_id in ids]
+
+    def convert_tokens_to_string(self, tokens) -> str:
+        if isinstance(tokens, str):
+            tokens = [tokens]
+        return "".join(tokens)
+
+    def __len__(self) -> int:
+        return len(self._token_text)
+
+
 class FakeTransformEngine:
     def __init__(self, transformed_source: str) -> None:
         self._transformed_source = transformed_source
@@ -174,6 +226,50 @@ def test_extract_teacher_rows_collects_entropy_and_logits() -> None:
     assert rows[1]["next_token"] == tokenizer.encode("b", add_special_tokens=False)[0]
     assert len(rows[2]["teacher_logits"]) == len(tokenizer)
     assert rows[2]["entropy"] >= 0.0
+
+
+def test_extract_teacher_rows_preserves_explicit_empty_prefix() -> None:
+    model = RecordingTeacherModel()
+    tokenizer = CharacterTokenizer()
+    tokenizer.register_text("ab")
+
+    rows = extract_teacher_rows(
+        tokenizer=tokenizer,
+        model=model,
+        text="ab",
+        context_width=2,
+    )
+
+    assert rows[0]["prefix_tokens"] == []
+    assert model.prefixes[0] == ()
+
+
+def test_extract_teacher_rows_does_not_fabricate_prefix_token_for_forward_models() -> None:
+    model = RecordingForwardTeacherModel()
+    tokenizer = CharacterTokenizer()
+    tokenizer.register_text("ab")
+
+    extract_teacher_rows(
+        tokenizer=tokenizer,
+        model=model,
+        text="ab",
+        context_width=2,
+    )
+
+    assert model.calls[0].shape == (1, 0)
+
+
+def test_extract_teacher_rows_aligns_with_tokenizer_token_strings() -> None:
+    tokenizer = PretokenizedTokenizer()
+
+    rows = extract_teacher_rows(
+        tokenizer=tokenizer,
+        model=RecordingTeacherModel(),
+        text="ab",
+        context_width=2,
+    )
+
+    assert [(row["token_start"], row["token_end"]) for row in rows] == [(0, 1), (1, 2)]
 
 
 def test_train_entry_loads_cached_rows_without_running_training(tmp_path: Path, capsys) -> None:

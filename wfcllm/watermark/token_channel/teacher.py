@@ -22,22 +22,22 @@ def extract_teacher_rows(
         raise ValueError("context_width must be > 0")
 
     token_ids = list(_encode_text(tokenizer, text))
-    token_texts = [_decode_token(tokenizer, token_id) for token_id in token_ids]
-    token_spans = _align_token_spans(text, token_texts)
+    token_spans = _align_token_spans(text, token_ids, tokenizer)
 
     rows: list[dict[str, object]] = []
     for index, token_id in enumerate(token_ids):
         prefix_tokens = token_ids[max(0, index - context_width) : index]
         teacher_logits = _score_next(model, prefix_tokens)
+        token_start, token_end = token_spans[index]
         rows.append(
             {
                 "prefix_tokens": list(prefix_tokens),
                 "next_token": token_id,
                 "teacher_logits": teacher_logits.tolist(),
                 "entropy": _compute_entropy(teacher_logits),
-                "token_text": token_texts[index],
-                "token_start": token_spans[index][0],
-                "token_end": token_spans[index][1],
+                "token_text": text[token_start:token_end],
+                "token_start": token_start,
+                "token_end": token_end,
                 "token_index": index,
             }
         )
@@ -81,30 +81,47 @@ def _encode_text(tokenizer: object, text: str) -> list[int]:
     return token_ids
 
 
-def _decode_token(tokenizer: object, token_id: int) -> str:
+def _align_token_spans(text: str, token_ids: list[int], tokenizer: object) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    previous_prefix = ""
+    for prefix_index in range(1, len(token_ids) + 1):
+        rendered_prefix = _render_token_prefix(tokenizer, token_ids[:prefix_index])
+        if not text.startswith(rendered_prefix):
+            raise ValueError(
+                f"Unable to align rendered prefix {rendered_prefix!r} with source"
+            )
+        start = len(previous_prefix)
+        end = len(rendered_prefix)
+        if end < start:
+            raise ValueError("token alignment prefix lengths must be non-decreasing")
+        if start == end:
+            spans.append((start, end))
+            previous_prefix = rendered_prefix
+            continue
+        spans.append((start, end))
+        previous_prefix = rendered_prefix
+    return spans
+
+
+def _render_token_prefix(tokenizer: object, token_ids: list[int]) -> str:
+    convert_ids_to_tokens = getattr(tokenizer, "convert_ids_to_tokens", None)
+    convert_tokens_to_string = getattr(tokenizer, "convert_tokens_to_string", None)
+    if convert_ids_to_tokens is not None and convert_tokens_to_string is not None:
+        tokens = convert_ids_to_tokens(token_ids)
+        rendered = convert_tokens_to_string(tokens)
+        if not isinstance(rendered, str):
+            raise ValueError("tokenizer.convert_tokens_to_string() must return a string")
+        return rendered
+
     decode = getattr(tokenizer, "decode", None)
     if decode is None:
-        raise ValueError("tokenizer must provide a decode() method")
-    token_text = decode([token_id], skip_special_tokens=True)
-    if not isinstance(token_text, str):
+        raise ValueError(
+            "tokenizer must provide decode() or convert_ids_to_tokens()/convert_tokens_to_string()"
+        )
+    rendered = decode(token_ids, skip_special_tokens=True)
+    if not isinstance(rendered, str):
         raise ValueError("tokenizer.decode() must return a string")
-    return token_text
-
-
-def _align_token_spans(text: str, token_texts: list[str]) -> list[tuple[int, int]]:
-    spans: list[tuple[int, int]] = []
-    cursor = 0
-    for token_text in token_texts:
-        if not token_text:
-            spans.append((cursor, cursor))
-            continue
-        start = text.find(token_text, cursor)
-        if start < 0:
-            raise ValueError(f"Unable to align token text {token_text!r} in source")
-        end = start + len(token_text)
-        spans.append((start, end))
-        cursor = end
-    return spans
+    return rendered
 
 
 def _score_next(model: object, prefix_tokens: list[int]) -> torch.Tensor:
@@ -114,7 +131,7 @@ def _score_next(model: object, prefix_tokens: list[int]) -> torch.Tensor:
             raise ValueError("model.score_next() must return a 1D tensor")
         return logits.detach().cpu().to(dtype=torch.float32)
 
-    input_ids = torch.tensor([prefix_tokens or [0]], dtype=torch.long)
+    input_ids = torch.tensor([prefix_tokens], dtype=torch.long)
     output = model(input_ids)
     logits = getattr(output, "logits", None)
     if logits is None and isinstance(output, dict):
