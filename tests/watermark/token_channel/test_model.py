@@ -304,6 +304,14 @@ def test_build_training_evidence_rejects_malformed_switch_target() -> None:
         )
 
 
+def test_build_training_evidence_requires_switch_target() -> None:
+    with pytest.raises(ValueError, match="switch_target"):
+        build_training_evidence(
+            rows=[{}],
+            epochs=[TokenChannelEpochMetrics(epoch=1, train_loss=0.7, validation_loss=0.5, switch_loss=0.2)],
+        )
+
+
 def test_save_token_channel_training_artifacts_writes_evidence(tmp_path: Path) -> None:
     checkpoint_dir = tmp_path / "artifact"
     model = TokenChannelModel(vocab_size=8, context_width=4, hidden_size=12)

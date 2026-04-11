@@ -196,7 +196,9 @@ def build_training_evidence(
     for row in rows:
         if not isinstance(row, dict):
             raise ValueError("row must be a mapping")
-        switch_target = _require_binary_int(row.get("switch_target", 0), "switch_target")
+        if "switch_target" not in row:
+            raise ValueError("switch_target must be present")
+        switch_target = _require_binary_int(row["switch_target"], "switch_target")
         if switch_target == 1:
             positive_count += 1
         else:
