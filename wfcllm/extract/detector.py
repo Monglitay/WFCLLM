@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Literal
 
 from wfcllm.common.ast_parser import extract_statement_blocks
@@ -36,6 +37,7 @@ class WatermarkDetector:
         self._scorer = BlockScorer(keying, verifier, default_gamma=config.lsh_gamma)
         self._config = config
         self._lexical_detector: ReplayTokenChannelDetector | None = None
+        self._token_channel_artifact = None
 
     def detect(
         self,
@@ -126,7 +128,7 @@ class WatermarkDetector:
         if not self._config.token_channel.enabled or self._config.token_channel.mode == "semantic-only":
             return None
         if self._lexical_detector is None:
-            artifact = load_token_channel_artifact(self._config.token_channel.model_path)
+            artifact = self._get_token_channel_artifact()
             runtime = TokenChannelRuntime(
                 model=artifact.model,
                 config=self._config.token_channel,
@@ -156,6 +158,77 @@ class WatermarkDetector:
         lexical_detection_enabled = self._config.token_channel.enabled and self._config.token_channel.mode != "semantic-only"
         if lexical_detection_enabled and token_channel.get("token_altering_postprocess"):
             raise ValueError("token-channel detection requires tokenizer-visible final code")
+        if lexical_detection_enabled:
+            self._assert_token_channel_pin_matches(token_channel)
+
+    def _get_token_channel_artifact(self):
+        if self._token_channel_artifact is None:
+            self._token_channel_artifact = load_token_channel_artifact(
+                self._config.token_channel.model_path
+            )
+        return self._token_channel_artifact
+
+    def _assert_token_channel_pin_matches(self, token_channel: dict) -> None:
+        mismatches: list[str] = []
+        for key in (
+            "mode",
+            "context_width",
+            "switch_threshold",
+            "ignore_repeated_ngrams",
+            "ignore_repeated_prefixes",
+        ):
+            if key not in token_channel:
+                continue
+            expected = token_channel[key]
+            actual = getattr(self._config.token_channel, key)
+            if actual != expected:
+                mismatches.append(f"{key}: expected {expected!r}, got {actual!r}")
+
+        artifact = self._get_token_channel_artifact()
+        pinned_metadata = token_channel.get("artifact_metadata")
+        if pinned_metadata is not None:
+            actual_metadata = self._artifact_metadata_to_dict(artifact.metadata)
+            if actual_metadata != pinned_metadata:
+                mismatches.append("artifact_metadata does not match persisted watermark metadata")
+
+        pinned_fingerprints = token_channel.get("artifact_fingerprints")
+        if isinstance(pinned_fingerprints, dict):
+            actual_fingerprints = {
+                "model_sha256": self._sha256_file(artifact.model_path),
+                "metadata_sha256": self._sha256_file(artifact.metadata_path),
+            }
+            if actual_fingerprints != pinned_fingerprints:
+                mismatches.append("artifact_fingerprints do not match persisted watermark metadata")
+
+        if mismatches:
+            raise ValueError(
+                "token-channel artifact/config mismatch: " + "; ".join(mismatches)
+            )
+
+    @staticmethod
+    def _artifact_metadata_to_dict(metadata) -> dict[str, object]:
+        to_dict = getattr(metadata, "to_dict", None)
+        if callable(to_dict):
+            return to_dict()
+        return {
+            "schema_version": getattr(metadata, "schema_version", None),
+            "tokenizer_name": getattr(metadata, "tokenizer_name", None),
+            "tokenizer_vocab_size": getattr(metadata, "tokenizer_vocab_size", None),
+            "context_width": getattr(metadata, "context_width", None),
+            "feature_version": getattr(metadata, "feature_version", None),
+            "training_config": dict(getattr(metadata, "training_config", {}) or {}),
+        }
+
+    @staticmethod
+    def _sha256_file(path) -> str:
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            while True:
+                chunk = handle.read(65536)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        return digest.hexdigest()
 
     def _with_alignment(
         self,

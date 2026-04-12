@@ -2574,6 +2574,62 @@ class TestTokenChannelGeneration:
         assert ctx._next_logits[0, 1].item() == pytest.approx(1.5)
         assert ctx._next_logits[0, 3].item() == pytest.approx(1.5)
 
+    def test_build_runtime_token_features_uses_real_last_token_span(self, monkeypatch, mock_components):
+        model, tokenizer, encoder, enc_tok = mock_components
+        config = WatermarkConfig(
+            secret_key="test-key",
+            encoder_device="cpu",
+            token_channel=TokenChannelConfig(enabled=True, mode="dual-channel"),
+        )
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.load_token_channel_artifact",
+            lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
+        )
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.TokenChannelRuntime",
+            lambda **kwargs: MagicMock(),
+        )
+
+        tokenizer.return_value = {
+            "input_ids": [10, 11, 12],
+            "offset_mapping": [(0, 8), (8, 9), (9, 13)],
+        }
+        captured: dict[str, object] = {}
+
+        def fake_build_features(source_code: str, token_start: int, token_end: int):
+            captured["source_code"] = source_code
+            captured["token_start"] = token_start
+            captured["token_end"] = token_end
+            return TokenChannelFeatures(
+                node_type="expression_statement",
+                parent_node_type="module",
+                block_relative_offset=0,
+                in_code_body=False,
+                structure_mask=True,
+            )
+
+        monkeypatch.setattr(
+            "wfcllm.watermark.generator.build_token_channel_features",
+            fake_build_features,
+        )
+
+        gen = WatermarkGenerator(
+            model=model,
+            tokenizer=tokenizer,
+            encoder=encoder,
+            encoder_tokenizer=enc_tok,
+            config=config,
+        )
+
+        features = gen._build_runtime_token_features(
+            SimpleNamespace(generated_text="if True:\n    ")
+        )
+
+        assert features.in_code_body is False
+        assert captured["source_code"].startswith("if True:\n    ")
+        assert captured["token_start"] == 9
+        assert captured["token_end"] == 13
+
     def test_token_channel_low_gate_fraction_probe_starts_from_first_scorable_token(
         self,
         monkeypatch,

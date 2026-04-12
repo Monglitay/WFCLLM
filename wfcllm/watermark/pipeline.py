@@ -1,6 +1,7 @@
 """Batch watermarking pipeline over HumanEval/MBPP datasets."""
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from collections import Counter, defaultdict
@@ -88,15 +89,100 @@ class WatermarkPipeline:
             params["adaptive_gamma"] = adaptive_gamma
         token_channel = getattr(generator_config, "token_channel", None)
         if token_channel is not None and getattr(token_channel, "enabled", False):
-            params["token_channel"] = {
-                "enabled": True,
-                "mode": getattr(token_channel, "mode", "semantic-only"),
-                "context_width": getattr(token_channel, "context_width", 0),
-                "switch_threshold": getattr(token_channel, "switch_threshold", 0.0),
-                "delta": getattr(token_channel, "delta", 0.0),
-                "token_altering_postprocess": False,
-            }
+            params["token_channel"] = WatermarkPipeline._build_public_token_channel_params(
+                generator
+            )
         return params
+
+    @staticmethod
+    def _build_public_token_channel_params(generator: WatermarkGenerator) -> dict:
+        generator_config = getattr(generator, "config", None)
+        token_channel = getattr(generator_config, "token_channel", None)
+        return {
+            "enabled": True,
+            "mode": getattr(token_channel, "mode", "semantic-only"),
+            "context_width": getattr(token_channel, "context_width", 0),
+            "switch_threshold": getattr(token_channel, "switch_threshold", 0.0),
+            "delta": getattr(token_channel, "delta", 0.0),
+            "token_altering_postprocess": False,
+        }
+
+    @staticmethod
+    def _build_token_channel_metadata(generator: WatermarkGenerator) -> dict | None:
+        generator_config = getattr(generator, "config", None)
+        token_channel = getattr(generator_config, "token_channel", None)
+        if token_channel is None or not getattr(token_channel, "enabled", False):
+            return None
+
+        payload = {
+            **WatermarkPipeline._build_public_token_channel_params(generator),
+            "ignore_repeated_ngrams": getattr(token_channel, "ignore_repeated_ngrams", False),
+            "ignore_repeated_prefixes": getattr(token_channel, "ignore_repeated_prefixes", False),
+        }
+        artifact = getattr(generator, "_token_channel_artifact", None)
+        if artifact is None:
+            return payload
+
+        metadata = getattr(artifact, "metadata", None)
+        metadata_dict = WatermarkPipeline._coerce_token_channel_artifact_metadata(metadata)
+        if metadata_dict is not None:
+            payload["artifact_metadata"] = metadata_dict
+
+        model_path = getattr(artifact, "model_path", None)
+        metadata_path = getattr(artifact, "metadata_path", None)
+        if WatermarkPipeline._is_real_path(model_path) and WatermarkPipeline._is_real_path(metadata_path):
+            payload["artifact_fingerprints"] = {
+                "model_sha256": WatermarkPipeline._sha256_file(Path(model_path)),
+                "metadata_sha256": WatermarkPipeline._sha256_file(Path(metadata_path)),
+            }
+        return payload
+
+    @staticmethod
+    def _coerce_token_channel_artifact_metadata(metadata: object) -> dict[str, object] | None:
+        if metadata is None:
+            return None
+        to_dict = getattr(metadata, "to_dict", None)
+        if callable(to_dict):
+            payload = to_dict()
+            if isinstance(payload, dict):
+                return payload
+        training_config = getattr(metadata, "training_config", None)
+        if not isinstance(training_config, dict):
+            return None
+        schema_version = getattr(metadata, "schema_version", None)
+        tokenizer_name = getattr(metadata, "tokenizer_name", None)
+        tokenizer_vocab_size = getattr(metadata, "tokenizer_vocab_size", None)
+        context_width = getattr(metadata, "context_width", None)
+        feature_version = getattr(metadata, "feature_version", None)
+        if not isinstance(schema_version, str) or not isinstance(tokenizer_name, str):
+            return None
+        if not isinstance(tokenizer_vocab_size, int) or not isinstance(context_width, int):
+            return None
+        if not isinstance(feature_version, str):
+            return None
+        return {
+            "schema_version": schema_version,
+            "tokenizer_name": tokenizer_name,
+            "tokenizer_vocab_size": tokenizer_vocab_size,
+            "context_width": context_width,
+            "feature_version": feature_version,
+            "training_config": dict(training_config),
+        }
+
+    @staticmethod
+    def _is_real_path(path: object) -> bool:
+        return isinstance(path, (str, Path)) and Path(path).exists()
+
+    @staticmethod
+    def _sha256_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            while True:
+                chunk = handle.read(65536)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        return digest.hexdigest()
 
     @staticmethod
     def _build_public_adaptive_gamma_params(
@@ -426,6 +512,11 @@ class WatermarkPipeline:
                     record["watermark_params"] = self._build_public_watermark_params(
                         self._generator
                     )
+                    token_channel_metadata = self._build_token_channel_metadata(
+                        self._generator
+                    )
+                    if token_channel_metadata is not None:
+                        record["token_channel"] = token_channel_metadata
                     f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
                     for ledger_row in persisted_block_ledgers:

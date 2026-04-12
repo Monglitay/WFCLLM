@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 from dataclasses import dataclass, field
 
@@ -121,6 +122,7 @@ class WatermarkGenerator:
         self._gamma_schedule: PiecewiseQuantileSchedule | None = None
         self._initialize_adaptive_gamma()
         self._cascade_rollback_counter = 0
+        self._token_channel_artifact = None
         self._token_channel_runtime = self._initialize_token_channel_runtime()
 
         _STRUCTURAL_KEYWORDS = [
@@ -333,6 +335,7 @@ class WatermarkGenerator:
         if not token_channel_config.enabled or token_channel_config.mode == "semantic-only":
             return None
         artifact = load_token_channel_artifact(token_channel_config.model_path)
+        self._token_channel_artifact = artifact
         return TokenChannelRuntime(
             model=artifact.model,
             config=token_channel_config,
@@ -395,23 +398,85 @@ class WatermarkGenerator:
         return gate_fraction < token_channel_config.lexical_gate_min_fraction
 
     def _build_runtime_token_features(self, ctx) -> TokenChannelFeatures:
-        source_code = f"{ctx.generated_text}x"
-        token_start = len(ctx.generated_text)
-        token_end = token_start + 1
+        token_span = self._resolve_runtime_token_span(ctx)
+        if token_span is None:
+            return self._fallback_runtime_token_features()
+
+        token_start, token_end = token_span
+        for source_code in self._runtime_feature_source_variants(ctx.generated_text):
+            try:
+                return build_token_channel_features(
+                    source_code,
+                    token_start=token_start,
+                    token_end=token_end,
+                )
+            except (SyntaxError, ValueError):
+                continue
+        return self._fallback_runtime_token_features()
+
+    def _resolve_runtime_token_span(self, ctx) -> tuple[int, int] | None:
+        generated_text = getattr(ctx, "generated_text", "")
+        if not isinstance(generated_text, str) or not generated_text:
+            return None
+
+        tokenize = getattr(self._tokenizer, "__call__", None)
+        if not callable(tokenize):
+            return None
+
         try:
-            return build_token_channel_features(
-                source_code,
-                token_start=token_start,
-                token_end=token_end,
+            encoded = tokenize(
+                generated_text,
+                add_special_tokens=False,
+                return_offsets_mapping=True,
             )
-        except (SyntaxError, ValueError):
-            return TokenChannelFeatures(
-                node_type="module",
-                parent_node_type="module",
-                block_relative_offset=0,
-                in_code_body=False,
-                structure_mask=False,
-            )
+        except TypeError:
+            return None
+
+        offset_mapping = self._resolve_runtime_offset_mapping(encoded)
+        if offset_mapping is None:
+            return None
+
+        for offset in reversed(offset_mapping):
+            start, end = self._normalize_runtime_offset(offset)
+            if end > start:
+                return start, end
+        return None
+
+    @staticmethod
+    def _resolve_runtime_offset_mapping(encoded) -> list[object] | None:
+        if not isinstance(encoded, dict) or "offset_mapping" not in encoded:
+            return None
+        offset_mapping = encoded["offset_mapping"]
+        if isinstance(offset_mapping, list) and offset_mapping and isinstance(offset_mapping[0], list):
+            return list(offset_mapping[0])
+        if isinstance(offset_mapping, list):
+            return list(offset_mapping)
+        return None
+
+    @staticmethod
+    def _normalize_runtime_offset(offset: object) -> tuple[int, int]:
+        if not isinstance(offset, (tuple, list)) or len(offset) != 2:
+            raise ValueError("offset_mapping entries must be (start, end) pairs")
+        return int(offset[0]), int(offset[1])
+
+    @staticmethod
+    def _runtime_feature_source_variants(generated_text: str) -> tuple[str, ...]:
+        variants = [generated_text]
+        for suffix in ("pass", "0", "\npass", "\n0", json.dumps("x")):
+            candidate = f"{generated_text}{suffix}"
+            if candidate not in variants:
+                variants.append(candidate)
+        return tuple(variants)
+
+    @staticmethod
+    def _fallback_runtime_token_features() -> TokenChannelFeatures:
+        return TokenChannelFeatures(
+            node_type="module",
+            parent_node_type="module",
+            block_relative_offset=0,
+            in_code_body=False,
+            structure_mask=False,
+        )
 
     def _ensure_next_logits(self, ctx) -> None:
         if getattr(ctx, "_next_logits", None) is not None:

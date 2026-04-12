@@ -1,6 +1,7 @@
 """Tests for wfcllm.watermark.pipeline."""
 from __future__ import annotations
 
+import hashlib
 from dataclasses import asdict, replace
 import pytest
 from wfcllm.common.block_contract import build_block_contracts
@@ -294,6 +295,69 @@ class TestWatermarkPipelineRun:
             "switch_threshold": 0.0,
             "delta": 1.5,
             "token_altering_postprocess": False,
+        }
+
+    def test_pipeline_pins_token_channel_artifact_metadata_for_extraction(self, tmp_path, mock_result):
+        cfg = WatermarkPipelineConfig(
+            dataset="humaneval",
+            output_dir=str(tmp_path),
+            dataset_path="data/datasets",
+        )
+        model_path = tmp_path / "token-channel-model.pt"
+        metadata_path = tmp_path / "token-channel-metadata.json"
+        model_path.write_text("model-bytes", encoding="utf-8")
+        metadata_path.write_text('{"schema_version": "token-channel/v1"}', encoding="utf-8")
+        generator = self._build_generator(mock_result)
+        generator.config.token_channel = TokenChannelConfig(
+            enabled=True,
+            mode="dual-channel",
+            context_width=64,
+            switch_threshold=0.25,
+            ignore_repeated_ngrams=True,
+        )
+        generator._token_channel_artifact = SimpleNamespace(
+            metadata=SimpleNamespace(
+                schema_version="token-channel/v1",
+                tokenizer_name="demo-tokenizer",
+                tokenizer_vocab_size=8,
+                context_width=64,
+                feature_version="token-channel-features/v1",
+                training_config={"dropout": 0.1},
+            ),
+            model_path=model_path,
+            metadata_path=metadata_path,
+        )
+        pipeline = WatermarkPipeline(generator=generator, config=cfg)
+
+        with patch.object(pipeline, "_load_prompts", return_value=[
+            {"id": "HumanEval/0", "prompt": "def foo():\n"},
+        ]):
+            output_path = pipeline.run()
+
+        expected_model_sha256 = hashlib.sha256(model_path.read_bytes()).hexdigest()
+        expected_metadata_sha256 = hashlib.sha256(metadata_path.read_bytes()).hexdigest()
+        row = json.loads(Path(output_path).read_text(encoding="utf-8").splitlines()[0])
+        assert row["token_channel"] == {
+            "enabled": True,
+            "mode": "dual-channel",
+            "context_width": 64,
+            "switch_threshold": 0.25,
+            "delta": 2.0,
+            "ignore_repeated_ngrams": True,
+            "ignore_repeated_prefixes": False,
+            "token_altering_postprocess": False,
+            "artifact_metadata": {
+                "schema_version": "token-channel/v1",
+                "tokenizer_name": "demo-tokenizer",
+                "tokenizer_vocab_size": 8,
+                "context_width": 64,
+                "feature_version": "token-channel-features/v1",
+                "training_config": {"dropout": 0.1},
+            },
+            "artifact_fingerprints": {
+                "model_sha256": expected_model_sha256,
+                "metadata_sha256": expected_metadata_sha256,
+            },
         }
 
     def test_run_persists_diagnostic_summary_and_block_ledger(self, tmp_path):

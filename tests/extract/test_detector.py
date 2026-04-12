@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -312,6 +314,67 @@ class TestWatermarkDetector:
                     }
                 },
             )
+
+    def test_detect_rejects_mismatched_pinned_token_channel_artifact(
+        self,
+        tmp_path,
+        config,
+        mock_encoder,
+        mock_tokenizer,
+    ):
+        config.token_channel.enabled = True
+        config.token_channel.mode = "dual-channel"
+        config.token_channel.context_width = 64
+        config.token_channel.ignore_repeated_ngrams = True
+        detector = WatermarkDetector(config, mock_encoder, mock_tokenizer, device="cpu")
+
+        model_path = tmp_path / "model.pt"
+        metadata_path = tmp_path / "metadata.json"
+        model_path.write_text("current-model", encoding="utf-8")
+        metadata_path.write_text('{"schema_version": "token-channel/v1"}', encoding="utf-8")
+        artifact = SimpleNamespace(
+            model=object(),
+            metadata=SimpleNamespace(
+                schema_version="token-channel/v1",
+                tokenizer_name="demo-tokenizer",
+                tokenizer_vocab_size=8,
+                context_width=64,
+                feature_version="token-channel-features/v1",
+                training_config={"dropout": 0.1},
+            ),
+            model_path=Path(model_path),
+            metadata_path=Path(metadata_path),
+        )
+
+        with patch("wfcllm.extract.detector.load_token_channel_artifact", return_value=artifact):
+            with pytest.raises(ValueError, match="token-channel artifact/config mismatch"):
+                detector.detect(
+                    "x = 1\n",
+                    watermark_metadata={
+                        "token_channel": {
+                            "enabled": True,
+                            "mode": "dual-channel",
+                            "context_width": 64,
+                            "switch_threshold": 0.0,
+                            "delta": 2.0,
+                            "ignore_repeated_ngrams": False,
+                            "ignore_repeated_prefixes": False,
+                            "token_altering_postprocess": False,
+                            "artifact_metadata": {
+                                "schema_version": "token-channel/v1",
+                                "tokenizer_name": "demo-tokenizer",
+                                "tokenizer_vocab_size": 8,
+                                "context_width": 64,
+                                "feature_version": "token-channel-features/v1",
+                                "training_config": {"dropout": 0.1},
+                            },
+                            "artifact_fingerprints": {
+                                "model_sha256": "different-model",
+                                "metadata_sha256": "different-metadata",
+                            },
+                        }
+                    },
+                )
 
     def test_detect_allows_token_altering_postprocess_in_semantic_only_mode(
         self, config, mock_encoder, mock_tokenizer
