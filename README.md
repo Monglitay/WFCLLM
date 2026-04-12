@@ -273,8 +273,11 @@ python run.py --reset
 HF_HUB_OFFLINE=1 conda run -n WFCLLM python scripts/evaluate_dual_channel.py \
     --dataset humaneval \
     --config configs/base_config.json \
+    --num-candidates 10 \
     --output-dir data/eval/dual_channel
 ```
+
+`pass@1` / `pass@10` 会基于每个任务的多候选 `generated_code`，使用本地参考解的 AST 归一化匹配离线计算。
 
 ### Adaptive Gamma Watermarking
 

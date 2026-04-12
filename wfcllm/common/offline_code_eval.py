@@ -33,6 +33,28 @@ def write_jsonl_records(path: str | Path, records: list[dict[str, Any]]) -> None
     artifact_path.write_text(f"{payload}\n" if payload else "", encoding="utf-8")
 
 
+def annotate_correctness_from_references(
+    records: list[dict[str, Any]],
+    reference_records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Annotate candidate rows using an offline reference-code match."""
+    reference_map = {
+        str(record.get("id") or record.get("task_id") or ""): normalize_code(record.get("generated_code", ""))
+        for record in reference_records
+    }
+    annotated: list[dict[str, Any]] = []
+    for record in records:
+        task_id = str(record.get("task_id") or record.get("id") or "")
+        if not task_id:
+            raise ValueError("each record must provide task_id or id")
+        if task_id not in reference_map:
+            raise ValueError(f"missing reference solution for task_id={task_id}")
+        updated = dict(record)
+        updated["is_correct"] = normalize_code(record.get("generated_code", "")) == reference_map[task_id]
+        annotated.append(updated)
+    return annotated
+
+
 def compute_pass_at_k(records: list[dict[str, Any]], k: int) -> float:
     """Compute HumanEval/MBPP-style pass@k from per-sample correctness rows."""
     if k <= 0:
@@ -43,7 +65,9 @@ def compute_pass_at_k(records: list[dict[str, Any]], k: int) -> float:
         task_id = str(record.get("task_id") or record.get("id") or "")
         if not task_id:
             raise ValueError("each record must provide task_id or id")
-        grouped.setdefault(task_id, []).append(bool(record.get("passed", False)))
+        if "is_correct" not in record:
+            raise ValueError("each record must provide is_correct")
+        grouped.setdefault(task_id, []).append(bool(record["is_correct"]))
 
     if not grouped:
         return 0.0
@@ -181,6 +205,16 @@ def apply_perturbation(code: str, perturbation: str) -> str:
     if perturbation == "light-rewrite":
         return _light_rewrite(code)
     raise ValueError(f"unsupported perturbation: {perturbation}")
+
+
+def normalize_code(code: Any) -> str:
+    """Normalize code for offline reference-based correctness checks."""
+    source = str(code or "")
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return source.strip()
+    return ast.dump(tree, annotate_fields=True, include_attributes=False)
 
 
 def _estimate_pass_at_k(n: int, c: int, k: int) -> float:

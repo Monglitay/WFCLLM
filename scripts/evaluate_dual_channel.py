@@ -1,5 +1,9 @@
 #!/usr/bin/env python
-"""Offline evaluation harness for semantic, lexical, and dual-channel modes."""
+"""Offline evaluation harness for semantic, lexical, and dual-channel modes.
+
+Correctness stays offline: pass@k is derived from generated code grouped per task and
+matched against local reference solutions via normalized AST equality.
+"""
 
 from __future__ import annotations
 
@@ -18,6 +22,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from wfcllm.common.dataset_loader import load_reference_solutions
+from wfcllm.common.offline_code_eval import annotate_correctness_from_references
 from wfcllm.common.offline_code_eval import build_perturbation_corpus
 from wfcllm.common.offline_code_eval import compute_average_latency
 from wfcllm.common.offline_code_eval import compute_pass_at_k
@@ -28,6 +34,7 @@ from wfcllm.common.offline_code_eval import extract_scores
 from wfcllm.common.offline_code_eval import load_jsonl_records
 from wfcllm.common.offline_code_eval import mean_or_zero
 from wfcllm.common.offline_code_eval import relative_delta
+from wfcllm.common.offline_code_eval import write_jsonl_records
 
 MODES = ("semantic-only", "lexical-only", "dual-channel")
 PERTURBATIONS = ("formatting", "comments", "rename", "light-rewrite")
@@ -52,15 +59,25 @@ def run_evaluation(
     config_path: str,
     output_dir: str,
     *,
+    candidate_count: int = 10,
+    reference_records: list[dict[str, Any]] | None = None,
     command_runner: CommandRunner | None = None,
 ) -> dict[str, Any]:
     """Run the offline dual-channel evaluation harness and write metric artifacts."""
+    if candidate_count <= 0:
+        raise ValueError("candidate_count must be > 0")
+
     runner = command_runner or _run_command
     output_root = Path(output_dir)
     output_root.mkdir(parents=True, exist_ok=True)
 
     env = dict(os.environ)
     env.setdefault("HF_HUB_OFFLINE", "1")
+    resolved_reference_records = _resolve_reference_records(
+        dataset=dataset,
+        config_path=config_path,
+        reference_records=reference_records,
+    )
 
     negative_output = output_root / "negative" / f"{dataset}_negative.jsonl"
     _ensure_negative_corpus(dataset, config_path, negative_output, runner, env)
@@ -72,22 +89,47 @@ def run_evaluation(
         mode_dir = output_root / mode
         mode_dir.mkdir(parents=True, exist_ok=True)
 
-        watermarked_path, watermark_timing = _run_watermark_phase(
-            dataset=dataset,
-            config_path=config_path,
-            mode=mode,
-            output_dir=mode_dir / "watermarked",
-            runner=runner,
-            env=env,
+        watermark_paths: list[Path] = []
+        positive_detail_paths: list[Path] = []
+        elapsed_total = 0.0
+        watermarked_records: list[dict[str, Any]] = []
+        positive_detail_records: list[dict[str, Any]] = []
+
+        for candidate_index in range(candidate_count):
+            watermarked_path, watermark_timing = _run_watermark_phase(
+                dataset=dataset,
+                config_path=config_path,
+                mode=mode,
+                output_dir=mode_dir / f"watermarked_candidate_{candidate_index + 1}",
+                runner=runner,
+                env=env,
+            )
+            positive_details_path = _run_extract_phase(
+                config_path=config_path,
+                mode=mode,
+                input_file=watermarked_path,
+                output_dir=mode_dir / f"positive_extract_candidate_{candidate_index + 1}",
+                runner=runner,
+                env=env,
+            )
+            candidate_records = load_jsonl_records(watermarked_path)
+            for record in candidate_records:
+                record["candidate_index"] = candidate_index
+            watermarked_records.extend(candidate_records)
+            positive_detail_records.extend(load_jsonl_records(positive_details_path))
+            watermark_paths.append(watermarked_path)
+            positive_detail_paths.append(positive_details_path)
+            elapsed_total += watermark_timing.elapsed_seconds
+
+        watermarked_records = annotate_correctness_from_references(
+            watermarked_records,
+            resolved_reference_records,
         )
-        positive_details_path = _run_extract_phase(
-            config_path=config_path,
-            mode=mode,
-            input_file=watermarked_path,
-            output_dir=mode_dir / "positive_extract",
-            runner=runner,
-            env=env,
-        )
+        combined_watermarked_path = mode_dir / "watermarked_candidates.jsonl"
+        write_jsonl_records(combined_watermarked_path, watermarked_records)
+        combined_positive_details_path = mode_dir / "positive_details.jsonl"
+        write_jsonl_records(combined_positive_details_path, positive_detail_records)
+
         negative_details_path = _run_extract_phase(
             config_path=config_path,
             mode=mode,
@@ -97,15 +139,13 @@ def run_evaluation(
             env=env,
         )
 
-        watermarked_records = load_jsonl_records(watermarked_path)
-        positive_detail_records = load_jsonl_records(positive_details_path)
         negative_detail_records = load_jsonl_records(negative_details_path)
 
         sample_count = len(watermarked_records)
         pass_at_1 = compute_pass_at_k(watermarked_records, k=1)
         pass_at_10 = compute_pass_at_k(watermarked_records, k=10)
         retry_rate = compute_retry_rate(watermarked_records)
-        latency = compute_average_latency(watermark_timing.elapsed_seconds, sample_count)
+        latency = compute_average_latency(elapsed_total, sample_count)
         positive_scores = extract_scores(positive_detail_records, mode)
         negative_scores = extract_scores(negative_detail_records, mode)
         roc_auc = compute_roc_auc(positive_scores, negative_scores)
@@ -114,8 +154,10 @@ def run_evaluation(
         metric_payload: dict[str, Any] = {
             "mode": mode,
             "artifacts": {
-                "watermarked": str(watermarked_path),
-                "positive_details": str(positive_details_path),
+                "watermarked_candidates": str(combined_watermarked_path),
+                "candidate_watermarked_runs": [str(path) for path in watermark_paths],
+                "positive_details": str(combined_positive_details_path),
+                "candidate_positive_extract_runs": [str(path) for path in positive_detail_paths],
                 "negative_details": str(negative_details_path),
             },
             "generation": {
@@ -171,6 +213,7 @@ def run_evaluation(
         "dataset": dataset,
         "config_path": str(Path(config_path)),
         "target_fpr": TARGET_FPR,
+        "candidate_count": candidate_count,
         "modes": results_by_mode,
     }
     summary_path = output_root / "evaluation_summary.json"
@@ -190,14 +233,39 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default="data/eval/dual_channel",
         help="directory for evaluation artifacts",
     )
+    parser.add_argument(
+        "--num-candidates",
+        type=int,
+        default=10,
+        help="number of generated candidates per task for pass@k evaluation",
+    )
     return parser
 
 
 def main() -> None:
     """CLI entrypoint."""
     args = build_argument_parser().parse_args()
-    result = run_evaluation(dataset=args.dataset, config_path=args.config, output_dir=args.output_dir)
+    result = run_evaluation(
+        dataset=args.dataset,
+        config_path=args.config,
+        output_dir=args.output_dir,
+        candidate_count=args.num_candidates,
+    )
     print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+def _resolve_reference_records(
+    *,
+    dataset: str,
+    config_path: str,
+    reference_records: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    if reference_records is not None:
+        return reference_records
+    config = json.loads(Path(config_path).read_text(encoding="utf-8"))
+    watermark_config = config.get("watermark") or {}
+    dataset_path = str(watermark_config.get("dataset_path", "data/datasets"))
+    return load_reference_solutions(dataset, dataset_path)
 
 
 def _ensure_negative_corpus(

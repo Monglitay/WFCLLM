@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from wfcllm.common.offline_code_eval import annotate_correctness_from_references
 from wfcllm.common.offline_code_eval import compute_pass_at_k
 from wfcllm.common.offline_code_eval import compute_roc_auc
 from wfcllm.common.offline_code_eval import compute_tpr_at_fpr
@@ -60,17 +61,36 @@ def test_lexical_result_can_be_promoted_for_lexical_only_mode() -> None:
     assert result.rationale == "lexical-only evidence"
 
 
-def test_compute_pass_at_k_matches_humaneval_style_estimator() -> None:
+def test_compute_pass_at_k_uses_grouped_local_correctness_rows() -> None:
     records = [
-        {"task_id": "task-1", "passed": True},
-        {"task_id": "task-1", "passed": False},
-        {"task_id": "task-2", "passed": False},
-        {"task_id": "task-2", "passed": False},
+        {"task_id": "task-1", "is_correct": True},
+        {"task_id": "task-1", "is_correct": False},
+        {"task_id": "task-2", "is_correct": False},
+        {"task_id": "task-2", "is_correct": False},
     ]
 
     assert compute_pass_at_k(records, k=1) == pytest.approx(0.25)
     assert compute_pass_at_k(records, k=2) == pytest.approx(0.5)
     assert compute_pass_at_k(records, k=10) == pytest.approx(0.5)
+
+
+def test_annotate_correctness_from_references_uses_generated_code() -> None:
+    references = [
+        {"id": "task-1", "generated_code": "def solve(x):\n    return x + 1\n"},
+        {"id": "task-2", "generated_code": "def solve(x):\n    return x * 2\n"},
+    ]
+    candidates = [
+        {"task_id": "task-1", "generated_code": "def solve(x):\n    return x + 1\n"},
+        {"task_id": "task-1", "generated_code": "def solve(x):\n    value = x + 1\n    return value\n"},
+        {"task_id": "task-2", "generated_code": "def solve(x):\n    return x - 1\n"},
+        {"task_id": "task-2", "generated_code": "def solve(x):\n    return x * 2\n"},
+    ]
+
+    annotated = annotate_correctness_from_references(candidates, references)
+
+    assert [row["is_correct"] for row in annotated] == [True, False, False, True]
+    assert compute_pass_at_k(annotated[:2], k=1) == pytest.approx(0.5)
+    assert compute_pass_at_k(annotated, k=2) == pytest.approx(1.0)
 
 
 def test_distribution_metrics_cover_roc_auc_and_tpr_at_one_percent_fpr() -> None:
@@ -93,18 +113,24 @@ def test_evaluate_dual_channel_builds_all_three_modes(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
+    run_counts: dict[str, int] = {}
 
     def fake_runner(command: list[str], env: dict[str, str] | None = None) -> CommandRunResult:
         assert env is not None
         assert env["HF_HUB_OFFLINE"] == "1"
         phase = _arg_value(command, "--phase")
         mode = _optional_arg_value(command, "--token-channel-mode") or "semantic-only"
+        run_counts[mode] = run_counts.get(mode, 0)
 
         if phase == "watermark":
+            run_counts[mode] += 1
             output_dir = Path(_arg_value(command, "--output-dir"))
             output_dir.mkdir(parents=True, exist_ok=True)
             artifact_path = output_dir / f"humaneval_{mode}.jsonl"
-            artifact_path.write_text(_watermarked_rows_for_mode(mode), encoding="utf-8")
+            artifact_path.write_text(
+                _watermarked_rows_for_mode(mode, candidate_index=run_counts[mode]),
+                encoding="utf-8",
+            )
             return CommandRunResult(exit_code=0, elapsed_seconds=_latency_for_mode(mode))
 
         if phase == "generate-negative":
@@ -133,10 +159,16 @@ def test_evaluate_dual_channel_builds_all_three_modes(tmp_path: Path) -> None:
         dataset="humaneval",
         config_path=str(config_path),
         output_dir=str(tmp_path / "eval"),
+        candidate_count=2,
+        reference_records=_reference_rows(),
         command_runner=fake_runner,
     )
 
     assert set(result["modes"]) == {"semantic-only", "lexical-only", "dual-channel"}
+    assert result["modes"]["semantic-only"]["generation"]["pass_at_1"] == pytest.approx(0.25)
+    assert result["modes"]["semantic-only"]["generation"]["pass_at_10"] == pytest.approx(0.5)
+    assert result["modes"]["dual-channel"]["generation"]["pass_at_1"] == pytest.approx(0.5)
+    assert result["modes"]["dual-channel"]["generation"]["pass_at_10"] == pytest.approx(1.0)
     assert (tmp_path / "eval" / "evaluation_summary.json").exists()
     assert (tmp_path / "eval" / "semantic-only" / "metrics.json").exists()
     assert (tmp_path / "eval" / "lexical-only" / "metrics.json").exists()
@@ -154,112 +186,113 @@ def _optional_arg_value(command: list[str], flag: str) -> str | None:
     return _arg_value(command, flag)
 
 
-def _watermarked_rows_for_mode(mode: str) -> str:
+def _watermarked_rows_for_mode(mode: str, candidate_index: int) -> str:
     by_mode = {
-        "semantic-only": [
+        ("semantic-only", 1): [
             {
-                "id": "task-1-sample-0",
+                "id": "task-1-sample-1",
                 "task_id": "task-1",
                 "generated_code": "def solve(x):\n    return x + 1\n",
-                "passed": True,
                 "retry_summary": {"attempts_total": 2},
                 "total_blocks": 2,
             },
             {
-                "id": "task-1-sample-1",
+                "id": "task-2-sample-1",
+                "task_id": "task-2",
+                "generated_code": "def solve(x):\n    return x - 1\n",
+                "retry_summary": {"attempts_total": 1},
+                "total_blocks": 2,
+            },
+        ],
+        ("semantic-only", 2): [
+            {
+                "id": "task-1-sample-2",
                 "task_id": "task-1",
                 "generated_code": "def solve(x):\n    return x\n",
-                "passed": False,
                 "retry_summary": {"attempts_total": 0},
                 "total_blocks": 2,
             },
             {
-                "id": "task-2-sample-0",
+                "id": "task-2-sample-2",
                 "task_id": "task-2",
-                "generated_code": "def solve(x):\n    return x * 2\n",
-                "passed": False,
-                "retry_summary": {"attempts_total": 1},
-                "total_blocks": 2,
-            },
-            {
-                "id": "task-2-sample-1",
-                "task_id": "task-2",
-                "generated_code": "def solve(x):\n    return x - 1\n",
-                "passed": False,
+                "generated_code": "def solve(x):\n    return x - 2\n",
                 "retry_summary": {"attempts_total": 1},
                 "total_blocks": 2,
             },
         ],
-        "lexical-only": [
+        ("lexical-only", 1): [
             {
-                "id": "task-1-sample-0",
+                "id": "task-1-sample-1",
                 "task_id": "task-1",
                 "generated_code": "def solve(x):\n    return x + 1\n",
-                "passed": True,
                 "retry_summary": {"attempts_total": 3},
                 "total_blocks": 2,
             },
             {
-                "id": "task-1-sample-1",
-                "task_id": "task-1",
-                "generated_code": "def solve(x):\n    return x\n",
-                "passed": False,
-                "retry_summary": {"attempts_total": 1},
-                "total_blocks": 2,
-            },
-            {
-                "id": "task-2-sample-0",
-                "task_id": "task-2",
-                "generated_code": "def solve(x):\n    return x * 2\n",
-                "passed": False,
-                "retry_summary": {"attempts_total": 2},
-                "total_blocks": 2,
-            },
-            {
                 "id": "task-2-sample-1",
                 "task_id": "task-2",
                 "generated_code": "def solve(x):\n    return x - 1\n",
-                "passed": False,
                 "retry_summary": {"attempts_total": 2},
                 "total_blocks": 2,
             },
         ],
-        "dual-channel": [
+        ("lexical-only", 2): [
             {
-                "id": "task-1-sample-0",
+                "id": "task-1-sample-2",
                 "task_id": "task-1",
-                "generated_code": "def solve(x):\n    return x + 1\n",
-                "passed": True,
+                "generated_code": "def solve(x):\n    return x\n",
+                "retry_summary": {"attempts_total": 1},
+                "total_blocks": 2,
+            },
+            {
+                "id": "task-2-sample-2",
+                "task_id": "task-2",
+                "generated_code": "def solve(x):\n    return x * 2\n",
                 "retry_summary": {"attempts_total": 2},
                 "total_blocks": 2,
             },
+        ],
+        ("dual-channel", 1): [
             {
                 "id": "task-1-sample-1",
                 "task_id": "task-1",
-                "generated_code": "def solve(x):\n    return x\n",
-                "passed": False,
-                "retry_summary": {"attempts_total": 1},
-                "total_blocks": 2,
-            },
-            {
-                "id": "task-2-sample-0",
-                "task_id": "task-2",
-                "generated_code": "def solve(x):\n    return x * 2\n",
-                "passed": True,
-                "retry_summary": {"attempts_total": 1},
+                "generated_code": "def solve(x):\n    return x + 1\n",
+                "retry_summary": {"attempts_total": 2},
                 "total_blocks": 2,
             },
             {
                 "id": "task-2-sample-1",
                 "task_id": "task-2",
                 "generated_code": "def solve(x):\n    return x - 1\n",
-                "passed": False,
+                "retry_summary": {"attempts_total": 1},
+                "total_blocks": 2,
+            },
+        ],
+        ("dual-channel", 2): [
+            {
+                "id": "task-1-sample-2",
+                "task_id": "task-1",
+                "generated_code": "def solve(x):\n    return x\n",
+                "retry_summary": {"attempts_total": 1},
+                "total_blocks": 2,
+            },
+            {
+                "id": "task-2-sample-2",
+                "task_id": "task-2",
+                "generated_code": "def solve(x):\n    return x * 2\n",
                 "retry_summary": {"attempts_total": 1},
                 "total_blocks": 2,
             },
         ],
     }
-    return "\n".join(json.dumps(row) for row in by_mode[mode]) + "\n"
+    return "\n".join(json.dumps(row) for row in by_mode[(mode, candidate_index)]) + "\n"
+
+
+def _reference_rows() -> list[dict[str, str]]:
+    return [
+        {"id": "task-1", "generated_code": "def solve(x):\n    return x + 1\n"},
+        {"id": "task-2", "generated_code": "def solve(x):\n    return x * 2\n"},
+    ]
 
 
 def _negative_rows() -> str:
