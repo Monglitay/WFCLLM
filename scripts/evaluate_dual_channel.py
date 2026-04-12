@@ -15,8 +15,8 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 from typing import Any
+from typing import Callable
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -142,14 +142,25 @@ def run_evaluation(
         negative_detail_records = load_jsonl_records(negative_details_path)
 
         sample_count = len(watermarked_records)
+        evaluated_k = min(10, candidate_count)
         pass_at_1 = compute_pass_at_k(watermarked_records, k=1)
-        pass_at_10 = compute_pass_at_k(watermarked_records, k=10)
+        pass_at_k = compute_pass_at_k(watermarked_records, k=evaluated_k)
         retry_rate = compute_retry_rate(watermarked_records)
         latency = compute_average_latency(elapsed_total, sample_count)
         positive_scores = extract_scores(positive_detail_records, mode)
         negative_scores = extract_scores(negative_detail_records, mode)
         roc_auc = compute_roc_auc(positive_scores, negative_scores)
         tpr_at_1pct_fpr = compute_tpr_at_fpr(positive_scores, negative_scores, target_fpr=TARGET_FPR)
+
+        generation_metrics: dict[str, Any] = {
+            "pass_at_1": pass_at_1,
+            "pass_at_k": pass_at_k,
+            "pass_at_k_k": evaluated_k,
+            "retry_rate": retry_rate,
+            "latency_seconds": latency,
+        }
+        if evaluated_k == 10:
+            generation_metrics["pass_at_10"] = pass_at_k
 
         metric_payload: dict[str, Any] = {
             "mode": mode,
@@ -160,12 +171,7 @@ def run_evaluation(
                 "candidate_positive_extract_runs": [str(path) for path in positive_detail_paths],
                 "negative_details": str(negative_details_path),
             },
-            "generation": {
-                "pass_at_1": pass_at_1,
-                "pass_at_10": pass_at_10,
-                "retry_rate": retry_rate,
-                "latency_seconds": latency,
-            },
+            "generation": generation_metrics,
             "detection": {
                 "roc_auc": roc_auc,
                 "tpr_at_1pct_fpr": tpr_at_1pct_fpr,
@@ -177,7 +183,8 @@ def run_evaluation(
         if baseline_metrics is None:
             baseline_metrics = {
                 "pass_at_1": pass_at_1,
-                "pass_at_10": pass_at_10,
+                "pass_at_k": pass_at_k,
+                "pass_at_k_k": evaluated_k,
                 "retry_rate": retry_rate,
                 "latency_seconds": latency,
                 "roc_auc": roc_auc,
@@ -186,7 +193,8 @@ def run_evaluation(
 
         metric_payload["deltas_vs_semantic_only"] = {
             "pass_at_1": pass_at_1 - baseline_metrics["pass_at_1"],
-            "pass_at_10": pass_at_10 - baseline_metrics["pass_at_10"],
+            "pass_at_k": pass_at_k - baseline_metrics["pass_at_k"],
+            "pass_at_k_k": evaluated_k,
             "retry_delta": retry_rate - baseline_metrics["retry_rate"],
             "latency_delta": latency - baseline_metrics["latency_seconds"],
             "joint_uplift_roc_auc": roc_auc - baseline_metrics["roc_auc"],
@@ -396,13 +404,22 @@ def _build_threshold_report(
 
     thresholds = {
         "pass_at_1_within_2pp": baseline_metrics["pass_at_1"] - generation["pass_at_1"] <= 0.02,
-        "pass_at_10_within_3pp": baseline_metrics["pass_at_10"] - generation["pass_at_10"] <= 0.03,
         "retry_within_25pct": relative_delta(generation["retry_rate"], baseline_metrics["retry_rate"]) <= 0.25,
         "latency_within_35pct": relative_delta(
             generation["latency_seconds"],
             baseline_metrics["latency_seconds"],
         ) <= 0.35,
     }
+    if baseline_metrics["pass_at_k_k"] == 10:
+        thresholds["pass_at_10_within_3pp"] = (
+            baseline_metrics["pass_at_k"] - generation["pass_at_k"] <= 0.03
+        )
+    else:
+        thresholds["pass_at_10_within_3pp"] = None
+        thresholds["insufficient_candidates_for_pass_at_10"] = True
+        thresholds["pass_at_k_within_3pp"] = (
+            baseline_metrics["pass_at_k"] - generation["pass_at_k"] <= 0.03
+        )
 
     if mode == "lexical-only":
         thresholds["roc_auc_gte_0_65"] = detection["roc_auc"] >= 0.65

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from wfcllm.common.offline_code_eval import annotate_correctness_from_references
+from wfcllm.common.offline_code_eval import apply_perturbation
 from wfcllm.common.offline_code_eval import compute_pass_at_k
 from wfcllm.common.offline_code_eval import compute_roc_auc
 from wfcllm.common.offline_code_eval import compute_tpr_at_fpr
@@ -166,13 +167,33 @@ def test_evaluate_dual_channel_builds_all_three_modes(tmp_path: Path) -> None:
 
     assert set(result["modes"]) == {"semantic-only", "lexical-only", "dual-channel"}
     assert result["modes"]["semantic-only"]["generation"]["pass_at_1"] == pytest.approx(0.25)
-    assert result["modes"]["semantic-only"]["generation"]["pass_at_10"] == pytest.approx(0.5)
+    assert result["modes"]["semantic-only"]["generation"]["pass_at_k"] == pytest.approx(0.5)
+    assert result["modes"]["semantic-only"]["generation"]["pass_at_k_k"] == 2
+    assert "pass_at_10" not in result["modes"]["semantic-only"]["generation"]
     assert result["modes"]["dual-channel"]["generation"]["pass_at_1"] == pytest.approx(0.5)
-    assert result["modes"]["dual-channel"]["generation"]["pass_at_10"] == pytest.approx(1.0)
+    assert result["modes"]["dual-channel"]["generation"]["pass_at_k"] == pytest.approx(1.0)
+    assert result["modes"]["dual-channel"]["generation"]["pass_at_k_k"] == 2
     assert (tmp_path / "eval" / "evaluation_summary.json").exists()
     assert (tmp_path / "eval" / "semantic-only" / "metrics.json").exists()
     assert (tmp_path / "eval" / "lexical-only" / "metrics.json").exists()
     assert (tmp_path / "eval" / "dual-channel" / "metrics.json").exists()
+
+
+def test_safe_perturbations_preserve_runtime_behavior() -> None:
+    code = (
+        "def solve(x):\n"
+        "    value = x + 1\n"
+        "    return value * 2\n"
+    )
+
+    renamed = apply_perturbation(code, "rename")
+    rewritten = apply_perturbation(code, "light-rewrite")
+
+    assert _run_solve(code, 3) == 8
+    assert _run_solve(renamed, 3) == 8
+    assert _run_solve(rewritten, 3) == 8
+    assert "value_renamed" in renamed
+    assert "__wfcllm_value" in rewritten
 
 
 def _arg_value(command: list[str], flag: str) -> str:
@@ -342,3 +363,10 @@ def _latency_for_mode(mode: str) -> float:
         "lexical-only": 1.3,
         "dual-channel": 1.2,
     }[mode]
+
+
+def _run_solve(source: str, value: int) -> int:
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+    solve = namespace["solve"]
+    return solve(value)

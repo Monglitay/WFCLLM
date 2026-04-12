@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 import json
 import math
-import re
 from pathlib import Path
 from typing import Any
 
@@ -201,9 +200,9 @@ def apply_perturbation(code: str, perturbation: str) -> str:
     if perturbation == "comments":
         return _inject_comment(code)
     if perturbation == "rename":
-        return _rename_local_variable(code)
+        return _rename_local_variable_ast(code)
     if perturbation == "light-rewrite":
-        return _light_rewrite(code)
+        return _light_rewrite_ast(code)
     raise ValueError(f"unsupported perturbation: {perturbation}")
 
 
@@ -245,22 +244,117 @@ def _inject_comment(code: str) -> str:
     return f"{comment}\n{code}"
 
 
-def _rename_local_variable(code: str) -> str:
-    match = re.search(r"^(?P<indent>\s*)(?P<name>[A-Za-z_]\w*)\s*=", code, flags=re.MULTILINE)
-    if match is None:
+def _rename_local_variable_ast(code: str) -> str:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
         return code
-    variable_name = match.group("name")
-    if variable_name in {"self", "cls"}:
+
+    function_node = next(
+        (node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))),
+        None,
+    )
+    if function_node is None:
         return code
+
+    variable_name = _find_first_local_name(function_node)
+    if variable_name is None or variable_name in {"self", "cls"}:
+        return code
+
     renamed = f"{variable_name}_renamed"
-    return re.sub(rf"\b{re.escape(variable_name)}\b", renamed, code)
+
+    class LocalRenamer(ast.NodeTransformer):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+            if node is function_node:
+                return self.generic_visit(node)
+            return node
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AST:
+            if node is function_node:
+                return self.generic_visit(node)
+            return node
+
+        def visit_Name(self, node: ast.Name) -> ast.AST:
+            if node.id == variable_name:
+                return ast.copy_location(ast.Name(id=renamed, ctx=node.ctx), node)
+            return node
+
+    updated = LocalRenamer().visit(tree)
+    ast.fix_missing_locations(updated)
+    return ast.unparse(updated).rstrip() + "\n"
 
 
-def _light_rewrite(code: str) -> str:
-    match = re.search(r"^(?P<indent>\s*)return\s+(?P<expr>.+)$", code, flags=re.MULTILINE)
-    if match is None:
+def _light_rewrite_ast(code: str) -> str:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
         return code
-    indent = match.group("indent")
-    expr = match.group("expr")
-    replacement = f"{indent}__wfcllm_value = {expr}\n{indent}return __wfcllm_value"
-    return code[: match.start()] + replacement + code[match.end() :]
+
+    class ReturnRewriter(ast.NodeTransformer):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+            return self._rewrite_function(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AST:
+            return self._rewrite_function(node)
+
+        def _rewrite_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> ast.AST:
+            temp_name = _unique_temp_name(node)
+            node.body = _rewrite_return_statements(node.body, temp_name)
+            return node
+
+    updated = ReturnRewriter().visit(tree)
+    ast.fix_missing_locations(updated)
+    return ast.unparse(updated).rstrip() + "\n"
+
+
+def _find_first_local_name(function_node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
+    for node in ast.walk(function_node):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    return target.id
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            return node.target.id
+    return None
+
+
+def _unique_temp_name(function_node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
+    existing_names = {node.id for node in ast.walk(function_node) if isinstance(node, ast.Name)}
+    candidate = "__wfcllm_value"
+    suffix = 0
+    while candidate in existing_names:
+        suffix += 1
+        candidate = f"__wfcllm_value_{suffix}"
+    return candidate
+
+
+def _rewrite_return_statements(body: list[ast.stmt], temp_name: str) -> list[ast.stmt]:
+    rewritten: list[ast.stmt] = []
+    for statement in body:
+        if isinstance(statement, ast.Return) and statement.value is not None:
+            assign_stmt = ast.Assign(
+                targets=[ast.Name(id=temp_name, ctx=ast.Store())],
+                value=statement.value,
+            )
+            assign_stmt = ast.copy_location(assign_stmt, statement)
+            return_stmt = ast.Return(value=ast.Name(id=temp_name, ctx=ast.Load()))
+            return_stmt = ast.copy_location(return_stmt, statement)
+            rewritten.extend([assign_stmt, return_stmt])
+            continue
+        if isinstance(statement, ast.If):
+            statement.body = _rewrite_return_statements(statement.body, temp_name)
+            statement.orelse = _rewrite_return_statements(statement.orelse, temp_name)
+        elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
+            statement.body = _rewrite_return_statements(statement.body, temp_name)
+            statement.orelse = _rewrite_return_statements(statement.orelse, temp_name)
+        elif isinstance(statement, (ast.With, ast.AsyncWith, ast.Try)):
+            statement.body = _rewrite_return_statements(statement.body, temp_name)
+            if hasattr(statement, "orelse"):
+                statement.orelse = _rewrite_return_statements(statement.orelse, temp_name)
+            if hasattr(statement, "finalbody"):
+                statement.finalbody = _rewrite_return_statements(statement.finalbody, temp_name)
+            if isinstance(statement, ast.Try):
+                for handler in statement.handlers:
+                    handler.body = _rewrite_return_statements(handler.body, temp_name)
+        rewritten.append(statement)
+    return rewritten
