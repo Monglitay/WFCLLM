@@ -267,6 +267,15 @@ python run.py --phase encoder --force
 python run.py --reset
 ```
 
+### 评估双通道阈值
+
+```bash
+HF_HUB_OFFLINE=1 conda run -n WFCLLM python scripts/evaluate_dual_channel.py \
+    --dataset humaneval \
+    --config configs/base_config.json \
+    --output-dir data/eval/dual_channel
+```
+
 ### Adaptive Gamma Watermarking
 
 ```bash
