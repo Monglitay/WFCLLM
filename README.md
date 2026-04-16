@@ -312,43 +312,21 @@ python run.py --phase extract \
 ### Token-Channel Commands
 
 ```bash
-# 1. 当前入口仅用于加载离线训练缓存 / teacher cache 并校验参数
-#    （训练循环与产物导出能力尚未在 CLI 中串成完整 workflow）
-HF_HUB_OFFLINE=1 conda run -n WFCLLM python -m wfcllm.watermark.token_channel.train \
-    --corpus-cache data/token_channel/train_corpus.json \
-    --teacher-cache data/token_channel/teacher_cache.json
-
-# 2. 双通道生成：开启 token 级词法通道并指定模型产物
-HF_HUB_OFFLINE=1 conda run -n WFCLLM python run.py --phase watermark \
+# 官方训练入口：重建训练 cache，训练 token-channel 模型，并校验产物兼容性
+HF_HUB_OFFLINE=1 conda run -n WFCLLM python run.py --phase token-channel-train \
     --config configs/base_config.json \
-    --lm-model-path data/models/deepseek-coder-7b-base \
-    --secret-key mysecret \
     --dataset humaneval \
-    --token-channel-enabled true \
-    --token-channel-mode dual-channel \
-    --token-channel-model-path data/models/token-channel \
-    --token-channel-delta 2.0
+    --dataset-path data/datasets \
+    --lm-model-path data/models/deepseek-coder-7b-base \
+    --token-channel-cache-path data/token_channel/train_corpus.json \
+    --token-channel-model-path data/models/token-channel
 
-# 3. 仅词法通道检测：关闭语义联合，只输出 lexical 判决
-HF_HUB_OFFLINE=1 conda run -n WFCLLM python run.py --phase extract \
-    --config configs/base_config.json \
-    --secret-key mysecret \
-    --input-file data/watermarked/humaneval_20260309_120000.jsonl \
-    --token-channel-enabled true \
-    --token-channel-mode lexical-only \
-    --token-channel-model-path data/models/token-channel \
-    --token-channel-ignore-repeated-prefixes true
-
-# 4. 双通道联合检测：details / CLI 摘要使用扁平字段输出，
-#    例如 semantic_prediction、lexical_z_score、joint_score、joint_prediction
-HF_HUB_OFFLINE=1 conda run -n WFCLLM python run.py --phase extract \
-    --config configs/base_config.json \
-    --secret-key mysecret \
-    --input-file data/watermarked/humaneval_20260309_120000.jsonl \
-    --token-channel-enabled true \
-    --token-channel-mode dual-channel \
-    --token-channel-model-path data/models/token-channel \
-    --token-channel-joint-threshold 4.0
+# 训练完成后默认写出：
+# - data/token_channel/train_corpus.json
+# - data/models/token-channel/model.pt
+# - data/models/token-channel/metadata.json
+# - data/models/token-channel/training_evidence.json
+# 并在 workflow 结束前校验 metadata / tokenizer / context_width 等兼容性
 ```
 
 ---

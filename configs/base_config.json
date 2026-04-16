@@ -113,5 +113,21 @@
     "top_k": 50,
     "device": "cuda",
     "limit": null
+  },
+  "token_channel_train": {
+    "dataset": "humaneval",
+    "dataset_path": "data/datasets",
+    "lm_model_path": "data/models/deepseek-coder-7b-base",
+    "model_path": "data/models/token-channel",
+    "cache_path": "data/token_channel/train_corpus.json",
+    "context_width": 128,
+    "hidden_size": 64,
+    "batch_size": 128,
+    "epochs": 3,
+    "lr": 0.001,
+    "entropy_threshold": 1.0,
+    "diversity_threshold": 2,
+    "split_ratio": 0.9,
+    "seed": 0
   }
 }

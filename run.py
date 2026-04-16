@@ -53,7 +53,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 PHASES = ["encoder", "watermark", "extract"]
-OPTIONAL_PHASES = ["generate-negative"]
+OPTIONAL_PHASES = ["generate-negative", "token-channel-train"]
 ALL_PHASES = PHASES + OPTIONAL_PHASES
 DEFAULT_STATE_FILE = Path("data/run_state.json")
 DEFAULT_CONFIG_FILE = Path("configs/base_config.json")
@@ -446,10 +446,63 @@ def build_parser() -> argparse.ArgumentParser:
         help="token 通道模型产物路径",
     )
     parser.add_argument(
+        "--token-channel-cache-path",
+        default=None,
+        help="token 通道训练缓存路径",
+    )
+    parser.add_argument(
         "--token-channel-context-width",
         type=int,
         default=None,
         help="token 通道上下文宽度",
+    )
+    parser.add_argument(
+        "--token-channel-hidden-size",
+        type=int,
+        default=None,
+        help="token 通道训练隐藏层维度",
+    )
+    parser.add_argument(
+        "--token-channel-batch-size",
+        type=int,
+        default=None,
+        help="token 通道训练批大小",
+    )
+    parser.add_argument(
+        "--token-channel-epochs",
+        type=int,
+        default=None,
+        help="token 通道训练轮数",
+    )
+    parser.add_argument(
+        "--token-channel-lr",
+        type=float,
+        default=None,
+        help="token 通道训练学习率",
+    )
+    parser.add_argument(
+        "--token-channel-entropy-threshold",
+        type=float,
+        default=None,
+        help="token 通道训练样本熵阈值",
+    )
+    parser.add_argument(
+        "--token-channel-diversity-threshold",
+        type=int,
+        default=None,
+        help="token 通道训练样本多样性阈值",
+    )
+    parser.add_argument(
+        "--token-channel-split-ratio",
+        type=float,
+        default=None,
+        help="token 通道训练集划分比例",
+    )
+    parser.add_argument(
+        "--token-channel-seed",
+        type=int,
+        default=None,
+        help="token 通道训练随机种子",
     )
     parser.add_argument(
         "--token-channel-switch-threshold",
@@ -705,6 +758,7 @@ def run_phase(phase: str, args: argparse.Namespace, state: RunState) -> int:
         "watermark": run_watermark,
         "extract": run_extract,
         "generate-negative": run_generate_negative,
+        "token-channel-train": run_token_channel_train,
     }
     return runners[phase](args, state)
 
@@ -1228,6 +1282,147 @@ def run_generate_negative(args: argparse.Namespace, state: RunState) -> int:
 
     state.mark_done("generate-negative", output_file=out_path, dataset=dataset)
     print(f"[完成] 负样本语料已保存至 {out_path}")
+    return 0
+
+
+def resolve_token_channel_train_config(args: argparse.Namespace) -> dict[str, object]:
+    """Merge token-channel-train config with CLI overrides."""
+
+    default_cfg = load_config(DEFAULT_CONFIG_FILE)
+    default_section = default_cfg.get("token_channel_train", {})
+    if default_section is None:
+        train_cfg: dict[str, object] = {}
+    elif isinstance(default_section, dict):
+        train_cfg = dict(default_section)
+    else:
+        raise ValueError("token_channel_train must be a JSON object")
+
+    cfg = get_config(args)
+    raw_section = cfg.get("token_channel_train", {})
+    if raw_section is None:
+        configured_train_cfg: dict[str, object] = {}
+    elif isinstance(raw_section, dict):
+        configured_train_cfg = dict(raw_section)
+    else:
+        raise ValueError("token_channel_train must be a JSON object")
+    train_cfg.update(configured_train_cfg)
+
+    overrides = {
+        "dataset": getattr(args, "dataset", None),
+        "dataset_path": getattr(args, "dataset_path", None),
+        "lm_model_path": getattr(args, "lm_model_path", None),
+        "model_path": getattr(args, "token_channel_model_path", None),
+        "cache_path": getattr(args, "token_channel_cache_path", None),
+        "context_width": getattr(args, "token_channel_context_width", None),
+        "hidden_size": getattr(args, "token_channel_hidden_size", None),
+        "batch_size": getattr(args, "token_channel_batch_size", None),
+        "epochs": getattr(args, "token_channel_epochs", None),
+        "lr": getattr(args, "token_channel_lr", None),
+        "entropy_threshold": getattr(args, "token_channel_entropy_threshold", None),
+        "diversity_threshold": getattr(args, "token_channel_diversity_threshold", None),
+        "split_ratio": getattr(args, "token_channel_split_ratio", None),
+        "seed": getattr(args, "token_channel_seed", None),
+    }
+    for key, value in overrides.items():
+        if value is not None:
+            train_cfg[key] = value
+
+    dataset = train_cfg.get("dataset")
+    if dataset is not None and dataset not in {"humaneval", "mbpp"}:
+        raise ValueError("dataset must be one of: humaneval, mbpp")
+
+    positive_int_fields = (
+        "context_width",
+        "hidden_size",
+        "batch_size",
+        "epochs",
+    )
+    for field_name in positive_int_fields:
+        field_value = train_cfg.get(field_name)
+        if field_value is not None and int(field_value) <= 0:
+            raise ValueError(f"{field_name} must be > 0")
+
+    lr = train_cfg.get("lr")
+    if lr is not None and float(lr) <= 0:
+        raise ValueError("lr must be > 0")
+
+    split_ratio = train_cfg.get("split_ratio")
+    if split_ratio is not None and not 0 < float(split_ratio) < 1:
+        raise ValueError("split_ratio must be within (0, 1)")
+
+    diversity_threshold = train_cfg.get("diversity_threshold")
+    if diversity_threshold is not None and int(diversity_threshold) < 1:
+        raise ValueError("diversity_threshold must be >= 1")
+
+    entropy_threshold = train_cfg.get("entropy_threshold")
+    if entropy_threshold is not None and float(entropy_threshold) < 0:
+        raise ValueError("entropy_threshold must be >= 0")
+
+    return train_cfg
+
+
+def validate_token_channel_train_config(train_cfg: dict[str, object]) -> str | None:
+    """Validate required user-facing inputs before workflow construction."""
+
+    if not train_cfg.get("dataset"):
+        return "[错误] token-channel-train 需要提供 dataset（可通过配置文件或 --dataset 指定）"
+    if not train_cfg.get("lm_model_path"):
+        return "[错误] token-channel-train 需要提供 lm_model_path（可通过配置文件或 --lm-model-path 指定）"
+    return None
+
+
+def run_token_channel_train(args: argparse.Namespace, state: RunState) -> int:
+    """Run the token-channel training workflow."""
+
+    from wfcllm.watermark.token_channel.train_workflow import (
+        TokenChannelTrainWorkflowConfig,
+    )
+    from wfcllm.watermark.token_channel.train_workflow import (
+        format_token_channel_train_workflow_summary,
+    )
+    from wfcllm.watermark.token_channel.train_workflow import (
+        run_token_channel_train_workflow,
+    )
+
+    print("=== 可选阶段：Token Channel 训练 ===")
+
+    try:
+        train_cfg = resolve_token_channel_train_config(args)
+    except ValueError as exc:
+        print(f"[错误] token-channel-train 配置无效：{exc}", file=sys.stderr)
+        return 1
+
+    validation_error = validate_token_channel_train_config(train_cfg)
+    if validation_error is not None:
+        print(validation_error, file=sys.stderr)
+        return 1
+
+    try:
+        workflow_config = TokenChannelTrainWorkflowConfig(**train_cfg)
+    except (TypeError, ValueError) as exc:
+        print(f"[错误] token-channel-train 配置无效：{exc}", file=sys.stderr)
+        return 1
+
+    if workflow_config.cache_path.exists():
+        print(f"[提示] overwrite existing cache: {workflow_config.cache_path}")
+    if workflow_config.model_path.exists():
+        print(f"[提示] overwrite existing model artifacts: {workflow_config.model_path}")
+
+    try:
+        summary = run_token_channel_train_workflow(workflow_config)
+    except Exception as exc:
+        print(f"[错误] token-channel-train 运行失败：{exc}", file=sys.stderr)
+        return 1
+
+    for line in format_token_channel_train_workflow_summary(summary):
+        print(line)
+
+    state.mark_done(
+        "token-channel-train",
+        dataset=summary.dataset,
+        cache_path=str(summary.cache_path),
+        artifact_dir=str(summary.artifact_dir),
+    )
     return 0
 
 
