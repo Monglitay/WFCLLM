@@ -171,7 +171,11 @@ def format_token_channel_train_workflow_summary(
     return lines
 
 
-def normalize_reference_solution_rows(rows: list[dict[str, object]]) -> list[dict[str, str]]:
+def normalize_reference_solution_rows(
+    rows: list[dict[str, object]],
+    *,
+    dataset: SupportedTokenChannelDataset,
+) -> list[dict[str, str]]:
     """Normalize dataset-loader rows into token-channel training samples."""
 
     samples: list[dict[str, str]] = []
@@ -181,6 +185,12 @@ def normalize_reference_solution_rows(rows: list[dict[str, object]]) -> list[dic
         generated_code = row.get("generated_code")
         if not isinstance(generated_code, str) or not generated_code:
             raise ValueError("generated_code must be a non-empty string")
+        if dataset == "humaneval":
+            prompt = row.get("prompt")
+            if not isinstance(prompt, str) or not prompt:
+                raise ValueError("prompt must be a non-empty string for humaneval rows")
+            samples.append({"source_code": f"{prompt}{generated_code}"})
+            continue
         samples.append({"source_code": generated_code})
     return samples
 
@@ -212,7 +222,7 @@ def run_token_channel_train_workflow(
     reference_rows = load_reference_solutions(config.dataset, str(config.dataset_path))
     if not reference_rows:
         raise ValueError("reference solution rows must not be empty")
-    samples = normalize_reference_solution_rows(reference_rows)
+    samples = normalize_reference_solution_rows(reference_rows, dataset=config.dataset)
     tokenizer = AutoTokenizer.from_pretrained(config.lm_model_path)
     teacher_model = _load_teacher_model(config.lm_model_path)
 

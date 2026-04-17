@@ -55,8 +55,8 @@ def _setup_minimal_workflow_mocks(
         train_workflow,
         "load_reference_solutions",
         lambda dataset, dataset_path: [
-            {"generated_code": "print('a')"},
-            {"generated_code": "print('b')"},
+            {"prompt": "def a():\n", "generated_code": "    return 'a'\n"},
+            {"prompt": "def b():\n", "generated_code": "    return 'b'\n"},
         ],
     )
     monkeypatch.setattr(
@@ -275,24 +275,39 @@ def test_normalize_reference_solution_rows_rejects_invalid_generated_code(
     row: dict[str, object],
 ) -> None:
     with pytest.raises(ValueError, match="generated_code"):
-        normalize_reference_solution_rows([row])
+        normalize_reference_solution_rows([row], dataset="humaneval")
 
 
-def test_normalize_reference_solution_rows_returns_source_code_samples() -> None:
+def test_normalize_reference_solution_rows_combines_humaneval_prompt_and_body() -> None:
     assert normalize_reference_solution_rows(
         [
-            {"generated_code": "print('a')"},
-            {"generated_code": "print('b')"},
-        ]
-    ) == [
-        {"source_code": "print('a')"},
-        {"source_code": "print('b')"},
-    ]
+            {
+                "prompt": "def foo(x):\n",
+                "generated_code": "    return x + 1\n",
+            }
+        ],
+        dataset="humaneval",
+    ) == [{"source_code": "def foo(x):\n    return x + 1\n"}]
+
+
+def test_normalize_reference_solution_rows_preserves_mbpp_generated_code() -> None:
+    assert normalize_reference_solution_rows(
+        [{"generated_code": "def foo(x):\n    return x + 1\n"}],
+        dataset="mbpp",
+    ) == [{"source_code": "def foo(x):\n    return x + 1\n"}]
 
 
 def test_normalize_reference_solution_rows_rejects_non_mapping_rows() -> None:
     with pytest.raises(ValueError, match="dataset row must be a mapping"):
-        normalize_reference_solution_rows(["not-a-row"])  # type: ignore[list-item]
+        normalize_reference_solution_rows(["not-a-row"], dataset="humaneval")  # type: ignore[list-item]
+
+
+def test_normalize_reference_solution_rows_requires_humaneval_prompt() -> None:
+    with pytest.raises(ValueError, match="prompt"):
+        normalize_reference_solution_rows(
+            [{"generated_code": "    return 1\n"}],
+            dataset="humaneval",
+        )
 
 
 def test_split_training_rows_rejects_single_row() -> None:
@@ -342,9 +357,9 @@ def test_run_token_channel_train_workflow_orchestrates_training_and_export(
 ) -> None:
     config = _build_config(tmp_path, batch_size=2, epochs=2)
     dataset_rows = [
-        {"generated_code": "print('a')"},
-        {"generated_code": "print('b')"},
-        {"generated_code": "print('c')"},
+        {"prompt": "def a():\n", "generated_code": "    return 'a'\n"},
+        {"prompt": "def b():\n", "generated_code": "    return 'b'\n"},
+        {"prompt": "def c():\n", "generated_code": "    return 'c'\n"},
     ]
     training_rows = [
         {"switch_target": 1, "prefix_tokens": [1], "next_token": 2, "teacher_logits": [0.1, 0.9]},
@@ -542,8 +557,8 @@ def test_run_token_channel_train_workflow_rejects_empty_training_corpus(
         train_workflow,
         "load_reference_solutions",
         lambda dataset, dataset_path: [
-            {"generated_code": "print('a')"},
-            {"generated_code": "print('b')"},
+            {"prompt": "def a():\n", "generated_code": "    return 'a'\n"},
+            {"prompt": "def b():\n", "generated_code": "    return 'b'\n"},
         ],
     )
     monkeypatch.setattr(
@@ -581,8 +596,8 @@ def test_run_token_channel_train_workflow_batches_by_configured_batch_size(
         train_workflow,
         "load_reference_solutions",
         lambda dataset, dataset_path: [
-            {"generated_code": "print('a')"},
-            {"generated_code": "print('b')"},
+            {"prompt": "def a():\n", "generated_code": "    return 'a'\n"},
+            {"prompt": "def b():\n", "generated_code": "    return 'b'\n"},
         ],
     )
     monkeypatch.setattr(
@@ -776,8 +791,8 @@ def test_run_token_channel_train_workflow_propagates_compatibility_failure(
         train_workflow,
         "load_reference_solutions",
         lambda dataset, dataset_path: [
-            {"generated_code": "print('a')"},
-            {"generated_code": "print('b')"},
+            {"prompt": "def a():\n", "generated_code": "    return 'a'\n"},
+            {"prompt": "def b():\n", "generated_code": "    return 'b'\n"},
         ],
     )
     monkeypatch.setattr(train_workflow, "AutoTokenizer", SimpleNamespace(from_pretrained=lambda path: SimpleNamespace(name_or_path="offline-tokenizer", vocab_size=17)))
