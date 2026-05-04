@@ -892,3 +892,93 @@ def _write_fake_artifact_outputs(artifact_dir: Path) -> dict[str, Path]:
         "metadata_path": metadata_path,
         "evidence_path": evidence_path,
     }
+
+
+@pytest.mark.slow
+def test_workflow_with_batch_inference_integration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Integration test: full workflow with batch inference enabled."""
+    config = _build_config(
+        tmp_path,
+        batch_size=4,
+        epochs=1,
+        teacher_batch_size=8,
+    )
+    dataset_rows = [
+        {"prompt": "def a():\n", "generated_code": "    return 'a'\n"},
+        {"prompt": "def b():\n", "generated_code": "    return 'b'\n"},
+        {"prompt": "def c():\n", "generated_code": "    return 'c'\n"},
+    ]
+    training_rows = [
+        {"switch_target": 1, "prefix_tokens": [1], "next_token": 2, "teacher_logits": [0.1, 0.9]},
+        {"switch_target": 0, "prefix_tokens": [2], "next_token": 1, "teacher_logits": [0.8, 0.2]},
+        {"switch_target": 1, "prefix_tokens": [3], "next_token": 0, "teacher_logits": [0.3, 0.7]},
+        {"switch_target": 0, "prefix_tokens": [4], "next_token": 3, "teacher_logits": [0.4, 0.6]},
+    ]
+    epoch = TokenChannelEpochMetrics(epoch=1, train_loss=0.8, validation_loss=0.6, switch_loss=0.2)
+
+    monkeypatch.setattr(train_workflow, "load_reference_solutions", lambda dataset, dataset_path: dataset_rows)
+    monkeypatch.setattr(
+        train_workflow,
+        "AutoTokenizer",
+        SimpleNamespace(from_pretrained=lambda path: SimpleNamespace(name_or_path="offline-tokenizer", vocab_size=17)),
+    )
+    monkeypatch.setattr(train_workflow, "_load_teacher_model", lambda lm_model_path: MagicMock())
+    monkeypatch.setattr(train_workflow, "build_training_rows", lambda **kwargs: training_rows)
+    monkeypatch.setattr(train_workflow, "save_training_cache", lambda path, rows: None)
+    monkeypatch.setattr(train_workflow, "load_training_cache", lambda path: training_rows)
+
+    batch_calls: list[list[dict[str, object]]] = []
+
+    def fake_build_batch(rows: list[dict[str, object]], *, context_width: int) -> dict[str, object]:
+        batch_calls.append(list(rows))
+        return {"rows": list(rows)}
+
+    monkeypatch.setattr(train_workflow, "build_token_channel_batch", fake_build_batch)
+    monkeypatch.setattr(train_workflow, "TokenChannelModel", lambda **kwargs: MagicMock())
+    monkeypatch.setattr(train_workflow.torch.optim, "AdamW", lambda params, lr: MagicMock())
+    monkeypatch.setattr(train_workflow, "train_one_epoch", lambda **kwargs: epoch)
+    monkeypatch.setattr(
+        train_workflow,
+        "build_training_evidence",
+        lambda **kwargs: SimpleNamespace(
+            switch_target_positive_count=2,
+            switch_target_negative_count=2,
+            train_loss=epoch.train_loss,
+            validation_loss=epoch.validation_loss,
+            epochs=(epoch,),
+        ),
+    )
+    metadata = TokenChannelArtifactMetadata.from_mapping(
+        {
+            "schema_version": "token-channel/v1",
+            "tokenizer_name": "offline-tokenizer",
+            "tokenizer_vocab_size": 17,
+            "context_width": config.context_width,
+            "feature_version": "token-channel-features/v1",
+            "training_config": {},
+        }
+    )
+    monkeypatch.setattr(
+        train_workflow,
+        "save_token_channel_training_artifacts",
+        lambda **kwargs: _write_fake_artifact_outputs(config.model_path),
+    )
+    monkeypatch.setattr(train_workflow, "load_token_channel_artifact", lambda path: SimpleNamespace(metadata=metadata))
+    monkeypatch.setattr(train_workflow, "require_token_channel_compatibility", lambda metadata, **kwargs: None)
+
+    summary = run_token_channel_train_workflow(config)
+
+    assert summary.training_rows == 4
+    assert summary.train_rows > 0
+    assert summary.validation_rows > 0
+    assert summary.compatibility_ok
+    assert len(summary.epochs) == 1
+    assert summary.epochs[0].epoch == 1
+    assert summary.switch_target_positive_count == 2
+    assert summary.switch_target_negative_count == 2
+    assert (config.model_path / "model.pt").exists()
+    assert (config.model_path / "metadata.json").exists()
+    assert (config.model_path / "training_evidence.json").exists()
