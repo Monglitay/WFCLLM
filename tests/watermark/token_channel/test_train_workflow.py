@@ -125,6 +125,30 @@ def test_workflow_config_accepts_valid_values(tmp_path: Path) -> None:
     assert config.lr == pytest.approx(0.001)
 
 
+def test_workflow_config_accepts_teacher_batch_size_parameter(tmp_path: Path) -> None:
+    config = _build_config(tmp_path, teacher_batch_size=32)
+
+    assert config.teacher_batch_size == 32
+
+
+def test_workflow_config_teacher_batch_size_has_default_value(tmp_path: Path) -> None:
+    config = _build_config(tmp_path)
+
+    assert config.teacher_batch_size == 16
+
+
+@pytest.mark.parametrize(
+    "field_value",
+    [0, -1, -100],
+)
+def test_workflow_config_rejects_non_positive_teacher_batch_size(
+    tmp_path: Path,
+    field_value: int,
+) -> None:
+    with pytest.raises(ValueError, match="teacher_batch_size must be > 0"):
+        _build_config(tmp_path, teacher_batch_size=field_value)
+
+
 @pytest.mark.parametrize(
     ("field_name", "field_value", "message"),
     [

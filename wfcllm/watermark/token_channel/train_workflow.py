@@ -48,6 +48,7 @@ class TokenChannelTrainWorkflowConfig:
     diversity_threshold: int
     split_ratio: float
     seed: int
+    teacher_batch_size: int = 16
 
     def __post_init__(self) -> None:
         valid_datasets = {"humaneval", "mbpp"}
@@ -64,6 +65,7 @@ class TokenChannelTrainWorkflowConfig:
         epochs = _coerce_int(self.epochs, "epochs")
         diversity_threshold = _coerce_int(self.diversity_threshold, "diversity_threshold")
         seed = _coerce_int(self.seed, "seed")
+        teacher_batch_size = _coerce_int(self.teacher_batch_size, "teacher_batch_size")
         lr = _coerce_finite_float(self.lr, "lr")
         entropy_threshold = _coerce_finite_float(self.entropy_threshold, "entropy_threshold")
         split_ratio = _coerce_finite_float(self.split_ratio, "split_ratio")
@@ -78,6 +80,7 @@ class TokenChannelTrainWorkflowConfig:
         object.__setattr__(self, "epochs", epochs)
         object.__setattr__(self, "diversity_threshold", diversity_threshold)
         object.__setattr__(self, "seed", seed)
+        object.__setattr__(self, "teacher_batch_size", teacher_batch_size)
         object.__setattr__(self, "lr", lr)
         object.__setattr__(self, "entropy_threshold", entropy_threshold)
         object.__setattr__(self, "split_ratio", split_ratio)
@@ -100,6 +103,8 @@ class TokenChannelTrainWorkflowConfig:
             raise ValueError("diversity_threshold must be >= 1")
         if not 0 < self.split_ratio < 1:
             raise ValueError("split_ratio must be between 0 and 1")
+        if self.teacher_batch_size <= 0:
+            raise ValueError("teacher_batch_size must be > 0")
 
 
 def _coerce_path_like(value: str | os.PathLike[str], field_name: str) -> Path:
@@ -233,6 +238,7 @@ def run_token_channel_train_workflow(
         context_width=config.context_width,
         entropy_threshold=config.entropy_threshold,
         diversity_threshold=config.diversity_threshold,
+        teacher_batch_size=config.teacher_batch_size,
     )
     if not training_rows:
         raise ValueError("training corpus rows must not be empty")
