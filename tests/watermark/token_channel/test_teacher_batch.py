@@ -702,3 +702,152 @@ def test_batch_extract_teacher_rows_single_text(mock_model, mock_tokenizer):
     assert len(result) == 1
     # Mock tokenizer returns one token per character
     assert len(result[0]) == len("hello")
+
+
+# ============================================================================
+# Task 5: Consistency Validation Test
+# ============================================================================
+
+
+def test_batch_vs_sequential_consistency():
+    """Verify batch inference produces same results as sequential inference.
+
+    This test ensures the optimization doesn't change results by comparing:
+    - Sequential inference (original extract_teacher_rows)
+    - Batch inference (new batch_extract_teacher_rows)
+
+    Verifies all fields match within float16 precision tolerance.
+    """
+    from wfcllm.watermark.token_channel.teacher import (
+        extract_teacher_rows,
+        batch_extract_teacher_rows,
+    )
+
+    # Create a tokenizer that properly encodes/decodes with safe token IDs
+    class ConsistentTokenizer:
+        def __init__(self):
+            self.bos_token_id = 0
+            self.pad_token_id = 0
+
+        def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+            # One token per character, using ord() but clamped to vocab size
+            return [min(ord(c), 99) for c in text]
+
+        def decode(self, token_ids: list[int], skip_special_tokens: bool = False) -> str:
+            # Decode back to characters
+            return "".join(chr(tid) for tid in token_ids)
+
+        def convert_ids_to_tokens(self, token_ids: list[int]) -> list[str]:
+            return [chr(tid) for tid in token_ids]
+
+        def convert_tokens_to_string(self, tokens: list[str]) -> str:
+            return "".join(tokens)
+
+    # Use a deterministic model for reproducible results
+    class DeterministicModel(torch.nn.Module):
+        def __init__(self, vocab_size: int = 100):
+            super().__init__()
+            self.vocab_size = vocab_size
+            self.embedding = torch.nn.Embedding(vocab_size, 16)
+            self.linear = torch.nn.Linear(16, vocab_size)
+
+        def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor = None) -> dict[str, torch.Tensor]:
+            embeddings = self.embedding(input_ids)
+            logits = self.linear(embeddings)
+            return {"logits": logits}
+
+    torch.manual_seed(42)
+    model = DeterministicModel(vocab_size=100)
+    model.eval()
+    tokenizer = ConsistentTokenizer()
+
+    # Test text - use only characters with ord < 100
+    text = "abc"
+    context_width = 2
+
+    # Sequential inference (original)
+    rows_sequential = extract_teacher_rows(
+        tokenizer=tokenizer,
+        model=model,
+        text=text,
+        context_width=context_width,
+    )
+
+    # Batch inference (new)
+    rows_batch_list = batch_extract_teacher_rows(
+        tokenizer=tokenizer,
+        model=model,
+        texts=[text],
+        context_width=context_width,
+        batch_size=16,
+    )
+    rows_batch = rows_batch_list[0]
+
+    # Verify same number of rows
+    assert len(rows_sequential) == len(rows_batch), (
+        f"Row count mismatch: sequential={len(rows_sequential)}, batch={len(rows_batch)}"
+    )
+
+    # Compare each row field-by-field
+    for i, (r_seq, r_batch) in enumerate(zip(rows_sequential, rows_batch)):
+        # Verify prefix_tokens match exactly
+        assert r_seq["prefix_tokens"] == r_batch["prefix_tokens"], (
+            f"Row {i}: prefix_tokens mismatch\n"
+            f"  sequential: {r_seq['prefix_tokens']}\n"
+            f"  batch: {r_batch['prefix_tokens']}"
+        )
+
+        # Verify next_token matches exactly
+        assert r_seq["next_token"] == r_batch["next_token"], (
+            f"Row {i}: next_token mismatch\n"
+            f"  sequential: {r_seq['next_token']}\n"
+            f"  batch: {r_batch['next_token']}"
+        )
+
+        # Verify token_text matches exactly
+        assert r_seq["token_text"] == r_batch["token_text"], (
+            f"Row {i}: token_text mismatch\n"
+            f"  sequential: {r_seq['token_text']!r}\n"
+            f"  batch: {r_batch['token_text']!r}"
+        )
+
+        # Verify token_start matches exactly
+        assert r_seq["token_start"] == r_batch["token_start"], (
+            f"Row {i}: token_start mismatch\n"
+            f"  sequential: {r_seq['token_start']}\n"
+            f"  batch: {r_batch['token_start']}"
+        )
+
+        # Verify token_end matches exactly
+        assert r_seq["token_end"] == r_batch["token_end"], (
+            f"Row {i}: token_end mismatch\n"
+            f"  sequential: {r_seq['token_end']}\n"
+            f"  batch: {r_batch['token_end']}"
+        )
+
+        # Verify token_index matches exactly
+        assert r_seq["token_index"] == r_batch["token_index"], (
+            f"Row {i}: token_index mismatch\n"
+            f"  sequential: {r_seq['token_index']}\n"
+            f"  batch: {r_batch['token_index']}"
+        )
+
+        # Verify logits match within float16 precision (atol=1e-4)
+        logits_seq = torch.tensor(r_seq["teacher_logits"], dtype=torch.float32)
+        logits_batch = torch.tensor(r_batch["teacher_logits"], dtype=torch.float32)
+
+        assert torch.allclose(logits_seq, logits_batch, atol=1e-4), (
+            f"Row {i}: logits mismatch (atol=1e-4)\n"
+            f"  max diff: {(logits_seq - logits_batch).abs().max().item():.6f}"
+        )
+
+        # Verify entropy matches within 0.01
+        entropy_seq = r_seq["entropy"]
+        entropy_batch = r_batch["entropy"]
+
+        assert abs(entropy_seq - entropy_batch) < 0.01, (
+            f"Row {i}: entropy mismatch (tolerance=0.01)\n"
+            f"  sequential: {entropy_seq:.6f}\n"
+            f"  batch: {entropy_batch:.6f}\n"
+            f"  diff: {abs(entropy_seq - entropy_batch):.6f}"
+        )
