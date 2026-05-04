@@ -374,7 +374,12 @@ def _require_artifact_outputs(export_paths: object) -> None:
 
 
 def _load_teacher_model(lm_model_path: Path) -> object:
-    model = AutoModelForCausalLM.from_pretrained(lm_model_path)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = AutoModelForCausalLM.from_pretrained(
+        lm_model_path,
+        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+        device_map="auto" if device == "cuda" else None,
+    )
     model.eval()
     return model
 
