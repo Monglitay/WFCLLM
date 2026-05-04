@@ -6,10 +6,16 @@ from collections import defaultdict
 import json
 from pathlib import Path
 
+try:
+    from tqdm import tqdm
+except ImportError:
+    tqdm = None  # type: ignore[assignment]
+
 from wfcllm.common.transform.engine import TransformEngine
 from wfcllm.common.transform.positive import get_all_positive_rules
 from wfcllm.watermark.token_channel.features import build_token_channel_features_from_context
 from wfcllm.watermark.token_channel.features import prepare_token_channel_feature_context
+from wfcllm.watermark.token_channel.teacher import batch_extract_teacher_rows
 from wfcllm.watermark.token_channel.teacher import extract_teacher_rows
 
 TRAINING_CACHE_SCHEMA_VERSION = "token-channel-training-corpus/v1"
@@ -47,6 +53,7 @@ def build_training_rows(
     transform_engine: TransformEngine | object | None = None,
     entropy_threshold: float,
     diversity_threshold: int,
+    teacher_batch_size: int = 16,
 ) -> list[dict[str, object]]:
     """Build offline supervised rows from base samples and positive variants."""
 
@@ -56,7 +63,14 @@ def build_training_rows(
         raise ValueError("diversity_threshold must be > 0")
 
     rows: list[dict[str, object]] = []
-    for sample in samples:
+
+    sample_iterator = (
+        tqdm(samples, desc="      处理样本", unit="sample", dynamic_ncols=True)
+        if tqdm is not None
+        else samples
+    )
+
+    for sample in sample_iterator:
         source_code = sample.get("source_code")
         if not isinstance(source_code, str) or not source_code:
             raise ValueError("sample source_code must be a non-empty string")
@@ -64,43 +78,111 @@ def build_training_rows(
         sample_rows: list[dict[str, object]] = []
         continuation_sets: dict[tuple[int, ...], set[int]] = defaultdict(set)
 
-        for variant_source in build_augmented_variants(
+        variants = build_augmented_variants(
             source_code,
             transform_engine=transform_engine,
-        ):
-            feature_context = prepare_token_channel_feature_context(variant_source)
-            teacher_rows = extract_teacher_rows(
+        )
+
+        # Filter out syntax-invalid variants and prepare feature contexts
+        valid_variants: list[tuple[str, object]] = []
+        for variant_idx, variant_source in enumerate(variants, 1):
+            # Update progress bar suffix
+            if tqdm is not None and hasattr(sample_iterator, 'set_postfix'):
+                sample_iterator.set_postfix({'variant': f'{variant_idx}/{len(variants)}'}, refresh=True)
+
+            try:
+                feature_context = prepare_token_channel_feature_context(variant_source)
+                valid_variants.append((variant_source, feature_context))
+            except SyntaxError:
+                if tqdm is not None and hasattr(sample_iterator, 'set_postfix'):
+                    sample_iterator.set_postfix({'variant': f'{variant_idx}/{len(variants)} (跳过-语法错误)'}, refresh=True)
+                continue
+
+        # Determine if we can use batch inference
+        # Batch inference requires forward-pass models with bos_token_id
+        can_use_batch = (
+            not hasattr(teacher_model, "score_next")
+            and hasattr(tokenizer, "bos_token_id")
+            and isinstance(getattr(tokenizer, "bos_token_id", None), int)
+            and not isinstance(getattr(tokenizer, "bos_token_id", None), bool)
+        )
+
+        if can_use_batch and valid_variants:
+            # Use batch inference for all valid variants
+            variant_texts = [variant_source for variant_source, _ in valid_variants]
+            batch_teacher_rows = batch_extract_teacher_rows(
                 tokenizer=tokenizer,
                 model=teacher_model,
-                text=variant_source,
+                texts=variant_texts,
                 context_width=context_width,
+                batch_size=teacher_batch_size,
+                show_progress=True,
             )
-            for teacher_row in teacher_rows:
-                token_start = teacher_row["token_start"]
-                token_end = teacher_row["token_end"]
-                if not isinstance(token_start, int) or not isinstance(token_end, int):
-                    raise ValueError("teacher rows must include integer token spans")
-                features = build_token_channel_features_from_context(
-                    feature_context,
-                    token_start=token_start,
-                    token_end=token_end,
+
+            # Process results for each variant
+            for (variant_source, feature_context), teacher_rows in zip(valid_variants, batch_teacher_rows):
+                for teacher_row in teacher_rows:
+                    token_start = teacher_row["token_start"]
+                    token_end = teacher_row["token_end"]
+                    if not isinstance(token_start, int) or not isinstance(token_end, int):
+                        raise ValueError("teacher rows must include integer token spans")
+                    features = build_token_channel_features_from_context(
+                        feature_context,
+                        token_start=token_start,
+                        token_end=token_end,
+                    )
+                    row = {
+                        "prefix_tokens": list(teacher_row["prefix_tokens"]),
+                        "next_token": teacher_row["next_token"],
+                        "teacher_logits": list(teacher_row["teacher_logits"]),
+                        "entropy": teacher_row["entropy"],
+                        "continuation_diversity": 0,
+                        "node_type": features.node_type,
+                        "parent_node_type": features.parent_node_type,
+                        "block_relative_offset": features.block_relative_offset,
+                        "in_code_body": features.in_code_body,
+                        "structure_mask": features.structure_mask,
+                        "language": features.language,
+                        "switch_target": 0,
+                    }
+                    sample_rows.append(row)
+                    continuation_sets[tuple(row["prefix_tokens"])].add(int(row["next_token"]))
+        else:
+            # Fall back to sequential extraction for score_next models
+            for variant_source, feature_context in valid_variants:
+                teacher_rows = extract_teacher_rows(
+                    tokenizer=tokenizer,
+                    model=teacher_model,
+                    text=variant_source,
+                    context_width=context_width,
+                    show_progress=True,
                 )
-                row = {
-                    "prefix_tokens": list(teacher_row["prefix_tokens"]),
-                    "next_token": teacher_row["next_token"],
-                    "teacher_logits": list(teacher_row["teacher_logits"]),
-                    "entropy": teacher_row["entropy"],
-                    "continuation_diversity": 0,
-                    "node_type": features.node_type,
-                    "parent_node_type": features.parent_node_type,
-                    "block_relative_offset": features.block_relative_offset,
-                    "in_code_body": features.in_code_body,
-                    "structure_mask": features.structure_mask,
-                    "language": features.language,
-                    "switch_target": 0,
-                }
-                sample_rows.append(row)
-                continuation_sets[tuple(row["prefix_tokens"])].add(int(row["next_token"]))
+                for teacher_row in teacher_rows:
+                    token_start = teacher_row["token_start"]
+                    token_end = teacher_row["token_end"]
+                    if not isinstance(token_start, int) or not isinstance(token_end, int):
+                        raise ValueError("teacher rows must include integer token spans")
+                    features = build_token_channel_features_from_context(
+                        feature_context,
+                        token_start=token_start,
+                        token_end=token_end,
+                    )
+                    row = {
+                        "prefix_tokens": list(teacher_row["prefix_tokens"]),
+                        "next_token": teacher_row["next_token"],
+                        "teacher_logits": list(teacher_row["teacher_logits"]),
+                        "entropy": teacher_row["entropy"],
+                        "continuation_diversity": 0,
+                        "node_type": features.node_type,
+                        "parent_node_type": features.parent_node_type,
+                        "block_relative_offset": features.block_relative_offset,
+                        "in_code_body": features.in_code_body,
+                        "structure_mask": features.structure_mask,
+                        "language": features.language,
+                        "switch_target": 0,
+                    }
+                    sample_rows.append(row)
+                    continuation_sets[tuple(row["prefix_tokens"])].add(int(row["next_token"]))
 
         for row in sample_rows:
             continuation_diversity = len(continuation_sets[tuple(row["prefix_tokens"])])

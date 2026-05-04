@@ -261,6 +261,24 @@ def test_build_augmented_variants_filters_non_positive_variants() -> None:
     assert variants == ["value = a\n", "value = b\n"]
 
 
+def test_build_training_rows_skips_syntax_invalid_positive_variants() -> None:
+    tokenizer = CharacterTokenizer()
+    source = "value = a\n"
+    tokenizer.register_text(source)
+
+    rows = build_training_rows(
+        samples=[{"source_code": source}],
+        tokenizer=tokenizer,
+        teacher_model=FakeTeacherModel(tokenizer),
+        context_width=4,
+        transform_engine=FakeTransformEngine("for item in items:\nprint(item)\n"),
+        entropy_threshold=0.0,
+        diversity_threshold=1,
+    )
+
+    assert len(rows) == len(source)
+
+
 def test_build_training_rows_collects_prefix_entropy_and_next_token(tmp_path: Path) -> None:
     del tmp_path
     tokenizer = CharacterTokenizer()
@@ -341,6 +359,72 @@ def test_build_training_rows_reuses_precomputed_variant_parse_state(monkeypatch)
     )
 
     assert parse_calls <= 2
+
+
+def test_build_training_rows_uses_batch_inference(monkeypatch) -> None:
+    """Verify that build_training_rows uses batch_extract_teacher_rows for forward-pass models."""
+    tokenizer = BosTokenizer()  # Use BosTokenizer which has bos_token_id
+    tokenizer.register_text("value = a\n")
+    tokenizer.register_text("value = b\n")
+
+    # Use a forward-pass model (not score_next)
+    teacher_model = RecordingForwardTeacherModel()
+
+    # Track calls to batch_extract_teacher_rows
+    batch_calls = []
+
+    def mock_batch_extract(tokenizer, model, texts, context_width, batch_size=16, *, show_progress=False):
+        batch_calls.append({
+            "texts": texts,
+            "batch_size": batch_size,
+            "num_texts": len(texts),
+        })
+        # Return mock results matching expected structure
+        results = []
+        for text in texts:
+            token_ids = tokenizer.encode(text, add_special_tokens=False)
+            rows = []
+            for idx, token_id in enumerate(token_ids):
+                prefix_tokens = token_ids[max(0, idx - context_width):idx]
+                rows.append({
+                    "prefix_tokens": list(prefix_tokens),
+                    "next_token": token_id,
+                    "teacher_logits": [1.0] * len(tokenizer),
+                    "entropy": 1.5,
+                    "token_text": text[idx:idx+1],
+                    "token_start": idx,
+                    "token_end": idx + 1,
+                    "token_index": idx,
+                })
+            results.append(rows)
+        return results
+
+    monkeypatch.setattr(
+        "wfcllm.watermark.token_channel.train_corpus.batch_extract_teacher_rows",
+        mock_batch_extract,
+    )
+
+    rows = build_training_rows(
+        samples=[{"source_code": "value = a\n"}],
+        tokenizer=tokenizer,
+        teacher_model=teacher_model,
+        context_width=4,
+        transform_engine=FakeTransformEngine("value = b\n"),
+        entropy_threshold=1.0,
+        diversity_threshold=2,
+        teacher_batch_size=8,
+    )
+
+    # Verify batch_extract_teacher_rows was called
+    assert len(batch_calls) == 1, "batch_extract_teacher_rows should be called once per sample"
+
+    # Verify it was called with multiple texts (base + variant)
+    call = batch_calls[0]
+    assert call["num_texts"] == 2, "Should batch both base and variant together"
+    assert call["batch_size"] == 8, "Should use the specified teacher_batch_size"
+
+    # Verify results are still correct
+    assert len(rows) > 0, "Should produce training rows"
 
 
 def test_training_and_teacher_cache_round_trip(tmp_path: Path) -> None:
