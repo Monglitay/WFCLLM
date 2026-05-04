@@ -7,6 +7,11 @@ from pathlib import Path
 
 import torch
 
+try:
+    from tqdm import tqdm
+except ImportError:
+    tqdm = None  # type: ignore[assignment]
+
 TEACHER_CACHE_SCHEMA_VERSION = "token-channel-teacher-cache/v1"
 
 
@@ -15,6 +20,8 @@ def extract_teacher_rows(
     model: object,
     text: str,
     context_width: int,
+    *,
+    show_progress: bool = False,
 ) -> list[dict[str, object]]:
     """Extract offline teacher rows for every token position in text."""
 
@@ -25,7 +32,14 @@ def extract_teacher_rows(
     token_spans = _align_token_spans(text, token_ids, tokenizer)
 
     rows: list[dict[str, object]] = []
-    for index, token_id in enumerate(token_ids):
+
+    token_iterator = (
+        tqdm(enumerate(token_ids), total=len(token_ids), desc="        提取 teacher logits", leave=False, dynamic_ncols=True)
+        if show_progress and tqdm is not None
+        else enumerate(token_ids)
+    )
+
+    for index, token_id in token_iterator:
         prefix_tokens = token_ids[max(0, index - context_width) : index]
         teacher_logits = _score_next(model, prefix_tokens, tokenizer=tokenizer)
         token_start, token_end = token_spans[index]
@@ -180,3 +194,99 @@ def _compute_entropy(logits: torch.Tensor) -> float:
     log_probabilities = torch.log(probabilities.clamp_min(1e-12))
     entropy = -(probabilities * log_probabilities).sum()
     return float(entropy.item())
+
+
+def _get_vocab_size(model: object) -> int:
+    """Get vocabulary size from model."""
+    if hasattr(model, "config") and hasattr(model.config, "vocab_size"):
+        vocab_size = model.config.vocab_size
+        if isinstance(vocab_size, int):
+            return vocab_size
+    if hasattr(model, "vocab_size"):
+        vocab_size = model.vocab_size
+        if isinstance(vocab_size, int):
+            return vocab_size
+    raise ValueError("model must expose vocab_size via config.vocab_size or vocab_size attribute")
+
+
+def _extract_single_text_all_positions(
+    model: object,
+    token_ids: list[int],
+    tokenizer: object,
+) -> torch.Tensor:
+    """Extract logits for all token positions in a single text using one forward pass.
+
+    Args:
+        model: Language model that accepts input_ids and returns logits
+        token_ids: List of token IDs for the text
+        tokenizer: Tokenizer with optional bos_token_id attribute
+
+    Returns:
+        Tensor of shape [seq_len, vocab_size] with float32 dtype.
+        For position i, returns logits predicting token_ids[i] given token_ids[:i].
+    """
+    if not token_ids:
+        vocab_size = _get_vocab_size(model)
+        return torch.empty((0, vocab_size), dtype=torch.float32)
+
+    # Prepend bos_token if tokenizer has one
+    input_tokens = token_ids.copy()
+    bos_token_id = getattr(tokenizer, "bos_token_id", None)
+    if isinstance(bos_token_id, int) and not isinstance(bos_token_id, bool):
+        input_tokens = [bos_token_id] + input_tokens
+
+    # Prepare input tensor
+    input_ids = torch.tensor(
+        [input_tokens],
+        dtype=torch.long,
+        device=_resolve_module_device(model),
+    )
+
+    # Set model to eval mode
+    was_training = getattr(model, "training", None)
+    eval_method = getattr(model, "eval", None)
+    train_method = getattr(model, "train", None)
+    if callable(eval_method):
+        eval_method()
+
+    try:
+        # Forward pass with no gradient
+        with torch.no_grad():
+            output = model(input_ids)
+    finally:
+        # Restore training mode
+        if was_training is not None and callable(train_method):
+            train_method(was_training)
+
+    # Extract logits from output
+    logits = getattr(output, "logits", None)
+    if logits is None and isinstance(output, dict):
+        logits = output.get("logits")
+    if logits is None:
+        logits = output if isinstance(output, torch.Tensor) else None
+    if not isinstance(logits, torch.Tensor) or logits.ndim != 3:
+        raise ValueError("teacher model must expose 3D logits output")
+
+    # Extract logits for each position
+    # logits shape: [batch_size=1, seq_len, vocab_size]
+    # For position i in token_ids, we want logits[0, i] which predicts token_ids[i]
+    # If we prepended bos_token, logits[0, 0] predicts token_ids[0], etc.
+    batch_logits = logits[0]  # [seq_len, vocab_size]
+
+    # Extract the relevant positions
+    if isinstance(bos_token_id, int) and not isinstance(bos_token_id, bool):
+        # We prepended bos, so positions 0..len(token_ids)-1 predict token_ids[0..len(token_ids)-1]
+        result_logits = batch_logits[:len(token_ids)]
+    else:
+        # No bos prepended, positions 0..len(token_ids)-2 predict token_ids[1..len(token_ids)-1]
+        # Position 0 predicts token_ids[1], so we skip the last position
+        result_logits = batch_logits[:len(token_ids) - 1]
+        # We need len(token_ids) rows, but only have len(token_ids)-1
+        # For the first token (no prefix), we need to handle it separately
+        # This case should use bos_token, so we'll raise an error
+        if len(token_ids) > 0:
+            raise ValueError(
+                "forward teacher models require tokenizer.bos_token_id for extracting all positions"
+            )
+
+    return result_logits.detach().cpu().to(dtype=torch.float32)
