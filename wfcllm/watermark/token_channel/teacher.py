@@ -285,3 +285,132 @@ def _extract_single_text_all_positions(
         )
 
     return result_logits.detach().cpu().to(dtype=torch.float32)
+
+
+def _batch_forward_all_positions(
+    model: object,
+    batch_token_ids: list[list[int]],
+    tokenizer: object,
+) -> list[torch.Tensor]:
+    """Extract logits for all positions in multiple texts using batch forward pass.
+
+    Args:
+        model: Language model that accepts input_ids and returns logits
+        batch_token_ids: List of token ID lists (variable length sequences)
+        tokenizer: Tokenizer with optional bos_token_id attribute
+
+    Returns:
+        List of tensors, each with shape [seq_len, vocab_size] and float32 dtype.
+        For text i at position j, returns logits predicting batch_token_ids[i][j]
+        given batch_token_ids[i][:j].
+    """
+    if not batch_token_ids:
+        return []
+
+    # Get BOS token
+    bos_token_id = getattr(tokenizer, "bos_token_id", None)
+    if not isinstance(bos_token_id, int) or isinstance(bos_token_id, bool):
+        raise ValueError(
+            "forward teacher models require tokenizer.bos_token_id for batch extraction"
+        )
+
+    # Get vocab size for empty sequences
+    vocab_size = _get_vocab_size(model)
+
+    # Handle empty sequences separately
+    results: list[torch.Tensor] = []
+    non_empty_indices: list[int] = []
+    non_empty_token_ids: list[list[int]] = []
+
+    for i, token_ids in enumerate(batch_token_ids):
+        if not token_ids:
+            results.append(torch.empty((0, vocab_size), dtype=torch.float32))
+        else:
+            results.append(None)  # Placeholder
+            non_empty_indices.append(i)
+            non_empty_token_ids.append(token_ids)
+
+    # If all sequences are empty, return early
+    if not non_empty_token_ids:
+        return results
+
+    # Prepend BOS token to each sequence
+    input_sequences = [[bos_token_id] + token_ids for token_ids in non_empty_token_ids]
+
+    # Find max length for padding
+    max_len = max(len(seq) for seq in input_sequences)
+
+    # Get pad token ID (use 0 as default, common for most tokenizers)
+    pad_token_id = getattr(tokenizer, "pad_token_id", 0)
+    if not isinstance(pad_token_id, int) or isinstance(pad_token_id, bool):
+        pad_token_id = 0
+
+    # Apply left padding to preserve causal structure
+    padded_sequences = []
+    attention_masks = []
+    original_lengths = []
+
+    for seq in input_sequences:
+        seq_len = len(seq)
+        original_lengths.append(seq_len)
+        padding_len = max_len - seq_len
+
+        # Left padding
+        padded_seq = [pad_token_id] * padding_len + seq
+        attention_mask = [0] * padding_len + [1] * seq_len
+
+        padded_sequences.append(padded_seq)
+        attention_masks.append(attention_mask)
+
+    # Convert to tensors
+    device = _resolve_module_device(model)
+    input_ids = torch.tensor(padded_sequences, dtype=torch.long, device=device)
+    attention_mask = torch.tensor(attention_masks, dtype=torch.long, device=device)
+
+    # Set model to eval mode
+    was_training = getattr(model, "training", None)
+    eval_method = getattr(model, "eval", None)
+    train_method = getattr(model, "train", None)
+    if callable(eval_method):
+        eval_method()
+
+    try:
+        # Forward pass with no gradient
+        with torch.no_grad():
+            # Try passing attention_mask
+            try:
+                output = model(input_ids, attention_mask=attention_mask)
+            except TypeError:
+                # Model doesn't accept attention_mask, try without it
+                output = model(input_ids)
+    finally:
+        # Restore training mode
+        if was_training is not None and callable(train_method):
+            train_method(was_training)
+
+    # Extract logits from output
+    logits = getattr(output, "logits", None)
+    if logits is None and isinstance(output, dict):
+        logits = output.get("logits")
+    if logits is None:
+        logits = output if isinstance(output, torch.Tensor) else None
+    if not isinstance(logits, torch.Tensor) or logits.ndim != 3:
+        raise ValueError("teacher model must expose 3D logits output")
+
+    # Extract logits for each sequence
+    # logits shape: [batch_size, max_len, vocab_size]
+    for i, (batch_idx, token_ids) in enumerate(zip(non_empty_indices, non_empty_token_ids)):
+        seq_len = len(token_ids)
+        padding_len = max_len - original_lengths[i]
+
+        # Extract the relevant positions (skip padding, skip BOS, take seq_len positions)
+        # After padding: [pad, pad, ..., bos, tok1, tok2, ...]
+        # We want logits at positions [padding_len, padding_len+1, ..., padding_len+seq_len-1]
+        # These predict [tok1, tok2, ..., tokN]
+        start_pos = padding_len
+        end_pos = padding_len + seq_len
+
+        seq_logits = logits[i, start_pos:end_pos]  # [seq_len, vocab_size]
+        results[batch_idx] = seq_logits.detach().cpu().to(dtype=torch.float32)
+
+    return results

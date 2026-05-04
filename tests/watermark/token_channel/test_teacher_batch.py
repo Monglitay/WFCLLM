@@ -185,3 +185,209 @@ def test_get_vocab_size():
 
     with pytest.raises(ValueError, match="must expose vocab_size"):
         _get_vocab_size(ModelWithNeither())
+
+
+# ============================================================================
+# Task 2: Inter-Text Parallel Inference (Batch Multiple Texts)
+# ============================================================================
+
+
+def test_batch_forward_all_positions_returns_list(mock_model, mock_tokenizer):
+    """Test that _batch_forward_all_positions returns a list of tensors."""
+    from wfcllm.watermark.token_channel.teacher import _batch_forward_all_positions
+
+    batch_token_ids = [
+        [1, 2, 3],
+        [4, 5, 6, 7],
+        [8, 9],
+    ]
+
+    result = _batch_forward_all_positions(mock_model, batch_token_ids, mock_tokenizer)
+
+    assert isinstance(result, list)
+    assert len(result) == len(batch_token_ids)
+
+
+def test_batch_forward_all_positions_correct_shapes(mock_model, mock_tokenizer):
+    """Test that each output tensor has correct shape [seq_len, vocab_size]."""
+    from wfcllm.watermark.token_channel.teacher import _batch_forward_all_positions
+
+    batch_token_ids = [
+        [1, 2, 3],
+        [4, 5, 6, 7],
+        [8, 9],
+    ]
+
+    result = _batch_forward_all_positions(mock_model, batch_token_ids, mock_tokenizer)
+
+    for i, token_ids in enumerate(batch_token_ids):
+        assert isinstance(result[i], torch.Tensor)
+        assert result[i].shape == (len(token_ids), mock_model.vocab_size)
+        assert result[i].dtype == torch.float32
+
+
+def test_batch_forward_all_positions_empty_batch(mock_model, mock_tokenizer):
+    """Test that empty batch returns empty list."""
+    from wfcllm.watermark.token_channel.teacher import _batch_forward_all_positions
+
+    batch_token_ids = []
+    result = _batch_forward_all_positions(mock_model, batch_token_ids, mock_tokenizer)
+
+    assert isinstance(result, list)
+    assert len(result) == 0
+
+
+def test_batch_forward_all_positions_single_empty_text(mock_model, mock_tokenizer):
+    """Test that batch with single empty text returns correct shape."""
+    from wfcllm.watermark.token_channel.teacher import _batch_forward_all_positions
+
+    batch_token_ids = [[]]
+    result = _batch_forward_all_positions(mock_model, batch_token_ids, mock_tokenizer)
+
+    assert len(result) == 1
+    assert result[0].shape == (0, mock_model.vocab_size)
+
+
+def test_batch_forward_all_positions_matches_single_inference(mock_tokenizer):
+    """Test that batch inference produces same results as single inference."""
+    from wfcllm.watermark.token_channel.teacher import (
+        _batch_forward_all_positions,
+        _extract_single_text_all_positions,
+    )
+
+    # Use a deterministic model that respects attention_mask
+    class DeterministicModel(torch.nn.Module):
+        def __init__(self, vocab_size: int = 100):
+            super().__init__()
+            self.vocab_size = vocab_size
+            self.embedding = torch.nn.Embedding(vocab_size, 16)
+            self.linear = torch.nn.Linear(16, vocab_size)
+
+        def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor = None) -> dict[str, torch.Tensor]:
+            # Deterministic forward pass based on input_ids
+            # Use position-wise computation to avoid padding effects
+            embeddings = self.embedding(input_ids)
+            # Simple position-wise transformation
+            logits = self.linear(embeddings)
+            return {"logits": logits}
+
+    torch.manual_seed(42)
+    model = DeterministicModel(vocab_size=100)
+    model.eval()
+
+    batch_token_ids = [
+        [1, 2, 3],
+        [4, 5, 6, 7],
+        [8, 9],
+    ]
+
+    # Get batch results
+    batch_results = _batch_forward_all_positions(model, batch_token_ids, mock_tokenizer)
+
+    # Get single results
+    single_results = [
+        _extract_single_text_all_positions(model, token_ids, mock_tokenizer)
+        for token_ids in batch_token_ids
+    ]
+
+    # Compare results
+    for i, (batch_result, single_result) in enumerate(zip(batch_results, single_results)):
+        assert batch_result.shape == single_result.shape, f"Shape mismatch for text {i}"
+        # Allow small numerical differences due to padding
+        assert torch.allclose(batch_result, single_result, atol=1e-5), f"Result mismatch for text {i}"
+
+
+def test_batch_forward_all_positions_uses_left_padding(mock_tokenizer):
+    """Test that left padding is used (preserves causal structure)."""
+    from wfcllm.watermark.token_channel.teacher import _batch_forward_all_positions
+
+    # Create a model that tracks input_ids
+    class TrackingModel(torch.nn.Module):
+        def __init__(self, vocab_size: int = 100):
+            super().__init__()
+            self.vocab_size = vocab_size
+            self.received_input_ids = None
+            self.received_attention_mask = None
+
+        def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor = None) -> dict[str, torch.Tensor]:
+            self.received_input_ids = input_ids
+            self.received_attention_mask = attention_mask
+            batch_size, seq_len = input_ids.shape
+            logits = torch.randn(batch_size, seq_len, self.vocab_size)
+            return {"logits": logits}
+
+    model = TrackingModel(vocab_size=100)
+
+    batch_token_ids = [
+        [1, 2, 3, 4, 5],  # Length 5
+        [6, 7],           # Length 2
+    ]
+
+    result = _batch_forward_all_positions(model, batch_token_ids, mock_tokenizer)
+
+    # Verify left padding was used
+    # With BOS prepended: [0, 1, 2, 3, 4, 5] (length 6) and [0, 6, 7] (length 3)
+    # After left padding to length 6: [0, 1, 2, 3, 4, 5] and [pad, pad, pad, 0, 6, 7]
+    assert model.received_input_ids is not None
+    assert model.received_attention_mask is not None
+
+    # Check that shorter sequence has padding on the left
+    # The second sequence should have padding tokens at the beginning
+    input_ids = model.received_input_ids
+    attention_mask = model.received_attention_mask
+
+    # Second sequence should have 0s in attention mask at the beginning
+    assert attention_mask[1, 0] == 0  # First position is padding
+    assert attention_mask[1, -1] == 1  # Last position is real token
+
+
+def test_batch_forward_all_positions_eval_mode(mock_tokenizer):
+    """Test that model.eval() is called during batch extraction."""
+    from wfcllm.watermark.token_channel.teacher import _batch_forward_all_positions
+
+    model = MockModel(vocab_size=100)
+    model.train()
+    assert model.training is True
+
+    batch_token_ids = [[1, 2, 3], [4, 5]]
+
+    # Track eval calls
+    eval_called = []
+    original_eval = model.eval
+
+    def tracking_eval():
+        eval_called.append(True)
+        return original_eval()
+
+    model.eval = tracking_eval
+
+    result = _batch_forward_all_positions(model, batch_token_ids, mock_tokenizer)
+
+    # Verify eval was called
+    assert len(eval_called) == 1
+    # Verify training mode was restored
+    assert model.training is True
+
+
+def test_batch_forward_all_positions_no_grad(mock_tokenizer):
+    """Test that gradient tracking is disabled during batch extraction."""
+    from wfcllm.watermark.token_channel.teacher import _batch_forward_all_positions
+
+    model = MockModel(vocab_size=100)
+    batch_token_ids = [[1, 2, 3], [4, 5]]
+
+    # Track whether forward pass happens under no_grad
+    grad_enabled_during_forward = []
+    original_forward = model.forward
+
+    def tracking_forward(input_ids, attention_mask=None):
+        grad_enabled_during_forward.append(torch.is_grad_enabled())
+        return original_forward(input_ids)
+
+    model.forward = tracking_forward
+
+    result = _batch_forward_all_positions(model, batch_token_ids, mock_tokenizer)
+
+    # Verify forward pass happened with gradients disabled
+    assert len(grad_enabled_during_forward) == 1
+    assert grad_enabled_during_forward[0] is False
