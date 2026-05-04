@@ -30,9 +30,17 @@ class MockModel(torch.nn.Module):
         self.vocab_size = vocab_size
         self.linear = torch.nn.Linear(1, vocab_size)
 
-    def forward(self, input_ids: torch.Tensor) -> dict[str, torch.Tensor]:
+    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor = None) -> dict[str, torch.Tensor]:
         batch_size, seq_len = input_ids.shape
+        # Use input_ids to generate deterministic logits
+        # Apply attention_mask if provided to mask out padding positions
         logits = torch.randn(batch_size, seq_len, self.vocab_size)
+
+        if attention_mask is not None:
+            # Mask out padding positions by setting logits to very negative values
+            mask_expanded = attention_mask.unsqueeze(-1).expand_as(logits)
+            logits = logits.masked_fill(mask_expanded == 0, -1e9)
+
         return {"logits": logits}
 
 
@@ -716,7 +724,11 @@ def test_batch_vs_sequential_consistency():
     - Sequential inference (original extract_teacher_rows)
     - Batch inference (new batch_extract_teacher_rows)
 
-    Verifies all fields match within float16 precision tolerance.
+    Verifies:
+    1. Determinism: running inference twice produces identical results
+    2. Consistency: batch and sequential produce identical results
+    3. Context width: prefix_tokens respect context_width limit
+    4. All fields match within float16 precision tolerance
     """
     from wfcllm.watermark.token_channel.teacher import (
         extract_teacher_rows,
@@ -743,7 +755,7 @@ def test_batch_vs_sequential_consistency():
         def convert_tokens_to_string(self, tokens: list[str]) -> str:
             return "".join(tokens)
 
-    # Use a deterministic model for reproducible results
+    # Use a deterministic model with fixed weights (not random)
     class DeterministicModel(torch.nn.Module):
         def __init__(self, vocab_size: int = 100):
             super().__init__()
@@ -751,12 +763,22 @@ def test_batch_vs_sequential_consistency():
             self.embedding = torch.nn.Embedding(vocab_size, 16)
             self.linear = torch.nn.Linear(16, vocab_size)
 
+            # Initialize with fixed weights for true determinism
+            torch.nn.init.constant_(self.embedding.weight, 0.1)
+            torch.nn.init.constant_(self.linear.weight, 0.1)
+            torch.nn.init.constant_(self.linear.bias, 0.0)
+
         def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor = None) -> dict[str, torch.Tensor]:
             embeddings = self.embedding(input_ids)
             logits = self.linear(embeddings)
+
+            # Apply attention mask if provided
+            if attention_mask is not None:
+                mask_expanded = attention_mask.unsqueeze(-1).expand_as(logits)
+                logits = logits.masked_fill(mask_expanded == 0, -1e9)
+
             return {"logits": logits}
 
-    torch.manual_seed(42)
     model = DeterministicModel(vocab_size=100)
     model.eval()
     tokenizer = ConsistentTokenizer()
@@ -764,6 +786,47 @@ def test_batch_vs_sequential_consistency():
     # Test text - use only characters with ord < 100
     text = "abc"
     context_width = 2
+
+    # ========================================================================
+    # Test 1: Verify determinism - running inference twice produces identical results
+    # ========================================================================
+
+    rows_run1 = extract_teacher_rows(
+        tokenizer=tokenizer,
+        model=model,
+        text=text,
+        context_width=context_width,
+    )
+
+    rows_run2 = extract_teacher_rows(
+        tokenizer=tokenizer,
+        model=model,
+        text=text,
+        context_width=context_width,
+    )
+
+    assert len(rows_run1) == len(rows_run2), "Determinism check: row count differs between runs"
+
+    for i, (r1, r2) in enumerate(zip(rows_run1, rows_run2)):
+        # All fields should be identical
+        assert r1["prefix_tokens"] == r2["prefix_tokens"], f"Run {i}: prefix_tokens not deterministic"
+        assert r1["next_token"] == r2["next_token"], f"Run {i}: next_token not deterministic"
+        assert r1["token_text"] == r2["token_text"], f"Run {i}: token_text not deterministic"
+        assert r1["token_start"] == r2["token_start"], f"Run {i}: token_start not deterministic"
+        assert r1["token_end"] == r2["token_end"], f"Run {i}: token_end not deterministic"
+        assert r1["token_index"] == r2["token_index"], f"Run {i}: token_index not deterministic"
+
+        # Logits should be identical (not just close)
+        logits1 = torch.tensor(r1["teacher_logits"], dtype=torch.float32)
+        logits2 = torch.tensor(r2["teacher_logits"], dtype=torch.float32)
+        assert torch.equal(logits1, logits2), f"Run {i}: logits not deterministic"
+
+        # Entropy should be identical
+        assert r1["entropy"] == r2["entropy"], f"Run {i}: entropy not deterministic"
+
+    # ========================================================================
+    # Test 2: Verify batch vs sequential consistency
+    # ========================================================================
 
     # Sequential inference (original)
     rows_sequential = extract_teacher_rows(
@@ -841,13 +904,32 @@ def test_batch_vs_sequential_consistency():
             f"  max diff: {(logits_seq - logits_batch).abs().max().item():.6f}"
         )
 
-        # Verify entropy matches within 0.01
+        # Verify entropy matches within 1e-4 (same tolerance as logits)
+        # Entropy is computed from logits via softmax, so should have similar precision
         entropy_seq = r_seq["entropy"]
         entropy_batch = r_batch["entropy"]
 
-        assert abs(entropy_seq - entropy_batch) < 0.01, (
-            f"Row {i}: entropy mismatch (tolerance=0.01)\n"
+        assert abs(entropy_seq - entropy_batch) < 1e-4, (
+            f"Row {i}: entropy mismatch (tolerance=1e-4)\n"
             f"  sequential: {entropy_seq:.6f}\n"
             f"  batch: {entropy_batch:.6f}\n"
             f"  diff: {abs(entropy_seq - entropy_batch):.6f}"
+        )
+
+    # ========================================================================
+    # Test 3: Verify context_width is respected
+    # ========================================================================
+
+    for i, row in enumerate(rows_sequential):
+        prefix_len = len(row["prefix_tokens"])
+        assert prefix_len <= context_width, (
+            f"Row {i}: prefix_tokens length {prefix_len} exceeds context_width {context_width}\n"
+            f"  prefix_tokens: {row['prefix_tokens']}"
+        )
+
+    for i, row in enumerate(rows_batch):
+        prefix_len = len(row["prefix_tokens"])
+        assert prefix_len <= context_width, (
+            f"Row {i}: prefix_tokens length {prefix_len} exceeds context_width {context_width}\n"
+            f"  prefix_tokens: {row['prefix_tokens']}"
         )
