@@ -505,6 +505,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="token 通道训练随机种子",
     )
     parser.add_argument(
+        "--token-channel-teacher-batch-size",
+        type=int,
+        default=None,
+        help="token 通道 teacher 模型批量推理大小（默认 16）",
+    )
+    parser.add_argument(
         "--token-channel-switch-threshold",
         type=float,
         default=None,
@@ -1322,6 +1328,7 @@ def resolve_token_channel_train_config(args: argparse.Namespace) -> dict[str, ob
         "diversity_threshold": getattr(args, "token_channel_diversity_threshold", None),
         "split_ratio": getattr(args, "token_channel_split_ratio", None),
         "seed": getattr(args, "token_channel_seed", None),
+        "teacher_batch_size": getattr(args, "token_channel_teacher_batch_size", None),
     }
     for key, value in overrides.items():
         if value is not None:
