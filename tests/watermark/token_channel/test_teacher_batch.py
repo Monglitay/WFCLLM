@@ -11,9 +11,15 @@ class MockTokenizer:
 
     def __init__(self, bos_token_id: int | None = None):
         self.bos_token_id = bos_token_id
+        self.pad_token_id = 0
 
     def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
-        return [1, 2, 3, 4, 5]
+        # Return one token per character for simplicity
+        return [ord(c) for c in text]
+
+    def decode(self, token_ids: list[int], skip_special_tokens: bool = False) -> str:
+        # Decode back to characters
+        return "".join(chr(tid) for tid in token_ids)
 
 
 class MockModel(torch.nn.Module):
@@ -571,3 +577,128 @@ def test_get_available_memory_gb_fallback():
 
     # Should return fallback value
     assert memory == 20.0
+
+
+# ============================================================================
+# Task 4: Main Batch Extract Function
+# ============================================================================
+
+
+def test_batch_extract_teacher_rows_returns_list_of_lists(mock_model, mock_tokenizer):
+    """Test that batch_extract_teacher_rows returns list of lists."""
+    from wfcllm.watermark.token_channel.teacher import batch_extract_teacher_rows
+
+    texts = ["hello world", "foo bar baz"]
+
+    result = batch_extract_teacher_rows(
+        tokenizer=mock_tokenizer,
+        model=mock_model,
+        texts=texts,
+        context_width=10,
+        batch_size=16,
+    )
+
+    assert isinstance(result, list)
+    assert len(result) == len(texts)
+    assert all(isinstance(rows, list) for rows in result)
+
+
+def test_batch_extract_teacher_rows_row_format(mock_tokenizer):
+    """Test that each row has all required fields."""
+    from wfcllm.watermark.token_channel.teacher import batch_extract_teacher_rows
+
+    model = MockModel(vocab_size=100)
+    texts = ["abc"]
+
+    result = batch_extract_teacher_rows(
+        tokenizer=mock_tokenizer,
+        model=model,
+        texts=texts,
+        context_width=10,
+        batch_size=16,
+    )
+
+    # Check first text's rows
+    rows = result[0]
+    assert len(rows) > 0
+
+    # Check each row has required fields
+    for row in rows:
+        assert "prefix_tokens" in row
+        assert "next_token" in row
+        assert "teacher_logits" in row
+        assert "entropy" in row
+        assert "token_text" in row
+        assert "token_start" in row
+        assert "token_end" in row
+        assert "token_index" in row
+
+        # Check types
+        assert isinstance(row["prefix_tokens"], list)
+        assert isinstance(row["next_token"], int)
+        assert isinstance(row["teacher_logits"], list)
+        assert isinstance(row["entropy"], float)
+        assert isinstance(row["token_text"], str)
+        assert isinstance(row["token_start"], int)
+        assert isinstance(row["token_end"], int)
+        assert isinstance(row["token_index"], int)
+
+
+def test_batch_extract_teacher_rows_preserves_order(mock_model, mock_tokenizer):
+    """Test that results preserve original text order."""
+    from wfcllm.watermark.token_channel.teacher import batch_extract_teacher_rows
+
+    # Create texts with different lengths to trigger grouping
+    texts = ["short", "medium length text", "x", "another medium text"]
+
+    result = batch_extract_teacher_rows(
+        tokenizer=mock_tokenizer,
+        model=mock_model,
+        texts=texts,
+        context_width=10,
+        batch_size=16,
+    )
+
+    # Should return results in same order as input
+    assert len(result) == len(texts)
+
+    # Each text should have rows equal to its character count (one token per char)
+    expected_lengths = [len(text) for text in texts]
+    for i, (rows, expected_len) in enumerate(zip(result, expected_lengths)):
+        assert len(rows) == expected_len, f"Text {i} has {len(rows)} rows, expected {expected_len}"
+
+
+def test_batch_extract_teacher_rows_empty_texts(mock_model, mock_tokenizer):
+    """Test that empty texts list returns empty list."""
+    from wfcllm.watermark.token_channel.teacher import batch_extract_teacher_rows
+
+    texts = []
+
+    result = batch_extract_teacher_rows(
+        tokenizer=mock_tokenizer,
+        model=mock_model,
+        texts=texts,
+        context_width=10,
+        batch_size=16,
+    )
+
+    assert result == []
+
+
+def test_batch_extract_teacher_rows_single_text(mock_model, mock_tokenizer):
+    """Test that single text works correctly."""
+    from wfcllm.watermark.token_channel.teacher import batch_extract_teacher_rows
+
+    texts = ["hello"]
+
+    result = batch_extract_teacher_rows(
+        tokenizer=mock_tokenizer,
+        model=mock_model,
+        texts=texts,
+        context_width=10,
+        batch_size=16,
+    )
+
+    assert len(result) == 1
+    # Mock tokenizer returns one token per character
+    assert len(result[0]) == len("hello")

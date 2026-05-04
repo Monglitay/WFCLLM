@@ -549,3 +549,136 @@ def _get_available_memory_gb(model: object) -> float:
 
     # Fallback to default
     return 20.0
+
+
+def batch_extract_teacher_rows(
+    tokenizer: object,
+    model: object,
+    texts: list[str],
+    context_width: int,
+    batch_size: int = 16,
+    *,
+    show_progress: bool = False,
+) -> list[list[dict[str, object]]]:
+    """Extract offline teacher rows for multiple texts using batch inference.
+
+    This function implements two-level parallelism:
+    1. Intra-text parallelism: Extract all positions in a single text with one forward pass
+    2. Inter-text parallelism: Batch multiple texts together to reduce forward passes
+
+    Args:
+        tokenizer: Tokenizer with encode() method and optional bos_token_id
+        model: Language model that accepts input_ids and returns logits
+        texts: List of text strings to process
+        context_width: Maximum number of prefix tokens to use for prediction
+        batch_size: Base batch size for processing (will be adjusted dynamically)
+        show_progress: Whether to show progress bar
+
+    Returns:
+        List of row lists, one per input text. Each row contains:
+        - prefix_tokens: List of token IDs in the prefix (up to context_width)
+        - next_token: Token ID being predicted
+        - teacher_logits: Logits for all vocabulary tokens (as list)
+        - entropy: Entropy of the teacher distribution
+        - token_text: Text representation of the token
+        - token_start: Character start position in original text
+        - token_end: Character end position in original text
+        - token_index: Position index in the token sequence
+    """
+    if context_width <= 0:
+        raise ValueError("context_width must be > 0")
+
+    if not texts:
+        return []
+
+    # Group texts by similar length to reduce padding waste
+    groups = _group_texts_by_length(texts, tokenizer, tolerance=0.2)
+
+    # Get available memory for dynamic batch sizing
+    available_memory = _get_available_memory_gb(model)
+
+    # Prepare results storage (preserve original order)
+    results: list[list[dict[str, object]] | None] = [None] * len(texts)
+
+    # Setup progress tracking
+    total_texts = len(texts)
+    text_iterator = (
+        tqdm(range(len(groups)), desc="        批量提取 teacher logits", leave=False, dynamic_ncols=True)
+        if show_progress and tqdm is not None
+        else range(len(groups))
+    )
+
+    # Process each group
+    for group_idx in text_iterator:
+        group = groups[group_idx]
+
+        # Extract indices and texts from group
+        indices = [idx for idx, _ in group]
+        group_texts = [text for _, text in group]
+
+        # Tokenize all texts in group
+        group_token_ids = [list(_encode_text(tokenizer, text)) for text in group_texts]
+        group_token_spans = [
+            _align_token_spans(text, token_ids, tokenizer)
+            for text, token_ids in zip(group_texts, group_token_ids)
+        ]
+
+        # Compute dynamic batch size based on max length in group
+        max_length = max((len(token_ids) for token_ids in group_token_ids), default=0)
+        dynamic_batch_size = _compute_dynamic_batch_size(
+            max_length=max_length,
+            base_batch_size=batch_size,
+            available_memory_gb=available_memory,
+        )
+
+        # Process texts in batches
+        for batch_start in range(0, len(group_texts), dynamic_batch_size):
+            batch_end = min(batch_start + dynamic_batch_size, len(group_texts))
+
+            # Extract batch data
+            batch_token_ids = group_token_ids[batch_start:batch_end]
+            batch_texts = group_texts[batch_start:batch_end]
+            batch_token_spans = group_token_spans[batch_start:batch_end]
+            batch_indices = indices[batch_start:batch_end]
+
+            # Run batch forward pass to get logits for all positions
+            batch_logits = _batch_forward_all_positions(model, batch_token_ids, tokenizer)
+
+            # Convert logits to rows for each text
+            for i, (text, token_ids, token_spans, logits_tensor, original_idx) in enumerate(
+                zip(batch_texts, batch_token_ids, batch_token_spans, batch_logits, batch_indices)
+            ):
+                rows: list[dict[str, object]] = []
+
+                # Create a row for each token position
+                for token_index, token_id in enumerate(token_ids):
+                    # Get prefix tokens (up to context_width)
+                    prefix_tokens = token_ids[max(0, token_index - context_width) : token_index]
+
+                    # Get logits for this position
+                    position_logits = logits_tensor[token_index]
+
+                    # Get token span
+                    token_start, token_end = token_spans[token_index]
+
+                    # Create row
+                    rows.append(
+                        {
+                            "prefix_tokens": list(prefix_tokens),
+                            "next_token": token_id,
+                            "teacher_logits": position_logits.tolist(),
+                            "entropy": _compute_entropy(position_logits),
+                            "token_text": text[token_start:token_end],
+                            "token_start": token_start,
+                            "token_end": token_end,
+                            "token_index": token_index,
+                        }
+                    )
+
+                # Store results in original order
+                results[original_idx] = rows
+
+    # Verify all results were filled
+    assert all(r is not None for r in results), "Internal error: some results were not filled"
+
+    return results  # type: ignore[return-value]
