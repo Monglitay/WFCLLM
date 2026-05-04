@@ -391,3 +391,183 @@ def test_batch_forward_all_positions_no_grad(mock_tokenizer):
     # Verify forward pass happened with gradients disabled
     assert len(grad_enabled_during_forward) == 1
     assert grad_enabled_during_forward[0] is False
+
+
+# ============================================================================
+# Task 3: Dynamic Batch Sizing and Length Grouping
+# ============================================================================
+
+
+def test_group_texts_by_length_returns_groups(mock_tokenizer):
+    """Test that _group_texts_by_length returns list of groups."""
+    from wfcllm.watermark.token_channel.teacher import _group_texts_by_length
+
+    texts = ["short", "medium text", "another short", "very long text here"]
+
+    groups = _group_texts_by_length(texts, mock_tokenizer, tolerance=0.2)
+
+    assert isinstance(groups, list)
+    assert len(groups) > 0
+    assert all(isinstance(group, list) for group in groups)
+
+
+def test_group_texts_by_length_groups_similar_lengths(mock_tokenizer):
+    """Test that texts with similar lengths are grouped together."""
+    from wfcllm.watermark.token_channel.teacher import _group_texts_by_length
+
+    # Create a tokenizer that returns different lengths
+    class LengthTokenizer:
+        def __init__(self):
+            self.bos_token_id = 0
+
+        def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+            # Return length proportional to text length
+            return list(range(len(text)))
+
+    tokenizer = LengthTokenizer()
+
+    # Texts with clearly different lengths
+    texts = ["a", "bb", "ccc", "d", "ee", "ffff"]  # lengths: 1, 2, 3, 1, 2, 4
+
+    groups = _group_texts_by_length(texts, tokenizer, tolerance=0.3)
+
+    # Should have multiple groups
+    assert len(groups) >= 2
+
+    # Each group should contain (index, text) tuples
+    for group in groups:
+        assert all(isinstance(item, tuple) and len(item) == 2 for item in group)
+        assert all(isinstance(item[0], int) and isinstance(item[1], str) for item in group)
+
+    # Verify texts with length 1 are grouped together
+    length_1_indices = {idx for group in groups for idx, text in group if len(text) == 1}
+    assert 0 in length_1_indices and 3 in length_1_indices
+
+
+def test_group_texts_by_length_respects_tolerance(mock_tokenizer):
+    """Test that tolerance parameter controls grouping."""
+    from wfcllm.watermark.token_channel.teacher import _group_texts_by_length
+
+    class LengthTokenizer:
+        def __init__(self):
+            self.bos_token_id = 0
+
+        def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+            return list(range(len(text)))
+
+    tokenizer = LengthTokenizer()
+    texts = ["a" * 10, "b" * 11, "c" * 20]  # lengths: 10, 11, 20
+
+    # With high tolerance, should group 10 and 11 together
+    groups_high = _group_texts_by_length(texts, tokenizer, tolerance=0.5)
+
+    # With low tolerance, 10 and 11 might be separate
+    groups_low = _group_texts_by_length(texts, tokenizer, tolerance=0.05)
+
+    # High tolerance should produce fewer or equal groups
+    assert len(groups_high) <= len(groups_low)
+
+
+def test_group_texts_by_length_empty_input(mock_tokenizer):
+    """Test that empty input returns empty list."""
+    from wfcllm.watermark.token_channel.teacher import _group_texts_by_length
+
+    texts = []
+    groups = _group_texts_by_length(texts, mock_tokenizer, tolerance=0.2)
+
+    assert groups == []
+
+
+def test_group_texts_by_length_single_text(mock_tokenizer):
+    """Test that single text returns one group."""
+    from wfcllm.watermark.token_channel.teacher import _group_texts_by_length
+
+    texts = ["single text"]
+    groups = _group_texts_by_length(texts, mock_tokenizer, tolerance=0.2)
+
+    assert len(groups) == 1
+    assert len(groups[0]) == 1
+    assert groups[0][0] == (0, "single text")
+
+
+def test_compute_dynamic_batch_size_scales_with_length():
+    """Test that batch size decreases as sequence length increases."""
+    from wfcllm.watermark.token_channel.teacher import _compute_dynamic_batch_size
+
+    available_memory = 20.0  # 20 GB
+    base_batch_size = 32
+
+    # Short sequences should allow larger batch
+    batch_short = _compute_dynamic_batch_size(
+        max_length=50,
+        base_batch_size=base_batch_size,
+        available_memory_gb=available_memory
+    )
+
+    # Long sequences should use smaller batch
+    batch_long = _compute_dynamic_batch_size(
+        max_length=500,
+        base_batch_size=base_batch_size,
+        available_memory_gb=available_memory
+    )
+
+    assert batch_short > batch_long
+    assert isinstance(batch_short, int)
+    assert isinstance(batch_long, int)
+
+
+def test_compute_dynamic_batch_size_respects_min_constraint():
+    """Test that batch size never goes below minimum."""
+    from wfcllm.watermark.token_channel.teacher import _compute_dynamic_batch_size
+
+    # Very long sequence with limited memory
+    batch_size = _compute_dynamic_batch_size(
+        max_length=10000,
+        base_batch_size=32,
+        available_memory_gb=1.0
+    )
+
+    # Should be at least 4
+    assert batch_size >= 4
+
+
+def test_compute_dynamic_batch_size_respects_max_constraint():
+    """Test that batch size never exceeds maximum."""
+    from wfcllm.watermark.token_channel.teacher import _compute_dynamic_batch_size
+
+    base_batch_size = 32
+
+    # Very short sequence with lots of memory
+    batch_size = _compute_dynamic_batch_size(
+        max_length=10,
+        base_batch_size=base_batch_size,
+        available_memory_gb=100.0
+    )
+
+    # Should not exceed base_batch_size * 2
+    assert batch_size <= base_batch_size * 2
+
+
+def test_get_available_memory_gb_returns_float(mock_model):
+    """Test that _get_available_memory_gb returns a float."""
+    from wfcllm.watermark.token_channel.teacher import _get_available_memory_gb
+
+    memory = _get_available_memory_gb(mock_model)
+
+    assert isinstance(memory, float)
+    assert memory > 0
+
+
+def test_get_available_memory_gb_fallback():
+    """Test that _get_available_memory_gb falls back to default when CUDA unavailable."""
+    from wfcllm.watermark.token_channel.teacher import _get_available_memory_gb
+
+    # Mock model without CUDA
+    class CPUModel:
+        pass
+
+    model = CPUModel()
+    memory = _get_available_memory_gb(model)
+
+    # Should return fallback value
+    assert memory == 20.0

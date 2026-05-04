@@ -414,3 +414,138 @@ def _batch_forward_all_positions(
         results[batch_idx] = seq_logits.detach().cpu().to(dtype=torch.float32)
 
     return results
+
+
+def _group_texts_by_length(
+    texts: list[str],
+    tokenizer: object,
+    tolerance: float = 0.2,
+) -> list[list[tuple[int, str]]]:
+    """Group texts by similar token length to reduce padding waste.
+
+    Args:
+        texts: List of text strings to group
+        tokenizer: Tokenizer to compute token lengths
+        tolerance: Maximum relative length difference within a group (default 0.2 = 20%)
+
+    Returns:
+        List of groups, where each group is a list of (original_index, text) tuples.
+        Texts within each group have similar token lengths (within tolerance).
+    """
+    if not texts:
+        return []
+
+    # Compute token lengths for all texts
+    text_lengths: list[tuple[int, str, int]] = []
+    for idx, text in enumerate(texts):
+        token_ids = _encode_text(tokenizer, text)
+        text_lengths.append((idx, text, len(token_ids)))
+
+    # Sort by length
+    text_lengths.sort(key=lambda x: x[2])
+
+    # Group by similar lengths
+    groups: list[list[tuple[int, str]]] = []
+    current_group: list[tuple[int, str]] = []
+    current_base_length: int | None = None
+
+    for idx, text, length in text_lengths:
+        if current_base_length is None:
+            # Start first group
+            current_base_length = length
+            current_group.append((idx, text))
+        else:
+            # Check if this text fits in current group
+            if current_base_length == 0:
+                # Special case: zero-length texts always group together
+                if length == 0:
+                    current_group.append((idx, text))
+                else:
+                    # Start new group for non-zero length
+                    groups.append(current_group)
+                    current_group = [(idx, text)]
+                    current_base_length = length
+            else:
+                # Normal case: check relative difference
+                relative_diff = abs(length - current_base_length) / current_base_length
+                if relative_diff <= tolerance:
+                    current_group.append((idx, text))
+                else:
+                    # Start new group
+                    groups.append(current_group)
+                    current_group = [(idx, text)]
+                    current_base_length = length
+
+    # Add final group
+    if current_group:
+        groups.append(current_group)
+
+    return groups
+
+
+def _compute_dynamic_batch_size(
+    max_length: int,
+    base_batch_size: int,
+    available_memory_gb: float,
+) -> int:
+    """Compute dynamic batch size based on sequence length and available memory.
+
+    Args:
+        max_length: Maximum sequence length in the batch
+        base_batch_size: Base batch size for reference
+        available_memory_gb: Available GPU memory in GB
+
+    Returns:
+        Adjusted batch size (constrained to [4, base_batch_size * 2])
+    """
+    # Empirical formula: memory_per_token ≈ 0.5 MB for model parameters + activations
+    # This is a conservative estimate that accounts for:
+    # - Model parameters (shared across batch)
+    # - Activations (scales with batch_size * seq_len)
+    # - Gradients (not needed in inference, but buffer overhead exists)
+
+    if max_length == 0:
+        # Edge case: empty sequences
+        return base_batch_size * 2
+
+    # Use a more conservative formula that accounts for model overhead
+    # Available memory for activations = available_memory_gb * 0.7 (reserve 30% for model/overhead)
+    usable_memory_gb = available_memory_gb * 0.7
+    memory_mb = usable_memory_gb * 1024
+
+    # Memory per token in MB (includes hidden states, attention, etc.)
+    memory_per_token_mb = 0.5
+
+    # Compute ideal batch size
+    ideal_batch_size = int(memory_mb / (max_length * memory_per_token_mb))
+
+    # Apply constraints
+    min_batch_size = 4
+    max_batch_size = base_batch_size * 2
+
+    batch_size = max(min_batch_size, min(ideal_batch_size, max_batch_size))
+
+    return batch_size
+
+
+def _get_available_memory_gb(model: object) -> float:
+    """Get available GPU memory in GB.
+
+    Args:
+        model: Model to check device for
+
+    Returns:
+        Available GPU memory in GB, or 20.0 GB as fallback if cannot determine
+    """
+    try:
+        device = _resolve_module_device(model)
+        if device.type == "cuda" and torch.cuda.is_available():
+            # Get available memory on the model's device
+            device_index = device.index if device.index is not None else torch.cuda.current_device()
+            free_memory, total_memory = torch.cuda.mem_get_info(device_index)
+            return free_memory / (1024 ** 3)  # Convert bytes to GB
+    except Exception:
+        pass
+
+    # Fallback to default
+    return 20.0
