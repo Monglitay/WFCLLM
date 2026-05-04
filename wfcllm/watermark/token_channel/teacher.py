@@ -278,15 +278,10 @@ def _extract_single_text_all_positions(
         # We prepended bos, so positions 0..len(token_ids)-1 predict token_ids[0..len(token_ids)-1]
         result_logits = batch_logits[:len(token_ids)]
     else:
-        # No bos prepended, positions 0..len(token_ids)-2 predict token_ids[1..len(token_ids)-1]
-        # Position 0 predicts token_ids[1], so we skip the last position
-        result_logits = batch_logits[:len(token_ids) - 1]
-        # We need len(token_ids) rows, but only have len(token_ids)-1
-        # For the first token (no prefix), we need to handle it separately
-        # This case should use bos_token, so we'll raise an error
-        if len(token_ids) > 0:
-            raise ValueError(
-                "forward teacher models require tokenizer.bos_token_id for extracting all positions"
-            )
+        # No bos prepended - this path should not be used for batch extraction
+        # because we cannot predict the first token without a prefix
+        raise ValueError(
+            "forward teacher models require tokenizer.bos_token_id for extracting all positions"
+        )
 
     return result_logits.detach().cpu().to(dtype=torch.float32)
