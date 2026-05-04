@@ -661,14 +661,15 @@ def batch_extract_teacher_rows(
 
     # Setup progress tracking
     total_texts = len(texts)
+    processed_texts = 0
     text_iterator = (
-        tqdm(range(len(groups)), desc="        批量提取 teacher logits", leave=False, dynamic_ncols=True)
+        tqdm(total=total_texts, desc="        批量提取 teacher logits", leave=False, dynamic_ncols=True, unit="text")
         if show_progress and tqdm is not None
-        else range(len(groups))
+        else None
     )
 
     # Process each group
-    for group_idx in text_iterator:
+    for group_idx in range(len(groups)):
         group = groups[group_idx]
 
         # Extract indices and texts from group
@@ -736,6 +737,14 @@ def batch_extract_teacher_rows(
 
                 # Store results in original order
                 results[original_idx] = rows
+
+                # Update progress bar
+                if text_iterator is not None:
+                    text_iterator.update(1)
+
+    # Close progress bar
+    if text_iterator is not None:
+        text_iterator.close()
 
     # Verify all results were filled
     assert all(r is not None for r in results), "Internal error: some results were not filled"
