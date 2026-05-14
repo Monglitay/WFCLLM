@@ -45,3 +45,39 @@ def test_entropy_old_and_new_paths_share_symbols():
     new = importlib.import_module("wfcllm.watermark.adaptive_gamma.entropy")
     assert old.NodeEntropyEstimator is new.NodeEntropyEstimator
     assert old.ENTROPY_SCALE is new.ENTROPY_SCALE
+
+
+# --- profile: new path works ---
+
+def test_profile_new_path_importable_and_callable(tmp_path):
+    from wfcllm.watermark.adaptive_gamma.profile import EntropyProfile
+    profile = EntropyProfile(
+        language="python",
+        model_family="codet5",
+        quantiles_units_map={"p10": 1, "p50": 2, "p75": 3, "p90": 4, "p95": 5},
+    )
+    assert profile.quantile_units("p50") == 2
+
+
+# --- profile: old path is a deprecated shim ---
+
+def test_entropy_profile_old_path_emits_deprecation_warning():
+    sys.modules.pop("wfcllm.watermark.entropy_profile", None)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        module = importlib.import_module("wfcllm.watermark.entropy_profile")
+    assert any(
+        issubclass(w.category, DeprecationWarning)
+        and "wfcllm.watermark.adaptive_gamma.profile" in str(w.message)
+        for w in caught
+    )
+    assert hasattr(module, "EntropyProfile")
+
+
+def test_entropy_profile_old_and_new_paths_share_symbols():
+    sys.modules.pop("wfcllm.watermark.entropy_profile", None)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        old = importlib.import_module("wfcllm.watermark.entropy_profile")
+    new = importlib.import_module("wfcllm.watermark.adaptive_gamma.profile")
+    assert old.EntropyProfile is new.EntropyProfile
