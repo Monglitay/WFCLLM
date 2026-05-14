@@ -1,5 +1,7 @@
 """Tests for positive transformation rules."""
 
+import ast
+
 import pytest
 from wfcllm.common.transform.positive import get_all_positive_rules
 
@@ -55,6 +57,40 @@ class TestControlFlowRules:
         rule = BranchFlip()
         source = "if x > 0:\n    print('yes')\nelse:\n    print('no')"
         assert rule.can_apply(source)
+
+    @pytest.mark.parametrize(
+        ("rule_cls", "source"),
+        [
+            (
+                "LoopConvert",
+                "def run(n):\n"
+                "    for i in range(n):\n"
+                "        print(i)\n",
+            ),
+            (
+                "IterationConvert",
+                "def run(items):\n"
+                "    for item in items:\n"
+                "        print(item)\n",
+            ),
+            (
+                "BranchFlip",
+                "def run(flag):\n"
+                "    if flag:\n"
+                "        print('yes')\n"
+                "    else:\n"
+                "        print('no')\n",
+            ),
+        ],
+    )
+    def test_control_flow_rules_preserve_indentation(self, rule_cls, source):
+        from wfcllm.common.transform.positive import control_flow
+
+        rule = getattr(control_flow, rule_cls)()
+        result = rule.transform(source)
+
+        assert result is not None
+        ast.parse(result)
 
 
 class TestExpressionLogicRules:

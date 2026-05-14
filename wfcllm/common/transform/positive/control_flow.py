@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import textwrap
-
 from wfcllm.common.transform.base import Match, Rule, parse_code
 
 
@@ -38,12 +36,12 @@ class LoopConvert(Rule):
     def apply(self, source, matches):
         result = source
         for m in sorted(matches, key=lambda m: m.start_byte, reverse=True):
-            tree = parse_code(source)
+            tree = parse_code(result)
             # Re-find the node at this position
             node = self._find_for_node(tree.root_node, m.start_byte)
             if not node:
                 continue
-            replacement = self._convert_for_to_while(node, source)
+            replacement = self._convert_for_to_while(node, result)
             result = result[:m.start_byte] + replacement + result[m.end_byte:]
         return result
 
@@ -72,23 +70,16 @@ class LoopConvert(Rule):
             start_val = positional[0].text.decode("utf-8")
             end_val = positional[1].text.decode("utf-8")
 
-        # Get body content and its indentation
+        statement_indent = _line_indent(source, node.start_byte)
+        body_indent = _line_indent(source, body.start_byte)
         body_text = source[body.start_byte:body.end_byte]
-        # Detect indentation from first line of body
-        body_lines = body_text.split("\n")
-        indent = ""
-        for ch in body_lines[0]:
-            if ch in (" ", "\t"):
-                indent += ch
-            else:
-                break
 
         # Build while loop
         lines = [
             f"{var_name} = {start_val}",
-            f"while {var_name} < {end_val}:",
-            body_text,
-            f"{indent}{var_name} += 1",
+            f"{statement_indent}while {var_name} < {end_val}:",
+            _reindent_block(body_text, original_indent=body_indent, target_indent=body_indent),
+            f"{body_indent}{var_name} += 1",
         ]
         return "\n".join(lines)
 
@@ -129,20 +120,18 @@ class IterationConvert(Rule):
 
             var_name = left.text.decode("utf-8")
             iterable = right.text.decode("utf-8")
+            statement_indent = _line_indent(result, node.start_byte)
+            body_indent = _line_indent(result, body.start_byte)
             body_text = result[body.start_byte:body.end_byte]
 
-            # Detect indentation
-            body_lines = body_text.split("\n")
-            indent = ""
-            for ch in body_lines[0]:
-                if ch in (" ", "\t"):
-                    indent += ch
-                else:
-                    break
-
             idx_var = "_i"
-            new_body = f"{indent}{var_name} = {iterable}[{idx_var}]\n{body_text}"
-            replacement = f"for {idx_var} in range(len({iterable})):\n{new_body}"
+            replacement = "\n".join(
+                [
+                    f"for {idx_var} in range(len({iterable})):",
+                    f"{body_indent}{var_name} = {iterable}[{idx_var}]",
+                    _reindent_block(body_text, original_indent=body_indent, target_indent=body_indent),
+                ]
+            )
             result = result[:node.start_byte] + replacement + result[node.end_byte:]
         return result
 
@@ -237,10 +226,28 @@ class BranchFlip(Rule):
                         return
 
                     cond_text = condition.text.decode("utf-8")
+                    statement_indent = _line_indent(source, node.start_byte)
+                    if_indent = _line_indent(source, consequence.start_byte)
+                    else_indent = _line_indent(source, else_body_node.start_byte)
                     if_body = source[consequence.start_byte:consequence.end_byte]
                     else_body = source[else_body_node.start_byte:else_body_node.end_byte]
 
-                    replacement = f"if not {cond_text}:\n{else_body}\nelse:\n{if_body}"
+                    replacement = "\n".join(
+                        [
+                            f"if not {cond_text}:",
+                            _reindent_block(
+                                else_body,
+                                original_indent=else_indent,
+                                target_indent=else_indent,
+                            ),
+                            f"{statement_indent}else:",
+                            _reindent_block(
+                                if_body,
+                                original_indent=if_indent,
+                                target_indent=if_indent,
+                            ),
+                        ]
+                    )
                     matches.append(Match(
                         "if_statement", node.start_byte, node.end_byte,
                         source[node.start_byte:node.end_byte], replacement))
@@ -254,3 +261,24 @@ class BranchFlip(Rule):
         for m in sorted(matches, key=lambda m: m.start_byte, reverse=True):
             result = result[:m.start_byte] + m.replacement_text + result[m.end_byte:]
         return result
+
+
+def _line_indent(source: str, offset: int) -> str:
+    line_start = source.rfind("\n", 0, offset) + 1
+    return source[line_start:offset]
+
+
+def _reindent_block(
+    block_text: str,
+    *,
+    original_indent: str,
+    target_indent: str,
+) -> str:
+    lines = block_text.split("\n")
+    normalized_lines: list[str] = []
+    for index, line in enumerate(lines):
+        relative_line = line
+        if index > 0 and line.startswith(original_indent):
+            relative_line = line[len(original_indent):]
+        normalized_lines.append(f"{target_indent}{relative_line}" if relative_line else "")
+    return "\n".join(normalized_lines)
