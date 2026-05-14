@@ -66,3 +66,43 @@ def test_parse_optional_bool_true():
 def test_parse_optional_bool_false():
     assert parse_optional_bool("false") is False
     assert parse_optional_bool("0") is False
+
+
+# --- entry.main tests ---
+
+from wfcllm.cli.entry import main, _populate_phase_registry
+
+
+def test_populate_phase_registry_registers_all_phases():
+    from wfcllm.orchestration.phase_registry import PhaseRegistry
+    from wfcllm.orchestration.state import ALL_PHASES
+    reg = PhaseRegistry()
+    _populate_phase_registry(reg)
+    for phase in ALL_PHASES:
+        # Don't call — runners need real configs. Just verify registration.
+        assert phase in reg.phases()
+
+
+def test_main_status_returns_zero(tmp_path, monkeypatch, capsys):
+    # Redirect run_state.json to tmp
+    state_path = tmp_path / "rs.json"
+    monkeypatch.setattr(
+        "wfcllm.cli.entry.DEFAULT_STATE_FILE",
+        state_path,
+    )
+    rc = main(["--status"])
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "阶段状态" in captured.out
+
+
+def test_main_reset_returns_zero(tmp_path, monkeypatch, capsys):
+    state_path = tmp_path / "rs.json"
+    monkeypatch.setattr(
+        "wfcllm.cli.entry.DEFAULT_STATE_FILE",
+        state_path,
+    )
+    rc = main(["--reset"])
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "已重置" in captured.out

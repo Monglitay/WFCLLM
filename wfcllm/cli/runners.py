@@ -76,6 +76,21 @@ def has_explicit_extract_input(args: argparse.Namespace) -> bool:
     return bool(getattr(args, "input_file", None) or configured_extract_input(args))
 
 
+def validate_compare_only_mode(args: argparse.Namespace) -> str | None:
+    """Return an error string if compare-only flags are used incorrectly, else None."""
+    compare_flags = COMPARE_ONLY_REQUIRED_FLAGS + COMPARE_ONLY_OPTIONAL_WATERMARKED_FLAGS
+    if not any(getattr(args, flag, None) for flag in compare_flags):
+        return None
+    if args.phase != "extract":
+        return "[错误] compare-only 模式仅支持 --phase extract"
+    if not is_compare_only_mode(args):
+        return (
+            "[错误] compare-only 模式要求提供左右 summary/details 和 compare-output；"
+            "watermarked 必须两侧同时提供或同时省略"
+        )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Per-phase runner functions
 # ---------------------------------------------------------------------------

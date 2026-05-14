@@ -83,6 +83,7 @@ from wfcllm.cli.runners import (  # noqa: E402
     configured_extract_input,
     is_compare_only_mode,
     has_explicit_extract_input,
+    validate_compare_only_mode,
     COMPARE_ONLY_REQUIRED_FLAGS,
     COMPARE_ONLY_OPTIONAL_WATERMARKED_FLAGS,
 )
@@ -158,16 +159,6 @@ def should_skip_completed_phase(args: argparse.Namespace, phase: str, state: Run
         return False
     return True
 
-
-def validate_compare_only_mode(args: argparse.Namespace) -> str | None:
-    compare_flags = COMPARE_ONLY_REQUIRED_FLAGS + COMPARE_ONLY_OPTIONAL_WATERMARKED_FLAGS
-    if not any(getattr(args, flag, None) for flag in compare_flags):
-        return None
-    if args.phase != "extract":
-        return "[错误] compare-only 模式仅支持 --phase extract"
-    if not is_compare_only_mode(args):
-        return "[错误] compare-only 模式要求提供左右 summary/details 和 compare-output；watermarked 必须两侧同时提供或同时省略"
-    return None
 
 
 def main() -> int:
