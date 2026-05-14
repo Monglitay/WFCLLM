@@ -106,3 +106,42 @@ def test_main_reset_returns_zero(tmp_path, monkeypatch, capsys):
     assert rc == 0
     captured = capsys.readouterr()
     assert "已重置" in captured.out
+
+
+def test_main_compare_only_mode_forces_phase_rerun(tmp_path, monkeypatch, capsys):
+    """Compare-only mode should bypass the 'phase already done → skip' optimization."""
+    state_path = tmp_path / "rs.json"
+    monkeypatch.setattr("wfcllm.cli.entry.DEFAULT_STATE_FILE", state_path)
+
+    # Pre-mark extract as done in the state file
+    from wfcllm.orchestration.state import RunStateManager
+    RunStateManager(path=state_path).mark_done("extract", details_file="prior.jsonl")
+
+    # Replace the extract runner with a sentinel so we can assert it WAS called
+    called = []
+    def sentinel_runner(args, state):
+        called.append("extract")
+        return 0
+
+    # Patch the name in entry.py's module namespace so _populate_phase_registry
+    # registers the sentinel (entry.py imports run_extract by name at module level;
+    # _populate_phase_registry references that module-level name when registering).
+    monkeypatch.setattr("wfcllm.cli.entry.run_extract", sentinel_runner)
+
+    # Construct compare-only CLI invocation
+    argv = [
+        "--phase", "extract",
+        "--compare-summary-left", str(tmp_path / "sl.json"),
+        "--compare-details-left", str(tmp_path / "dl.jsonl"),
+        "--compare-summary-right", str(tmp_path / "sr.json"),
+        "--compare-details-right", str(tmp_path / "dr.jsonl"),
+        "--compare-output", str(tmp_path / "out.json"),
+    ]
+    from wfcllm.cli.entry import main
+    rc = main(argv)
+
+    # If the fix is in place, runner gets called despite extract being done.
+    assert called == ["extract"], (
+        "compare-only mode failed to bypass skip — extract should have been re-run"
+    )
+    assert rc == 0

@@ -74,6 +74,11 @@ def main(argv: list[str] | None = None) -> int:
         print(compare_only_error, file=sys.stderr)
         return 1
 
+    # Preserve original run.py behavior: compare-only mode bypasses the "phase done → skip"
+    # optimization since the user is supplying new compare-source files for this run.
+    if is_compare_only_mode(args):
+        args.force = True
+
     # Cache the loaded config on args for downstream helpers (matches old behavior).
     setattr(args, "_config_cache", load_config(args.config))
 
