@@ -134,3 +134,84 @@ def test_gamma_schedule_old_and_new_paths_share_symbols():
     new = importlib.import_module("wfcllm.watermark.adaptive_gamma.schedule")
     for name in ("GammaResolution", "PiecewiseQuantileSchedule", "quantize_gamma"):
         assert getattr(old, name) is getattr(new, name), name
+
+
+# --- calibrate: new path works ---
+
+def test_calibrate_new_path_writes_profile(tmp_path):
+    from wfcllm.watermark.adaptive_gamma.calibrate import build_entropy_profile_from_log
+    log_path = tmp_path / "wm.log"
+    log_path.write_text(
+        "\n".join(
+            f"wfcllm.watermark.generator DEBUG entropy={value:.4f}"
+            for value in (0.12, 0.24, 0.36, 0.48, 0.60)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    out_path = tmp_path / "profile.json"
+    build_entropy_profile_from_log(
+        input_log=log_path,
+        output=out_path,
+        language="python",
+        model_family="codet5-base",
+    )
+    import json
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert payload["language"] == "python"
+    assert payload["model_family"] == "codet5-base"
+    assert payload["sample_count"] == 5
+    assert payload["quantiles_units"]["p10"] == 1200
+    assert payload["quantiles_units"]["p95"] == 6000
+
+
+def test_calibrate_raises_when_log_has_no_entropy_lines(tmp_path):
+    from wfcllm.watermark.adaptive_gamma.calibrate import build_entropy_profile_from_log
+    log_path = tmp_path / "empty.log"
+    log_path.write_text("nothing here\n", encoding="utf-8")
+    out_path = tmp_path / "profile.json"
+    with pytest.raises(ValueError, match="No entropy=<float> entries"):
+        build_entropy_profile_from_log(
+            input_log=log_path,
+            output=out_path,
+            language="python",
+            model_family="codet5-base",
+        )
+
+
+def test_calibrate_persists_profile_id_when_provided(tmp_path):
+    from wfcllm.watermark.adaptive_gamma.calibrate import build_entropy_profile_from_log
+    log_path = tmp_path / "wm.log"
+    log_path.write_text("entropy=0.5\n", encoding="utf-8")
+    out_path = tmp_path / "profile.json"
+    build_entropy_profile_from_log(
+        input_log=log_path,
+        output=out_path,
+        language="python",
+        model_family="codet5-base",
+        profile_id="my-profile-v1",
+    )
+    import json
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert payload["profile_id"] == "my-profile-v1"
+
+
+def test_calibrate_loadable_by_entropy_profile(tmp_path):
+    """The output JSON must be loadable by EntropyProfile.load."""
+    from wfcllm.watermark.adaptive_gamma.calibrate import build_entropy_profile_from_log
+    from wfcllm.watermark.adaptive_gamma.profile import EntropyProfile
+    log_path = tmp_path / "wm.log"
+    log_path.write_text(
+        "\n".join(f"entropy={v:.4f}" for v in (0.1, 0.2, 0.3, 0.4, 0.5)) + "\n",
+        encoding="utf-8",
+    )
+    out_path = tmp_path / "profile.json"
+    build_entropy_profile_from_log(
+        input_log=log_path,
+        output=out_path,
+        language="python",
+        model_family="codet5-base",
+    )
+    profile = EntropyProfile.load(out_path)
+    assert profile.language == "python"
+    assert profile.quantile_units("p50") > 0
