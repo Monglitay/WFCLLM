@@ -36,3 +36,33 @@ def test_parser_secret_key_override():
     parser = build_parser()
     args = parser.parse_args(["--secret-key", "abc"])
     assert args.secret_key == "abc"
+
+
+# --- config_resolver tests ---
+
+import json
+from pathlib import Path
+from wfcllm.cli.config_resolver import load_config, parse_optional_bool
+
+
+def test_load_config_reads_json(tmp_path):
+    cfg_path = tmp_path / "test.json"
+    cfg_path.write_text(json.dumps({"encoder": {"lr": 1e-4}}))
+    cfg = load_config(cfg_path)
+    assert cfg == {"encoder": {"lr": 1e-4}}
+
+
+def test_load_config_missing_file_returns_empty():
+    cfg = load_config(Path("/nonexistent/path.json"))
+    assert cfg == {}
+
+
+def test_parse_optional_bool_true():
+    assert parse_optional_bool("true") is True
+    assert parse_optional_bool("TRUE") is True
+    assert parse_optional_bool("1") is True
+
+
+def test_parse_optional_bool_false():
+    assert parse_optional_bool("false") is False
+    assert parse_optional_bool("0") is False

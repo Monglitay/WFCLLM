@@ -32,8 +32,9 @@ def test_load_config_missing_phase_ok(tmp_path):
 
 
 def test_load_config_file_not_found(tmp_path):
-    with pytest.raises(SystemExit):
-        load_config(tmp_path / "nonexistent.json")
+    # load_config now returns {} for missing files (graceful library behavior)
+    result = load_config(tmp_path / "nonexistent.json")
+    assert result == {}
 
 
 def test_load_config_invalid_json(tmp_path):

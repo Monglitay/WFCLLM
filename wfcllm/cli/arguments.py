@@ -8,12 +8,12 @@ import argparse
 from pathlib import Path
 
 from wfcllm.orchestration.state import ALL_PHASES
+from wfcllm.cli.config_resolver import parse_optional_bool
 
 DEFAULT_CONFIG_FILE = Path("configs/base_config.json")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    from run import parse_optional_bool  # deferred import to avoid circular dep
     parser = argparse.ArgumentParser(
         description="WFCLLM 统一运行入口",
         formatter_class=argparse.RawDescriptionHelpFormatter,
