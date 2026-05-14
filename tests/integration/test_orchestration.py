@@ -126,3 +126,116 @@ def test_prereq_registry_is_module_singleton():
     reg_b = PrereqRegistry()
     assert "watermark" in reg_b._by_phase
     reg_b.clear()  # cleanup for other tests
+
+
+# --- PhaseOrchestrator tests ---
+
+import argparse
+from wfcllm.orchestration.pipeline import PhaseOrchestrator
+
+
+def _make_args(**kwargs):
+    """Build minimal argparse.Namespace for orchestrator tests."""
+    defaults = dict(force=False, eval_only=False, phase=None, input_file=None)
+    defaults.update(kwargs)
+    ns = argparse.Namespace(**defaults)
+    # config cache hook used by has_explicit_extract_input
+    setattr(ns, "_config_cache", {"extract": {}})
+    return ns
+
+
+def test_orchestrator_runs_all_main_phases_when_phase_unspecified(tmp_path):
+    PrereqRegistry().clear()
+    state = RunStateManager(path=tmp_path / "rs.json")
+    ran = []
+
+    reg = PhaseRegistry()
+    for p in ("encoder", "watermark", "extract"):
+        reg.register(p, lambda a, s, name=p: (ran.append(name), 0)[1])
+
+    orch = PhaseOrchestrator(state=state, phase_registry=reg, prereq_registry=PrereqRegistry())
+    rc = orch.run(_make_args())
+    assert rc == 0
+    assert ran == ["encoder", "watermark", "extract"]
+
+
+def test_orchestrator_skips_completed_phase(tmp_path):
+    PrereqRegistry().clear()
+    state = RunStateManager(path=tmp_path / "rs.json")
+    state.mark_done("encoder")
+    ran = []
+    reg = PhaseRegistry()
+    reg.register("encoder", lambda a, s: (ran.append("encoder"), 0)[1])
+    reg.register("watermark", lambda a, s: (ran.append("watermark"), 0)[1])
+    reg.register("extract", lambda a, s: (ran.append("extract"), 0)[1])
+
+    orch = PhaseOrchestrator(state=state, phase_registry=reg, prereq_registry=PrereqRegistry())
+    rc = orch.run(_make_args())
+    assert rc == 0
+    assert ran == ["watermark", "extract"]
+
+
+def test_orchestrator_force_reruns_completed_phase(tmp_path):
+    PrereqRegistry().clear()
+    state = RunStateManager(path=tmp_path / "rs.json")
+    state.mark_done("encoder")
+    ran = []
+    reg = PhaseRegistry()
+    reg.register("encoder", lambda a, s: (ran.append("encoder"), 0)[1])
+    reg.register("watermark", lambda a, s: (ran.append("watermark"), 0)[1])
+    reg.register("extract", lambda a, s: (ran.append("extract"), 0)[1])
+
+    orch = PhaseOrchestrator(state=state, phase_registry=reg, prereq_registry=PrereqRegistry())
+    rc = orch.run(_make_args(force=True))
+    assert rc == 0
+    assert ran == ["encoder", "watermark", "extract"]
+
+
+def test_orchestrator_fails_fast_on_nonzero(tmp_path):
+    PrereqRegistry().clear()
+    state = RunStateManager(path=tmp_path / "rs.json")
+    ran = []
+    reg = PhaseRegistry()
+    reg.register("encoder", lambda a, s: (ran.append("encoder"), 0)[1])
+    reg.register("watermark", lambda a, s: (ran.append("watermark"), 7)[1])  # fail
+    reg.register("extract", lambda a, s: (ran.append("extract"), 0)[1])
+
+    orch = PhaseOrchestrator(state=state, phase_registry=reg, prereq_registry=PrereqRegistry())
+    rc = orch.run(_make_args())
+    assert rc == 7
+    assert ran == ["encoder", "watermark"]  # extract never runs
+
+
+def test_orchestrator_runs_single_phase_when_specified(tmp_path):
+    PrereqRegistry().clear()
+    state = RunStateManager(path=tmp_path / "rs.json")
+    ran = []
+    reg = PhaseRegistry()
+    for p in ("encoder", "watermark", "extract", "generate-negative"):
+        reg.register(p, lambda a, s, name=p: (ran.append(name), 0)[1])
+
+    orch = PhaseOrchestrator(state=state, phase_registry=reg, prereq_registry=PrereqRegistry())
+    rc = orch.run(_make_args(phase="generate-negative"))
+    assert rc == 0
+    assert ran == ["generate-negative"]
+
+
+def test_orchestrator_invokes_prereqs_before_phase(tmp_path):
+    PrereqRegistry().clear()
+    state = RunStateManager(path=tmp_path / "rs.json")
+    events = []
+
+    reg = PhaseRegistry()
+    reg.register("watermark", lambda a, s: (events.append("phase"), 0)[1])
+
+    preq = PrereqRegistry()
+    preq.register("watermark", Prereq(
+        name="dummy",
+        check=lambda cfg: False,                    # always missing
+        fix=lambda cfg, runner: events.append("prereq"),
+    ))
+
+    orch = PhaseOrchestrator(state=state, phase_registry=reg, prereq_registry=preq)
+    rc = orch.run(_make_args(phase="watermark"))
+    assert rc == 0
+    assert events == ["prereq", "phase"]
