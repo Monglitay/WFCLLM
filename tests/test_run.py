@@ -14,7 +14,7 @@ README_MD = PROJECT_ROOT / "README.md"
 # ── 将项目根目录加入 sys.path（如果需要）
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from run import ALL_PHASES, PHASES, RunState
+from wfcllm.orchestration.state import ALL_PHASES, PHASES, RunStateManager as RunState
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -86,7 +86,8 @@ class TestRunGenerateNegative:
 
     def test_run_generate_negative_missing_lm_model_path(self, tmp_path, neg_cfg_file):
         """run_generate_negative returns 1 when lm_model_path is missing."""
-        from run import run_generate_negative, RunState
+        from wfcllm.cli.runners import run_generate_negative
+        from wfcllm.orchestration.state import RunStateManager as RunState
 
         state = RunState(tmp_path / "state.json")
 
@@ -107,7 +108,8 @@ class TestRunGenerateNegative:
         tmp_path,
     ):
         from unittest.mock import patch, MagicMock
-        from run import run_generate_negative, RunState
+        from wfcllm.cli.runners import run_generate_negative
+        from wfcllm.orchestration.state import RunStateManager as RunState
 
         cfg_path = tmp_path / "cfg.json"
         cfg_path.write_text(
@@ -145,7 +147,8 @@ class TestRunGenerateNegative:
     def test_run_generate_negative_calls_generator(self, tmp_path, neg_cfg_file):
         """run_generate_negative calls NegativeCorpusGenerator.run() and marks done."""
         from unittest.mock import patch, MagicMock
-        from run import run_generate_negative, RunState
+        from wfcllm.cli.runners import run_generate_negative
+        from wfcllm.orchestration.state import RunStateManager as RunState
 
         state = RunState(tmp_path / "state.json")
         out_jsonl = str(tmp_path / "neg.jsonl")
@@ -189,13 +192,13 @@ class TestCLI:
             assert "run.py" not in constants
 
     def test_build_parser_parses_resume_argument(self):
-        from run import build_parser
+        from wfcllm.cli.arguments import build_parser
 
         args = build_parser().parse_args(["--phase", "extract", "--resume", "latest"])
         assert args.resume == "latest"
 
     def test_build_parser_accepts_token_channel_flags(self):
-        from run import build_parser
+        from wfcllm.cli.arguments import build_parser
 
         args = build_parser().parse_args(
             [
@@ -221,7 +224,7 @@ class TestCLI:
         assert args.token_channel_joint_threshold == pytest.approx(5.0)
 
     def test_build_parser_accepts_token_channel_train_phase_and_flags(self):
-        from run import build_parser
+        from wfcllm.cli.arguments import build_parser
 
         args = build_parser().parse_args(
             [
@@ -265,25 +268,32 @@ class TestCLI:
         assert args.token_channel_split_ratio == pytest.approx(0.8)
         assert args.token_channel_seed == 7
 
-    def test_main_does_not_run_token_channel_train_by_default(self, monkeypatch):
-        import run
+    def test_main_does_not_run_token_channel_train_by_default(self, monkeypatch, tmp_path):
+        """Top-level main() should run only the 3 main phases when --phase is not specified."""
+        # Redirect state file so we start clean
+        state_path = tmp_path / "rs.json"
+        monkeypatch.setattr("wfcllm.cli.entry.DEFAULT_STATE_FILE", state_path)
 
+        # Fake each runner; capture which were called
         run_calls = []
+        def make_fake(name):
+            def fake(args, state):
+                run_calls.append(name)
+                return 0
+            return fake
 
-        def fake_run_phase(phase, args, state):
-            run_calls.append(phase)
-            return 0
+        monkeypatch.setattr("wfcllm.cli.entry.run_encoder", make_fake("encoder"))
+        monkeypatch.setattr("wfcllm.cli.entry.run_watermark", make_fake("watermark"))
+        monkeypatch.setattr("wfcllm.cli.entry.run_extract", make_fake("extract"))
+        monkeypatch.setattr("wfcllm.cli.entry.run_generate_negative", make_fake("generate-negative"))
+        monkeypatch.setattr("wfcllm.cli.entry.run_token_channel_train", make_fake("token-channel-train"))
 
-        monkeypatch.setattr(sys, "argv", ["run.py"])
-        monkeypatch.setattr(run, "run_phase", fake_run_phase)
-        monkeypatch.setattr(run, "should_skip_completed_phase", lambda args, phase, state: False)
-
-        assert run.main() == 0
+        from wfcllm.cli.entry import main
+        rc = main([])  # no flags = default 3-phase flow
+        assert rc == 0
         assert run_calls == ["encoder", "watermark", "extract"]
 
     def test_run_phase_dispatches_token_channel_train(self, tmp_path, monkeypatch):
-        import run
-
         state = RunState(tmp_path / "run_state.json")
         args = argparse.Namespace()
         seen = []
@@ -294,7 +304,8 @@ class TestCLI:
 
         monkeypatch.setattr("wfcllm.cli.runners.run_token_channel_train", fake_runner)
 
-        assert run.run_phase("token-channel-train", args, state) == 0
+        from wfcllm.cli.runners import run_phase
+        assert run_phase("token-channel-train", args, state) == 0
         assert seen == [(args, state)]
 
     def test_base_config_includes_token_channel_train_defaults(self):
@@ -318,7 +329,7 @@ class TestCLI:
         }
 
     def test_run_token_channel_train_loads_defaults_from_config(self, tmp_path, capsys):
-        from run import run_token_channel_train
+        from wfcllm.cli.runners import run_token_channel_train
         from wfcllm.watermark.token_channel.train import TokenChannelEpochMetrics
         from wfcllm.watermark.token_channel.train_workflow import TokenChannelTrainWorkflowSummary
         from unittest.mock import patch
@@ -405,7 +416,7 @@ class TestCLI:
         assert state.get("token-channel-train", "artifact_dir") == str(summary.artifact_dir)
 
     def test_run_token_channel_train_cli_overrides_dataset_inputs(self, tmp_path, capsys):
-        from run import run_token_channel_train
+        from wfcllm.cli.runners import run_token_channel_train
         from wfcllm.watermark.token_channel.train import TokenChannelEpochMetrics
         from wfcllm.watermark.token_channel.train_workflow import TokenChannelTrainWorkflowSummary
         from unittest.mock import patch
@@ -499,7 +510,7 @@ class TestCLI:
         assert "dataset: mbpp" in captured.out
 
     def test_run_token_channel_train_cli_overrides_model_path(self, tmp_path):
-        from run import run_token_channel_train
+        from wfcllm.cli.runners import run_token_channel_train
         from wfcllm.watermark.token_channel.train import TokenChannelEpochMetrics
         from wfcllm.watermark.token_channel.train_workflow import TokenChannelTrainWorkflowSummary
         from unittest.mock import patch
@@ -587,7 +598,7 @@ class TestCLI:
         assert seen_config.model_path == tmp_path / "override-model"
 
     def test_run_token_channel_train_applies_defaults_for_partial_custom_config(self, tmp_path):
-        from run import run_token_channel_train
+        from wfcllm.cli.runners import run_token_channel_train
         from wfcllm.watermark.token_channel.train import TokenChannelEpochMetrics
         from wfcllm.watermark.token_channel.train_workflow import TokenChannelTrainWorkflowSummary
         from unittest.mock import patch
@@ -675,7 +686,7 @@ class TestCLI:
         assert seen_config.seed == 0
 
     def test_run_token_channel_train_prints_summary_output(self, tmp_path, capsys):
-        from run import run_token_channel_train
+        from wfcllm.cli.runners import run_token_channel_train
         from wfcllm.watermark.token_channel.train import TokenChannelEpochMetrics
         from wfcllm.watermark.token_channel.train_workflow import TokenChannelTrainWorkflowSummary
         from unittest.mock import patch
@@ -764,7 +775,7 @@ class TestCLI:
         tmp_path,
         capsys,
     ):
-        from run import run_token_channel_train
+        from wfcllm.cli.runners import run_token_channel_train
         from wfcllm.watermark.token_channel.train import TokenChannelEpochMetrics
         from wfcllm.watermark.token_channel.train_workflow import TokenChannelTrainWorkflowSummary
         from unittest.mock import patch
@@ -853,7 +864,7 @@ class TestCLI:
         self,
         tmp_path,
     ):
-        from run import resolve_token_channel_train_config
+        from wfcllm.cli.runners import resolve_token_channel_train_config
 
         config_path = tmp_path / "config.json"
         config_path.write_text(
@@ -902,7 +913,7 @@ class TestCLI:
         assert train_cfg["seed"] == 0
 
     def test_run_token_channel_train_requires_merged_lm_model_path(self, tmp_path, capsys):
-        from run import run_token_channel_train
+        from wfcllm.cli.runners import run_token_channel_train
 
         config_path = tmp_path / "config.json"
         config_path.write_text(
@@ -941,7 +952,7 @@ class TestCLI:
         assert state.is_done("token-channel-train") is False
 
     def test_resolve_token_channel_train_config_rejects_non_object_section(self, tmp_path):
-        from run import resolve_token_channel_train_config
+        from wfcllm.cli.runners import resolve_token_channel_train_config
 
         config_path = tmp_path / "config.json"
         config_path.write_text(
@@ -970,7 +981,7 @@ class TestCLI:
             resolve_token_channel_train_config(args)
 
     def test_resolve_token_channel_train_config_rejects_invalid_split_ratio(self, tmp_path):
-        from run import resolve_token_channel_train_config
+        from wfcllm.cli.runners import resolve_token_channel_train_config
 
         config_path = tmp_path / "config.json"
         config_path.write_text(
@@ -999,7 +1010,7 @@ class TestCLI:
             resolve_token_channel_train_config(args)
 
     def test_resolve_token_channel_train_config_rejects_invalid_diversity_threshold(self, tmp_path):
-        from run import resolve_token_channel_train_config
+        from wfcllm.cli.runners import resolve_token_channel_train_config
 
         config_path = tmp_path / "config.json"
         config_path.write_text(
@@ -1028,7 +1039,7 @@ class TestCLI:
             resolve_token_channel_train_config(args)
 
     def test_resolve_token_channel_train_config_rejects_invalid_entropy_threshold(self, tmp_path):
-        from run import resolve_token_channel_train_config
+        from wfcllm.cli.runners import resolve_token_channel_train_config
 
         config_path = tmp_path / "config.json"
         config_path.write_text(
@@ -1057,7 +1068,7 @@ class TestCLI:
             resolve_token_channel_train_config(args)
 
     def test_resolve_token_channel_train_config_rejects_invalid_dataset(self, tmp_path):
-        from run import resolve_token_channel_train_config
+        from wfcllm.cli.runners import resolve_token_channel_train_config
 
         config_path = tmp_path / "config.json"
         config_path.write_text(
@@ -1102,7 +1113,7 @@ class TestCLI:
         field_value,
         expected_message,
     ):
-        from run import resolve_token_channel_train_config
+        from wfcllm.cli.runners import resolve_token_channel_train_config
 
         config_path = tmp_path / "config.json"
         config_path.write_text(
@@ -1131,7 +1142,7 @@ class TestCLI:
             resolve_token_channel_train_config(args)
 
     def test_resolve_token_channel_config_applies_cli_overrides(self):
-        from run import resolve_token_channel_config
+        from wfcllm.cli.config_resolver import resolve_token_channel_config
 
         args = argparse.Namespace(
             token_channel_enabled=True,
@@ -1183,7 +1194,7 @@ class TestCLI:
         assert resolved.joint_threshold == pytest.approx(5.0)
 
     def test_resolve_token_channel_config_preserves_value_error_for_invalid_joint_config(self):
-        from run import resolve_token_channel_config
+        from wfcllm.cli.config_resolver import resolve_token_channel_config
 
         args = argparse.Namespace(
             token_channel_enabled=True,
@@ -1273,7 +1284,7 @@ class TestCLI:
         assert result.returncode != 0
 
     def test_run_offline_analysis_writes_json_report(self, tmp_path):
-        from run import run_offline_analysis
+        from wfcllm.cli.runners import run_offline_analysis
 
         left_summary = tmp_path / "left_summary.json"
         right_summary = tmp_path / "right_summary.json"
@@ -1379,7 +1390,7 @@ class TestCLI:
         }
 
     def test_main_rejects_compare_only_mode_outside_extract_phase(self, monkeypatch, capsys):
-        import run as run_module
+        import wfcllm.cli.entry as run_module
 
         monkeypatch.setattr(
             sys,
@@ -1413,7 +1424,7 @@ class TestCLI:
         assert "extract" in stderr
 
     def test_main_compare_only_extract_bypasses_extract_prerequisites(self, tmp_path, monkeypatch):
-        import run as run_module
+        import wfcllm.cli.entry as run_module
 
         left_summary = tmp_path / "left_summary.json"
         right_summary = tmp_path / "right_summary.json"
@@ -1481,25 +1492,27 @@ class TestCLI:
         monkeypatch,
         capsys,
     ):
-        import run as run_module
+        import wfcllm.cli.entry as run_module
 
         input_file = tmp_path / "input.jsonl"
         input_file.write_text("{}\n", encoding="utf-8")
         called: list[str] = []
 
         class FakeState:
+            def __init__(self, path=None, **kwargs):
+                pass
+
             @staticmethod
             def is_done(phase: str) -> bool:
                 return phase == "extract"
 
-        def fake_run_phase(phase: str, args, state) -> int:
-            called.append(phase)
-            assert phase == "extract"
+        def fake_run_extract(args, state) -> int:
+            called.append("extract")
             assert args.input_file == str(input_file)
             return 0
 
-        monkeypatch.setattr(run_module, "RunState", FakeState)
-        monkeypatch.setattr(run_module, "run_phase", fake_run_phase)
+        monkeypatch.setattr("wfcllm.cli.entry.RunStateManager", FakeState)
+        monkeypatch.setattr("wfcllm.cli.entry.run_extract", fake_run_extract)
         monkeypatch.setattr(
             sys,
             "argv",
@@ -1525,7 +1538,7 @@ class TestCLI:
         monkeypatch,
         capsys,
     ):
-        import run as run_module
+        import wfcllm.cli.entry as run_module
 
         input_file = tmp_path / "input.jsonl"
         input_file.write_text("{}\n", encoding="utf-8")
@@ -1537,18 +1550,20 @@ class TestCLI:
         called: list[str] = []
 
         class FakeState:
+            def __init__(self, path=None, **kwargs):
+                pass
+
             @staticmethod
             def is_done(phase: str) -> bool:
                 return phase == "extract"
 
-        def fake_run_phase(phase: str, args, state) -> int:
-            called.append(phase)
-            assert phase == "extract"
+        def fake_run_extract(args, state) -> int:
+            called.append("extract")
             assert args.config == config_file
             return 0
 
-        monkeypatch.setattr(run_module, "RunState", FakeState)
-        monkeypatch.setattr(run_module, "run_phase", fake_run_phase)
+        monkeypatch.setattr("wfcllm.cli.entry.RunStateManager", FakeState)
+        monkeypatch.setattr("wfcllm.cli.entry.run_extract", fake_run_extract)
         monkeypatch.setattr(
             sys,
             "argv",
@@ -1659,7 +1674,7 @@ def test_run_extract_resolves_lsh_params_from_first_record():
 
 
 def test_run_extract_returns_error_on_invalid_first_record_json(tmp_path, capsys):
-    from run import run_extract
+    from wfcllm.cli.runners import run_extract
 
     class _State:
         @staticmethod
@@ -1696,7 +1711,7 @@ def test_run_extract_returns_error_on_invalid_first_record_json(tmp_path, capsys
 
 
 def test_run_extract_returns_error_on_invalid_first_record_lsh(tmp_path, capsys):
-    from run import run_extract
+    from wfcllm.cli.runners import run_extract
 
     class _State:
         @staticmethod

@@ -11,7 +11,7 @@ CONFIGS_DIR = PROJECT_ROOT / "configs"
 
 # run.py 在项目根目录，需加入 sys.path
 sys.path.insert(0, str(PROJECT_ROOT))
-from run import load_config
+from wfcllm.cli.config_resolver import load_config
 
 
 def test_load_config_returns_dict(tmp_path):
@@ -44,7 +44,7 @@ def test_load_config_invalid_json(tmp_path):
         load_config(f)
 
 
-from run import build_parser
+from wfcllm.cli.arguments import build_parser
 
 
 def test_parser_default_config():
@@ -123,7 +123,7 @@ def test_base_config_b_restores_humaneval_best_known_region():
     }
 
 def test_run_extract_uses_resolved_gamma_for_calibration(monkeypatch, tmp_path):
-    import run as run_module
+    import wfcllm.cli.runners as run_module
 
     captured: dict = {}
 
@@ -267,7 +267,7 @@ def test_run_extract_uses_resolved_gamma_for_calibration(monkeypatch, tmp_path):
 
 
 def test_run_watermark_parses_token_channel_from_config(monkeypatch, tmp_path):
-    import run as run_module
+    import wfcllm.cli.runners as run_module
 
     captured: dict = {}
 
@@ -361,7 +361,7 @@ def test_run_watermark_parses_token_channel_from_config(monkeypatch, tmp_path):
 
 
 def test_run_extract_parses_token_channel_from_config(monkeypatch, tmp_path):
-    import run as run_module
+    import wfcllm.cli.runners as run_module
 
     captured: dict = {}
 
@@ -483,7 +483,7 @@ def test_run_extract_parses_token_channel_from_config(monkeypatch, tmp_path):
 
 
 def test_run_watermark_rejects_non_object_token_channel_config(tmp_path, capsys):
-    import run as run_module
+    import wfcllm.cli.runners as run_module
 
     config_file = tmp_path / "cfg.json"
     config_file.write_text(
@@ -533,7 +533,7 @@ def test_run_extract_uses_adaptive_calibration_when_adaptive_detection_enabled(
     monkeypatch,
     tmp_path,
 ):
-    import run as run_module
+    import wfcllm.cli.runners as run_module
 
     captured: dict = {}
 
@@ -710,7 +710,7 @@ def test_run_extract_prefers_configured_fpr_when_cli_fpr_not_provided(
     monkeypatch,
     tmp_path,
 ):
-    import run as run_module
+    import wfcllm.cli.runners as run_module
 
     captured: dict = {}
 
@@ -842,7 +842,7 @@ def test_run_extract_allows_extract_only_validation_without_encoder_done(
     monkeypatch,
     tmp_path,
 ):
-    import run as run_module
+    import wfcllm.cli.runners as run_module
 
     captured: dict = {}
 
