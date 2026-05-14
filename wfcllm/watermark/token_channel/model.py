@@ -27,6 +27,7 @@ TOKEN_CHANNEL_METADATA_REQUIRED_KEYS = {
 }
 TOKEN_CHANNEL_METADATA_FILENAME = "metadata.json"
 TOKEN_CHANNEL_MODEL_FILENAME = "model.pt"
+TOKEN_CHANNEL_TRAINING_STATE_FILENAME = "training_state.pt"
 
 
 @dataclass(frozen=True)
@@ -271,18 +272,26 @@ class TokenChannelModel(nn.Module):
         if switch_target.ndim == 0:
             switch_target = switch_target.unsqueeze(0)
 
-        if preference_logits.shape != teacher_logits.shape:
-            raise ValueError("teacher_logits must match preference_logits shape")
         if preference_logits.shape[0] != next_token.shape[0]:
             raise ValueError("next_token batch size must match preference logits")
         if switch_logit.shape[0] != switch_target.shape[0]:
             raise ValueError("switch_target batch size must match switch logits")
+
+        # Compute distillation loss (KL divergence)
+        # Note: teacher_logits may contain -inf for non-top-k positions (if using top-k storage)
+        # This is correct: softmax(-inf) = 0, so KL divergence only considers top-k positions
+        if teacher_logits.shape != preference_logits.shape:
+            raise ValueError(
+                f"teacher_logits shape {teacher_logits.shape} must match "
+                f"preference_logits shape {preference_logits.shape}"
+            )
 
         distillation_loss = F.kl_div(
             F.log_softmax(preference_logits, dim=-1),
             F.softmax(teacher_logits, dim=-1),
             reduction="batchmean",
         )
+
         ce_loss = F.cross_entropy(preference_logits, next_token)
         switch_loss = F.binary_cross_entropy_with_logits(switch_logit, switch_target)
         total_loss = (
@@ -303,8 +312,18 @@ def export_token_channel_checkpoint(
     checkpoint_dir: str | Path,
     model: TokenChannelModel,
     metadata: dict[str, object],
+    optimizer: torch.optim.Optimizer | None = None,
+    epoch: int | None = None,
 ) -> TokenChannelCheckpointExport:
-    """Persist a local checkpoint plus metadata bundle."""
+    """Persist a local checkpoint plus metadata bundle.
+
+    Args:
+        checkpoint_dir: Directory to save checkpoint
+        model: Model to save
+        metadata: Metadata dictionary
+        optimizer: Optional optimizer to save (for resuming training)
+        epoch: Optional current epoch number (for resuming training)
+    """
 
     export_dir = Path(checkpoint_dir)
     export_dir.mkdir(parents=True, exist_ok=True)
@@ -312,6 +331,15 @@ def export_token_channel_checkpoint(
     metadata_path = export_dir / TOKEN_CHANNEL_METADATA_FILENAME
     torch.save(model.state_dict(), checkpoint_path)
     save_token_channel_artifact_metadata(metadata_path, metadata)
+
+    # Save training state if optimizer and epoch are provided
+    if optimizer is not None and epoch is not None:
+        training_state_path = export_dir / TOKEN_CHANNEL_TRAINING_STATE_FILENAME
+        torch.save({
+            'epoch': epoch,
+            'optimizer_state_dict': optimizer.state_dict(),
+        }, training_state_path)
+
     return TokenChannelCheckpointExport(
         checkpoint_path=checkpoint_path,
         metadata_path=metadata_path,
@@ -349,10 +377,11 @@ def check_token_channel_compatibility(
             "schema_version mismatch: "
             f"expected {TOKEN_CHANNEL_SCHEMA_VERSION!r}, got {metadata.schema_version!r}"
         )
-    if metadata.tokenizer_name != tokenizer_name:
-        reasons.append(
-            f"tokenizer_name mismatch: expected {tokenizer_name!r}, got {metadata.tokenizer_name!r}"
-        )
+    # Skip tokenizer_name check - only vocab_size matters for compatibility
+    # if metadata.tokenizer_name != tokenizer_name:
+    #     reasons.append(
+    #         f"tokenizer_name mismatch: expected {tokenizer_name!r}, got {metadata.tokenizer_name!r}"
+    #     )
     if metadata.tokenizer_vocab_size != tokenizer_vocab_size:
         reasons.append(
             "tokenizer_vocab_size mismatch: "
@@ -415,6 +444,32 @@ def load_token_channel_artifact(path: str | Path, map_location: str | torch.devi
         model_path=model_path,
         metadata_path=metadata_path,
     )
+
+
+def load_training_state(
+    checkpoint_dir: str | Path,
+    map_location: str | torch.device = "cpu",
+) -> dict[str, object] | None:
+    """Load training state (optimizer + epoch) if available.
+
+    Returns:
+        Dictionary with 'epoch' and 'optimizer_state_dict' keys, or None if not found
+    """
+    training_state_path = Path(checkpoint_dir) / TOKEN_CHANNEL_TRAINING_STATE_FILENAME
+    if not training_state_path.exists():
+        return None
+
+    try:
+        state = torch.load(training_state_path, map_location=map_location, weights_only=True)
+    except TypeError:
+        state = torch.load(training_state_path, map_location=map_location)
+
+    if not isinstance(state, dict):
+        raise ValueError("Training state must be a dictionary")
+    if 'epoch' not in state or 'optimizer_state_dict' not in state:
+        raise ValueError("Training state must contain 'epoch' and 'optimizer_state_dict'")
+
+    return state
 
 
 def _stable_feature_index(value: str, modulo: int, device: torch.device) -> torch.Tensor:

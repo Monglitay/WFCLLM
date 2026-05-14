@@ -9,6 +9,10 @@ import json
 from pathlib import Path
 
 import torch
+try:
+    from tqdm import tqdm
+except ImportError:
+    tqdm = None  # type: ignore[assignment]
 
 from wfcllm.watermark.token_channel.features import TokenChannelFeatures
 from wfcllm.watermark.token_channel.model import TokenChannelLossWeights
@@ -63,8 +67,16 @@ def build_token_channel_batch(
     *,
     context_width: int,
     device: torch.device | str = "cpu",
+    vocab_size: int | None = None,
 ) -> dict[str, torch.Tensor]:
-    """Convert persisted training rows into padded tensor batches."""
+    """Convert persisted training rows into padded tensor batches.
+
+    Args:
+        rows: List of training row dictionaries
+        context_width: Maximum prefix length
+        device: Target device for tensors
+        vocab_size: Vocabulary size (required if using top-k logits)
+    """
 
     if context_width <= 0:
         raise ValueError("context_width must be > 0")
@@ -85,7 +97,10 @@ def build_token_channel_batch(
         padded_prefix = [0] * (context_width - len(trimmed_prefix)) + trimmed_prefix
         prefix_tokens.append(padded_prefix)
         next_tokens.append(_require_int(row.get("next_token"), "next_token"))
-        teacher_logits.append(_require_numeric_list(row.get("teacher_logits"), "teacher_logits"))
+
+        # Reconstruct teacher logits from top-k format if needed
+        reconstructed_logits = _reconstruct_teacher_logits(row, vocab_size)
+        teacher_logits.append(reconstructed_logits)
         switch_targets.append(float(_require_binary_int(row.get("switch_target"), "switch_target")))
         feature_rows.append(TokenChannelFeatures.from_mapping(row).to_dict())
 
@@ -124,14 +139,26 @@ def train_one_epoch(
     train_batches: Iterable[dict[str, torch.Tensor]],
     validation_batches: Iterable[dict[str, torch.Tensor]],
     epoch: int,
+    total_epochs: int | None = None,
     features: TokenChannelFeatures | None = None,
     loss_weights: TokenChannelLossWeights | None = None,
 ) -> TokenChannelEpochMetrics:
     """Train and evaluate one epoch, returning validation evidence."""
 
+    display_total_epochs = total_epochs or epoch
     train_losses: list[float] = []
     switch_losses: list[float] = []
-    for batch in train_batches:
+    train_iterator = (
+        tqdm(
+            train_batches,
+            desc=f"Epoch {epoch}/{display_total_epochs} [train]",
+            leave=True,
+            dynamic_ncols=True,
+        )
+        if tqdm is not None
+        else train_batches
+    )
+    for batch in train_iterator:
         step_losses = run_training_step(
             model=model,
             optimizer=optimizer,
@@ -141,16 +168,36 @@ def train_one_epoch(
         )
         train_losses.append(step_losses["total_loss"])
         switch_losses.append(step_losses["switch_loss"])
+        if tqdm is not None:
+            train_iterator.set_postfix(
+                loss=f"{sum(train_losses) / len(train_losses):.4f}",
+                switch_loss=f"{sum(switch_losses) / len(switch_losses):.4f}",
+            )
 
-    validation_losses = [
-        evaluate_batch_loss(
-            model=model,
-            batch=batch,
-            features=features,
-            loss_weights=loss_weights,
-        )["total_loss"]
-        for batch in validation_batches
-    ]
+    validation_losses: list[float] = []
+    validation_iterator = (
+        tqdm(
+            validation_batches,
+            desc=f"Epoch {epoch}/{display_total_epochs} [val]",
+            leave=False,
+            dynamic_ncols=True,
+        )
+        if tqdm is not None
+        else validation_batches
+    )
+    for batch in validation_iterator:
+        validation_losses.append(
+            evaluate_batch_loss(
+                model=model,
+                batch=batch,
+                features=features,
+                loss_weights=loss_weights,
+            )["total_loss"]
+        )
+        if tqdm is not None:
+            validation_iterator.set_postfix(
+                val_loss=f"{sum(validation_losses) / len(validation_losses):.4f}",
+            )
     if not train_losses:
         raise ValueError("train_batches must not be empty")
     if not validation_losses:
@@ -304,6 +351,64 @@ def _feature_for_batch_row(feature_rows: object, index: int) -> TokenChannelFeat
     if index >= len(feature_rows):
         raise ValueError("feature_rows must match prefix_tokens batch size")
     return TokenChannelFeatures.from_mapping(feature_rows[index])
+
+
+def _reconstruct_teacher_logits(row: dict, vocab_size: int | None) -> list[float]:
+    """Reconstruct teacher logits from either full or top-k format.
+
+    Args:
+        row: Training row dictionary
+        vocab_size: Vocabulary size (required if using top-k format)
+
+    Returns:
+        List of teacher logits (full vocabulary size)
+    """
+    # Check if full logits are available
+    teacher_logits = row.get("teacher_logits")
+    if teacher_logits is not None:
+        # Full logits format
+        return _require_numeric_list(teacher_logits, "teacher_logits")
+
+    # Top-k format: reconstruct from values and indices
+    topk_values = row.get("teacher_logits_topk_values")
+    topk_indices = row.get("teacher_logits_topk_indices")
+
+    if topk_values is None or topk_indices is None:
+        raise ValueError(
+            "row must contain either 'teacher_logits' or both "
+            "'teacher_logits_topk_values' and 'teacher_logits_topk_indices'"
+        )
+
+    if vocab_size is None:
+        raise ValueError(
+            "vocab_size is required when reconstructing from top-k logits"
+        )
+
+    # Validate top-k data
+    if not isinstance(topk_values, list) or not isinstance(topk_indices, list):
+        raise ValueError("teacher_logits_topk_values and topk_indices must be lists")
+
+    if len(topk_values) != len(topk_indices):
+        raise ValueError(
+            f"teacher_logits_topk_values length ({len(topk_values)}) must match "
+            f"topk_indices length ({len(topk_indices)})"
+        )
+
+    # Reconstruct full logits with -inf for non-top-k positions
+    # Using -inf ensures softmax will assign ~0 probability to these positions
+    reconstructed = [float('-inf')] * vocab_size
+
+    for value, index in zip(topk_values, topk_indices):
+        if not isinstance(index, int) or isinstance(index, bool):
+            raise ValueError("teacher_logits_topk_indices must contain integers")
+        if index < 0 or index >= vocab_size:
+            raise ValueError(
+                f"teacher_logits_topk_indices contains invalid index {index} "
+                f"(vocab_size={vocab_size})"
+            )
+        reconstructed[index] = float(value)
+
+    return reconstructed
 
 
 def _require_int_list(value: object, field_name: str) -> list[int]:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import gc
 import json
 from pathlib import Path
 
@@ -24,14 +25,26 @@ TRAINING_CACHE_SCHEMA_VERSION = "token-channel-training-corpus/v1"
 def build_augmented_variants(
     source_code: str,
     transform_engine: TransformEngine | object | None = None,
+    max_variants: int | None = None,
 ) -> list[str]:
-    """Return the base sample plus positive semantic-equivalent variants."""
+    """Return the base sample plus positive semantic-equivalent variants.
+
+    Args:
+        source_code: Original source code
+        transform_engine: Optional transform engine
+        max_variants: Maximum number of variants to generate (including original).
+                     None means no limit. Default is None.
+    """
 
     variants = [source_code]
     engine = transform_engine or TransformEngine(rules=get_all_positive_rules())
     generated_variants = engine.generate_variants(source_code)
     seen_sources = {source_code}
     for variant in generated_variants:
+        # Stop if we've reached the limit
+        if max_variants is not None and len(variants) >= max_variants:
+            break
+
         if variant.get("sample_type") != "positive":
             continue
         transformed_source = variant.get("transformed_source")
@@ -54,15 +67,26 @@ def build_training_rows(
     entropy_threshold: float,
     diversity_threshold: int,
     teacher_batch_size: int = 16,
-) -> list[dict[str, object]]:
-    """Build offline supervised rows from base samples and positive variants."""
+    max_variants: int | None = None,
+    top_k_logits: int | None = 100,
+):
+    """Build offline supervised rows from base samples and positive variants.
+
+    Yields rows incrementally to support streaming writes and avoid memory buildup.
+
+    Args:
+        max_variants: Maximum number of variants per sample (including original).
+                     None means no limit. Set to a small number (e.g., 5) to reduce
+                     corpus size and training time.
+        top_k_logits: Only save top-k logits to reduce cache size. None means save all.
+                     Default is 100, which reduces cache size by ~99% with minimal
+                     performance impact.
+    """
 
     if context_width <= 0:
         raise ValueError("context_width must be > 0")
     if diversity_threshold <= 0:
         raise ValueError("diversity_threshold must be > 0")
-
-    rows: list[dict[str, object]] = []
 
     sample_iterator = (
         tqdm(samples, desc="      处理样本", unit="sample", dynamic_ncols=True)
@@ -81,6 +105,7 @@ def build_training_rows(
         variants = build_augmented_variants(
             source_code,
             transform_engine=transform_engine,
+            max_variants=max_variants,
         )
 
         # Filter out syntax-invalid variants and prepare feature contexts
@@ -96,6 +121,12 @@ def build_training_rows(
             except SyntaxError:
                 if tqdm is not None and hasattr(sample_iterator, 'set_postfix'):
                     sample_iterator.set_postfix({'variant': f'{variant_idx}/{len(variants)} (跳过-语法错误)'}, refresh=True)
+                continue
+            except ValueError as e:
+                # Skip variants that fail token alignment or other validation
+                if tqdm is not None and hasattr(sample_iterator, 'set_postfix'):
+                    error_type = "对齐错误" if "align" in str(e).lower() else "验证错误"
+                    sample_iterator.set_postfix({'variant': f'{variant_idx}/{len(variants)} (跳过-{error_type})'}, refresh=True)
                 continue
 
         # Determine if we can use batch inference
@@ -131,10 +162,26 @@ def build_training_rows(
                         token_start=token_start,
                         token_end=token_end,
                     )
+
+                    # Optionally save only top-k logits (by value) to reduce cache size
+                    teacher_logits_full = teacher_row["teacher_logits"]
+                    if top_k_logits is not None and len(teacher_logits_full) > top_k_logits:
+                        # Save top-k by value (not by position)
+                        import torch
+                        logits_tensor = torch.tensor(teacher_logits_full, dtype=torch.float32)
+                        topk_values, topk_indices = torch.topk(logits_tensor, k=top_k_logits)
+                        teacher_logits_values = topk_values.tolist()
+                        teacher_logits_indices = topk_indices.tolist()
+                    else:
+                        teacher_logits_values = None
+                        teacher_logits_indices = None
+
                     row = {
                         "prefix_tokens": list(teacher_row["prefix_tokens"]),
                         "next_token": teacher_row["next_token"],
-                        "teacher_logits": list(teacher_row["teacher_logits"]),
+                        "teacher_logits": list(teacher_logits_full) if top_k_logits is None or len(teacher_logits_full) <= top_k_logits else None,
+                        "teacher_logits_topk_values": teacher_logits_values,
+                        "teacher_logits_topk_indices": teacher_logits_indices,
                         "entropy": teacher_row["entropy"],
                         "continuation_diversity": 0,
                         "node_type": features.node_type,
@@ -147,6 +194,9 @@ def build_training_rows(
                     }
                     sample_rows.append(row)
                     continuation_sets[tuple(row["prefix_tokens"])].add(int(row["next_token"]))
+
+            # Explicitly release batch_teacher_rows memory after processing
+            del batch_teacher_rows
         else:
             # Fall back to sequential extraction for score_next models
             for variant_source, feature_context in valid_variants:
@@ -167,10 +217,26 @@ def build_training_rows(
                         token_start=token_start,
                         token_end=token_end,
                     )
+
+                    # Optionally save only top-k logits (by value) to reduce cache size
+                    teacher_logits_full = teacher_row["teacher_logits"]
+                    if top_k_logits is not None and len(teacher_logits_full) > top_k_logits:
+                        # Save top-k by value (not by position)
+                        import torch
+                        logits_tensor = torch.tensor(teacher_logits_full, dtype=torch.float32)
+                        topk_values, topk_indices = torch.topk(logits_tensor, k=top_k_logits)
+                        teacher_logits_values = topk_values.tolist()
+                        teacher_logits_indices = topk_indices.tolist()
+                    else:
+                        teacher_logits_values = None
+                        teacher_logits_indices = None
+
                     row = {
                         "prefix_tokens": list(teacher_row["prefix_tokens"]),
                         "next_token": teacher_row["next_token"],
-                        "teacher_logits": list(teacher_row["teacher_logits"]),
+                        "teacher_logits": list(teacher_logits_full) if top_k_logits is None or len(teacher_logits_full) <= top_k_logits else None,
+                        "teacher_logits_topk_values": teacher_logits_values,
+                        "teacher_logits_topk_indices": teacher_logits_indices,
                         "entropy": teacher_row["entropy"],
                         "continuation_diversity": 0,
                         "node_type": features.node_type,
@@ -194,9 +260,17 @@ def build_training_rows(
                 and float(row["entropy"]) >= entropy_threshold
                 and continuation_diversity >= diversity_threshold
             )
-        rows.extend(sample_rows)
+            # Yield each row immediately instead of accumulating
+            yield row
 
-    return rows
+        # Explicitly release sample-level memory after processing
+        del sample_rows
+        del continuation_sets
+        del valid_variants
+
+        # Force garbage collection every 10 samples to prevent memory buildup
+        if (samples.index(sample) + 1) % 10 == 0:
+            gc.collect()
 
 
 def save_training_cache(path: str | Path, rows: list[dict[str, object]]) -> None:
@@ -208,6 +282,78 @@ def save_training_cache(path: str | Path, rows: list[dict[str, object]]) -> None
         "rows": rows,
     }
     cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def save_training_cache_streaming(
+    path: str | Path,
+    rows_iterator,
+    *,
+    flush_interval: int = 500,  # Reduced from 5000 to 500 for better memory control
+) -> int:
+    """Persist corpus rows incrementally to avoid memory buildup.
+
+    Args:
+        path: Output cache file path
+        rows_iterator: Iterator yielding row dicts
+        flush_interval: Write to disk every N rows (default 500 for balanced performance/memory)
+
+    Returns:
+        Total number of rows written
+    """
+    cache_path = Path(path)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Write schema header
+    temp_path = cache_path.with_suffix('.tmp')
+    with open(temp_path, 'w', encoding='utf-8') as f:
+        f.write('{\n')
+        f.write(f'  "schema_version": "{TRAINING_CACHE_SCHEMA_VERSION}",\n')
+        f.write('  "rows": [\n')
+
+        row_count = 0
+        buffer = []
+
+        # Try to import tqdm for progress bar
+        try:
+            from tqdm import tqdm
+            rows_iterator = tqdm(rows_iterator, desc="写入训练缓存", unit="行", dynamic_ncols=True)
+        except ImportError:
+            pass
+
+        for row in rows_iterator:
+            buffer.append(row)
+            row_count += 1
+
+            # Flush buffer periodically
+            if len(buffer) >= flush_interval:
+                for i, buffered_row in enumerate(buffer):
+                    # Use compact JSON (no indent) for speed
+                    row_json = json.dumps(buffered_row, ensure_ascii=False, separators=(',', ':'))
+                    if row_count - len(buffer) + i > 0:
+                        f.write(',\n    ')
+                    else:
+                        f.write('    ')
+                    f.write(row_json)
+                f.flush()
+                buffer.clear()
+                # GC every flush to keep memory under control
+                gc.collect()
+
+        # Flush remaining buffer
+        for i, buffered_row in enumerate(buffer):
+            row_json = json.dumps(buffered_row, ensure_ascii=False, separators=(',', ':'))
+            if row_count - len(buffer) + i > 0:
+                f.write(',\n    ')
+            else:
+                f.write('    ')
+            f.write(row_json)
+
+        f.write('\n  ]\n')
+        f.write('}\n')
+
+    # Atomic rename
+    temp_path.replace(cache_path)
+    return row_count
 
 
 def load_training_cache(path: str | Path) -> list[dict[str, object]]:

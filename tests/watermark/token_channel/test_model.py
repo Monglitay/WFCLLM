@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from unittest.mock import patch
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -46,6 +47,8 @@ def _training_row(**overrides: object) -> dict[str, object]:
         "prefix_tokens": [1, 2],
         "next_token": 3,
         "teacher_logits": [0.1] * 8,
+        "teacher_logits_topk_values": None,
+        "teacher_logits_topk_indices": None,
         "switch_target": 1,
         "node_type": "if_statement",
         "parent_node_type": "block",
@@ -145,6 +148,7 @@ def test_build_token_channel_batch_converts_rows_to_tensors() -> None:
             _training_row(prefix_tokens=[4], next_token=2, teacher_logits=[0.2] * 8, switch_target=0),
         ],
         context_width=4,
+        vocab_size=8,
     )
 
     assert batch["prefix_tokens"].shape == (2, 4)
@@ -168,7 +172,46 @@ def test_build_token_channel_batch_rejects_malformed_row_types(
     message: str,
 ) -> None:
     with pytest.raises(ValueError, match=message):
-        build_token_channel_batch([row], context_width=4)
+        build_token_channel_batch([row], context_width=4, vocab_size=8)
+
+
+def test_build_token_channel_batch_reconstructs_topk_logits() -> None:
+    """Test that top-k logits are correctly reconstructed with -inf padding."""
+    # Create a row with top-k format
+    row = _training_row(
+        teacher_logits=None,  # No full logits
+        teacher_logits_topk_values=[0.9, 0.7, 0.5],  # Top-3 values
+        teacher_logits_topk_indices=[4, 2, 6],  # Corresponding indices
+    )
+
+    batch = build_token_channel_batch([row], context_width=4, vocab_size=8)
+
+    # Check that teacher_logits tensor has correct shape
+    assert batch["teacher_logits"].shape == (1, 8)
+
+    # Check that top-k positions have correct values
+    teacher_logits = batch["teacher_logits"][0].tolist()
+    assert teacher_logits[4] == pytest.approx(0.9)
+    assert teacher_logits[2] == pytest.approx(0.7)
+    assert teacher_logits[6] == pytest.approx(0.5)
+
+    # Check that non-top-k positions are -inf
+    assert teacher_logits[0] == float('-inf')
+    assert teacher_logits[1] == float('-inf')
+    assert teacher_logits[3] == float('-inf')
+    assert teacher_logits[5] == float('-inf')
+    assert teacher_logits[7] == float('-inf')
+
+
+def test_build_token_channel_batch_uses_full_logits_when_available() -> None:
+    """Test that full logits are used when available (no top-k)."""
+    row = _training_row(teacher_logits=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8])
+
+    batch = build_token_channel_batch([row], context_width=4, vocab_size=8)
+
+    # Check that teacher_logits match the full logits
+    teacher_logits = batch["teacher_logits"][0].tolist()
+    assert teacher_logits == pytest.approx([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8])
 
 
 def test_run_training_step_returns_loss_terms() -> None:
@@ -190,6 +233,7 @@ def test_run_training_step_returns_loss_terms() -> None:
             )
         ],
         context_width=4,
+        vocab_size=8,
     )
 
     losses = run_training_step(model=model, optimizer=optimizer, batch=batch, features=features)
@@ -240,6 +284,7 @@ def test_train_one_epoch_rejects_empty_train_batches() -> None:
     validation_batch = build_token_channel_batch(
         [_training_row(prefix_tokens=[1], next_token=2)],
         context_width=4,
+        vocab_size=8,
     )
 
     with pytest.raises(ValueError, match="train_batches"):
@@ -258,6 +303,7 @@ def test_train_one_epoch_rejects_empty_validation_batches() -> None:
     train_batch = build_token_channel_batch(
         [_training_row(prefix_tokens=[1], next_token=2)],
         context_width=4,
+        vocab_size=8,
     )
 
     with pytest.raises(ValueError, match="validation_batches"):
@@ -268,6 +314,71 @@ def test_train_one_epoch_rejects_empty_validation_batches() -> None:
             validation_batches=[],
             epoch=1,
         )
+
+
+def test_train_one_epoch_reports_train_and_validation_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import wfcllm.watermark.token_channel.train as train_module
+
+    progress_bars: list[SimpleNamespace] = []
+
+    class FakeTqdm:
+        def __init__(self, iterable, *, desc: str, **kwargs) -> None:
+            del kwargs
+            self._items = list(iterable)
+            self.desc = desc
+            self.postfixes: list[dict[str, object]] = []
+            progress_bars.append(SimpleNamespace(desc=desc, postfixes=self.postfixes))
+
+        def __iter__(self):
+            return iter(self._items)
+
+        def set_postfix(self, **kwargs) -> None:
+            self.postfixes.append(kwargs)
+
+    train_losses = iter(
+        [
+            {"total_loss": 0.8, "switch_loss": 0.3},
+            {"total_loss": 0.4, "switch_loss": 0.1},
+        ]
+    )
+    validation_losses = iter(
+        [
+            {"total_loss": 0.6},
+            {"total_loss": 0.2},
+        ]
+    )
+
+    monkeypatch.setattr(train_module, "tqdm", FakeTqdm, raising=False)
+    monkeypatch.setattr(train_module, "run_training_step", lambda **kwargs: next(train_losses))
+    monkeypatch.setattr(
+        train_module,
+        "evaluate_batch_loss",
+        lambda **kwargs: next(validation_losses),
+    )
+
+    metrics = train_module.train_one_epoch(
+        model=SimpleNamespace(),
+        optimizer=SimpleNamespace(),
+        train_batches=[{"batch": 1}, {"batch": 2}],
+        validation_batches=[{"batch": 3}, {"batch": 4}],
+        epoch=2,
+        total_epochs=4,
+    )
+
+    assert metrics == TokenChannelEpochMetrics(
+        epoch=2,
+        train_loss=pytest.approx(0.6),
+        validation_loss=pytest.approx(0.4),
+        switch_loss=pytest.approx(0.2),
+    )
+    assert [bar.desc for bar in progress_bars] == [
+        "Epoch 2/4 [train]",
+        "Epoch 2/4 [val]",
+    ]
+    assert progress_bars[0].postfixes[-1] == {"loss": "0.6000", "switch_loss": "0.2000"}
+    assert progress_bars[1].postfixes[-1] == {"val_loss": "0.4000"}
 
 
 def test_export_checkpoint_saves_model_and_metadata(tmp_path: Path) -> None:

@@ -678,10 +678,34 @@ def batch_extract_teacher_rows(
 
         # Tokenize all texts in group
         group_token_ids = [list(_encode_text(tokenizer, text)) for text in group_texts]
-        group_token_spans = [
-            _align_token_spans(text, token_ids, tokenizer)
-            for text, token_ids in zip(group_texts, group_token_ids)
-        ]
+
+        # Align token spans, skipping texts that fail alignment
+        group_token_spans = []
+        valid_indices = []
+        valid_texts = []
+        valid_token_ids = []
+
+        for idx, text, token_ids in zip(indices, group_texts, group_token_ids):
+            try:
+                token_spans = _align_token_spans(text, token_ids, tokenizer)
+                group_token_spans.append(token_spans)
+                valid_indices.append(idx)
+                valid_texts.append(text)
+                valid_token_ids.append(token_ids)
+            except ValueError:
+                # Skip texts that fail token alignment (e.g., encoding issues)
+                # Store empty result for this text to preserve order
+                results[idx] = []
+                continue
+
+        # Skip this group if no valid texts remain
+        if not valid_texts:
+            continue
+
+        # Update group data to only include valid texts
+        indices = valid_indices
+        group_texts = valid_texts
+        group_token_ids = valid_token_ids
 
         # Compute dynamic batch size based on max length in group
         max_length = max((len(token_ids) for token_ids in group_token_ids), default=0)
