@@ -8,6 +8,7 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RUN_PY = PROJECT_ROOT / "run.py"
+RUNNERS_PY = PROJECT_ROOT / "wfcllm" / "cli" / "runners.py"
 README_MD = PROJECT_ROOT / "README.md"
 
 # ── 将项目根目录加入 sys.path（如果需要）
@@ -291,7 +292,7 @@ class TestCLI:
             seen.append((passed_args, passed_state))
             return 0
 
-        monkeypatch.setattr(run, "run_token_channel_train", fake_runner)
+        monkeypatch.setattr("wfcllm.cli.runners.run_token_channel_train", fake_runner)
 
         assert run.run_phase("token-channel-train", args, state) == 0
         assert seen == [(args, state)]
@@ -1570,7 +1571,7 @@ class TestCLI:
 
 class TestRunWatermarkConfigNoFallback:
     def _find_keyword_call(self, call_name: str, keyword_name: str) -> bool:
-        tree = ast.parse(RUN_PY.read_text(encoding="utf-8"))
+        tree = ast.parse(RUNNERS_PY.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and getattr(node.func, "id", None) == call_name:
                 if any(keyword.arg == keyword_name for keyword in node.keywords):
@@ -1586,13 +1587,13 @@ class TestRunWatermarkConfigNoFallback:
                 raise AssertionError("run.py 仍传递了已废弃的 enable_fallback 参数")
 
     def test_run_watermark_has_enable_cascade(self):
-        """run.py 构建 WatermarkConfig 传递 enable_cascade。"""
-        source = RUN_PY.read_text()
+        """runners.py 构建 WatermarkConfig 传递 enable_cascade。"""
+        source = RUNNERS_PY.read_text()
         tree = ast.parse(source)
         for node in ast.walk(tree):
             if isinstance(node, ast.keyword) and node.arg == "enable_cascade":
                 return
-        raise AssertionError("run.py 应传递 enable_cascade 参数给 WatermarkConfig")
+        raise AssertionError("runners.py 应传递 enable_cascade 参数给 WatermarkConfig")
 
     def test_run_watermark_pipeline_config_receives_resume(self):
         assert self._find_keyword_call("WatermarkPipelineConfig", "resume")
@@ -1604,7 +1605,7 @@ class TestRunWatermarkConfigNoFallback:
         assert self._find_keyword_call("ExtractPipelineConfig", "resume")
 
     def test_run_extract_marks_summary_file_in_state(self):
-        tree = ast.parse(RUN_PY.read_text(encoding="utf-8"))
+        tree = ast.parse(RUNNERS_PY.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "mark_done":
                 if node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == "extract":
@@ -1613,11 +1614,11 @@ class TestRunWatermarkConfigNoFallback:
                     assert "summary_file" in keywords
                     assert "report_file" not in keywords
                     return
-        raise AssertionError("run.py should mark extract state with details_file and summary_file")
+        raise AssertionError("runners.py should mark extract state with details_file and summary_file")
 
 
 def test_run_extract_passes_lsh_params():
-    tree = ast.parse(RUN_PY.read_text(encoding="utf-8"))
+    tree = ast.parse(RUNNERS_PY.read_text(encoding="utf-8"))
     seen_extract_config_call = False
     matched_expected_call = False
 
@@ -1638,14 +1639,14 @@ def test_run_extract_passes_lsh_params():
             if has_expected_lsh_d and has_expected_lsh_gamma:
                 matched_expected_call = True
 
-    assert seen_extract_config_call, "run.py must call ExtractConfig"
+    assert seen_extract_config_call, "runners.py must call ExtractConfig"
     assert matched_expected_call, (
-        "run.py must pass lsh_d=lsh_d and lsh_gamma=lsh_gamma into ExtractConfig"
+        "runners.py must pass lsh_d=lsh_d and lsh_gamma=lsh_gamma into ExtractConfig"
     )
 
 
 def test_run_extract_resolves_lsh_params_from_first_record():
-    tree = ast.parse(RUN_PY.read_text(encoding="utf-8"))
+    tree = ast.parse(RUNNERS_PY.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "resolve_extract_lsh_params":
             assert len(node.args) >= 2
@@ -1654,7 +1655,7 @@ def test_run_extract_resolves_lsh_params_from_first_record():
             assert node.args[0].id == "first_record"
             assert node.args[1].id == "ext_cfg"
             return
-    raise AssertionError("run.py must resolve extract LSH params from first_record/ext_cfg")
+    raise AssertionError("runners.py must resolve extract LSH params from first_record/ext_cfg")
 
 
 def test_run_extract_returns_error_on_invalid_first_record_json(tmp_path, capsys):
