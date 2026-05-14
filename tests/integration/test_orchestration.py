@@ -75,3 +75,54 @@ def test_phase_registry_phases_lists_registered():
     reg.register("encoder", lambda a, s: 0)
     reg.register("watermark", lambda a, s: 0)
     assert sorted(reg.phases()) == ["encoder", "watermark"]
+
+
+# --- Prereq tests ---
+
+from wfcllm.orchestration.prereq import Prereq, PrereqRegistry
+
+
+def test_prereq_check_satisfied_does_nothing():
+    fix_called = []
+    prereq = Prereq(
+        name="dummy",
+        check=lambda cfg: True,
+        fix=lambda cfg, runner: fix_called.append(True),
+    )
+    PrereqRegistry().clear()
+    reg = PrereqRegistry()
+    reg.register("watermark", prereq)
+    reg.ensure_satisfied("watermark", config={}, runner=None)
+    assert fix_called == []
+
+
+def test_prereq_unsatisfied_triggers_fix():
+    fix_called = []
+    prereq = Prereq(
+        name="dummy",
+        check=lambda cfg: False,
+        fix=lambda cfg, runner: fix_called.append("ran"),
+    )
+    PrereqRegistry().clear()
+    reg = PrereqRegistry()
+    reg.register("watermark", prereq)
+    reg.ensure_satisfied("watermark", config={}, runner=None)
+    assert fix_called == ["ran"]
+
+
+def test_prereq_no_registered_for_phase_is_noop():
+    PrereqRegistry().clear()
+    reg = PrereqRegistry()
+    # no prereqs registered for "extract"
+    reg.ensure_satisfied("extract", config={}, runner=None)
+    # should not raise
+
+
+def test_prereq_registry_is_module_singleton():
+    """PrereqRegistry() returns the same underlying store each call (module-level)."""
+    reg_a = PrereqRegistry()
+    reg_a.clear()
+    reg_a.register("watermark", Prereq("p", lambda c: True, lambda c, r: None))
+    reg_b = PrereqRegistry()
+    assert "watermark" in reg_b._by_phase
+    reg_b.clear()  # cleanup for other tests
