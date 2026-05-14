@@ -298,3 +298,18 @@ def test_dispatch_phase_skips_prereq_check(tmp_path):
     orch.dispatch_phase("build-entropy-profile", _make_args())
     assert prereq_invocations == []
     PrereqRegistry().clear()
+
+
+def test_all_phases_includes_build_entropy_profile():
+    from wfcllm.orchestration.state import ALL_PHASES, OPTIONAL_PHASES
+    assert "build-entropy-profile" in OPTIONAL_PHASES
+    assert "build-entropy-profile" in ALL_PHASES
+
+
+def test_run_state_manager_tracks_build_entropy_profile(tmp_path):
+    from wfcllm.orchestration.state import RunStateManager
+    state = RunStateManager(path=tmp_path / "rs.json")
+    assert state.is_done("build-entropy-profile") is False
+    state.mark_done("build-entropy-profile", profile_path="data/calibration/p.json")
+    assert state.is_done("build-entropy-profile") is True
+    assert state.get("build-entropy-profile", "profile_path") == "data/calibration/p.json"
