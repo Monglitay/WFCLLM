@@ -46,6 +46,8 @@ def test_build_entropy_profile_subcommand_writes_json(tmp_path):
     )
 
     assert completed.returncode == 0
+    assert "deprecated" in completed.stderr.lower()
+    assert "scripts/build_entropy_profile.py" in completed.stderr
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["language"] == "python"
     assert payload["model_family"] == "demo-model"

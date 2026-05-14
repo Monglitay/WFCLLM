@@ -1,81 +1,52 @@
 #!/usr/bin/env python
-"""Adaptive watermark calibration utilities.
+"""Watermark calibration utilities.
 
-Legacy usage without a subcommand still maps to `calibrate-threshold`.
+(Phase 3 refactor: ``build-entropy-profile`` moved to scripts/build_entropy_profile.py;
+this script proxies that subcommand for backwards compatibility and keeps
+``calibrate-threshold`` for now.)
 """
-
 from __future__ import annotations
 
 import argparse
 import json
-import math
-import re
 import sys
 from pathlib import Path
 
-
-_ENTROPY_PATTERN = re.compile(r"entropy=(?P<entropy>-?\d+(?:\.\d+)?)")
-_ENTROPY_SCALE = 10000
-_QUANTILES: tuple[tuple[str, float], ...] = (
-    ("p10", 0.10),
-    ("p50", 0.50),
-    ("p75", 0.75),
-    ("p90", 0.90),
-    ("p95", 0.95),
-)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Build entropy profiles or calibrate watermark detection thresholds."
+        description="Watermark calibration utilities (deprecated wrapper).",
     )
     subparsers = parser.add_subparsers(dest="command")
 
     build_profile = subparsers.add_parser(
         "build-entropy-profile",
-        help="Parse watermark debug logs into an entropy profile JSON",
+        help="DEPRECATED: use scripts/build_entropy_profile.py",
     )
-    build_profile.add_argument("--input-log", required=True, help="Path to watermark debug log")
-    build_profile.add_argument("--output", required=True, help="Path to write profile JSON")
-    build_profile.add_argument("--language", required=True, help="Profile language label")
-    build_profile.add_argument("--model-family", required=True, help="Profile model-family label")
-    build_profile.add_argument(
-        "--strategy",
-        default="piecewise_quantile",
-        help="Adaptive gamma schedule strategy label to persist",
-    )
-    build_profile.add_argument(
-        "--profile-id",
-        default=None,
-        help="Optional profile identifier to persist alongside the profile",
-    )
+    build_profile.add_argument("--input-log", required=True)
+    build_profile.add_argument("--output", required=True)
+    build_profile.add_argument("--language", required=True)
+    build_profile.add_argument("--model-family", required=True)
+    build_profile.add_argument("--strategy", default="piecewise_quantile")
+    build_profile.add_argument("--profile-id", default=None)
 
     calibrate = subparsers.add_parser(
         "calibrate-threshold",
         help="Calibrate FPR-based watermark detection threshold",
     )
-    calibrate.add_argument("--input", required=True, help="Path to negative corpus JSONL")
-    calibrate.add_argument("--output", required=True, help="Path to write threshold JSON")
-    calibrate.add_argument(
-        "--fpr", type=float, default=0.01,
-        help="Target false positive rate (default: 0.01)",
-    )
-    calibrate.add_argument("--secret-key", required=True, help="Watermark secret key")
-    calibrate.add_argument(
-        "--model", required=True,
-        help="Path to encoder model (e.g. data/models/codet5-base)",
-    )
-    calibrate.add_argument("--device", default="cuda", help="Device: cuda or cpu")
-    calibrate.add_argument(
-        "--embed-dim", type=int, default=128, help="Embedding dimension (default: 128)"
-    )
-    calibrate.add_argument(
-        "--lsh-d", type=int, default=3, help="LSH projection count (default: 3)"
-    )
-    calibrate.add_argument(
-        "--gamma", type=float, default=0.5,
-        help="LSH valid-region fraction gamma (default: 0.5)",
-    )
+    calibrate.add_argument("--input", required=True)
+    calibrate.add_argument("--output", required=True)
+    calibrate.add_argument("--fpr", type=float, default=0.01)
+    calibrate.add_argument("--secret-key", required=True)
+    calibrate.add_argument("--model", required=True)
+    calibrate.add_argument("--device", default="cuda")
+    calibrate.add_argument("--embed-dim", type=int, default=128)
+    calibrate.add_argument("--lsh-d", type=int, default=3)
+    calibrate.add_argument("--gamma", type=float, default=0.5)
     return parser
 
 
@@ -91,8 +62,32 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _proxy_build_entropy_profile(args: argparse.Namespace) -> int:
+    print(
+        "[deprecated] scripts/calibrate.py build-entropy-profile is deprecated; "
+        "use scripts/build_entropy_profile.py instead.",
+        file=sys.stderr,
+    )
+    from wfcllm.watermark.adaptive_gamma.calibrate import (
+        build_entropy_profile_from_log,
+    )
+    try:
+        build_entropy_profile_from_log(
+            input_log=args.input_log,
+            output=args.output,
+            language=args.language,
+            model_family=args.model_family,
+            strategy=args.strategy,
+            profile_id=args.profile_id,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"[错误] {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def _load_jsonl(path: str) -> list[dict]:
-    records = []
+    records: list[dict] = []
     with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -101,50 +96,8 @@ def _load_jsonl(path: str) -> list[dict]:
     return records
 
 
-def _nearest_rank_quantile(sorted_values: list[int], probability: float) -> int:
-    index = max(1, math.ceil(probability * len(sorted_values))) - 1
-    return sorted_values[index]
-
-
-def _build_entropy_profile(args: argparse.Namespace) -> None:
-    entropy_units: list[int] = []
-    with open(args.input_log, encoding="utf-8") as handle:
-        for line in handle:
-            match = _ENTROPY_PATTERN.search(line)
-            if match is None:
-                continue
-            entropy_value = float(match.group("entropy"))
-            entropy_units.append(max(0, int(round(entropy_value * _ENTROPY_SCALE))))
-
-    if not entropy_units:
-        raise SystemExit("No entropy=<float> entries found in input log")
-
-    entropy_units.sort()
-    payload = {
-        "language": args.language,
-        "model_family": args.model_family,
-        "strategy": args.strategy,
-        "sample_count": len(entropy_units),
-        "quantiles_units": {
-            name: _nearest_rank_quantile(entropy_units, probability)
-            for name, probability in _QUANTILES
-        },
-    }
-    if args.profile_id is not None:
-        payload["profile_id"] = args.profile_id
-
-    output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-
-
-def _calibrate_threshold(args: argparse.Namespace) -> None:
-
-    # Lazy imports to keep startup fast when --help is used
-    import torch
+def _calibrate_threshold(args: argparse.Namespace) -> int:
+    import torch  # noqa: F401  (sanity import; real dependency below)
     from transformers import AutoModel, AutoTokenizer
 
     from wfcllm.extract.calibrator import ThresholdCalibrator
@@ -182,19 +135,17 @@ def _calibrate_threshold(args: argparse.Namespace) -> None:
         f"  Output        : {args.output}",
         file=sys.stderr,
     )
+    return 0
 
 
-def main() -> None:
+def main() -> int:
     args = _parse_args()
-
     if args.command == "build-entropy-profile":
-        _build_entropy_profile(args)
-        return
+        return _proxy_build_entropy_profile(args)
     if args.command == "calibrate-threshold":
-        _calibrate_threshold(args)
-        return
+        return _calibrate_threshold(args)
     raise SystemExit(f"Unsupported command: {args.command!r}")
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
