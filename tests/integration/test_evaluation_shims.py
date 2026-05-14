@@ -120,3 +120,16 @@ def test_offline_analysis_old_and_new_paths_share_symbols():
         "DetailDeltaReport",
     ):
         assert getattr(old, name) is getattr(new, name), name
+
+
+# --- dual_channel: new module ---
+
+def test_dual_channel_new_module_exposes_public_api():
+    from wfcllm.evaluation import dual_channel
+    assert callable(dual_channel.run_evaluation)
+    assert callable(dual_channel.build_argument_parser)
+    assert callable(dual_channel.main)
+    assert hasattr(dual_channel, "CommandRunResult")
+    assert dual_channel.MODES == ("semantic-only", "lexical-only", "dual-channel")
+    assert dual_channel.PERTURBATIONS == ("formatting", "comments", "rename", "light-rewrite")
+    assert dual_channel.TARGET_FPR == pytest.approx(0.01)
