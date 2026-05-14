@@ -14,6 +14,7 @@ from wfcllm.cli.config_resolver import load_config
 from wfcllm.cli.runners import (
     is_compare_only_mode,
     validate_compare_only_mode,
+    run_build_entropy_profile,
     run_encoder,
     run_extract,
     run_generate_negative,
@@ -51,6 +52,7 @@ def _populate_phase_registry(reg: PhaseRegistry) -> None:
     reg.register("extract", run_extract)
     reg.register("generate-negative", run_generate_negative)
     reg.register("token-channel-train", run_token_channel_train)
+    reg.register("build-entropy-profile", run_build_entropy_profile)
 
 
 def main(argv: list[str] | None = None) -> int:

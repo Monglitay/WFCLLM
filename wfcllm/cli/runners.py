@@ -791,3 +791,66 @@ def run_token_channel_train(args: argparse.Namespace, state: RunStateManager) ->
         artifact_dir=str(summary.artifact_dir),
     )
     return 0
+
+
+def run_build_entropy_profile(
+    args: argparse.Namespace,
+    state: RunStateManager,
+) -> int:
+    """Build an entropy profile JSON from a watermark debug log."""
+    from wfcllm.watermark.adaptive_gamma.calibrate import (
+        build_entropy_profile_from_log,
+    )
+
+    print("=== 阶段：构建 entropy profile ===")
+
+    cfg = (getattr(args, "_config_cache", None) or {}).get("adaptive_gamma", {}) or {}
+
+    input_log = args.build_profile_input_log or cfg.get("input_log")
+    output = args.build_profile_output or cfg.get("output")
+    language = args.build_profile_language or cfg.get("language")
+    model_family = args.build_profile_model_family or cfg.get("model_family")
+    strategy = (
+        args.build_profile_strategy
+        or cfg.get("strategy")
+        or "piecewise_quantile"
+    )
+    profile_id = args.build_profile_id or cfg.get("profile_id")
+
+    missing: list[str] = []
+    if not input_log:
+        missing.append("--build-profile-input-log")
+    if not output:
+        missing.append("--build-profile-output")
+    if not language:
+        missing.append("--build-profile-language")
+    if not model_family:
+        missing.append("--build-profile-model-family")
+    if missing:
+        print(
+            f"[错误] build-entropy-profile 缺少必填参数: {', '.join(missing)}",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        output_path = build_entropy_profile_from_log(
+            input_log=input_log,
+            output=output,
+            language=language,
+            model_family=model_family,
+            strategy=strategy,
+            profile_id=profile_id,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"[错误] entropy profile 构建失败：{exc}", file=sys.stderr)
+        return 1
+
+    state.mark_done(
+        "build-entropy-profile",
+        profile_path=str(output_path),
+        language=language,
+        model_family=model_family,
+    )
+    print(f"[完成] entropy profile 已保存至 {output_path}")
+    return 0

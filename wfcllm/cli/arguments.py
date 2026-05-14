@@ -101,6 +101,37 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="输出 watermark metadata 时使用的 entropy profile 标识",
     )
+    # build-entropy-profile phase 参数（Phase 3）
+    parser.add_argument(
+        "--build-profile-input-log",
+        default=None,
+        help="watermark debug 日志路径（用于 build-entropy-profile 阶段）",
+    )
+    parser.add_argument(
+        "--build-profile-output",
+        default=None,
+        help="entropy profile JSON 输出路径（用于 build-entropy-profile 阶段）",
+    )
+    parser.add_argument(
+        "--build-profile-language",
+        default=None,
+        help="entropy profile 语言标签",
+    )
+    parser.add_argument(
+        "--build-profile-model-family",
+        default=None,
+        help="entropy profile model-family 标签",
+    )
+    parser.add_argument(
+        "--build-profile-strategy",
+        default=None,
+        help="adaptive gamma 策略标签（默认 piecewise_quantile）",
+    )
+    parser.add_argument(
+        "--build-profile-id",
+        default=None,
+        help="profile_id 字段的可选标识",
+    )
     parser.add_argument(
         "--token-channel-enabled",
         type=parse_optional_bool,
