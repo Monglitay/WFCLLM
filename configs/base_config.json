@@ -38,8 +38,8 @@
     "encoder_device": "cuda",
     "margin_base": 0.001,
     "margin_alpha": 0.002,
-    "max_retries": 30,
-    "temperature": 0.7,
+    "max_retries": 50,
+    "temperature": 0.5,
     "top_p": 0.95,
     "top_k": 50,
     "max_new_tokens": 512,
@@ -50,8 +50,13 @@
     "lsh_d": 4,
     "lsh_gamma": 0.75,
     "token_channel": {
-      "enabled": false,
-      "channel_mode": "semantic-only"
+      "enabled": true,
+      "channel_mode": "dual-channel",
+      "model_path": "data/models/token-channel",
+      "switch_threshold": 0.3,
+      "delta": 2.0,
+      "ignore_repeated_ngrams": false,
+      "ignore_repeated_prefixes": false
     },
     "adaptive_gamma": {
       "enabled": true,
@@ -59,10 +64,10 @@
       "profile_path": "data/calibration/humaneval_entropy_profile.json",
       "profile_id": "humaneval_entropy_profile",
       "gamma_min": 0.25,
-      "gamma_max": 0.95,
+      "gamma_max": 0.75,
       "anchors": {
-        "p10": 0.95,
-        "p50": 0.75,
+        "p10": 0.75,
+        "p50": 0.50,
         "p75": 0.55,
         "p90": 0.35,
         "p95": 0.25
@@ -75,6 +80,7 @@
     "fpr_threshold": 3.0,
     "lsh_d": 4,
     "lsh_gamma": 0.75,
+    "min_blocks": 3,
     "calibration_corpus":"data/negative_corpus.jsonl",
     "fpr": 0.05,
     "input_file": null,
@@ -88,16 +94,18 @@
       "exclude_invalid_samples": true
     },
     "token_channel": {
-      "enabled": false,
-      "channel_mode": "semantic-only",
+      "enabled": true,
+      "channel_mode": "dual-channel",
       "model_path": "data/models/token-channel",
+      "switch_threshold": 0.3,
+      "delta": 2.0,
       "ignore_repeated_ngrams": false,
       "ignore_repeated_prefixes": false,
       "joint": {
         "semantic_weight": 1.0,
-        "lexical_weight": 0.75,
-        "lexical_full_weight_min_positions": 32,
-        "threshold": 4.0
+        "lexical_weight": 1.0,
+        "lexical_full_weight_min_positions": 16,
+        "threshold": 1.51
       }
     }
   },
@@ -123,10 +131,10 @@
     "context_width": 128,
     "hidden_size": 64,
     "batch_size": 128,
-    "epochs": 3,
+    "epochs": 50,
     "lr": 0.001,
-    "entropy_threshold": 1.0,
-    "diversity_threshold": 2,
+    "entropy_threshold": 0.5,
+    "diversity_threshold": 1,
     "split_ratio": 0.9,
     "seed": 0
   }

@@ -511,6 +511,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="token 通道 teacher 模型批量推理大小（默认 16）",
     )
     parser.add_argument(
+        "--token-channel-max-variants",
+        type=int,
+        default=None,
+        help="每个样本生成的最大变体数量（包括原始样本，默认无限制）",
+    )
+    parser.add_argument(
+        "--token-channel-top-k-logits",
+        type=int,
+        default=None,
+        help="只保存 top-k logits 以减少缓存大小（默认 100，None 表示保存全部）",
+    )
+    parser.add_argument(
+        "--token-channel-resume-training",
+        type=parse_optional_bool,
+        default=None,
+        help="是否从已有 checkpoint 继续训练（默认 true）",
+    )
+    parser.add_argument(
         "--token-channel-switch-threshold",
         type=float,
         default=None,
@@ -602,6 +620,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--extract-output-dir", default=None, help="检测报告输出目录（默认: data/results）")
     parser.add_argument("--fpr-threshold", type=float, default=None, help="FPR 阈值 M_r（默认: 3.0，需通过校准脚本生成）")
+    parser.add_argument(
+        "--min-blocks",
+        type=int,
+        default=None,
+        help="检测时最小块数阈值，低于此值的样本将被跳过（默认: 2）",
+    )
     parser.add_argument(
         "--calibration-corpus",
         default=None,
@@ -1061,6 +1085,7 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
     output_dir = args.extract_output_dir or ext_cfg.get("output_dir", "data/results")
     embed_dim = args.embed_dim or ext_cfg.get("embed_dim", 128)
     fpr_threshold = args.fpr_threshold or ext_cfg.get("fpr_threshold", 3.0)
+    min_blocks = args.min_blocks if args.min_blocks is not None else ext_cfg.get("min_blocks", 2)
     resume = args.resume if args.resume is not None else ext_cfg.get("resume")
     adaptive_detection_config = resolve_adaptive_detection_config(args, ext_cfg)
     adaptive_gamma_config = resolve_extract_adaptive_gamma_config(args, cfg)
@@ -1126,6 +1151,22 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     encoder = encoder.to(device)
     tokenizer = AutoTokenizer.from_pretrained(enc_config.model_name)
+
+    # Load LM tokenizer for token-channel compatibility if enabled
+    lm_tokenizer = None
+    if token_channel_config.enabled:
+        try:
+            artifact_metadata_path = Path(token_channel_config.model_path) / "metadata.json"
+            if artifact_metadata_path.exists():
+                with open(artifact_metadata_path, encoding="utf-8") as f:
+                    artifact_metadata = json.load(f)
+                lm_tokenizer_name = artifact_metadata.get("tokenizer_name")
+                if lm_tokenizer_name:
+                    lm_tokenizer = AutoTokenizer.from_pretrained(lm_tokenizer_name)
+                    print(f"[加载] token-channel LM tokenizer: {lm_tokenizer_name}")
+        except Exception as e:
+            print(f"[警告] 无法加载 token-channel LM tokenizer: {e}", file=sys.stderr)
+
 
     calibration_summary_metadata = None
     calibration_corpus_path = (
@@ -1197,11 +1238,12 @@ def run_extract(args: argparse.Namespace, state: RunState) -> int:
         fpr_threshold=fpr_threshold,
         lsh_d=lsh_d,
         lsh_gamma=lsh_gamma,
+        min_blocks=min_blocks,
         adaptive_detection=adaptive_detection_config,
         adaptive_gamma=adaptive_gamma_config,
         token_channel=token_channel_config,
     )
-    detector = WatermarkDetector(extract_config, encoder, tokenizer, device=device)
+    detector = WatermarkDetector(extract_config, encoder, tokenizer, device=device, lm_tokenizer=lm_tokenizer)
 
     pipeline_config = ExtractPipelineConfig(
         input_file=input_file,
@@ -1329,6 +1371,9 @@ def resolve_token_channel_train_config(args: argparse.Namespace) -> dict[str, ob
         "split_ratio": getattr(args, "token_channel_split_ratio", None),
         "seed": getattr(args, "token_channel_seed", None),
         "teacher_batch_size": getattr(args, "token_channel_teacher_batch_size", None),
+        "max_variants": getattr(args, "token_channel_max_variants", None),
+        "top_k_logits": getattr(args, "token_channel_top_k_logits", None),
+        "resume_training": getattr(args, "token_channel_resume_training", None),
     }
     for key, value in overrides.items():
         if value is not None:
