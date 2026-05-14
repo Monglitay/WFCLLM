@@ -50,3 +50,28 @@ def test_status_returns_full_dict_with_all_phases(tmp_path):
 def test_default_path_is_data_run_state_json():
     state = RunStateManager()
     assert state._path == Path("data/run_state.json")
+
+
+# --- PhaseRegistry tests ---
+
+from wfcllm.orchestration.phase_registry import PhaseRegistry
+
+
+def test_phase_registry_register_and_lookup():
+    reg = PhaseRegistry()
+    def fake_runner(args, state): return 0
+    reg.register("encoder", fake_runner)
+    assert reg.get("encoder") is fake_runner
+
+
+def test_phase_registry_unknown_phase_raises():
+    reg = PhaseRegistry()
+    with pytest.raises(KeyError, match="unknown phase"):
+        reg.get("nonexistent")
+
+
+def test_phase_registry_phases_lists_registered():
+    reg = PhaseRegistry()
+    reg.register("encoder", lambda a, s: 0)
+    reg.register("watermark", lambda a, s: 0)
+    assert sorted(reg.phases()) == ["encoder", "watermark"]
