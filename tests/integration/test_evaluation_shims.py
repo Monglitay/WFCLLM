@@ -64,3 +64,59 @@ def test_offline_code_eval_old_and_new_paths_share_symbols():
         "write_jsonl_records",
     ):
         assert getattr(old, name) is getattr(new, name), name
+
+
+# --- detection_report: new path works ---
+
+def test_detection_report_new_path_importable_and_callable():
+    from wfcllm.evaluation.detection_report import (
+        build_offline_regression_report,
+        load_detail_artifact,
+        load_summary_artifact,
+        load_watermarked_artifact,
+        write_offline_regression_report,
+    )
+
+    assert callable(build_offline_regression_report)
+    assert callable(load_detail_artifact)
+
+
+# --- detection_report: old path is deprecated shim ---
+
+def test_offline_analysis_old_path_emits_deprecation_warning():
+    import importlib
+    import sys
+    sys.modules.pop("wfcllm.extract.offline_analysis", None)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        module = importlib.import_module("wfcllm.extract.offline_analysis")
+    assert any(
+        issubclass(w.category, DeprecationWarning)
+        and "wfcllm.evaluation.detection_report" in str(w.message)
+        for w in caught
+    )
+    assert callable(module.build_offline_regression_report)
+    assert callable(module.load_summary_artifact)
+
+
+def test_offline_analysis_old_and_new_paths_share_symbols():
+    import importlib
+    import sys
+    sys.modules.pop("wfcllm.extract.offline_analysis", None)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        old = importlib.import_module("wfcllm.extract.offline_analysis")
+    new = importlib.import_module("wfcllm.evaluation.detection_report")
+    for name in (
+        "build_offline_regression_report",
+        "load_summary_artifact",
+        "load_detail_artifact",
+        "load_watermarked_artifact",
+        "write_offline_regression_report",
+        "SummaryArtifact",
+        "DetailArtifact",
+        "WatermarkedArtifact",
+        "DetailDelta",
+        "DetailDeltaReport",
+    ):
+        assert getattr(old, name) is getattr(new, name), name
