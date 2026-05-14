@@ -194,6 +194,14 @@ class ExtractPipeline:
 
         with open(details_path, mode, encoding="utf-8") as f:
             for item in iterator:
+                # Filter samples with insufficient blocks
+                if "blocks" in item and len(item["blocks"]) < self._detector._config.min_blocks:
+                    print(
+                        f"  ⊘ {item['id']} | blocks={len(item['blocks'])} < min_blocks={self._detector._config.min_blocks} | skipped",
+                        file=sys.stderr,
+                    )
+                    continue
+
                 if "blocks" in item:
                     result = self._detector.detect(
                         item["generated_code"],

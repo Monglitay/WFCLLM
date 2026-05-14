@@ -264,7 +264,13 @@ class TestWatermarkDetector:
             result = detector.detect("x = 1\n")
 
         assert result.lexical_result is lexical_result
-        assert result.joint_result.joint_score == pytest.approx(result.z_score + (0.75 * 2.0))
+        # Stouffer's method: z_combined = (w_s*z_s + w_l*z_l) / sqrt(w_s^2 + w_l^2)
+        # With w_s=1.0, w_l=0.75, z_s=result.z_score, z_l=2.0
+        import math
+        w_s = 1.0
+        w_l = 0.75
+        expected_joint = (w_s * result.z_score + w_l * 2.0) / math.sqrt(w_s**2 + w_l**2)
+        assert result.joint_result.joint_score == pytest.approx(expected_joint)
         assert result.semantic_result.z_score == result.z_score
 
     def test_detect_uses_lexical_only_mode_without_semantic_scores(

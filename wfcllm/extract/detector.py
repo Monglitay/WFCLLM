@@ -29,8 +29,10 @@ class WatermarkDetector:
         encoder,
         tokenizer,
         device: str = "cuda",
+        lm_tokenizer=None,
     ):
         self._tokenizer = tokenizer
+        self._lm_tokenizer = lm_tokenizer
         lsh_space = LSHSpace(config.secret_key, config.embed_dim, config.lsh_d)
         keying = WatermarkKeying(config.secret_key, config.lsh_d, config.lsh_gamma)
         verifier = ProjectionVerifier(encoder, tokenizer, lsh_space=lsh_space, device=device)
@@ -114,6 +116,9 @@ class WatermarkDetector:
             lexical_result=lexical_result,
             config=self._config.token_channel,
         )
+        # In dual-channel mode, use joint prediction for final verdict
+        # but keep z_score as semantic z_score for backward compatibility
+        result.is_watermarked = result.joint_result.prediction
         return result
 
     def _detect_lexical(self, code: str):
@@ -129,16 +134,18 @@ class WatermarkDetector:
             return None
         if self._lexical_detector is None:
             artifact = self._get_token_channel_artifact()
+            # Use LM tokenizer for token-channel if available, otherwise fall back to encoder tokenizer
+            token_channel_tokenizer = self._lm_tokenizer if self._lm_tokenizer is not None else self._tokenizer
             runtime = TokenChannelRuntime(
                 model=artifact.model,
                 config=self._config.token_channel,
                 artifact_metadata=artifact.metadata,
-                tokenizer=self._tokenizer,
+                tokenizer=token_channel_tokenizer,
                 secret_key=self._config.secret_key,
             )
             self._lexical_detector = ReplayTokenChannelDetector(
                 runtime=runtime,
-                tokenizer=self._tokenizer,
+                tokenizer=token_channel_tokenizer,
                 config=self._config.token_channel,
             )
         return self._lexical_detector

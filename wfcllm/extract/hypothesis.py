@@ -135,14 +135,33 @@ def fuse_joint_detection(
     lexical_result: LexicalDetectionResult,
     config: TokenChannelConfig,
 ) -> JointDetectionResult:
+    """Fuse semantic and lexical detection using Stouffer's Z-score method.
+
+    Stouffer's method correctly combines independent Z-scores by normalizing
+    the weighted sum: z_combined = (w1*z1 + w2*z2) / sqrt(w1^2 + w2^2)
+
+    This ensures the combined score is also a valid Z-score with proper
+    statistical interpretation.
+    """
     support_factor = min(
         1.0,
         lexical_result.num_positions_scored / config.lexical_full_weight_min_positions,
     )
-    joint_score = (
-        config.joint_semantic_weight * semantic_z_score
-        + config.joint_lexical_weight * support_factor * lexical_result.lexical_z_score
-    )
+
+    # Apply weights
+    w_semantic = config.joint_semantic_weight
+    w_lexical = config.joint_lexical_weight * support_factor
+
+    # Stouffer's Z-score method: normalize by sqrt of sum of squared weights
+    weighted_sum = w_semantic * semantic_z_score + w_lexical * lexical_result.lexical_z_score
+    weight_norm = math.sqrt(w_semantic ** 2 + w_lexical ** 2)
+
+    # Avoid division by zero
+    if weight_norm > 0:
+        joint_score = weighted_sum / weight_norm
+    else:
+        joint_score = 0.0
+
     p_joint = float(norm.sf(joint_score))
     return JointDetectionResult(
         semantic_z=semantic_z_score,
