@@ -9,8 +9,11 @@ wfcllm/              # 主包
 ├── encoder/          # 阶段一：鲁棒语义编码器预训练
 ├── watermark/        # 阶段二：生成时水印嵌入
 ├── extract/          # 阶段三：提取与验证
-└── common/           # 共享工具（AST 解析、配置等）
+├── cli/              # CLI 入口、参数解析、配置合并、各阶段 runner
+├── orchestration/    # 跨阶段编排：RunStateManager / PhaseOrchestrator / 预置依赖
+└── common/           # 共享工具（AST 解析、Registry[T] 等）
 
+run.py                # 顶层入口脚本（薄壳，转发到 wfcllm.cli.entry:main）
 experiment/           # 前期实验代码（仅供算法逻辑参考）
 tests/                # 测试代码
 docs/                 # 文档与设计
