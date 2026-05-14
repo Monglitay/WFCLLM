@@ -1,7 +1,7 @@
 """Generation-time watermark embedding module."""
 
 from wfcllm.watermark.config import WatermarkConfig
-from wfcllm.watermark.entropy import NodeEntropyEstimator
+from wfcllm.watermark.adaptive_gamma.entropy import NodeEntropyEstimator
 from wfcllm.watermark.generator import GenerateResult, WatermarkGenerator
 from wfcllm.watermark.interceptor import InterceptEvent, StatementInterceptor
 from wfcllm.watermark.keying import WatermarkKeying

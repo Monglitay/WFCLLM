@@ -20,9 +20,9 @@ from wfcllm.watermark.diagnostics import (
     hash_block_text,
     summarize_sample_diagnostics,
 )
-from wfcllm.watermark.entropy import ENTROPY_SCALE, NodeEntropyEstimator
-from wfcllm.watermark.entropy_profile import EntropyProfile
-from wfcllm.watermark.gamma_schedule import GammaResolution, PiecewiseQuantileSchedule, quantize_gamma
+from wfcllm.watermark.adaptive_gamma.entropy import ENTROPY_SCALE, NodeEntropyEstimator
+from wfcllm.watermark.adaptive_gamma.profile import EntropyProfile
+from wfcllm.watermark.adaptive_gamma.schedule import GammaResolution, PiecewiseQuantileSchedule, quantize_gamma
 from wfcllm.watermark.keying import WatermarkKeying
 from wfcllm.watermark.lsh_space import LSHSpace
 from wfcllm.watermark.retry_loop import RetryLoop, RetryDiagnostics, RetryResult

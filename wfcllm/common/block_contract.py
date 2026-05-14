@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from wfcllm.common.ast_parser import extract_statement_blocks
 
 if TYPE_CHECKING:
-    from wfcllm.watermark.gamma_schedule import GammaResolution
+    from wfcllm.watermark.adaptive_gamma.schedule import GammaResolution
 
 
 @dataclass(frozen=True)
@@ -33,7 +33,7 @@ def build_block_contracts(
     gamma_resolver: Callable[[int], "GammaResolution"] | None = None,
 ) -> list[BlockContract]:
     """Extract statement blocks and return canonical block contracts."""
-    from wfcllm.watermark.entropy import NodeEntropyEstimator
+    from wfcllm.watermark.adaptive_gamma.entropy import NodeEntropyEstimator
 
     all_blocks = extract_statement_blocks(code)
     blocks = [

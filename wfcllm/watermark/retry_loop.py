@@ -9,8 +9,8 @@ from dataclasses import dataclass, field
 from wfcllm.watermark.config import WatermarkConfig
 from wfcllm.watermark.context import GenerationContext, Checkpoint
 from wfcllm.watermark.diagnostics import FailureReason, hash_block_text
-from wfcllm.watermark.entropy import NodeEntropyEstimator
-from wfcllm.watermark.gamma_schedule import GammaResolution, quantize_gamma
+from wfcllm.watermark.adaptive_gamma.entropy import NodeEntropyEstimator
+from wfcllm.watermark.adaptive_gamma.schedule import GammaResolution, quantize_gamma
 from wfcllm.watermark.interceptor import InterceptEvent
 from wfcllm.watermark.keying import WatermarkKeying
 from wfcllm.watermark.verifier import ProjectionVerifier

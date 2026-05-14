@@ -7,8 +7,8 @@ from dataclasses import dataclass, field
 
 from wfcllm.common.block_contract import build_block_contracts
 from wfcllm.watermark.config import AdaptiveGammaConfig
-from wfcllm.watermark.entropy_profile import EntropyProfile
-from wfcllm.watermark.gamma_schedule import PiecewiseQuantileSchedule
+from wfcllm.watermark.adaptive_gamma.profile import EntropyProfile
+from wfcllm.watermark.adaptive_gamma.schedule import PiecewiseQuantileSchedule
 
 _STRUCTURAL_FIELDS = (
     "ordinal",
