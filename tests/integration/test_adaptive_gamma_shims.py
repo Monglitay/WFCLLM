@@ -81,3 +81,56 @@ def test_entropy_profile_old_and_new_paths_share_symbols():
         old = importlib.import_module("wfcllm.watermark.entropy_profile")
     new = importlib.import_module("wfcllm.watermark.adaptive_gamma.profile")
     assert old.EntropyProfile is new.EntropyProfile
+
+
+# --- schedule: new path works ---
+
+def test_schedule_new_path_importable_and_callable():
+    from wfcllm.watermark.adaptive_gamma.profile import EntropyProfile
+    from wfcllm.watermark.adaptive_gamma.schedule import (
+        GammaResolution,
+        PiecewiseQuantileSchedule,
+        quantize_gamma,
+    )
+    profile = EntropyProfile(
+        language="python",
+        model_family="codet5",
+        quantiles_units_map={"p10": 100, "p50": 200, "p75": 300, "p90": 400, "p95": 500},
+    )
+    schedule = PiecewiseQuantileSchedule(profile=profile)
+    resolution = schedule.resolve(entropy_units=200, lsh_d=3)
+    assert isinstance(resolution, GammaResolution)
+    assert 1 <= resolution.k <= 7  # 2**3 - 1
+
+
+def test_quantize_gamma_clamps_low():
+    from wfcllm.watermark.adaptive_gamma.schedule import quantize_gamma
+    resolution = quantize_gamma(0.0, lsh_d=3)
+    assert resolution.k == 1
+
+
+# --- schedule: old path is a deprecated shim ---
+
+def test_gamma_schedule_old_path_emits_deprecation_warning():
+    sys.modules.pop("wfcllm.watermark.gamma_schedule", None)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        module = importlib.import_module("wfcllm.watermark.gamma_schedule")
+    assert any(
+        issubclass(w.category, DeprecationWarning)
+        and "wfcllm.watermark.adaptive_gamma.schedule" in str(w.message)
+        for w in caught
+    )
+    assert hasattr(module, "PiecewiseQuantileSchedule")
+    assert hasattr(module, "GammaResolution")
+    assert callable(module.quantize_gamma)
+
+
+def test_gamma_schedule_old_and_new_paths_share_symbols():
+    sys.modules.pop("wfcllm.watermark.gamma_schedule", None)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        old = importlib.import_module("wfcllm.watermark.gamma_schedule")
+    new = importlib.import_module("wfcllm.watermark.adaptive_gamma.schedule")
+    for name in ("GammaResolution", "PiecewiseQuantileSchedule", "quantize_gamma"):
+        assert getattr(old, name) is getattr(new, name), name
