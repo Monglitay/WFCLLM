@@ -328,7 +328,7 @@ def run_watermark(args: argparse.Namespace, state: RunStateManager) -> int:
 
 
 def run_offline_analysis(args: argparse.Namespace) -> int:
-    from wfcllm.extract.offline_analysis import (
+    from wfcllm.evaluation.detection_report import (
         build_offline_regression_report,
         load_detail_artifact,
         load_summary_artifact,
