@@ -44,6 +44,17 @@ class PhaseOrchestrator:
 
         return 0
 
+    def dispatch_phase(self, phase: str, args: argparse.Namespace) -> int:
+        """Invoke a registered runner directly, bypassing skip/force/prereq logic.
+
+        Used by Prereq fixers that need to chain into another phase (e.g.
+        watermark's entropy-profile prereq triggers the `build-entropy-profile`
+        phase). Prereqs are intentionally skipped here to avoid infinite loops
+        when a phase's own prereq tries to satisfy itself.
+        """
+        runner = self._phases.get(phase)
+        return runner(args, self._state)
+
     def _should_skip(self, args: argparse.Namespace, phase: str) -> bool:
         """Replicates run.py:should_skip_completed_phase logic."""
         if not self._state.is_done(phase):

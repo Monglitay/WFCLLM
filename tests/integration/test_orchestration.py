@@ -239,3 +239,62 @@ def test_orchestrator_invokes_prereqs_before_phase(tmp_path):
     rc = orch.run(_make_args(phase="watermark"))
     assert rc == 0
     assert events == ["prereq", "phase"]
+
+
+# --- dispatch_phase tests ---
+
+def test_dispatch_phase_invokes_registered_runner(tmp_path):
+    PrereqRegistry().clear()
+    state = RunStateManager(path=tmp_path / "rs.json")
+    captured = {}
+
+    def fake_runner(args, st):
+        captured["args"] = args
+        captured["state"] = st
+        return 0
+
+    reg = PhaseRegistry()
+    reg.register("build-entropy-profile", fake_runner)
+    orch = PhaseOrchestrator(state=state, phase_registry=reg, prereq_registry=PrereqRegistry())
+    rc = orch.dispatch_phase("build-entropy-profile", _make_args())
+    assert rc == 0
+    assert captured["state"] is state
+
+
+def test_dispatch_phase_unknown_phase_raises(tmp_path):
+    PrereqRegistry().clear()
+    state = RunStateManager(path=tmp_path / "rs.json")
+    reg = PhaseRegistry()
+    orch = PhaseOrchestrator(state=state, phase_registry=reg, prereq_registry=PrereqRegistry())
+    with pytest.raises(KeyError, match="unknown phase"):
+        orch.dispatch_phase("nonexistent", _make_args())
+
+
+def test_dispatch_phase_propagates_nonzero_return(tmp_path):
+    PrereqRegistry().clear()
+    state = RunStateManager(path=tmp_path / "rs.json")
+    reg = PhaseRegistry()
+    reg.register("build-entropy-profile", lambda a, s: 5)
+    orch = PhaseOrchestrator(state=state, phase_registry=reg, prereq_registry=PrereqRegistry())
+    rc = orch.dispatch_phase("build-entropy-profile", _make_args())
+    assert rc == 5
+
+
+def test_dispatch_phase_skips_prereq_check(tmp_path):
+    """dispatch_phase is for in-flight chaining; it must not re-trigger prereqs (would loop)."""
+    PrereqRegistry().clear()
+    state = RunStateManager(path=tmp_path / "rs.json")
+    reg = PhaseRegistry()
+    reg.register("build-entropy-profile", lambda a, s: 0)
+
+    prereq_invocations = []
+    PrereqRegistry().register("build-entropy-profile", Prereq(
+        name="should-not-fire",
+        check=lambda cfg: (prereq_invocations.append("checked"), False)[1],
+        fix=lambda cfg, runner: prereq_invocations.append("fixed"),
+    ))
+
+    orch = PhaseOrchestrator(state=state, phase_registry=reg, prereq_registry=PrereqRegistry())
+    orch.dispatch_phase("build-entropy-profile", _make_args())
+    assert prereq_invocations == []
+    PrereqRegistry().clear()
