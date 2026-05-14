@@ -12,18 +12,8 @@ from wfcllm.orchestration.state import ALL_PHASES
 DEFAULT_CONFIG_FILE = Path("configs/base_config.json")
 
 
-def parse_optional_bool(raw_value: str) -> bool:
-    """Parse a CLI boolean value using explicit true/false strings."""
-
-    value = raw_value.strip().lower()
-    if value in {"1", "true", "yes", "on"}:
-        return True
-    if value in {"0", "false", "no", "off"}:
-        return False
-    raise argparse.ArgumentTypeError("expected one of: true, false, 1, 0, yes, no, on, off")
-
-
 def build_parser() -> argparse.ArgumentParser:
+    from run import parse_optional_bool  # deferred import to avoid circular dep
     parser = argparse.ArgumentParser(
         description="WFCLLM 统一运行入口",
         formatter_class=argparse.RawDescriptionHelpFormatter,

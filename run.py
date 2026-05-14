@@ -60,6 +60,17 @@ DEFAULT_STATE_FILE = Path("data/run_state.json")
 from wfcllm.cli.arguments import build_parser, DEFAULT_CONFIG_FILE  # noqa: E402
 
 
+def parse_optional_bool(raw_value: str) -> bool:
+    """Parse a CLI boolean value using explicit true/false strings."""
+
+    value = raw_value.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise argparse.ArgumentTypeError("expected one of: true, false, 1, 0, yes, no, on, off")
+
+
 def load_config(config_path: Path) -> dict:
     """读取 JSON 配置文件，返回按阶段分组的 dict。"""
     if not config_path.exists():
