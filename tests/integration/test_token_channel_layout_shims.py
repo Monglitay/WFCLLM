@@ -14,15 +14,22 @@ def test_core_config_new_path_importable():
 def test_core_config_old_path_emits_warning():
     import importlib
     import sys
-    sys.modules.pop("wfcllm.watermark.token_channel.config", None)
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        importlib.import_module("wfcllm.watermark.token_channel.config")
-        assert any(
-            issubclass(w.category, DeprecationWarning)
-            and "core.config" in str(w.message)
-            for w in caught
-        )
+    key = "wfcllm.watermark.token_channel.config"
+    original = sys.modules.pop(key, None)
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            importlib.import_module(key)
+            assert any(
+                issubclass(w.category, DeprecationWarning)
+                and "core.config" in str(w.message)
+                for w in caught
+            )
+    finally:
+        if original is not None:
+            sys.modules[key] = original
+        else:
+            sys.modules.pop(key, None)
 
 
 def test_core_config_symbol_identity():
