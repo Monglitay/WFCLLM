@@ -1,0 +1,23 @@
+{
+  "meta": {
+    "input_file": "data/watermarked/humaneval_watermarked.jsonl",
+    "total_samples": 100,
+    "scored_samples": 90,
+    "invalid_samples": 10
+  },
+  "summary": {
+    "watermark_rate": 0.78,
+    "watermark_rate_ci_95": [0.69, 0.85],
+    "mean_z_score": 4.21,
+    "std_z_score": 1.13,
+    "mean_p_value": 0.018,
+    "mean_blocks": 7.3,
+    "embed_rate_distribution": {"mean": 0.62, "p50": 0.65},
+    "mean_lexical_z_score": 2.0,
+    "mean_green_fraction": 0.55,
+    "mean_joint_score": 3.1,
+    "joint_prediction_rate": 0.74,
+    "mode_counts": {"fixed": 30, "adaptive": 60},
+    "invalid_reason_counts": {"alignment_failed": 4, "adaptive_contract_invalid": 6}
+  }
+}
