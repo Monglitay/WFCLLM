@@ -48,7 +48,7 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
 
-    from wfcllm.extract.negative_corpus import NegativeCorpusConfig, NegativeCorpusGenerator
+    from wfcllm.extract.calibration.negative_corpus import NegativeCorpusConfig, NegativeCorpusGenerator
 
     config = NegativeCorpusConfig(
         lm_model_path=args.lm_model_path,

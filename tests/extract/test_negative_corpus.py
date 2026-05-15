@@ -107,7 +107,7 @@ class TestNegativeCorpusGeneratorRun:
             },
         ]
 
-        with patch("wfcllm.extract.negative_corpus.load_reference_solutions", return_value=references), \
+        with patch("wfcllm.extract.calibration.negative_corpus.load_reference_solutions", return_value=references), \
              patch("torch.cuda.is_available", return_value=False):
             out_path = gen.run()
 
@@ -133,7 +133,7 @@ class TestNegativeCorpusGeneratorRun:
             {"id": "HumanEval/1", "prompt": "def bar():"},
         ]
 
-        with patch("wfcllm.extract.negative_corpus.load_prompts", return_value=prompts), \
+        with patch("wfcllm.extract.calibration.negative_corpus.load_prompts", return_value=prompts), \
              patch("torch.cuda.is_available", return_value=False):
             out_path = gen.run()
 
@@ -166,7 +166,7 @@ class TestNegativeCorpusGeneratorRun:
             {"id": "HumanEval/1", "prompt": "def bar():"},
         ]
 
-        with patch("wfcllm.extract.negative_corpus.load_prompts", return_value=prompts), \
+        with patch("wfcllm.extract.calibration.negative_corpus.load_prompts", return_value=prompts), \
              patch("torch.cuda.is_available", return_value=False):
             gen.run()
 

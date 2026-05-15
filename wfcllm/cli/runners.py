@@ -492,7 +492,7 @@ def run_extract(args: argparse.Namespace, state: RunStateManager) -> int:
         if not Path(calibration_corpus_path).exists():
             print(f"[错误] 校准语料文件不存在：{calibration_corpus_path}", file=sys.stderr)
             return 1
-        from wfcllm.extract.calibrator import ThresholdCalibrator
+        from wfcllm.extract.calibration.threshold import ThresholdCalibrator
         from wfcllm.extract.scorer import BlockScorer
         from wfcllm.watermark.keying import WatermarkKeying
         from wfcllm.watermark.lsh_space import LSHSpace
@@ -604,7 +604,7 @@ def run_generate_negative(args: argparse.Namespace, state: RunStateManager) -> i
     输出 JSONL 格式与阶段二水印数据集相同（含 generated_code 字段），
     可直接作为 --calibration-corpus 传给 run.py --phase extract。
     """
-    from wfcllm.extract.negative_corpus import NegativeCorpusConfig, NegativeCorpusGenerator
+    from wfcllm.extract.calibration.negative_corpus import NegativeCorpusConfig, NegativeCorpusGenerator
 
     print("=== 生成负样本语料 ===")
 
