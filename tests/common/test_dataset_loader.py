@@ -21,7 +21,7 @@ class TestLoadPrompts:
         with pytest.raises(ValueError, match="dataset must be one of"):
             load_prompts("unknown", "data/datasets")
 
-    @patch("wfcllm.common.dataset_loader.load_dataset")
+    @patch("wfcllm.datasets.loaders.local.load_dataset")
     def test_humaneval_returns_id_and_prompt(self, mock_load):
         fake_split = [{"task_id": "HumanEval/0", "prompt": "def foo():"}]
         mock_ds = {"test": fake_split}
@@ -38,7 +38,7 @@ class TestLoadPrompts:
         assert prompts[0]["id"] == "HumanEval/0"
         assert prompts[0]["prompt"] == "def foo():"
 
-    @patch("wfcllm.common.dataset_loader.load_dataset")
+    @patch("wfcllm.datasets.loaders.local.load_dataset")
     def test_mbpp_returns_id_and_prompt(self, mock_load):
         fake_split = [{"task_id": 1, "text": "Write a function"}]
         mock_ds = {"train": fake_split}
@@ -58,7 +58,7 @@ class TestLoadPrompts:
 
 
 class TestLoadReferenceSolutions:
-    @patch("wfcllm.common.dataset_loader.load_dataset")
+    @patch("wfcllm.datasets.loaders.local.load_dataset")
     def test_humaneval_returns_id_prompt_and_canonical_solution(self, mock_load):
         fake_split = [
             {
@@ -80,7 +80,7 @@ class TestLoadReferenceSolutions:
             }
         ]
 
-    @patch("wfcllm.common.dataset_loader.load_dataset")
+    @patch("wfcllm.datasets.loaders.local.load_dataset")
     def test_mbpp_returns_id_prompt_and_reference_code(self, mock_load):
         fake_split = [
             {

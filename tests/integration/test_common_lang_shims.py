@@ -85,3 +85,11 @@ def test_old_transform_package_symbol_identity():
     assert old.Match is new.Match
     assert old.parse_code is new.parse_code
     assert old.TransformEngine is new.TransformEngine
+
+
+def test_old_dataset_loader_symbol_identity():
+    import wfcllm.common.dataset_loader as old
+    import wfcllm.datasets.loaders.local as new
+    assert old.load_prompts is new.load_prompts
+    assert old.load_reference_solutions is new.load_reference_solutions
+    assert old.SUPPORTED_DATASETS == new.SUPPORTED_DATASETS
