@@ -63,3 +63,16 @@ def test_old_positive_rules_count_equals_new():
     import wfcllm.common.transform.positive as old
     import wfcllm.lang.python.transform.positive as new
     assert len(old.get_all_positive_rules()) == len(new.get_all_positive_rules())
+
+
+def test_old_negative_rules_symbol_identity():
+    import wfcllm.common.transform.negative as old
+    import wfcllm.lang.python.transform.negative as new
+    for sym in ("MinMaxFlip", "OffByOne", "EqNeqFlip", "SliceStepFlip", "ExceptionSwallow", "SysExitFlip"):
+        assert getattr(old, sym) is getattr(new, sym), sym
+
+
+def test_old_negative_rules_count_equals_new():
+    import wfcllm.common.transform.negative as old
+    import wfcllm.lang.python.transform.negative as new
+    assert len(old.get_all_negative_rules()) == len(new.get_all_negative_rules())
