@@ -7,14 +7,14 @@ from typing import Sequence
 
 import torch
 
-from wfcllm.watermark.token_channel.config import TokenChannelConfig
-from wfcllm.watermark.token_channel.features import FEATURE_VERSION
-from wfcllm.watermark.token_channel.features import TokenChannelFeatures
-from wfcllm.watermark.token_channel.model import TokenChannelArtifactMetadata
-from wfcllm.watermark.token_channel.model import TokenChannelModel
-from wfcllm.watermark.token_channel.model import require_token_channel_compatibility
-from wfcllm.watermark.token_channel.protocol import PartitionResult
-from wfcllm.watermark.token_channel.protocol import build_partition
+from wfcllm.watermark.token_channel.core.config import TokenChannelConfig
+from wfcllm.watermark.token_channel.core.features import FEATURE_VERSION
+from wfcllm.watermark.token_channel.core.features import TokenChannelFeatures
+from wfcllm.watermark.token_channel.core.model import TokenChannelArtifactMetadata
+from wfcllm.watermark.token_channel.core.model import TokenChannelModel
+from wfcllm.watermark.token_channel.core.model import require_token_channel_compatibility
+from wfcllm.watermark.token_channel.core.protocol import PartitionResult
+from wfcllm.watermark.token_channel.core.protocol import build_partition
 
 
 @dataclass(frozen=True)

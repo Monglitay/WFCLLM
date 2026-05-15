@@ -132,3 +132,19 @@ def test_core_model_symbol_identity():
     from wfcllm.watermark.token_channel.model import TokenChannelModel as old_cls
     from wfcllm.watermark.token_channel.core.model import TokenChannelModel as new_cls
     assert old_cls is new_cls
+
+
+def test_runtime_injector_new_path_importable():
+    from wfcllm.watermark.token_channel.runtime.injector import TokenChannelRuntime
+    assert callable(TokenChannelRuntime)
+
+
+def test_runtime_package_level_reexport():
+    """Old code does `from wfcllm.watermark.token_channel.runtime import TokenChannelRuntime`.
+
+    Note: no DeprecationWarning is emitted because runtime/ is now a real subpackage,
+    and emitting a warning from runtime/__init__.py would fire on every canonical import too.
+    """
+    from wfcllm.watermark.token_channel.runtime import TokenChannelRuntime as pkg_cls
+    from wfcllm.watermark.token_channel.runtime.injector import TokenChannelRuntime as mod_cls
+    assert pkg_cls is mod_cls
