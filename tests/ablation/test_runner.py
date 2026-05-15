@@ -135,3 +135,31 @@ def test_runner_continues_on_phase_failure_and_records_error(tmp_path, monkeypat
     assert "error" in rows[0]
     assert "boom" in rows[0]["error"]
     assert "error" not in rows[1]
+
+
+def test_runner_skips_runs_already_in_results_jsonl(tmp_path, monkeypatch):
+    spec = _build_spec(
+        tmp_path,
+        "  watermark.token_channel.mode: [semantic-only, dual-channel]",
+    )
+    spec.output_dir.mkdir(parents=True, exist_ok=True)
+    [combo0, combo1] = list(spec.expand())
+    # Pre-seed results.jsonl with combo0 already done:
+    (spec.output_dir / "results.jsonl").write_text(
+        json.dumps({"run_id": combo0.run_id, "axes_values": combo0.axes_values, "metrics": {}}) + "\n",
+        encoding="utf-8",
+    )
+
+    fake = _FakeOrchestrator()
+    runner = AblationRunner(orchestrator_factory=lambda *_a, **_kw: fake)
+    monkeypatch.setattr("wfcllm.ablation.runner.get_metric", lambda name: lambda a: 0.5)
+    runner.run(spec)
+
+    rows = [json.loads(l) for l in (spec.output_dir / "results.jsonl").read_text().splitlines() if l]
+    assert len(rows) == 2
+    assert rows[0]["run_id"] == combo0.run_id  # original row preserved
+    assert rows[0]["metrics"] == {}            # original metrics preserved (not 0.5)
+    assert rows[1]["run_id"] == combo1.run_id
+    # And only one combination was actually dispatched:
+    assert len(fake.calls) == 1
+    assert fake.calls[0][0] == "watermark"
