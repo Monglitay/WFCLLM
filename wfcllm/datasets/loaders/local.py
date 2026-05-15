@@ -1,6 +1,7 @@
 """Shared dataset loading utility for HumanEval and MBPP."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from datasets import load_dataset
@@ -98,3 +99,68 @@ def load_reference_solutions(dataset: str, dataset_path: str) -> list[dict]:
                 }
             )
     return rows
+
+
+@dataclass
+class TestCase:
+    """A single test case for code execution evaluation."""
+
+    task_id: str
+    entry_point: str | None
+    test_code: str
+
+
+def load_test_cases(dataset: str, dataset_path: str) -> dict[str, TestCase]:
+    """Load test cases from local HumanEval or MBPP dataset.
+
+    Args:
+        dataset: One of "humaneval" or "mbpp".
+        dataset_path: Root directory containing local dataset caches.
+
+    Returns:
+        Dict mapping task_id to TestCase.
+
+    Raises:
+        ValueError: If dataset is not in SUPPORTED_DATASETS.
+    """
+    if dataset not in SUPPORTED_DATASETS:
+        raise ValueError(
+            f"dataset must be one of {SUPPORTED_DATASETS}, got '{dataset}'"
+        )
+
+    path = str(Path(dataset_path) / dataset)
+
+    if dataset == "humaneval":
+        ds = load_dataset(
+            "openai/openai_humaneval",
+            cache_dir=path,
+            download_mode="reuse_cache_if_exists",
+        )
+        cases: dict[str, TestCase] = {}
+        for split in ds:
+            for item in ds[split]:
+                tid = item["task_id"]
+                cases[tid] = TestCase(
+                    task_id=tid,
+                    entry_point=item["entry_point"],
+                    test_code=item["test"],
+                )
+        return cases
+
+    # mbpp
+    ds = load_dataset(
+        "google-research-datasets/mbpp",
+        "full",
+        cache_dir=path,
+        download_mode="reuse_cache_if_exists",
+    )
+    cases = {}
+    for split in ds:
+        for item in ds[split]:
+            tid = f"mbpp/{item['task_id']}"
+            cases[tid] = TestCase(
+                task_id=tid,
+                entry_point=None,
+                test_code="\n".join(item["test_list"]),
+            )
+    return cases
