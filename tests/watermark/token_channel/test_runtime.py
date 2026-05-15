@@ -8,12 +8,12 @@ import pytest
 import torch
 from torch import nn
 
-from wfcllm.watermark.token_channel.config import TokenChannelConfig
-from wfcllm.watermark.token_channel.features import TokenChannelFeatures
-from wfcllm.watermark.token_channel.model import TokenChannelArtifactMetadata
-from wfcllm.watermark.token_channel.model import TokenChannelModel
-from wfcllm.watermark.token_channel.model import TokenChannelModelOutput
-from wfcllm.watermark.token_channel.protocol import build_partition
+from wfcllm.watermark.token_channel.core.config import TokenChannelConfig
+from wfcllm.watermark.token_channel.core.features import TokenChannelFeatures
+from wfcllm.watermark.token_channel.core.model import TokenChannelArtifactMetadata
+from wfcllm.watermark.token_channel.core.model import TokenChannelModel
+from wfcllm.watermark.token_channel.core.model import TokenChannelModelOutput
+from wfcllm.watermark.token_channel.core.protocol import build_partition
 from wfcllm.watermark.token_channel.runtime import TokenChannelRuntime
 
 

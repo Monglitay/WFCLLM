@@ -1,7 +1,7 @@
 """Tests for wfcllm.watermark.gamma_schedule."""
 
-from wfcllm.watermark.entropy_profile import EntropyProfile
-from wfcllm.watermark.gamma_schedule import PiecewiseQuantileSchedule
+from wfcllm.watermark.adaptive_gamma.profile import EntropyProfile
+from wfcllm.watermark.adaptive_gamma.schedule import PiecewiseQuantileSchedule
 
 
 def _profile() -> EntropyProfile:

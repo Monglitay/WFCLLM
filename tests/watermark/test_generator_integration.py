@@ -6,7 +6,7 @@ import torch
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from wfcllm.watermark.generator import WatermarkGenerator, GenerateResult, EmbedStats
+from wfcllm.watermark.orchestrator import WatermarkGenerator, GenerateResult, EmbedStats
 from wfcllm.watermark.config import WatermarkConfig
 from wfcllm.watermark.verifier import VerifyResult
 
@@ -178,7 +178,7 @@ class TestEmbedExtractTextAlignment:
     def test_simple_block_text_matches_ast_parser(self):
         """interceptor 捕获的 simple block 文本与 ast_parser 结果一致。"""
         from wfcllm.watermark.interceptor import StatementInterceptor
-        from wfcllm.common.ast_parser import extract_statement_blocks
+        from wfcllm.lang.python.parser import extract_statement_blocks
 
         code = "x = 1\ny = x + 2\nz = y + 3\n"
         ic = StatementInterceptor()
@@ -203,7 +203,7 @@ class TestEmbedExtractTextAlignment:
     def test_simple_block_parent_type_matches_ast_parser(self):
         """interceptor 推断的 parent_node_type 与 ast_parser 解析 parent 一致。"""
         from wfcllm.watermark.interceptor import StatementInterceptor
-        from wfcllm.common.ast_parser import extract_statement_blocks
+        from wfcllm.lang.python.parser import extract_statement_blocks
 
         code = "for i in range(n):\n    x = i\n"
         ic = StatementInterceptor()
@@ -229,7 +229,7 @@ class TestEmbedExtractTextAlignment:
     def test_after_cascade_rollback_simple_blocks_match_ast(self):
         """cascade rollback 后重新生成，simple block 文本与最终代码 AST 严格一致。"""
         from wfcllm.watermark.interceptor import StatementInterceptor
-        from wfcllm.common.ast_parser import extract_statement_blocks
+        from wfcllm.lang.python.parser import extract_statement_blocks
 
         ic = StatementInterceptor()
         cp = ic.checkpoint()

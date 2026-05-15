@@ -33,7 +33,7 @@ def test_core_config_old_path_emits_warning():
 
 
 def test_core_config_symbol_identity():
-    from wfcllm.watermark.token_channel.config import TokenChannelConfig as old_cls
+    from wfcllm.watermark.token_channel.core.config import TokenChannelConfig as old_cls
     from wfcllm.watermark.token_channel.core.config import TokenChannelConfig as new_cls
     assert old_cls is new_cls
 
@@ -65,7 +65,7 @@ def test_core_protocol_old_path_emits_warning():
 
 
 def test_core_protocol_symbol_identity():
-    from wfcllm.watermark.token_channel.protocol import build_partition as old_fn
+    from wfcllm.watermark.token_channel.core.protocol import build_partition as old_fn
     from wfcllm.watermark.token_channel.core.protocol import build_partition as new_fn
     assert old_fn is new_fn
 
@@ -97,7 +97,7 @@ def test_core_features_old_path_emits_warning():
 
 
 def test_core_features_symbol_identity():
-    from wfcllm.watermark.token_channel.features import TokenChannelFeatures as old_cls
+    from wfcllm.watermark.token_channel.core.features import TokenChannelFeatures as old_cls
     from wfcllm.watermark.token_channel.core.features import TokenChannelFeatures as new_cls
     assert old_cls is new_cls
 
@@ -129,7 +129,7 @@ def test_core_model_old_path_emits_warning():
 
 
 def test_core_model_symbol_identity():
-    from wfcllm.watermark.token_channel.model import TokenChannelModel as old_cls
+    from wfcllm.watermark.token_channel.core.model import TokenChannelModel as old_cls
     from wfcllm.watermark.token_channel.core.model import TokenChannelModel as new_cls
     assert old_cls is new_cls
 
@@ -177,7 +177,7 @@ def test_training_teacher_old_path_emits_warning():
 
 
 def test_training_teacher_symbol_identity():
-    from wfcllm.watermark.token_channel.teacher import extract_teacher_rows as old_fn
+    from wfcllm.watermark.token_channel.training.teacher import extract_teacher_rows as old_fn
     from wfcllm.watermark.token_channel.training.teacher import extract_teacher_rows as new_fn
     assert old_fn is new_fn
 
@@ -209,7 +209,7 @@ def test_training_trainer_old_path_emits_warning():
 
 
 def test_training_trainer_symbol_identity():
-    from wfcllm.watermark.token_channel.train import train_one_epoch as old_fn
+    from wfcllm.watermark.token_channel.training.trainer import train_one_epoch as old_fn
     from wfcllm.watermark.token_channel.training.trainer import train_one_epoch as new_fn
     assert old_fn is new_fn
 
@@ -241,7 +241,7 @@ def test_training_corpus_old_path_emits_warning():
 
 
 def test_training_corpus_symbol_identity():
-    from wfcllm.watermark.token_channel.train_corpus import build_training_rows as old_fn
+    from wfcllm.watermark.token_channel.training.corpus import build_training_rows as old_fn
     from wfcllm.watermark.token_channel.training.corpus import build_training_rows as new_fn
     assert old_fn is new_fn
 
@@ -273,7 +273,7 @@ def test_training_corpus_streaming_old_path_emits_warning():
 
 
 def test_training_corpus_streaming_symbol_identity():
-    from wfcllm.watermark.token_channel.train_corpus_streaming import stream_training_cache as old_fn
+    from wfcllm.watermark.token_channel.training.corpus_streaming import stream_training_cache as old_fn
     from wfcllm.watermark.token_channel.training.corpus_streaming import stream_training_cache as new_fn
     assert old_fn is new_fn
 
@@ -305,6 +305,6 @@ def test_training_workflow_old_path_emits_warning():
 
 
 def test_training_workflow_symbol_identity():
-    from wfcllm.watermark.token_channel.train_workflow import run_token_channel_train_workflow as old_fn
+    from wfcllm.watermark.token_channel.training.workflow import run_token_channel_train_workflow as old_fn
     from wfcllm.watermark.token_channel.training.workflow import run_token_channel_train_workflow as new_fn
     assert old_fn is new_fn

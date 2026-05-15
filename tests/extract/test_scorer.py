@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from wfcllm.common.ast_parser import StatementBlock
+from wfcllm.lang.python.parser import StatementBlock
 from wfcllm.extract.config import BlockScore
 from wfcllm.extract.scorer import BlockScorer
 from wfcllm.watermark.keying import WatermarkKeying

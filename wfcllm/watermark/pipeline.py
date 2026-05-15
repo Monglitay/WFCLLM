@@ -18,7 +18,7 @@ except ImportError:
 import torch
 
 from wfcllm.common.checkpoint import load_processed_ids, resolve_resume_path
-from wfcllm.watermark.generator import WatermarkGenerator
+from wfcllm.watermark.orchestrator import WatermarkGenerator
 from wfcllm.datasets.loaders.local import SUPPORTED_DATASETS, load_prompts
 
 

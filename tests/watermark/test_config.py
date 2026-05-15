@@ -1,7 +1,7 @@
 """Tests for wfcllm.watermark.config."""
 
 from wfcllm.watermark.config import AdaptiveGammaConfig, WatermarkConfig
-from wfcllm.watermark.token_channel.config import TokenChannelConfig
+from wfcllm.watermark.token_channel.core.config import TokenChannelConfig
 
 
 class TestWatermarkConfig:

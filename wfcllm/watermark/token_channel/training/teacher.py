@@ -18,7 +18,7 @@ Performance improvements:
 Usage examples:
 
     # Batch mode (recommended for training)
-    from wfcllm.watermark.token_channel.teacher import batch_extract_teacher_rows
+    from wfcllm.watermark.token_channel.training.teacher import batch_extract_teacher_rows
 
     results = batch_extract_teacher_rows(
         tokenizer=tokenizer,
@@ -39,7 +39,7 @@ Usage examples:
     # - token_index: Position index in the token sequence
 
     # Sequential mode (for debugging/validation)
-    from wfcllm.watermark.token_channel.teacher import extract_teacher_rows
+    from wfcllm.watermark.token_channel.training.teacher import extract_teacher_rows
 
     rows = extract_teacher_rows(
         tokenizer=tokenizer,

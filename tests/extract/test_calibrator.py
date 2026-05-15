@@ -8,8 +8,8 @@ from unittest.mock import MagicMock
 import pytest
 
 import wfcllm.extract.hypothesis as hypothesis_module
-from wfcllm.common.ast_parser import StatementBlock
-from wfcllm.extract.calibrator import ThresholdCalibrator
+from wfcllm.lang.python.parser import StatementBlock
+from wfcllm.extract.calibration.threshold import ThresholdCalibrator
 from wfcllm.extract.config import BlockScore
 
 

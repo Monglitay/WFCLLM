@@ -8,7 +8,7 @@ from wfcllm.extract.config import (
     DetectionResult,
     ExtractConfig,
 )
-from wfcllm.watermark.token_channel.config import TokenChannelConfig
+from wfcllm.watermark.token_channel.core.config import TokenChannelConfig
 
 
 class TestExtractConfig:

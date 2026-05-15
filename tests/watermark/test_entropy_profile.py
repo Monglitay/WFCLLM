@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from wfcllm.watermark.entropy_profile import EntropyProfile
+from wfcllm.watermark.adaptive_gamma.profile import EntropyProfile
 
 
 def test_load_reads_quantile_units_from_json(tmp_path):

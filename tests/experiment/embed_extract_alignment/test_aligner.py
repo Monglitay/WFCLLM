@@ -8,7 +8,7 @@ from experiment.embed_extract_alignment.models import (
     PromptReport,
 )
 from experiment.embed_extract_alignment.aligner import Aligner
-from wfcllm.common.ast_parser import StatementBlock
+from wfcllm.lang.python.parser import StatementBlock
 from wfcllm.extract.config import BlockScore
 
 

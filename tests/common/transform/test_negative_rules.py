@@ -1,7 +1,7 @@
 """Tests for negative transformation rules."""
 
 import pytest
-from wfcllm.common.transform.negative import get_all_negative_rules
+from wfcllm.lang.python.transform.negative import get_all_negative_rules
 
 
 class TestNegativeRulesRegistry:
@@ -18,21 +18,21 @@ class TestNegativeRulesRegistry:
 
 class TestNegativeApiCalls:
     def test_min_max_flip(self):
-        from wfcllm.common.transform.negative.api_calls import MinMaxFlip
+        from wfcllm.lang.python.transform.negative.api_calls import MinMaxFlip
         rule = MinMaxFlip()
         result = rule.transform("x = min(a, b)")
         assert result is not None
         assert "max" in result
 
     def test_any_all_flip(self):
-        from wfcllm.common.transform.negative.api_calls import AnyAllFlip
+        from wfcllm.lang.python.transform.negative.api_calls import AnyAllFlip
         rule = AnyAllFlip()
         result = rule.transform("if any(lst):\n    pass")
         assert result is not None
         assert "all" in result
 
     def test_ceil_floor_flip(self):
-        from wfcllm.common.transform.negative.api_calls import CeilFloorFlip
+        from wfcllm.lang.python.transform.negative.api_calls import CeilFloorFlip
         rule = CeilFloorFlip()
         result = rule.transform("x = math.ceil(y)")
         assert result is not None
@@ -41,14 +41,14 @@ class TestNegativeApiCalls:
 
 class TestNegativeControlFlow:
     def test_off_by_one(self):
-        from wfcllm.common.transform.negative.control_flow import OffByOne
+        from wfcllm.lang.python.transform.negative.control_flow import OffByOne
         rule = OffByOne()
         result = rule.transform("for i in range(n):\n    pass")
         assert result is not None
         assert "n - 1" in result
 
     def test_break_continue_swap(self):
-        from wfcllm.common.transform.negative.control_flow import BreakContinueSwap
+        from wfcllm.lang.python.transform.negative.control_flow import BreakContinueSwap
         rule = BreakContinueSwap()
         result = rule.transform("for i in range(10):\n    break")
         assert result is not None
@@ -57,14 +57,14 @@ class TestNegativeControlFlow:
 
 class TestNegativeExpressionLogic:
     def test_eq_neq_flip(self):
-        from wfcllm.common.transform.negative.expression_logic import EqNeqFlip
+        from wfcllm.lang.python.transform.negative.expression_logic import EqNeqFlip
         rule = EqNeqFlip()
         result = rule.transform("x == y")
         assert result is not None
         assert "!=" in result
 
     def test_and_or_swap(self):
-        from wfcllm.common.transform.negative.expression_logic import AndOrSwap
+        from wfcllm.lang.python.transform.negative.expression_logic import AndOrSwap
         rule = AndOrSwap()
         result = rule.transform("a and b")
         assert result is not None

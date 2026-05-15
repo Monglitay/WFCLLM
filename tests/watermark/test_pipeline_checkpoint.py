@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from wfcllm.watermark.generator import EmbedStats, GenerateResult
+from wfcllm.watermark.orchestrator import EmbedStats, GenerateResult
 from wfcllm.watermark.pipeline import WatermarkPipeline, WatermarkPipelineConfig
 
 

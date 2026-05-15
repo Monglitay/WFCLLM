@@ -297,7 +297,7 @@ class TestScenario11CascadeInnerBlocksTextConsistency:
         证明 passive fallback 不可用（中间态文本与最终文本不同）。
         """
         from wfcllm.watermark.interceptor import StatementInterceptor
-        from wfcllm.common.ast_parser import extract_statement_blocks
+        from wfcllm.lang.python.parser import extract_statement_blocks
 
         ic = StatementInterceptor()
         header = "for i in range(n):\n"
@@ -331,7 +331,7 @@ class TestScenario11CascadeInnerBlocksTextConsistency:
         正确性断言：嵌入端与提取端文本一致，是 passive fallback 修复的核心不变量。
         """
         from wfcllm.watermark.interceptor import StatementInterceptor
-        from wfcllm.common.ast_parser import extract_statement_blocks
+        from wfcllm.lang.python.parser import extract_statement_blocks
 
         ic = StatementInterceptor()
         cp = ic.checkpoint()

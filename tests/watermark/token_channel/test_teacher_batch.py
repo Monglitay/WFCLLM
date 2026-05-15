@@ -56,7 +56,7 @@ def mock_model():
 
 def test_extract_single_text_all_positions_shape(mock_model, mock_tokenizer):
     """Test that _extract_single_text_all_positions returns correct shape."""
-    from wfcllm.watermark.token_channel.teacher import _extract_single_text_all_positions
+    from wfcllm.watermark.token_channel.training.teacher import _extract_single_text_all_positions
 
     token_ids = [1, 2, 3, 4, 5]
     result = _extract_single_text_all_positions(mock_model, token_ids, mock_tokenizer)
@@ -68,7 +68,7 @@ def test_extract_single_text_all_positions_shape(mock_model, mock_tokenizer):
 
 def test_extract_single_text_all_positions_empty(mock_model, mock_tokenizer):
     """Test that _extract_single_text_all_positions handles empty token_ids."""
-    from wfcllm.watermark.token_channel.teacher import _extract_single_text_all_positions
+    from wfcllm.watermark.token_channel.training.teacher import _extract_single_text_all_positions
 
     token_ids = []
     result = _extract_single_text_all_positions(mock_model, token_ids, mock_tokenizer)
@@ -80,7 +80,7 @@ def test_extract_single_text_all_positions_empty(mock_model, mock_tokenizer):
 
 def test_extract_single_text_all_positions_prepends_bos(mock_model):
     """Test that BOS token is prepended when tokenizer has one."""
-    from wfcllm.watermark.token_channel.teacher import _extract_single_text_all_positions
+    from wfcllm.watermark.token_channel.training.teacher import _extract_single_text_all_positions
 
     tokenizer = MockTokenizer(bos_token_id=0)
     token_ids = [1, 2, 3]
@@ -105,7 +105,7 @@ def test_extract_single_text_all_positions_prepends_bos(mock_model):
 
 def test_extract_single_text_all_positions_no_bos_raises():
     """Test that missing BOS token raises error for non-empty token_ids."""
-    from wfcllm.watermark.token_channel.teacher import _extract_single_text_all_positions
+    from wfcllm.watermark.token_channel.training.teacher import _extract_single_text_all_positions
 
     tokenizer = MockTokenizer(bos_token_id=None)
     model = MockModel(vocab_size=100)
@@ -117,7 +117,7 @@ def test_extract_single_text_all_positions_no_bos_raises():
 
 def test_extract_single_text_all_positions_eval_mode(mock_model, mock_tokenizer):
     """Test that model.eval() is called during extraction."""
-    from wfcllm.watermark.token_channel.teacher import _extract_single_text_all_positions
+    from wfcllm.watermark.token_channel.training.teacher import _extract_single_text_all_positions
 
     # Set model to training mode
     mock_model.train()
@@ -145,7 +145,7 @@ def test_extract_single_text_all_positions_eval_mode(mock_model, mock_tokenizer)
 
 def test_extract_single_text_all_positions_no_grad(mock_model, mock_tokenizer):
     """Test that gradient tracking is disabled during extraction."""
-    from wfcllm.watermark.token_channel.teacher import _extract_single_text_all_positions
+    from wfcllm.watermark.token_channel.training.teacher import _extract_single_text_all_positions
 
     token_ids = [1, 2, 3]
 
@@ -168,7 +168,7 @@ def test_extract_single_text_all_positions_no_grad(mock_model, mock_tokenizer):
 
 def test_get_vocab_size():
     """Test _get_vocab_size helper function."""
-    from wfcllm.watermark.token_channel.teacher import _get_vocab_size
+    from wfcllm.watermark.token_channel.training.teacher import _get_vocab_size
 
     # Test with config.vocab_size
     class ModelWithConfig:
@@ -208,7 +208,7 @@ def test_get_vocab_size():
 
 def test_batch_forward_all_positions_returns_list(mock_model, mock_tokenizer):
     """Test that _batch_forward_all_positions returns a list of tensors."""
-    from wfcllm.watermark.token_channel.teacher import _batch_forward_all_positions
+    from wfcllm.watermark.token_channel.training.teacher import _batch_forward_all_positions
 
     batch_token_ids = [
         [1, 2, 3],
@@ -224,7 +224,7 @@ def test_batch_forward_all_positions_returns_list(mock_model, mock_tokenizer):
 
 def test_batch_forward_all_positions_correct_shapes(mock_model, mock_tokenizer):
     """Test that each output tensor has correct shape [seq_len, vocab_size]."""
-    from wfcllm.watermark.token_channel.teacher import _batch_forward_all_positions
+    from wfcllm.watermark.token_channel.training.teacher import _batch_forward_all_positions
 
     batch_token_ids = [
         [1, 2, 3],
@@ -242,7 +242,7 @@ def test_batch_forward_all_positions_correct_shapes(mock_model, mock_tokenizer):
 
 def test_batch_forward_all_positions_empty_batch(mock_model, mock_tokenizer):
     """Test that empty batch returns empty list."""
-    from wfcllm.watermark.token_channel.teacher import _batch_forward_all_positions
+    from wfcllm.watermark.token_channel.training.teacher import _batch_forward_all_positions
 
     batch_token_ids = []
     result = _batch_forward_all_positions(mock_model, batch_token_ids, mock_tokenizer)
@@ -253,7 +253,7 @@ def test_batch_forward_all_positions_empty_batch(mock_model, mock_tokenizer):
 
 def test_batch_forward_all_positions_single_empty_text(mock_model, mock_tokenizer):
     """Test that batch with single empty text returns correct shape."""
-    from wfcllm.watermark.token_channel.teacher import _batch_forward_all_positions
+    from wfcllm.watermark.token_channel.training.teacher import _batch_forward_all_positions
 
     batch_token_ids = [[]]
     result = _batch_forward_all_positions(mock_model, batch_token_ids, mock_tokenizer)
@@ -264,7 +264,7 @@ def test_batch_forward_all_positions_single_empty_text(mock_model, mock_tokenize
 
 def test_batch_forward_all_positions_matches_single_inference(mock_tokenizer):
     """Test that batch inference produces same results as single inference."""
-    from wfcllm.watermark.token_channel.teacher import (
+    from wfcllm.watermark.token_channel.training.teacher import (
         _batch_forward_all_positions,
         _extract_single_text_all_positions,
     )
@@ -313,7 +313,7 @@ def test_batch_forward_all_positions_matches_single_inference(mock_tokenizer):
 
 def test_batch_forward_all_positions_uses_left_padding(mock_tokenizer):
     """Test that left padding is used (preserves causal structure)."""
-    from wfcllm.watermark.token_channel.teacher import _batch_forward_all_positions
+    from wfcllm.watermark.token_channel.training.teacher import _batch_forward_all_positions
 
     # Create a model that tracks input_ids
     class TrackingModel(torch.nn.Module):
@@ -357,7 +357,7 @@ def test_batch_forward_all_positions_uses_left_padding(mock_tokenizer):
 
 def test_batch_forward_all_positions_eval_mode(mock_tokenizer):
     """Test that model.eval() is called during batch extraction."""
-    from wfcllm.watermark.token_channel.teacher import _batch_forward_all_positions
+    from wfcllm.watermark.token_channel.training.teacher import _batch_forward_all_positions
 
     model = MockModel(vocab_size=100)
     model.train()
@@ -385,7 +385,7 @@ def test_batch_forward_all_positions_eval_mode(mock_tokenizer):
 
 def test_batch_forward_all_positions_no_grad(mock_tokenizer):
     """Test that gradient tracking is disabled during batch extraction."""
-    from wfcllm.watermark.token_channel.teacher import _batch_forward_all_positions
+    from wfcllm.watermark.token_channel.training.teacher import _batch_forward_all_positions
 
     model = MockModel(vocab_size=100)
     batch_token_ids = [[1, 2, 3], [4, 5]]
@@ -414,7 +414,7 @@ def test_batch_forward_all_positions_no_grad(mock_tokenizer):
 
 def test_group_texts_by_length_returns_groups(mock_tokenizer):
     """Test that _group_texts_by_length returns list of groups."""
-    from wfcllm.watermark.token_channel.teacher import _group_texts_by_length
+    from wfcllm.watermark.token_channel.training.teacher import _group_texts_by_length
 
     texts = ["short", "medium text", "another short", "very long text here"]
 
@@ -427,7 +427,7 @@ def test_group_texts_by_length_returns_groups(mock_tokenizer):
 
 def test_group_texts_by_length_groups_similar_lengths(mock_tokenizer):
     """Test that texts with similar lengths are grouped together."""
-    from wfcllm.watermark.token_channel.teacher import _group_texts_by_length
+    from wfcllm.watermark.token_channel.training.teacher import _group_texts_by_length
 
     # Create a tokenizer that returns different lengths
     class LengthTokenizer:
@@ -460,7 +460,7 @@ def test_group_texts_by_length_groups_similar_lengths(mock_tokenizer):
 
 def test_group_texts_by_length_respects_tolerance(mock_tokenizer):
     """Test that tolerance parameter controls grouping."""
-    from wfcllm.watermark.token_channel.teacher import _group_texts_by_length
+    from wfcllm.watermark.token_channel.training.teacher import _group_texts_by_length
 
     class LengthTokenizer:
         def __init__(self):
@@ -484,7 +484,7 @@ def test_group_texts_by_length_respects_tolerance(mock_tokenizer):
 
 def test_group_texts_by_length_empty_input(mock_tokenizer):
     """Test that empty input returns empty list."""
-    from wfcllm.watermark.token_channel.teacher import _group_texts_by_length
+    from wfcllm.watermark.token_channel.training.teacher import _group_texts_by_length
 
     texts = []
     groups = _group_texts_by_length(texts, mock_tokenizer, tolerance=0.2)
@@ -494,7 +494,7 @@ def test_group_texts_by_length_empty_input(mock_tokenizer):
 
 def test_group_texts_by_length_single_text(mock_tokenizer):
     """Test that single text returns one group."""
-    from wfcllm.watermark.token_channel.teacher import _group_texts_by_length
+    from wfcllm.watermark.token_channel.training.teacher import _group_texts_by_length
 
     texts = ["single text"]
     groups = _group_texts_by_length(texts, mock_tokenizer, tolerance=0.2)
@@ -506,7 +506,7 @@ def test_group_texts_by_length_single_text(mock_tokenizer):
 
 def test_compute_dynamic_batch_size_scales_with_length():
     """Test that batch size decreases as sequence length increases."""
-    from wfcllm.watermark.token_channel.teacher import _compute_dynamic_batch_size
+    from wfcllm.watermark.token_channel.training.teacher import _compute_dynamic_batch_size
 
     available_memory = 20.0  # 20 GB
     base_batch_size = 32
@@ -532,7 +532,7 @@ def test_compute_dynamic_batch_size_scales_with_length():
 
 def test_compute_dynamic_batch_size_respects_min_constraint():
     """Test that batch size never goes below minimum."""
-    from wfcllm.watermark.token_channel.teacher import _compute_dynamic_batch_size
+    from wfcllm.watermark.token_channel.training.teacher import _compute_dynamic_batch_size
 
     # Very long sequence with limited memory
     batch_size = _compute_dynamic_batch_size(
@@ -547,7 +547,7 @@ def test_compute_dynamic_batch_size_respects_min_constraint():
 
 def test_compute_dynamic_batch_size_respects_max_constraint():
     """Test that batch size never exceeds maximum."""
-    from wfcllm.watermark.token_channel.teacher import _compute_dynamic_batch_size
+    from wfcllm.watermark.token_channel.training.teacher import _compute_dynamic_batch_size
 
     base_batch_size = 32
 
@@ -564,7 +564,7 @@ def test_compute_dynamic_batch_size_respects_max_constraint():
 
 def test_get_available_memory_gb_returns_float(mock_model):
     """Test that _get_available_memory_gb returns a float."""
-    from wfcllm.watermark.token_channel.teacher import _get_available_memory_gb
+    from wfcllm.watermark.token_channel.training.teacher import _get_available_memory_gb
 
     memory = _get_available_memory_gb(mock_model)
 
@@ -574,7 +574,7 @@ def test_get_available_memory_gb_returns_float(mock_model):
 
 def test_get_available_memory_gb_fallback():
     """Test that _get_available_memory_gb falls back to default when CUDA unavailable."""
-    from wfcllm.watermark.token_channel.teacher import _get_available_memory_gb
+    from wfcllm.watermark.token_channel.training.teacher import _get_available_memory_gb
 
     # Mock model without CUDA
     class CPUModel:
@@ -594,7 +594,7 @@ def test_get_available_memory_gb_fallback():
 
 def test_batch_extract_teacher_rows_returns_list_of_lists(mock_model, mock_tokenizer):
     """Test that batch_extract_teacher_rows returns list of lists."""
-    from wfcllm.watermark.token_channel.teacher import batch_extract_teacher_rows
+    from wfcllm.watermark.token_channel.training.teacher import batch_extract_teacher_rows
 
     texts = ["hello world", "foo bar baz"]
 
@@ -613,7 +613,7 @@ def test_batch_extract_teacher_rows_returns_list_of_lists(mock_model, mock_token
 
 def test_batch_extract_teacher_rows_row_format(mock_tokenizer):
     """Test that each row has all required fields."""
-    from wfcllm.watermark.token_channel.teacher import batch_extract_teacher_rows
+    from wfcllm.watermark.token_channel.training.teacher import batch_extract_teacher_rows
 
     model = MockModel(vocab_size=100)
     texts = ["abc"]
@@ -654,7 +654,7 @@ def test_batch_extract_teacher_rows_row_format(mock_tokenizer):
 
 def test_batch_extract_teacher_rows_preserves_order(mock_model, mock_tokenizer):
     """Test that results preserve original text order."""
-    from wfcllm.watermark.token_channel.teacher import batch_extract_teacher_rows
+    from wfcllm.watermark.token_channel.training.teacher import batch_extract_teacher_rows
 
     # Create texts with different lengths to trigger grouping
     texts = ["short", "medium length text", "x", "another medium text"]
@@ -678,7 +678,7 @@ def test_batch_extract_teacher_rows_preserves_order(mock_model, mock_tokenizer):
 
 def test_batch_extract_teacher_rows_empty_texts(mock_model, mock_tokenizer):
     """Test that empty texts list returns empty list."""
-    from wfcllm.watermark.token_channel.teacher import batch_extract_teacher_rows
+    from wfcllm.watermark.token_channel.training.teacher import batch_extract_teacher_rows
 
     texts = []
 
@@ -695,7 +695,7 @@ def test_batch_extract_teacher_rows_empty_texts(mock_model, mock_tokenizer):
 
 def test_batch_extract_teacher_rows_single_text(mock_model, mock_tokenizer):
     """Test that single text works correctly."""
-    from wfcllm.watermark.token_channel.teacher import batch_extract_teacher_rows
+    from wfcllm.watermark.token_channel.training.teacher import batch_extract_teacher_rows
 
     texts = ["hello"]
 
@@ -730,7 +730,7 @@ def test_batch_vs_sequential_consistency():
     3. Context width: prefix_tokens respect context_width limit
     4. All fields match within float16 precision tolerance
     """
-    from wfcllm.watermark.token_channel.teacher import (
+    from wfcllm.watermark.token_channel.training.teacher import (
         extract_teacher_rows,
         batch_extract_teacher_rows,
     )

@@ -7,9 +7,9 @@ from unittest.mock import MagicMock
 
 from wfcllm.watermark.context import GenerationContext, Checkpoint
 from wfcllm.watermark.config import WatermarkConfig, TokenChannelConfig
-from wfcllm.watermark.generator import WatermarkGenerator
+from wfcllm.watermark.orchestrator import WatermarkGenerator
 from wfcllm.watermark.interceptor import InterceptorState, InterceptEvent
-from wfcllm.watermark.token_channel.features import TokenChannelFeatures
+from wfcllm.watermark.token_channel.core.features import TokenChannelFeatures
 
 
 class TestCheckpointRollback:

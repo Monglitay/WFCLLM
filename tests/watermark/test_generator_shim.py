@@ -16,7 +16,7 @@ def test_orchestrator_exports_same_class_as_old_path():
     from wfcllm.watermark.orchestrator import WatermarkGenerator as W_new
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
-        from wfcllm.watermark.generator import WatermarkGenerator as W_old
+        from wfcllm.watermark.orchestrator import WatermarkGenerator as W_old
     assert W_new is W_old
 
 
@@ -35,7 +35,7 @@ def test_deprecation_warning_emitted_on_old_path_import():
 def test_old_symbols_resolvable_through_shim():
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
-        from wfcllm.watermark.generator import (
+        from wfcllm.watermark.orchestrator import (
             EmbedStats,
             GenerateResult,
             TokenChannelRuntimeState,

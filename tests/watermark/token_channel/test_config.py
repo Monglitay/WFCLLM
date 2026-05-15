@@ -2,7 +2,7 @@
 
 import pytest
 
-from wfcllm.watermark.token_channel.config import (
+from wfcllm.watermark.token_channel.core.config import (
     TokenChannelConfig,
     TokenChannelJointConfig,
 )

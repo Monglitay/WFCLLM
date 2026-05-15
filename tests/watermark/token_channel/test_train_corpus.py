@@ -10,16 +10,16 @@ import json
 import pytest
 import torch
 
-from wfcllm.watermark.token_channel.features import build_structure_masks
-from wfcllm.watermark.token_channel.features import collect_excluded_token_spans
-from wfcllm.watermark.token_channel.teacher import extract_teacher_rows
-from wfcllm.watermark.token_channel.teacher import load_teacher_cache
-from wfcllm.watermark.token_channel.teacher import save_teacher_cache
-from wfcllm.watermark.token_channel.train import main
-from wfcllm.watermark.token_channel.train_corpus import build_augmented_variants
-from wfcllm.watermark.token_channel.train_corpus import build_training_rows
-from wfcllm.watermark.token_channel.train_corpus import load_training_cache
-from wfcllm.watermark.token_channel.train_corpus import save_training_cache
+from wfcllm.watermark.token_channel.core.features import build_structure_masks
+from wfcllm.watermark.token_channel.core.features import collect_excluded_token_spans
+from wfcllm.watermark.token_channel.training.teacher import extract_teacher_rows
+from wfcllm.watermark.token_channel.training.teacher import load_teacher_cache
+from wfcllm.watermark.token_channel.training.teacher import save_teacher_cache
+from wfcllm.watermark.token_channel.training.trainer import main
+from wfcllm.watermark.token_channel.training.corpus import build_augmented_variants
+from wfcllm.watermark.token_channel.training.corpus import build_training_rows
+from wfcllm.watermark.token_channel.training.corpus import load_training_cache
+from wfcllm.watermark.token_channel.training.corpus import save_training_cache
 
 
 class CharacterTokenizer:

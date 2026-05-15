@@ -79,8 +79,8 @@ def test_base_config_includes_token_channel_train_defaults():
 
 def test_run_token_channel_train_loads_defaults_from_config(tmp_path, capsys):
     from wfcllm.cli.runners import run_token_channel_train
-    from wfcllm.watermark.token_channel.train import TokenChannelEpochMetrics
-    from wfcllm.watermark.token_channel.train_workflow import TokenChannelTrainWorkflowSummary
+    from wfcllm.watermark.token_channel.training.trainer import TokenChannelEpochMetrics
+    from wfcllm.watermark.token_channel.training.workflow import TokenChannelTrainWorkflowSummary
     from unittest.mock import patch
 
     lm_model_path = tmp_path / "teacher-model"
@@ -166,8 +166,8 @@ def test_run_token_channel_train_loads_defaults_from_config(tmp_path, capsys):
 
 def test_run_token_channel_train_cli_overrides_dataset_inputs(tmp_path, capsys):
     from wfcllm.cli.runners import run_token_channel_train
-    from wfcllm.watermark.token_channel.train import TokenChannelEpochMetrics
-    from wfcllm.watermark.token_channel.train_workflow import TokenChannelTrainWorkflowSummary
+    from wfcllm.watermark.token_channel.training.trainer import TokenChannelEpochMetrics
+    from wfcllm.watermark.token_channel.training.workflow import TokenChannelTrainWorkflowSummary
     from unittest.mock import patch
 
     config_lm_model_path = tmp_path / "config-teacher-model"
@@ -260,8 +260,8 @@ def test_run_token_channel_train_cli_overrides_dataset_inputs(tmp_path, capsys):
 
 def test_run_token_channel_train_cli_overrides_model_path(tmp_path):
     from wfcllm.cli.runners import run_token_channel_train
-    from wfcllm.watermark.token_channel.train import TokenChannelEpochMetrics
-    from wfcllm.watermark.token_channel.train_workflow import TokenChannelTrainWorkflowSummary
+    from wfcllm.watermark.token_channel.training.trainer import TokenChannelEpochMetrics
+    from wfcllm.watermark.token_channel.training.workflow import TokenChannelTrainWorkflowSummary
     from unittest.mock import patch
 
     lm_model_path = tmp_path / "teacher-model"
@@ -348,8 +348,8 @@ def test_run_token_channel_train_cli_overrides_model_path(tmp_path):
 
 def test_run_token_channel_train_applies_defaults_for_partial_custom_config(tmp_path):
     from wfcllm.cli.runners import run_token_channel_train
-    from wfcllm.watermark.token_channel.train import TokenChannelEpochMetrics
-    from wfcllm.watermark.token_channel.train_workflow import TokenChannelTrainWorkflowSummary
+    from wfcllm.watermark.token_channel.training.trainer import TokenChannelEpochMetrics
+    from wfcllm.watermark.token_channel.training.workflow import TokenChannelTrainWorkflowSummary
     from unittest.mock import patch
 
     lm_model_path = tmp_path / "teacher-model"
@@ -436,8 +436,8 @@ def test_run_token_channel_train_applies_defaults_for_partial_custom_config(tmp_
 
 def test_run_token_channel_train_prints_summary_output(tmp_path, capsys):
     from wfcllm.cli.runners import run_token_channel_train
-    from wfcllm.watermark.token_channel.train import TokenChannelEpochMetrics
-    from wfcllm.watermark.token_channel.train_workflow import TokenChannelTrainWorkflowSummary
+    from wfcllm.watermark.token_channel.training.trainer import TokenChannelEpochMetrics
+    from wfcllm.watermark.token_channel.training.workflow import TokenChannelTrainWorkflowSummary
     from unittest.mock import patch
 
     lm_model_path = tmp_path / "teacher-model"
@@ -523,8 +523,8 @@ def test_run_token_channel_train_prints_overwrite_notices_for_existing_paths(tmp
     capsys,
 ):
     from wfcllm.cli.runners import run_token_channel_train
-    from wfcllm.watermark.token_channel.train import TokenChannelEpochMetrics
-    from wfcllm.watermark.token_channel.train_workflow import TokenChannelTrainWorkflowSummary
+    from wfcllm.watermark.token_channel.training.trainer import TokenChannelEpochMetrics
+    from wfcllm.watermark.token_channel.training.workflow import TokenChannelTrainWorkflowSummary
     from unittest.mock import patch
 
     lm_model_path = tmp_path / "teacher-model"

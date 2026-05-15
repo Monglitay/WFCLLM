@@ -14,7 +14,7 @@ import pytest
 from wfcllm.extract.alignment import compare_block_contracts
 from wfcllm.extract.pipeline import ExtractPipeline, ExtractPipelineConfig
 from wfcllm.extract.config import DetectionResult
-from wfcllm.extract.calibrator import ThresholdCalibrator
+from wfcllm.extract.calibration.threshold import ThresholdCalibrator
 from wfcllm.extract.hypothesis import JointDetectionResult
 from wfcllm.extract.hypothesis import LexicalDetectionResult
 

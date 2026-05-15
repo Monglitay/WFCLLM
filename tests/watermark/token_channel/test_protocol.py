@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import torch
 
-from wfcllm.watermark.token_channel.protocol import build_partition
-from wfcllm.watermark.token_channel.protocol import make_prefix_key
-from wfcllm.watermark.token_channel.protocol import make_scored_token_key
+from wfcllm.watermark.token_channel.core.protocol import build_partition
+from wfcllm.watermark.token_channel.core.protocol import make_prefix_key
+from wfcllm.watermark.token_channel.core.protocol import make_scored_token_key
 
 
 def test_partition_uses_full_vocab_pairing() -> None:

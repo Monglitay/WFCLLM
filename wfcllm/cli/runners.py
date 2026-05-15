@@ -209,7 +209,7 @@ def run_watermark(args: argparse.Namespace, state: RunStateManager) -> int:
     from wfcllm.encoder.config import EncoderConfig
     from wfcllm.encoder.model import SemanticEncoder
     from wfcllm.watermark.config import WatermarkConfig
-    from wfcllm.watermark.generator import WatermarkGenerator
+    from wfcllm.watermark.orchestrator import WatermarkGenerator
     from wfcllm.watermark.pipeline import WatermarkPipeline, WatermarkPipelineConfig
 
     print("=== 阶段二：生成时水印嵌入 ===")

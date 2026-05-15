@@ -196,7 +196,7 @@ class TestCascadeTextConsistency:
         两者必须不同。
         """
         from wfcllm.watermark.interceptor import StatementInterceptor
-        from wfcllm.common.ast_parser import extract_statement_blocks
+        from wfcllm.lang.python.parser import extract_statement_blocks
 
         ic = StatementInterceptor()
         # 只喂 header，不喂 body
@@ -239,7 +239,7 @@ class TestCascadeTextConsistency:
         """cascade rollback 后，interceptor 捕获的 simple block 文本
         与对最终代码运行 ast_parser 的结果严格一致。"""
         from wfcllm.watermark.interceptor import StatementInterceptor
-        from wfcllm.common.ast_parser import extract_statement_blocks
+        from wfcllm.lang.python.parser import extract_statement_blocks
 
         ic = StatementInterceptor()
         compound_start_cp = ic.checkpoint()
@@ -279,7 +279,7 @@ class TestCascadeTextConsistency:
     def test_after_cascade_rollback_parent_type_matches_ast(self):
         """cascade rollback 后，simple block 的 parent_node_type 与 ast_parser 一致。"""
         from wfcllm.watermark.interceptor import StatementInterceptor
-        from wfcllm.common.ast_parser import extract_statement_blocks
+        from wfcllm.lang.python.parser import extract_statement_blocks
 
         ic = StatementInterceptor()
         cp = ic.checkpoint()

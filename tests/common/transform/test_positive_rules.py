@@ -3,7 +3,7 @@
 import ast
 
 import pytest
-from wfcllm.common.transform.positive import get_all_positive_rules
+from wfcllm.lang.python.transform.positive import get_all_positive_rules
 
 
 class TestPositiveRulesRegistry:
@@ -24,21 +24,21 @@ class TestPositiveRulesRegistry:
 
 class TestApiCallRules:
     def test_explicit_default_print(self):
-        from wfcllm.common.transform.positive.api_calls import ExplicitDefaultPrint
+        from wfcllm.lang.python.transform.positive.api_calls import ExplicitDefaultPrint
         rule = ExplicitDefaultPrint()
         result = rule.transform("print(x)")
         assert result is not None
         assert "flush" in result or "end" in result
 
     def test_explicit_default_range(self):
-        from wfcllm.common.transform.positive.api_calls import ExplicitDefaultRange
+        from wfcllm.lang.python.transform.positive.api_calls import ExplicitDefaultRange
         rule = ExplicitDefaultRange()
         result = rule.transform("range(10)")
         assert result is not None
         assert "0" in result  # range(10) -> range(0, 10)
 
     def test_min_max_unchanged_semantics(self):
-        from wfcllm.common.transform.positive.api_calls import ExplicitDefaultMinMax
+        from wfcllm.lang.python.transform.positive.api_calls import ExplicitDefaultMinMax
         rule = ExplicitDefaultMinMax()
         result = rule.transform("min(a, b)")
         assert result is not None
@@ -47,13 +47,13 @@ class TestApiCallRules:
 
 class TestControlFlowRules:
     def test_loop_convert(self):
-        from wfcllm.common.transform.positive.control_flow import LoopConvert
+        from wfcllm.lang.python.transform.positive.control_flow import LoopConvert
         rule = LoopConvert()
         source = "for i in range(n):\n    print(i)"
         assert rule.can_apply(source)
 
     def test_branch_flip(self):
-        from wfcllm.common.transform.positive.control_flow import BranchFlip
+        from wfcllm.lang.python.transform.positive.control_flow import BranchFlip
         rule = BranchFlip()
         source = "if x > 0:\n    print('yes')\nelse:\n    print('no')"
         assert rule.can_apply(source)
@@ -84,7 +84,7 @@ class TestControlFlowRules:
         ],
     )
     def test_control_flow_rules_preserve_indentation(self, rule_cls, source):
-        from wfcllm.common.transform.positive import control_flow
+        from wfcllm.lang.python.transform.positive import control_flow
 
         rule = getattr(control_flow, rule_cls)()
         result = rule.transform(source)
@@ -95,13 +95,13 @@ class TestControlFlowRules:
 
 class TestExpressionLogicRules:
     def test_operand_swap(self):
-        from wfcllm.common.transform.positive.expression_logic import OperandSwap
+        from wfcllm.lang.python.transform.positive.expression_logic import OperandSwap
         rule = OperandSwap()
         result = rule.transform("x + y")
         assert result is not None
 
     def test_comparison_flip(self):
-        from wfcllm.common.transform.positive.expression_logic import ComparisonFlip
+        from wfcllm.lang.python.transform.positive.expression_logic import ComparisonFlip
         rule = ComparisonFlip()
         result = rule.transform("a < b")
         assert result is not None
@@ -110,7 +110,7 @@ class TestExpressionLogicRules:
 
 class TestIdentifierRules:
     def test_variable_rename(self):
-        from wfcllm.common.transform.positive.identifier import VariableRename
+        from wfcllm.lang.python.transform.positive.identifier import VariableRename
         rule = VariableRename()
         result = rule.transform("my_var = 1")
         # Should convert snake_case to camelCase or vice versa
@@ -119,7 +119,7 @@ class TestIdentifierRules:
 
 class TestFormattingRules:
     def test_fix_spacing(self):
-        from wfcllm.common.transform.positive.formatting import FixSpacing
+        from wfcllm.lang.python.transform.positive.formatting import FixSpacing
         rule = FixSpacing()
         # If source has operators without spaces, should add them
         assert rule.name  # at minimum check it loads

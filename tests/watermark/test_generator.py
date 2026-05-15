@@ -11,12 +11,12 @@ from unittest.mock import MagicMock
 
 from wfcllm.common.block_contract import build_block_contracts
 from wfcllm.watermark.diagnostics import hash_block_text
-from wfcllm.watermark.generator import WatermarkGenerator, GenerateResult, EmbedStats
+from wfcllm.watermark.orchestrator import WatermarkGenerator, GenerateResult, EmbedStats
 from wfcllm.watermark.config import WatermarkConfig
 from wfcllm.watermark.interceptor import InterceptEvent
 from wfcllm.watermark.retry_loop import AttemptInfo, RetryDiagnostics, RetryResult
-from wfcllm.watermark.token_channel.config import TokenChannelConfig
-from wfcllm.watermark.token_channel.features import TokenChannelFeatures
+from wfcllm.watermark.token_channel.core.config import TokenChannelConfig
+from wfcllm.watermark.token_channel.core.features import TokenChannelFeatures
 from wfcllm.watermark.verifier import VerifyResult
 
 
@@ -1547,7 +1547,7 @@ class TestFallbackDeprecated:
         """废弃后 WatermarkGenerator 实例不应存在 _try_passive_fallback 方法。"""
         import torch
         from unittest.mock import MagicMock
-        from wfcllm.watermark.generator import WatermarkGenerator
+        from wfcllm.watermark.orchestrator import WatermarkGenerator
         from wfcllm.watermark.config import WatermarkConfig
         config = WatermarkConfig(secret_key="k", encoder_device="cpu")
         model = MagicMock()

@@ -6,7 +6,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 from dataclasses import dataclass
 
-from wfcllm.watermark.gamma_schedule import GammaResolution
+from wfcllm.watermark.adaptive_gamma.schedule import GammaResolution
 from wfcllm.watermark.retry_loop import RetryLoop, RetryResult, RetryDiagnostics, AttemptInfo
 from wfcllm.watermark.context import GenerationContext, Checkpoint
 from wfcllm.watermark.config import WatermarkConfig

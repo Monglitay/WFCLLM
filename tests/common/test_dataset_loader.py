@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from wfcllm.common.dataset_loader import (
+from wfcllm.datasets.loaders.local import (
     SUPPORTED_DATASETS,
     load_prompts,
     load_reference_solutions,

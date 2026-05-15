@@ -1,7 +1,7 @@
 """Tests for wfcllm.common.ast_parser."""
 
 import pytest
-from wfcllm.common.ast_parser import PythonParser, StatementBlock, extract_statement_blocks
+from wfcllm.lang.python.parser import PythonParser, StatementBlock, extract_statement_blocks
 
 
 class TestPythonParser:

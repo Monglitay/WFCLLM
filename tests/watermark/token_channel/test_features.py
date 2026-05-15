@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from wfcllm.watermark.token_channel.features import build_structure_masks
-from wfcllm.watermark.token_channel.features import is_structure_safe_span
-from wfcllm.watermark.token_channel.features import TokenChannelFeatures
+from wfcllm.watermark.token_channel.core.features import build_structure_masks
+from wfcllm.watermark.token_channel.core.features import is_structure_safe_span
+from wfcllm.watermark.token_channel.core.features import TokenChannelFeatures
 
 
 def test_token_channel_features_default_language_and_mapping_roundtrip() -> None:

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 
-from wfcllm.extract.negative_corpus import NegativeCorpusConfig, NegativeCorpusGenerator
+from wfcllm.extract.calibration.negative_corpus import NegativeCorpusConfig, NegativeCorpusGenerator
 
 
 class TestNegativeCorpusConfig:

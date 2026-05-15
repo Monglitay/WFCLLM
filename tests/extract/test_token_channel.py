@@ -9,8 +9,8 @@ from unittest.mock import patch
 import pytest
 
 from wfcllm.extract.token_channel import ReplayTokenChannelDetector
-from wfcllm.watermark.token_channel.config import TokenChannelConfig
-from wfcllm.watermark.token_channel.features import TokenChannelFeatures
+from wfcllm.watermark.token_channel.core.config import TokenChannelConfig
+from wfcllm.watermark.token_channel.core.features import TokenChannelFeatures
 
 
 class SimpleTokenizer:

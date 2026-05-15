@@ -9,8 +9,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from wfcllm.watermark.token_channel.features import TokenChannelFeatures
-from wfcllm.watermark.token_channel.model import (
+from wfcllm.watermark.token_channel.core.features import TokenChannelFeatures
+from wfcllm.watermark.token_channel.core.model import (
     TOKEN_CHANNEL_METADATA_REQUIRED_KEYS,
     TokenChannelArtifactMetadata,
     TokenChannelModel,
@@ -20,7 +20,7 @@ from wfcllm.watermark.token_channel.model import (
     load_token_channel_artifact_metadata,
     save_token_channel_artifact_metadata,
 )
-from wfcllm.watermark.token_channel.train import (
+from wfcllm.watermark.token_channel.training.trainer import (
     TokenChannelEpochMetrics,
     TokenChannelTrainingEvidence,
     build_training_evidence,

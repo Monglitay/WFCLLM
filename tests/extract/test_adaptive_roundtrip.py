@@ -11,8 +11,8 @@ from wfcllm.common.block_contract import build_block_contracts
 from wfcllm.extract.config import BlockScore, ExtractConfig
 from wfcllm.extract.detector import WatermarkDetector
 from wfcllm.watermark.config import AdaptiveGammaConfig
-from wfcllm.watermark.entropy_profile import EntropyProfile
-from wfcllm.watermark.gamma_schedule import PiecewiseQuantileSchedule
+from wfcllm.watermark.adaptive_gamma.profile import EntropyProfile
+from wfcllm.watermark.adaptive_gamma.schedule import PiecewiseQuantileSchedule
 
 
 def _adaptive_metadata(code: str, tmp_path) -> tuple[dict, AdaptiveGammaConfig]:

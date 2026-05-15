@@ -7,15 +7,15 @@ from pathlib import Path
 
 import pytest
 
-from wfcllm.common.offline_code_eval import annotate_correctness_from_references
-from wfcllm.common.offline_code_eval import apply_perturbation
-from wfcllm.common.offline_code_eval import compute_pass_at_k
-from wfcllm.common.offline_code_eval import compute_roc_auc
-from wfcllm.common.offline_code_eval import compute_tpr_at_fpr
+from wfcllm.evaluation.code_execution import annotate_correctness_from_references
+from wfcllm.evaluation.code_execution import apply_perturbation
+from wfcllm.evaluation.code_execution import compute_pass_at_k
+from wfcllm.evaluation.code_execution import compute_roc_auc
+from wfcllm.evaluation.code_execution import compute_tpr_at_fpr
 from wfcllm.extract.hypothesis import JointDetectionResult
 from wfcllm.extract.hypothesis import LexicalDetectionResult
 from wfcllm.extract.hypothesis import fuse_joint_detection
-from wfcllm.watermark.token_channel.config import TokenChannelConfig
+from wfcllm.watermark.token_channel.core.config import TokenChannelConfig
 
 from scripts.evaluate_dual_channel import CommandRunResult
 from scripts.evaluate_dual_channel import run_evaluation

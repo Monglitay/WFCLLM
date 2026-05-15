@@ -1,7 +1,7 @@
 """Tests for wfcllm.watermark.entropy."""
 
 import pytest
-from wfcllm.watermark.entropy import ENTROPY_SCALE, NodeEntropyEstimator
+from wfcllm.watermark.adaptive_gamma.entropy import ENTROPY_SCALE, NodeEntropyEstimator
 from wfcllm.watermark.config import WatermarkConfig
 
 

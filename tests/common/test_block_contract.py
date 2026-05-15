@@ -2,7 +2,7 @@
 
 from hashlib import sha256
 
-from wfcllm.watermark.entropy import NodeEntropyEstimator
+from wfcllm.watermark.adaptive_gamma.entropy import NodeEntropyEstimator
 from wfcllm.common.block_contract import build_block_contracts
 
 

@@ -7,8 +7,8 @@ import json
 
 from wfcllm.common.block_contract import build_block_contracts
 from wfcllm.extract.alignment import compare_block_contracts, rebuild_block_contracts
-from wfcllm.watermark.entropy_profile import EntropyProfile
-from wfcllm.watermark.gamma_schedule import PiecewiseQuantileSchedule
+from wfcllm.watermark.adaptive_gamma.profile import EntropyProfile
+from wfcllm.watermark.adaptive_gamma.schedule import PiecewiseQuantileSchedule
 
 
 def _contract(

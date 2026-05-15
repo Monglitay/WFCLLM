@@ -1,7 +1,7 @@
 """Tests for wfcllm.common.transform.engine."""
 
-from wfcllm.common.transform.base import Match, Rule, parse_code
-from wfcllm.common.transform.engine import TransformEngine
+from wfcllm.lang.python.transform.base import Match, Rule, parse_code
+from wfcllm.lang.python.transform.engine import TransformEngine
 
 
 class _AddOneRule(Rule):

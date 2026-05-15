@@ -5,7 +5,7 @@ import hashlib
 from dataclasses import asdict, replace
 import pytest
 from wfcllm.common.block_contract import build_block_contracts
-from wfcllm.watermark.token_channel.config import TokenChannelConfig
+from wfcllm.watermark.token_channel.core.config import TokenChannelConfig
 from wfcllm.watermark.pipeline import WatermarkPipelineConfig
 
 
@@ -94,7 +94,7 @@ import json
 import tempfile
 from types import SimpleNamespace
 from pathlib import Path
-from wfcllm.watermark.generator import GenerateResult, EmbedStats
+from wfcllm.watermark.orchestrator import GenerateResult, EmbedStats
 
 
 class TestWatermarkPipelineRun:
@@ -1057,7 +1057,7 @@ class TestWatermarkPipelineRun:
                 dataset_path="data/datasets",
             )
             from wfcllm.watermark.config import WatermarkConfig
-            from wfcllm.watermark.generator import WatermarkGenerator
+            from wfcllm.watermark.orchestrator import WatermarkGenerator
             from wfcllm.watermark.interceptor import InterceptEvent
             from wfcllm.watermark.verifier import VerifyResult
 

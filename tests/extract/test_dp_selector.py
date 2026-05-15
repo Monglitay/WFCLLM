@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from wfcllm.common.ast_parser import StatementBlock
+from wfcllm.lang.python.parser import StatementBlock
 from wfcllm.extract.config import BlockScore
 from wfcllm.extract.dp_selector import DPSelector
 
