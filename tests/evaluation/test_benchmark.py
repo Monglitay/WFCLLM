@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -178,3 +179,39 @@ def test_benchmark_runner_run_with_existing_results(tmp_path: Path) -> None:
     assert "detection" in report["metrics"]
     assert "semantic" in report["metrics"]["detection"]
     assert report["metrics"]["detection"]["semantic"]["auroc"] == pytest.approx(1.0)
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from scripts.evaluate import _build_parser
+
+
+def test_bench_cli_parser_existing_results() -> None:
+    parser = _build_parser()
+    args = parser.parse_args([
+        "bench",
+        "--dataset", "humaneval",
+        "--watermarked-dirs", "dir1", "dir2",
+        "--negative-details", "neg.jsonl",
+        "--positive-details", "pos.jsonl",
+        "--output-dir", "/tmp/out",
+    ])
+    assert args.subcommand == "bench"
+    assert args.dataset == "humaneval"
+    assert args.watermarked_dirs == ["dir1", "dir2"]
+    assert args.negative_details == "neg.jsonl"
+    assert args.positive_details == "pos.jsonl"
+
+
+def test_bench_cli_parser_auto_generate() -> None:
+    parser = _build_parser()
+    args = parser.parse_args([
+        "bench",
+        "--dataset", "mbpp",
+        "--config", "configs/base_config.json",
+        "--auto-generate",
+        "--num-candidates", "10",
+    ])
+    assert args.subcommand == "bench"
+    assert args.dataset == "mbpp"
+    assert args.auto_generate is True
+    assert args.num_candidates == 10

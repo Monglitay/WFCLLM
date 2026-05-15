@@ -91,6 +91,28 @@ def _cmd_dual(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_bench(args: argparse.Namespace) -> int:
+    from wfcllm.evaluation.benchmark import BenchmarkConfig, BenchmarkRunner
+
+    config = BenchmarkConfig(
+        dataset=args.dataset,
+        config_path=args.config,
+        dataset_path=args.dataset_path,
+        num_candidates=args.num_candidates,
+        timeout_per_test=args.timeout,
+        watermarked_dirs=args.watermarked_dirs,
+        positive_details=args.positive_details,
+        negative_details=args.negative_details,
+        auto_generate=args.auto_generate,
+        negative_corpus=args.negative_corpus,
+        output_dir=args.output_dir,
+    )
+    runner = BenchmarkRunner(config)
+    report = runner.run()
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="WFCLLM unified offline evaluation entry point.",
@@ -134,6 +156,28 @@ def _build_parser() -> argparse.ArgumentParser:
     dual_parser.add_argument("--output-dir", default="data/eval/dual_channel")
     dual_parser.add_argument("--num-candidates", type=int, default=10)
     dual_parser.set_defaults(func=_cmd_dual)
+
+    bench_parser = subparsers.add_parser(
+        "bench",
+        help="compute Pass@1, Pass@10, AUROC from watermarked candidates + negative corpus",
+    )
+    bench_parser.add_argument(
+        "--dataset", required=True, choices=["humaneval", "mbpp"],
+    )
+    bench_parser.add_argument("--config", default="configs/base_config.json")
+    bench_parser.add_argument("--dataset-path", default="data/datasets")
+    bench_parser.add_argument(
+        "--watermarked-dirs", nargs="+", default=None,
+        help="directories containing watermarked candidate JSONL files",
+    )
+    bench_parser.add_argument("--positive-details", default=None)
+    bench_parser.add_argument("--negative-details", default=None)
+    bench_parser.add_argument("--negative-corpus", default=None)
+    bench_parser.add_argument("--auto-generate", action="store_true")
+    bench_parser.add_argument("--num-candidates", type=int, default=10)
+    bench_parser.add_argument("--timeout", type=float, default=5.0)
+    bench_parser.add_argument("--output-dir", default="data/eval/benchmark")
+    bench_parser.set_defaults(func=_cmd_bench)
 
     return parser
 
