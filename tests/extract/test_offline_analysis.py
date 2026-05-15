@@ -8,7 +8,7 @@ import pytest
 
 
 def _load_module():
-    return import_module("wfcllm.extract.offline_analysis")
+    return import_module("wfcllm.evaluation.detection_report")
 
 
 def _write_json(path, payload: dict) -> None:

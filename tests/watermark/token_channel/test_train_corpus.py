@@ -346,7 +346,7 @@ def test_build_training_rows_reuses_precomputed_variant_parse_state(monkeypatch)
         parse_calls += 1
         return original_parse(*args, **kwargs)
 
-    monkeypatch.setattr("wfcllm.watermark.token_channel.features.ast.parse", counting_parse)
+    monkeypatch.setattr("wfcllm.watermark.token_channel.core.features.ast.parse", counting_parse)
 
     build_training_rows(
         samples=[{"source_code": "value = a\n"}],
@@ -400,7 +400,7 @@ def test_build_training_rows_uses_batch_inference(monkeypatch) -> None:
         return results
 
     monkeypatch.setattr(
-        "wfcllm.watermark.token_channel.train_corpus.batch_extract_teacher_rows",
+        "wfcllm.watermark.token_channel.training.corpus.batch_extract_teacher_rows",
         mock_batch_extract,
     )
 

@@ -608,7 +608,7 @@ def test_load_token_channel_artifact_uses_weights_only(tmp_path: Path) -> None:
     save_token_channel_artifact_metadata(metadata_path, _metadata())
     torch.save(model.state_dict(), model_path)
 
-    with patch("wfcllm.watermark.token_channel.model.torch.load") as load_mock:
+    with patch("wfcllm.watermark.token_channel.core.model.torch.load") as load_mock:
         load_mock.return_value = model.state_dict()
         load_token_channel_artifact(artifact_dir)
 
@@ -625,7 +625,7 @@ def test_load_token_channel_artifact_falls_back_without_weights_only(tmp_path: P
     save_token_channel_artifact_metadata(metadata_path, _metadata())
     torch.save(model.state_dict(), model_path)
 
-    with patch("wfcllm.watermark.token_channel.model.torch.load") as load_mock:
+    with patch("wfcllm.watermark.token_channel.core.model.torch.load") as load_mock:
         load_mock.side_effect = [TypeError("weights_only"), model.state_dict()]
 
         artifact = load_token_channel_artifact(artifact_dir)

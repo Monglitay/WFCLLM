@@ -150,7 +150,7 @@ def test_run_token_channel_train_loads_defaults_from_config(tmp_path, capsys):
     )
 
     with patch(
-        "wfcllm.watermark.token_channel.train_workflow.run_token_channel_train_workflow",
+        "wfcllm.watermark.token_channel.training.workflow.run_token_channel_train_workflow",
         return_value=summary,
     ):
         assert run_token_channel_train(args, state) == 0
@@ -246,7 +246,7 @@ def test_run_token_channel_train_cli_overrides_dataset_inputs(tmp_path, capsys):
         return summary
 
     with patch(
-        "wfcllm.watermark.token_channel.train_workflow.run_token_channel_train_workflow",
+        "wfcllm.watermark.token_channel.training.workflow.run_token_channel_train_workflow",
         side_effect=fake_workflow,
     ):
         assert run_token_channel_train(args, state) == 0
@@ -338,7 +338,7 @@ def test_run_token_channel_train_cli_overrides_model_path(tmp_path):
         return summary
 
     with patch(
-        "wfcllm.watermark.token_channel.train_workflow.run_token_channel_train_workflow",
+        "wfcllm.watermark.token_channel.training.workflow.run_token_channel_train_workflow",
         side_effect=fake_workflow,
     ):
         assert run_token_channel_train(args, state) == 0
@@ -414,7 +414,7 @@ def test_run_token_channel_train_applies_defaults_for_partial_custom_config(tmp_
         return summary
 
     with patch(
-        "wfcllm.watermark.token_channel.train_workflow.run_token_channel_train_workflow",
+        "wfcllm.watermark.token_channel.training.workflow.run_token_channel_train_workflow",
         side_effect=fake_workflow,
     ):
         assert run_token_channel_train(args, state) == 0
@@ -507,10 +507,10 @@ def test_run_token_channel_train_prints_summary_output(tmp_path, capsys):
     )
 
     with patch(
-        "wfcllm.watermark.token_channel.train_workflow.run_token_channel_train_workflow",
+        "wfcllm.watermark.token_channel.training.workflow.run_token_channel_train_workflow",
         return_value=summary,
     ), patch(
-        "wfcllm.watermark.token_channel.train_workflow.format_token_channel_train_workflow_summary",
+        "wfcllm.watermark.token_channel.training.workflow.format_token_channel_train_workflow_summary",
         return_value=["summary line 1", "summary line 2"],
     ):
         assert run_token_channel_train(args, state) == 0
@@ -598,7 +598,7 @@ def test_run_token_channel_train_prints_overwrite_notices_for_existing_paths(tmp
     )
 
     with patch(
-        "wfcllm.watermark.token_channel.train_workflow.run_token_channel_train_workflow",
+        "wfcllm.watermark.token_channel.training.workflow.run_token_channel_train_workflow",
         return_value=summary,
     ):
         assert run_token_channel_train(args, state) == 0
