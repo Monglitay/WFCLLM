@@ -15,6 +15,7 @@ from wfcllm.watermark.config import WatermarkConfig
 from wfcllm.watermark.context import GenerationContext
 from wfcllm.watermark.diagnostics import (
     BlockLifecycleRecord,
+    FailureReason,
     hash_block_text,
     summarize_sample_diagnostics,
 )

@@ -1108,7 +1108,7 @@ class TestWatermarkPipelineRun:
                     return self._steps >= 2
 
             monkeypatch.setattr(
-                "wfcllm.watermark.generator.GenerationContext",
+                "wfcllm.watermark.orchestrator.GenerationContext",
                 FakeContext,
             )
 

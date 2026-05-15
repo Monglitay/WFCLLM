@@ -444,11 +444,11 @@ class TestForwardAndSample:
         tokenizer.eos_token_id = 4
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.load_token_channel_artifact",
+            "wfcllm.watermark.orchestrator.load_token_channel_artifact",
             lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.TokenChannelRuntime",
+            "wfcllm.watermark.orchestrator.TokenChannelRuntime",
             lambda **kwargs: MagicMock(),
         )
 
@@ -532,11 +532,11 @@ class TestForwardAndSample:
         tokenizer.eos_token_id = 4
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.load_token_channel_artifact",
+            "wfcllm.watermark.orchestrator.load_token_channel_artifact",
             lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.TokenChannelRuntime",
+            "wfcllm.watermark.orchestrator.TokenChannelRuntime",
             lambda **kwargs: MagicMock(),
         )
 

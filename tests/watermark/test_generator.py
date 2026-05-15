@@ -159,7 +159,7 @@ class TestWatermarkGeneratorInit:
                 return self._steps >= 2
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.GenerationContext",
+            "wfcllm.watermark.orchestrator.GenerationContext",
             FakeContext,
         )
 
@@ -238,7 +238,7 @@ class TestWatermarkGeneratorInit:
                 return self._steps >= 2
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.GenerationContext",
+            "wfcllm.watermark.orchestrator.GenerationContext",
             FakeContext,
         )
 
@@ -302,11 +302,11 @@ class TestWatermarkGeneratorInit:
                 return self._steps >= 2
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.GenerationContext",
+            "wfcllm.watermark.orchestrator.GenerationContext",
             FakeContext,
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.build_block_contracts",
+            "wfcllm.watermark.orchestrator.build_block_contracts",
             lambda code, gamma_resolver=None: [],
         )
 
@@ -367,7 +367,7 @@ class TestWatermarkGeneratorInit:
                 return self._steps >= 2
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.GenerationContext",
+            "wfcllm.watermark.orchestrator.GenerationContext",
             FakeContext,
         )
 
@@ -457,7 +457,7 @@ class TestWatermarkGeneratorInit:
                 return self._steps >= 3
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.GenerationContext",
+            "wfcllm.watermark.orchestrator.GenerationContext",
             FakeContext,
         )
 
@@ -536,7 +536,7 @@ class TestWatermarkGeneratorInit:
                 return event
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.GenerationContext",
+            "wfcllm.watermark.orchestrator.GenerationContext",
             FakeContext,
         )
 
@@ -630,11 +630,11 @@ class TestWatermarkGeneratorInit:
                 )
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.GenerationContext",
+            "wfcllm.watermark.orchestrator.GenerationContext",
             FakeContext,
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.RetryLoop",
+            "wfcllm.watermark.orchestrator.RetryLoop",
             FakeRetryLoop,
         )
 
@@ -741,11 +741,11 @@ class TestWatermarkGeneratorInit:
                 )
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.GenerationContext",
+            "wfcllm.watermark.orchestrator.GenerationContext",
             FakeContext,
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.RetryLoop",
+            "wfcllm.watermark.orchestrator.RetryLoop",
             FakeRetryLoop,
         )
 
@@ -858,11 +858,11 @@ class TestWatermarkGeneratorInit:
                 )
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.GenerationContext",
+            "wfcllm.watermark.orchestrator.GenerationContext",
             FakeContext,
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.RetryLoop",
+            "wfcllm.watermark.orchestrator.RetryLoop",
             FakeRetryLoop,
         )
 
@@ -958,11 +958,11 @@ class TestWatermarkGeneratorInit:
                 )
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.GenerationContext",
+            "wfcllm.watermark.orchestrator.GenerationContext",
             FakeContext,
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.RetryLoop",
+            "wfcllm.watermark.orchestrator.RetryLoop",
             FakeRetryLoop,
         )
 
@@ -1066,11 +1066,11 @@ class TestWatermarkGeneratorInit:
                 )
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.GenerationContext",
+            "wfcllm.watermark.orchestrator.GenerationContext",
             FakeContext,
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.RetryLoop",
+            "wfcllm.watermark.orchestrator.RetryLoop",
             FakeRetryLoop,
         )
 
@@ -1175,11 +1175,11 @@ class TestWatermarkGeneratorInit:
                 )
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.GenerationContext",
+            "wfcllm.watermark.orchestrator.GenerationContext",
             FakeContext,
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.RetryLoop",
+            "wfcllm.watermark.orchestrator.RetryLoop",
             FakeRetryLoop,
         )
 
@@ -1327,11 +1327,11 @@ class TestWatermarkGeneratorInit:
                 )
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.GenerationContext",
+            "wfcllm.watermark.orchestrator.GenerationContext",
             FakeContext,
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.RetryLoop",
+            "wfcllm.watermark.orchestrator.RetryLoop",
             FakeRetryLoop,
         )
 
@@ -1421,7 +1421,7 @@ class TestBlockGammaRuntime:
             token_count=1,
         )
 
-        with caplog.at_level(logging.DEBUG, logger="wfcllm.watermark.generator"):
+        with caplog.at_level(logging.DEBUG, logger="wfcllm.watermark.semantic_channel"):
             gen._verify_block(event)
 
         assert "gamma_target=" in caplog.text
@@ -1501,7 +1501,7 @@ class TestBlockGammaRuntime:
                 return self._steps >= 2
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.GenerationContext",
+            "wfcllm.watermark.orchestrator.GenerationContext",
             FakeContext,
         )
 
@@ -1705,11 +1705,11 @@ class TestCascadeRegression:
                 )
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.GenerationContext",
+            "wfcllm.watermark.orchestrator.GenerationContext",
             FakeContext,
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.RetryLoop",
+            "wfcllm.watermark.orchestrator.RetryLoop",
             FakeRetryLoop,
         )
 
@@ -1872,11 +1872,11 @@ class TestCascadeRegression:
                 )
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.GenerationContext",
+            "wfcllm.watermark.orchestrator.GenerationContext",
             FakeContext,
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.RetryLoop",
+            "wfcllm.watermark.orchestrator.RetryLoop",
             FakeRetryLoop,
         )
 
@@ -2041,11 +2041,11 @@ class TestCascadeRegression:
                 )
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.GenerationContext",
+            "wfcllm.watermark.orchestrator.GenerationContext",
             FakeContext,
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.RetryLoop",
+            "wfcllm.watermark.orchestrator.RetryLoop",
             FakeRetryLoop,
         )
 
@@ -2208,11 +2208,11 @@ class TestCascadeRegression:
                 )
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.GenerationContext",
+            "wfcllm.watermark.orchestrator.GenerationContext",
             FakeContext,
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.RetryLoop",
+            "wfcllm.watermark.orchestrator.RetryLoop",
             FakeRetryLoop,
         )
 
@@ -2376,11 +2376,11 @@ class TestCascadeRegression:
                 )
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.GenerationContext",
+            "wfcllm.watermark.orchestrator.GenerationContext",
             FakeContext,
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.RetryLoop",
+            "wfcllm.watermark.orchestrator.RetryLoop",
             FakeRetryLoop,
         )
 
@@ -2440,11 +2440,11 @@ class TestTokenChannelGeneration:
                 captured.update(kwargs)
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.load_token_channel_artifact",
+            "wfcllm.watermark.orchestrator.load_token_channel_artifact",
             lambda path: artifact,
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.TokenChannelRuntime",
+            "wfcllm.watermark.orchestrator.TokenChannelRuntime",
             FakeRuntime,
         )
 
@@ -2475,11 +2475,11 @@ class TestTokenChannelGeneration:
             token_channel=TokenChannelConfig(enabled=True, mode="dual-channel"),
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.load_token_channel_artifact",
+            "wfcllm.watermark.orchestrator.load_token_channel_artifact",
             lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.TokenChannelRuntime",
+            "wfcllm.watermark.orchestrator.TokenChannelRuntime",
             lambda **kwargs: MagicMock(),
         )
         gen = WatermarkGenerator(
@@ -2528,11 +2528,11 @@ class TestTokenChannelGeneration:
             ),
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.load_token_channel_artifact",
+            "wfcllm.watermark.orchestrator.load_token_channel_artifact",
             lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.TokenChannelRuntime",
+            "wfcllm.watermark.orchestrator.TokenChannelRuntime",
             lambda **kwargs: MagicMock(),
         )
         gen = WatermarkGenerator(
@@ -2582,11 +2582,11 @@ class TestTokenChannelGeneration:
             token_channel=TokenChannelConfig(enabled=True, mode="dual-channel"),
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.load_token_channel_artifact",
+            "wfcllm.watermark.orchestrator.load_token_channel_artifact",
             lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.TokenChannelRuntime",
+            "wfcllm.watermark.orchestrator.TokenChannelRuntime",
             lambda **kwargs: MagicMock(),
         )
 
@@ -2609,7 +2609,7 @@ class TestTokenChannelGeneration:
             )
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.build_token_channel_features",
+            "wfcllm.watermark.orchestrator.build_token_channel_features",
             fake_build_features,
         )
 
@@ -2648,11 +2648,11 @@ class TestTokenChannelGeneration:
             ),
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.load_token_channel_artifact",
+            "wfcllm.watermark.orchestrator.load_token_channel_artifact",
             lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.TokenChannelRuntime",
+            "wfcllm.watermark.orchestrator.TokenChannelRuntime",
             lambda **kwargs: MagicMock(),
         )
         gen = WatermarkGenerator(
@@ -2711,11 +2711,11 @@ class TestTokenChannelGeneration:
             ),
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.load_token_channel_artifact",
+            "wfcllm.watermark.orchestrator.load_token_channel_artifact",
             lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.TokenChannelRuntime",
+            "wfcllm.watermark.orchestrator.TokenChannelRuntime",
             lambda **kwargs: MagicMock(),
         )
         gen = WatermarkGenerator(
@@ -2814,15 +2814,15 @@ class TestTokenChannelGeneration:
                 return self._steps >= 2
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.GenerationContext",
+            "wfcllm.watermark.orchestrator.GenerationContext",
             FakeContext,
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.load_token_channel_artifact",
+            "wfcllm.watermark.orchestrator.load_token_channel_artifact",
             lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.TokenChannelRuntime",
+            "wfcllm.watermark.orchestrator.TokenChannelRuntime",
             lambda **kwargs: MagicMock(),
         )
 
@@ -2926,15 +2926,15 @@ class TestTokenChannelGeneration:
                 return self._phase in {"initial-eos", "retry-eos"}
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.GenerationContext",
+            "wfcllm.watermark.orchestrator.GenerationContext",
             FakeContext,
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.load_token_channel_artifact",
+            "wfcllm.watermark.orchestrator.load_token_channel_artifact",
             lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.TokenChannelRuntime",
+            "wfcllm.watermark.orchestrator.TokenChannelRuntime",
             lambda **kwargs: MagicMock(),
         )
 
@@ -2983,11 +2983,11 @@ class TestTokenChannelGeneration:
             ),
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.load_token_channel_artifact",
+            "wfcllm.watermark.orchestrator.load_token_channel_artifact",
             lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.TokenChannelRuntime",
+            "wfcllm.watermark.orchestrator.TokenChannelRuntime",
             lambda **kwargs: MagicMock(),
         )
         gen = WatermarkGenerator(
@@ -3020,11 +3020,11 @@ class TestTokenChannelGeneration:
             token_channel=TokenChannelConfig(enabled=True, mode="dual-channel"),
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.load_token_channel_artifact",
+            "wfcllm.watermark.orchestrator.load_token_channel_artifact",
             lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.TokenChannelRuntime",
+            "wfcllm.watermark.orchestrator.TokenChannelRuntime",
             lambda **kwargs: MagicMock(),
         )
         gen = WatermarkGenerator(
@@ -3128,19 +3128,19 @@ class TestTokenChannelGeneration:
                 )
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.GenerationContext",
+            "wfcllm.watermark.orchestrator.GenerationContext",
             FakeContext,
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.RetryLoop",
+            "wfcllm.watermark.orchestrator.RetryLoop",
             FakeRetryLoop,
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.load_token_channel_artifact",
+            "wfcllm.watermark.orchestrator.load_token_channel_artifact",
             lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.TokenChannelRuntime",
+            "wfcllm.watermark.orchestrator.TokenChannelRuntime",
             lambda **kwargs: MagicMock(),
         )
 
@@ -3270,19 +3270,19 @@ class TestTokenChannelGeneration:
                 )
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.GenerationContext",
+            "wfcllm.watermark.orchestrator.GenerationContext",
             FakeContext,
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.RetryLoop",
+            "wfcllm.watermark.orchestrator.RetryLoop",
             FakeRetryLoop,
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.load_token_channel_artifact",
+            "wfcllm.watermark.orchestrator.load_token_channel_artifact",
             lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.TokenChannelRuntime",
+            "wfcllm.watermark.orchestrator.TokenChannelRuntime",
             lambda **kwargs: MagicMock(),
         )
 
@@ -3432,19 +3432,19 @@ class TestTokenChannelGeneration:
                 )
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.GenerationContext",
+            "wfcllm.watermark.orchestrator.GenerationContext",
             FakeContext,
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.RetryLoop",
+            "wfcllm.watermark.orchestrator.RetryLoop",
             FakeRetryLoop,
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.load_token_channel_artifact",
+            "wfcllm.watermark.orchestrator.load_token_channel_artifact",
             lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.TokenChannelRuntime",
+            "wfcllm.watermark.orchestrator.TokenChannelRuntime",
             lambda **kwargs: MagicMock(),
         )
 
@@ -3583,15 +3583,15 @@ class TestTokenChannelGeneration:
                 return self._phase == "done"
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.GenerationContext",
+            "wfcllm.watermark.orchestrator.GenerationContext",
             FakeContext,
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.load_token_channel_artifact",
+            "wfcllm.watermark.orchestrator.load_token_channel_artifact",
             lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.TokenChannelRuntime",
+            "wfcllm.watermark.orchestrator.TokenChannelRuntime",
             lambda **kwargs: MagicMock(),
         )
 
@@ -3646,11 +3646,11 @@ class TestTokenChannelGeneration:
             ),
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.load_token_channel_artifact",
+            "wfcllm.watermark.orchestrator.load_token_channel_artifact",
             lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.TokenChannelRuntime",
+            "wfcllm.watermark.orchestrator.TokenChannelRuntime",
             lambda **kwargs: MagicMock(),
         )
         gen = WatermarkGenerator(
@@ -3841,11 +3841,11 @@ class TestTokenChannelGeneration:
                 )
 
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.GenerationContext",
+            "wfcllm.watermark.orchestrator.GenerationContext",
             FakeContext,
         )
         monkeypatch.setattr(
-            "wfcllm.watermark.generator.RetryLoop",
+            "wfcllm.watermark.orchestrator.RetryLoop",
             FakeRetryLoop,
         )
 

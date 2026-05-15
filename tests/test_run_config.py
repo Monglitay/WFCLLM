@@ -331,7 +331,7 @@ def test_run_watermark_parses_token_channel_from_config(monkeypatch, tmp_path):
     monkeypatch.setattr("transformers.AutoModelForCausalLM.from_pretrained", lambda *args, **kwargs: object())
     monkeypatch.setattr("transformers.BitsAndBytesConfig", lambda **kwargs: SimpleNamespace(**kwargs))
     monkeypatch.setattr("wfcllm.encoder.model.SemanticEncoder", FakeEncoder)
-    monkeypatch.setattr("wfcllm.watermark.generator.WatermarkGenerator", FakeGenerator)
+    monkeypatch.setattr("wfcllm.watermark.orchestrator.WatermarkGenerator", FakeGenerator)
     monkeypatch.setattr("wfcllm.watermark.pipeline.WatermarkPipeline", FakePipeline)
     monkeypatch.setattr("wfcllm.watermark.pipeline.WatermarkPipelineConfig", lambda **kwargs: SimpleNamespace(**kwargs))
 

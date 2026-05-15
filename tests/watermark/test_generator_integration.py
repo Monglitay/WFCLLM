@@ -258,7 +258,7 @@ class TestEmbedExtractTextAlignment:
 
 
 def test_try_cascade_helper_does_not_verify_compound_text_inline():
-    tree = ast.parse(Path("wfcllm/watermark/generator.py").read_text(encoding="utf-8"))
+    tree = ast.parse(Path("wfcllm/watermark/orchestrator.py").read_text(encoding="utf-8"))
     for node in tree.body:
         if isinstance(node, ast.ClassDef) and node.name == "WatermarkGenerator":
             for fn in node.body:
