@@ -5,9 +5,11 @@ from wfcllm.ablation.metrics import (
     get_metric,
     register_metric,
 )
+from wfcllm.ablation.runner import AblationRunner
 from wfcllm.ablation.sweep import ResolvedConfig, SweepSpec, short_hash
 
 __all__ = [
+    "AblationRunner",
     "METRIC_REGISTRY",
     "MetricExtractor",
     "ResolvedConfig",
