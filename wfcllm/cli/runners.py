@@ -98,12 +98,14 @@ def validate_compare_only_mode(args: argparse.Namespace) -> str | None:
 
 def run_phase(phase: str, args: argparse.Namespace, state: RunStateManager) -> int:
     """分发到各阶段 runner，返回退出码。"""
+    from wfcllm.pretrain.runner import run_pretrain  # local import to avoid circular dep
     runners = {
         "encoder": run_encoder,
         "watermark": run_watermark,
         "extract": run_extract,
         "generate-negative": run_generate_negative,
         "token-channel-train": run_token_channel_train,
+        "pretrain": run_pretrain,
     }
     return runners[phase](args, state)
 

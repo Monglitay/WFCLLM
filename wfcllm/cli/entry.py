@@ -21,6 +21,7 @@ from wfcllm.cli.runners import (
     run_token_channel_train,
     run_watermark,
 )
+from wfcllm.pretrain.runner import run_pretrain
 from wfcllm.orchestration.phase_registry import PhaseRegistry
 from wfcllm.orchestration.pipeline import PhaseOrchestrator
 from wfcllm.orchestration.prereq import PrereqRegistry
@@ -53,6 +54,7 @@ def _populate_phase_registry(reg: PhaseRegistry) -> None:
     reg.register("generate-negative", run_generate_negative)
     reg.register("token-channel-train", run_token_channel_train)
     reg.register("build-entropy-profile", run_build_entropy_profile)
+    reg.register("pretrain", run_pretrain)
 
 
 def main(argv: list[str] | None = None) -> int:

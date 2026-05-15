@@ -96,3 +96,51 @@ class _DummyState:
 
     def is_done(self, phase: str) -> bool:
         return self._encoder_done if phase == "encoder" else False
+
+
+def test_cli_phase_pretrain_dispatches_pipeline(monkeypatch, tmp_path):
+    """`run.py --phase pretrain --stages encoder` calls run_encoder via PretrainPipeline."""
+    from wfcllm.cli.entry import main
+
+    state_path = tmp_path / "run_state.json"
+    monkeypatch.setattr("wfcllm.cli.entry.DEFAULT_STATE_FILE", state_path)
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "wfcllm.pretrain.pipeline.run_encoder",
+        lambda args, state: (calls.append("encoder") or 0),
+    )
+    monkeypatch.setattr(
+        "wfcllm.pretrain.pipeline.run_token_channel_train",
+        lambda args, state: (calls.append("lexical") or 0),
+    )
+
+    rc = main(["--phase", "pretrain", "--stages", "encoder"])
+    assert rc == 0
+    assert calls == ["encoder"]
+
+
+def test_cli_phase_pretrain_default_runs_both_in_order(monkeypatch, tmp_path):
+    """`run.py --phase pretrain` (no --stages) runs encoder then lexical."""
+    from wfcllm.cli.entry import main
+
+    state_path = tmp_path / "run_state.json"
+    monkeypatch.setattr("wfcllm.cli.entry.DEFAULT_STATE_FILE", state_path)
+
+    calls: list[str] = []
+
+    def fake_encoder(args, state):
+        # Simulate encoder completing successfully so the lexical stage proceeds.
+        state.mark_done("encoder", checkpoint="/tmp/fake")
+        calls.append("encoder")
+        return 0
+
+    monkeypatch.setattr("wfcllm.pretrain.pipeline.run_encoder", fake_encoder)
+    monkeypatch.setattr(
+        "wfcllm.pretrain.pipeline.run_token_channel_train",
+        lambda args, state: (calls.append("lexical") or 0),
+    )
+
+    rc = main(["--phase", "pretrain"])
+    assert rc == 0
+    assert calls == ["encoder", "lexical"]

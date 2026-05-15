@@ -59,6 +59,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="评测用的 checkpoint 路径（不传则从 run_state.json 读取）",
     )
+    parser.add_argument(
+        "--stages",
+        nargs="+",
+        choices=["encoder", "lexical"],
+        default=None,
+        help="（pretrain 专用）选择运行哪些 stage，默认两个都跑",
+    )
     # Encoder 参数
     parser.add_argument("--model-name", default=None, help="CodeT5 模型名称或本地路径")
     parser.add_argument("--embed-dim", type=int, default=None)

@@ -7,7 +7,7 @@ from pathlib import Path
 
 # Phase name source-of-truth (lifted unchanged from run.py to preserve schema).
 PHASES = ["encoder", "watermark", "extract"]
-OPTIONAL_PHASES = ["generate-negative", "token-channel-train", "build-entropy-profile"]
+OPTIONAL_PHASES = ["pretrain", "generate-negative", "token-channel-train", "build-entropy-profile"]
 ALL_PHASES = PHASES + OPTIONAL_PHASES
 
 DEFAULT_STATE_FILE = Path("data/run_state.json")
