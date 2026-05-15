@@ -76,3 +76,12 @@ def test_old_negative_rules_count_equals_new():
     import wfcllm.common.transform.negative as old
     import wfcllm.lang.python.transform.negative as new
     assert len(old.get_all_negative_rules()) == len(new.get_all_negative_rules())
+
+
+def test_old_transform_package_symbol_identity():
+    import wfcllm.common.transform as old
+    import wfcllm.lang.python.transform as new
+    assert old.Rule is new.Rule
+    assert old.Match is new.Match
+    assert old.parse_code is new.parse_code
+    assert old.TransformEngine is new.TransformEngine
