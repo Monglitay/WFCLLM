@@ -75,6 +75,31 @@ class BenchmarkRunner:
     def __init__(self, config: BenchmarkConfig):
         self._config = config
 
+    def _compute_detection_metrics(
+        self,
+        positive_details: list[dict[str, Any]],
+        negative_details: list[dict[str, Any]],
+    ) -> dict[str, dict[str, float]]:
+        """Compute AUROC and TPR@1%FPR for each available score field."""
+        from wfcllm.evaluation.code_execution import compute_roc_auc, compute_tpr_at_fpr
+
+        score_fields = {
+            "semantic": "z_score",
+            "lexical": "lexical_z_score",
+            "joint": "joint_score",
+        }
+        result: dict[str, dict[str, float]] = {}
+        for channel, field in score_fields.items():
+            pos_scores = [r[field] for r in positive_details if field in r]
+            neg_scores = [r[field] for r in negative_details if field in r]
+            if not pos_scores or not neg_scores:
+                continue
+            result[channel] = {
+                "auroc": compute_roc_auc(pos_scores, neg_scores),
+                "tpr_at_1pct_fpr": compute_tpr_at_fpr(pos_scores, neg_scores, target_fpr=0.01),
+            }
+        return result
+
     def _compute_pass_at_k(
         self,
         records: list[dict[str, Any]],

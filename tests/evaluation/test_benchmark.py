@@ -86,3 +86,28 @@ def test_benchmark_runner_pass_at_k() -> None:
     result = runner._compute_pass_at_k(mock_records, correctness)
     assert result["pass_at_1"] == pytest.approx(0.75)
     assert result["pass_at_2"] == pytest.approx(1.0)
+
+
+def test_benchmark_runner_compute_auroc() -> None:
+    """BenchmarkRunner computes AUROC from positive/negative details."""
+    config = BenchmarkConfig(
+        dataset="humaneval",
+        config_path="configs/base_config.json",
+        dataset_path="data/datasets",
+        output_dir="/tmp/test_benchmark",
+    )
+    positive_details = [
+        {"id": "HumanEval/0", "z_score": 3.0, "lexical_z_score": 2.5, "joint_score": 4.0},
+        {"id": "HumanEval/1", "z_score": 2.5, "lexical_z_score": 2.0, "joint_score": 3.5},
+    ]
+    negative_details = [
+        {"id": "HumanEval/0", "z_score": 0.5, "lexical_z_score": 0.3, "joint_score": 0.6},
+        {"id": "HumanEval/1", "z_score": 0.2, "lexical_z_score": 0.1, "joint_score": 0.3},
+    ]
+    runner = BenchmarkRunner(config)
+    result = runner._compute_detection_metrics(positive_details, negative_details)
+
+    assert result["semantic"]["auroc"] == pytest.approx(1.0)
+    assert result["lexical"]["auroc"] == pytest.approx(1.0)
+    assert result["joint"]["auroc"] == pytest.approx(1.0)
+    assert 0.0 <= result["semantic"]["tpr_at_1pct_fpr"] <= 1.0
