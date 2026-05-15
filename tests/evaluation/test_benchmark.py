@@ -1,9 +1,13 @@
 """Tests for the benchmark evaluation module."""
 from __future__ import annotations
 
+import json
+from pathlib import Path
+from unittest.mock import patch
+
 import pytest
 
-from wfcllm.datasets.loaders.local import load_test_cases
+from wfcllm.datasets.loaders.local import TestCase, load_test_cases
 
 
 def test_load_test_cases_humaneval() -> None:
@@ -111,3 +115,66 @@ def test_benchmark_runner_compute_auroc() -> None:
     assert result["lexical"]["auroc"] == pytest.approx(1.0)
     assert result["joint"]["auroc"] == pytest.approx(1.0)
     assert 0.0 <= result["semantic"]["tpr_at_1pct_fpr"] <= 1.0
+
+
+def test_benchmark_runner_run_with_existing_results(tmp_path: Path) -> None:
+    """BenchmarkRunner.run() produces a report from pre-existing artifacts."""
+    # Create mock watermarked JSONL (2 candidates for 2 tasks)
+    watermarked_dir = tmp_path / "watermarked"
+    watermarked_dir.mkdir()
+    records = [
+        {"id": "task_0", "generated_code": "def f():\n    return 1\n"},
+        {"id": "task_0", "generated_code": "def f():\n    return 1\n"},
+        {"id": "task_1", "generated_code": "def g():\n    return 2\n"},
+        {"id": "task_1", "generated_code": "def g():\n    return 2\n"},
+    ]
+    wm_file = watermarked_dir / "candidates.jsonl"
+    wm_file.write_text(
+        "\n".join(json.dumps(r) for r in records), encoding="utf-8"
+    )
+
+    # Create mock positive details
+    pos_details = tmp_path / "positive_details.jsonl"
+    pos_records = [
+        {"id": "task_0", "z_score": 2.5, "lexical_z_score": 1.8, "joint_score": 3.0},
+        {"id": "task_1", "z_score": 3.0, "lexical_z_score": 2.0, "joint_score": 3.5},
+    ]
+    pos_details.write_text(
+        "\n".join(json.dumps(r) for r in pos_records), encoding="utf-8"
+    )
+
+    # Create mock negative details
+    neg_details = tmp_path / "negative_details.jsonl"
+    neg_records = [
+        {"id": "task_0", "z_score": 0.3, "lexical_z_score": 0.1, "joint_score": 0.4},
+        {"id": "task_1", "z_score": 0.5, "lexical_z_score": 0.2, "joint_score": 0.5},
+    ]
+    neg_details.write_text(
+        "\n".join(json.dumps(r) for r in neg_records), encoding="utf-8"
+    )
+
+    # Create mock test cases
+    mock_test_cases = {
+        "task_0": TestCase(task_id="task_0", entry_point=None, test_code="assert f() == 1"),
+        "task_1": TestCase(task_id="task_1", entry_point=None, test_code="assert g() == 2"),
+    }
+
+    output_dir = tmp_path / "output"
+    config = BenchmarkConfig(
+        dataset="humaneval",
+        config_path="configs/base_config.json",
+        dataset_path="data/datasets",
+        num_candidates=2,
+        watermarked_dirs=[str(watermarked_dir)],
+        positive_details=str(pos_details),
+        negative_details=str(neg_details),
+        output_dir=str(output_dir),
+    )
+    runner = BenchmarkRunner(config)
+    with patch.object(runner, "_load_test_cases", return_value=mock_test_cases):
+        report = runner.run()
+
+    assert "pass_at_1" in report["metrics"]
+    assert "detection" in report["metrics"]
+    assert "semantic" in report["metrics"]["detection"]
+    assert report["metrics"]["detection"]["semantic"]["auroc"] == pytest.approx(1.0)

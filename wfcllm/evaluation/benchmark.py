@@ -117,3 +117,105 @@ class BenchmarkRunner:
         if k == 10:
             result["pass_at_10"] = result[f"pass_at_{k}"]
         return result
+
+    def run(self) -> dict[str, Any]:
+        """Execute the full benchmark evaluation and return the report."""
+        output_dir = Path(self._config.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        test_cases = self._load_test_cases()
+        watermarked_records = self._load_watermarked_records()
+
+        executor = TestExecutor(timeout=self._config.timeout_per_test)
+        correctness = self._evaluate_correctness(watermarked_records, test_cases, executor)
+        pass_metrics = self._compute_pass_at_k(watermarked_records, correctness)
+
+        exec_results_path = output_dir / f"{self._config.dataset}_exec_results.jsonl"
+        self._save_execution_results(exec_results_path, watermarked_records, correctness)
+
+        positive_details = self._load_details(self._config.positive_details)
+        negative_details = self._load_details(self._config.negative_details)
+        detection_metrics = self._compute_detection_metrics(positive_details, negative_details)
+
+        report: dict[str, Any] = {
+            "dataset": self._config.dataset,
+            "num_candidates": self._config.num_candidates,
+            "num_tasks": len(test_cases),
+            "metrics": {
+                **pass_metrics,
+                "detection": detection_metrics,
+            },
+            "details": {
+                "execution_results_path": str(exec_results_path),
+                "positive_details_path": self._config.positive_details,
+                "negative_details_path": self._config.negative_details,
+            },
+        }
+
+        report_path = output_dir / f"{self._config.dataset}_benchmark_report.json"
+        report_path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        return report
+
+    def _load_test_cases(self) -> dict[str, Any]:
+        from wfcllm.datasets.loaders.local import load_test_cases
+        return load_test_cases(self._config.dataset, self._config.dataset_path)
+
+    def _load_watermarked_records(self) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        if self._config.watermarked_dirs:
+            for dir_path in self._config.watermarked_dirs:
+                for jsonl_file in Path(dir_path).glob("*.jsonl"):
+                    records.extend(self._read_jsonl(jsonl_file))
+        return records
+
+    def _evaluate_correctness(
+        self,
+        records: list[dict[str, Any]],
+        test_cases: dict[str, Any],
+        executor: TestExecutor,
+    ) -> list[bool]:
+        results: list[bool] = []
+        for record in records:
+            task_id = str(record.get("id", ""))
+            code = str(record.get("generated_code", ""))
+            tc = test_cases.get(task_id)
+            if tc is None:
+                results.append(False)
+                continue
+            if tc.entry_point is not None:
+                passed = executor.execute_humaneval(code, tc.test_code, tc.entry_point)
+            else:
+                passed = executor.execute_mbpp(code, tc.test_code)
+            results.append(passed)
+        return results
+
+    def _save_execution_results(
+        self,
+        path: Path,
+        records: list[dict[str, Any]],
+        correctness: list[bool],
+    ) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lines = []
+        for record, is_correct in zip(records, correctness):
+            lines.append(json.dumps(
+                {"id": record.get("id"), "is_correct": is_correct},
+                ensure_ascii=False,
+            ))
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def _load_details(self, path: str | None) -> list[dict[str, Any]]:
+        if path is None:
+            return []
+        return self._read_jsonl(Path(path))
+
+    @staticmethod
+    def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line:
+                records.append(json.loads(line))
+        return records
