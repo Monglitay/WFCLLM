@@ -65,7 +65,7 @@ class TestWatermarkPipelineLoadPrompts:
                 {"task_id": "HumanEval/0", "prompt": "def foo():\n    pass\n"},
             ]
         }
-        with patch("wfcllm.common.dataset_loader.load_dataset", return_value=mock_ds):
+        with patch("wfcllm.datasets.loaders.local.load_dataset", return_value=mock_ds):
             prompts = pipeline._load_prompts()
         assert len(prompts) == 1
         assert prompts[0]["id"] == "HumanEval/0"
@@ -83,7 +83,7 @@ class TestWatermarkPipelineLoadPrompts:
                 {"task_id": 1, "text": "Write a function", "code": "def f(): pass"},
             ]
         }
-        with patch("wfcllm.common.dataset_loader.load_dataset", return_value=mock_ds):
+        with patch("wfcllm.datasets.loaders.local.load_dataset", return_value=mock_ds):
             prompts = pipeline._load_prompts()
         assert len(prompts) == 1
         assert prompts[0]["id"] == "mbpp/1"
