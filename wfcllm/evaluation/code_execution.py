@@ -1,6 +1,6 @@
 """Offline evaluation helpers for dual-channel code-watermark experiments.
 
-(Phase 2 refactor: moved from wfcllm.common.offline_code_eval.)
+(Phase 2 refactor: moved from wfcllm.evaluation.code_execution.)
 """
 
 from __future__ import annotations

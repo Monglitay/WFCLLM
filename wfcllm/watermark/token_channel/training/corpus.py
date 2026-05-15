@@ -12,8 +12,8 @@ try:
 except ImportError:
     tqdm = None  # type: ignore[assignment]
 
-from wfcllm.common.transform.engine import TransformEngine
-from wfcllm.common.transform.positive import get_all_positive_rules
+from wfcllm.lang.python.transform.engine import TransformEngine
+from wfcllm.lang.python.transform.positive import get_all_positive_rules
 from wfcllm.watermark.token_channel.core.features import build_token_channel_features_from_context
 from wfcllm.watermark.token_channel.core.features import prepare_token_channel_feature_context
 from wfcllm.watermark.token_channel.training.teacher import batch_extract_teacher_rows

@@ -7,7 +7,7 @@ import warnings
 from dataclasses import dataclass
 from typing import Literal
 
-from wfcllm.common.ast_parser import (
+from wfcllm.lang.python.parser import (
     COMPOUND_STATEMENT_TYPES,
     SIMPLE_STATEMENT_TYPES,
     PythonParser,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Callable, Literal
 
-from wfcllm.common.ast_parser import extract_statement_blocks
+from wfcllm.lang.python.parser import extract_statement_blocks
 from wfcllm.extract import hypothesis
 from wfcllm.extract.config import BlockScore
 from wfcllm.extract.scorer import BlockScorer

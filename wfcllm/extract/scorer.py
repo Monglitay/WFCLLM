@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from wfcllm.common.ast_parser import StatementBlock
+from wfcllm.lang.python.parser import StatementBlock
 from wfcllm.extract.config import BlockScore
 from wfcllm.watermark.keying import WatermarkKeying
 from wfcllm.watermark.verifier import ProjectionVerifier

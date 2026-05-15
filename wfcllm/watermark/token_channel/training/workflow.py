@@ -13,7 +13,7 @@ from typing import Literal
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from wfcllm.common.dataset_loader import load_reference_solutions
+from wfcllm.datasets.loaders.local import load_reference_solutions
 from wfcllm.watermark.token_channel.core.features import FEATURE_VERSION
 from wfcllm.watermark.token_channel.core.model import TokenChannelModel
 from wfcllm.watermark.token_channel.core.model import load_token_channel_artifact

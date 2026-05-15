@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from typing import Literal
 
-from wfcllm.common.ast_parser import extract_statement_blocks
+from wfcllm.lang.python.parser import extract_statement_blocks
 from wfcllm.extract.alignment import compare_block_contracts, rebuild_block_contracts
 from wfcllm.extract.config import BlockScore, DetectionResult, ExtractConfig
 from wfcllm.extract.hypothesis import HypothesisTester

@@ -8,7 +8,7 @@ derived from experiment/node_entropy/results/node_entropy_results.json.
 
 from __future__ import annotations
 
-from wfcllm.common.ast_parser import PythonParser
+from wfcllm.lang.python.parser import PythonParser
 from wfcllm.watermark.config import WatermarkConfig
 
 ENTROPY_SCALE = 10000

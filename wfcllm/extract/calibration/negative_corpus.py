@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from wfcllm.common.dataset_loader import (
+from wfcllm.datasets.loaders.local import (
     SUPPORTED_DATASETS,
     load_prompts,
     load_reference_solutions,

@@ -15,10 +15,10 @@ try:
 except ImportError:
     load_dataset = None  # type: ignore[assignment]
 
-from wfcllm.common.ast_parser import extract_statement_blocks
-from wfcllm.common.transform.engine import TransformEngine
-from wfcllm.common.transform.positive import get_all_positive_rules
-from wfcllm.common.transform.negative import get_all_negative_rules
+from wfcllm.lang.python.parser import extract_statement_blocks
+from wfcllm.lang.python.transform.engine import TransformEngine
+from wfcllm.lang.python.transform.positive import get_all_positive_rules
+from wfcllm.lang.python.transform.negative import get_all_negative_rules
 from wfcllm.encoder.config import EncoderConfig
 from wfcllm.encoder.dataset import TripletCodeDataset, build_triplets_from_blocks
 from wfcllm.encoder.model import SemanticEncoder

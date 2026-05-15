@@ -20,7 +20,7 @@ from typing import Callable
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-from wfcllm.common.dataset_loader import load_reference_solutions
+from wfcllm.datasets.loaders.local import load_reference_solutions
 from wfcllm.evaluation.code_execution import annotate_correctness_from_references
 from wfcllm.evaluation.code_execution import build_perturbation_corpus
 from wfcllm.evaluation.code_execution import compute_average_latency

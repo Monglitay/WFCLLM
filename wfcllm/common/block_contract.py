@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import TYPE_CHECKING
 
-from wfcllm.common.ast_parser import extract_statement_blocks
+from wfcllm.lang.python.parser import extract_statement_blocks
 
 if TYPE_CHECKING:
     from wfcllm.watermark.adaptive_gamma.schedule import GammaResolution

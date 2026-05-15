@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from wfcllm.common.ast_parser import extract_statement_blocks
+from wfcllm.lang.python.parser import extract_statement_blocks
 from wfcllm.common.block_contract import BlockContract
 from wfcllm.watermark.adaptive_gamma.entropy import ENTROPY_SCALE
 from wfcllm.watermark.adaptive_gamma.profile import EntropyProfile
