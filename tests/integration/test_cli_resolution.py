@@ -145,3 +145,150 @@ def test_main_compare_only_mode_forces_phase_rerun(tmp_path, monkeypatch, capsys
         "compare-only mode failed to bypass skip — extract should have been re-run"
     )
     assert rc == 0
+
+
+# --- CLI subprocess / parser tests (from test_run.py TestCLI) ---
+
+import ast
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+RUNNERS_PY = PROJECT_ROOT / "wfcllm" / "cli" / "runners.py"
+CONFIGS_DIR = PROJECT_ROOT / "configs"
+
+
+def test_cli_subprocess_invocations_do_not_use_bare_run_py_script_name():
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not (isinstance(node.func, ast.Attribute) and node.func.attr == "run"):
+            continue
+        if not node.args or not isinstance(node.args[0], ast.List):
+            continue
+        constants = [
+            elt.value
+            for elt in node.args[0].elts
+            if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+        ]
+        assert "run.py" not in constants
+
+
+def test_build_parser_parses_resume_argument():
+    from wfcllm.cli.arguments import build_parser
+
+    args = build_parser().parse_args(["--phase", "extract", "--resume", "latest"])
+    assert args.resume == "latest"
+
+
+def test_build_parser_accepts_token_channel_flags():
+    from wfcllm.cli.arguments import build_parser
+
+    args = build_parser().parse_args(
+        [
+            "--phase",
+            "watermark",
+            "--token-channel-enabled",
+            "true",
+            "--token-channel-mode",
+            "dual-channel",
+            "--token-channel-model-path",
+            "data/models/token-channel-demo",
+            "--token-channel-delta",
+            "1.5",
+            "--token-channel-joint-threshold",
+            "5.0",
+        ]
+    )
+
+    assert args.token_channel_enabled is True
+    assert args.token_channel_mode == "dual-channel"
+    assert args.token_channel_model_path == "data/models/token-channel-demo"
+    assert args.token_channel_delta == pytest.approx(1.5)
+    assert args.token_channel_joint_threshold == pytest.approx(5.0)
+
+
+def test_build_parser_accepts_token_channel_train_phase_and_flags():
+    from wfcllm.cli.arguments import build_parser
+
+    args = build_parser().parse_args(
+        [
+            "--phase",
+            "token-channel-train",
+            "--token-channel-cache-path",
+            "data/token_channel/custom_cache.json",
+            "--token-channel-model-path",
+            "data/models/token-channel-demo",
+            "--token-channel-context-width",
+            "256",
+            "--token-channel-hidden-size",
+            "96",
+            "--token-channel-batch-size",
+            "32",
+            "--token-channel-epochs",
+            "4",
+            "--token-channel-lr",
+            "0.01",
+            "--token-channel-entropy-threshold",
+            "1.5",
+            "--token-channel-diversity-threshold",
+            "3",
+            "--token-channel-split-ratio",
+            "0.8",
+            "--token-channel-seed",
+            "7",
+        ]
+    )
+
+    assert args.phase == "token-channel-train"
+    assert args.token_channel_cache_path == "data/token_channel/custom_cache.json"
+    assert args.token_channel_model_path == "data/models/token-channel-demo"
+    assert args.token_channel_context_width == 256
+    assert args.token_channel_hidden_size == 96
+    assert args.token_channel_batch_size == 32
+    assert args.token_channel_epochs == 4
+    assert args.token_channel_lr == pytest.approx(0.01)
+    assert args.token_channel_entropy_threshold == pytest.approx(1.5)
+    assert args.token_channel_diversity_threshold == 3
+    assert args.token_channel_split_ratio == pytest.approx(0.8)
+    assert args.token_channel_seed == 7
+
+
+# --- Parser tests (from test_run_config.py) ---
+
+
+def test_parser_default_config():
+    parser = build_parser()
+    args = parser.parse_args([])
+    assert args.config == Path("configs/base_config.json")
+    assert args.fpr is None
+
+
+def test_parser_custom_config():
+    parser = build_parser()
+    args = parser.parse_args(["--config", "configs/my.json"])
+    assert args.config == Path("configs/my.json")
+
+
+def test_parser_accepts_adaptive_watermark_and_extract_flags():
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "--gamma-strategy",
+            "piecewise_quantile",
+            "--entropy-profile",
+            "configs/demo_profile.json",
+            "--profile-id",
+            "python__demo__v1",
+            "--adaptive-detection-mode",
+            "prefer-adaptive",
+            "--strict-contract",
+        ]
+    )
+
+    assert args.gamma_strategy == "piecewise_quantile"
+    assert args.entropy_profile == "configs/demo_profile.json"
+    assert args.profile_id == "python__demo__v1"
+    assert args.adaptive_detection_mode == "prefer-adaptive"
+    assert args.strict_contract is True
