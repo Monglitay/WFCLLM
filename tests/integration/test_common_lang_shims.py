@@ -31,3 +31,17 @@ def test_old_ast_parser_constants_round_trip():
     assert old.SIMPLE_STATEMENT_TYPES == new.SIMPLE_STATEMENT_TYPES
     assert old.COMPOUND_STATEMENT_TYPES == new.COMPOUND_STATEMENT_TYPES
     assert old.STATEMENT_TYPES == new.STATEMENT_TYPES
+
+
+def test_old_transform_base_symbol_identity():
+    import wfcllm.common.transform.base as old
+    import wfcllm.lang.python.transform.base as new
+    assert old.Rule is new.Rule
+    assert old.Match is new.Match
+    assert old.parse_code is new.parse_code
+
+
+def test_old_transform_engine_symbol_identity():
+    import wfcllm.common.transform.engine as old
+    import wfcllm.lang.python.transform.engine as new
+    assert old.TransformEngine is new.TransformEngine
