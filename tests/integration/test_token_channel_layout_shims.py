@@ -100,3 +100,35 @@ def test_core_features_symbol_identity():
     from wfcllm.watermark.token_channel.features import TokenChannelFeatures as old_cls
     from wfcllm.watermark.token_channel.core.features import TokenChannelFeatures as new_cls
     assert old_cls is new_cls
+
+
+def test_core_model_new_path_importable():
+    from wfcllm.watermark.token_channel.core.model import TokenChannelModel
+    assert callable(TokenChannelModel)
+
+
+def test_core_model_old_path_emits_warning():
+    import importlib
+    import sys
+    key = "wfcllm.watermark.token_channel.model"
+    original = sys.modules.pop(key, None)
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            importlib.import_module(key)
+            assert any(
+                issubclass(w.category, DeprecationWarning)
+                and "core.model" in str(w.message)
+                for w in caught
+            )
+    finally:
+        if original is not None:
+            sys.modules[key] = original
+        else:
+            sys.modules.pop(key, None)
+
+
+def test_core_model_symbol_identity():
+    from wfcllm.watermark.token_channel.model import TokenChannelModel as old_cls
+    from wfcllm.watermark.token_channel.core.model import TokenChannelModel as new_cls
+    assert old_cls is new_cls
