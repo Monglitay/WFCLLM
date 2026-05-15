@@ -1,10 +1,13 @@
 """Tests for orchestration components: RunStateManager."""
+import argparse
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from wfcllm.orchestration.state import RunStateManager, ALL_PHASES
+from wfcllm.orchestration.state import RunStateManager, ALL_PHASES, PHASES
+from tests.integration.conftest import PROJECT_ROOT, RUN_PY, write_json, write_jsonl
 
 
 def test_initial_state_all_phases_pending(tmp_path):
@@ -313,3 +316,207 @@ def test_run_state_manager_tracks_build_entropy_profile(tmp_path):
     state.mark_done("build-entropy-profile", profile_path="data/calibration/p.json")
     assert state.is_done("build-entropy-profile") is True
     assert state.get("build-entropy-profile", "profile_path") == "data/calibration/p.json"
+
+
+# ── Tests migrated from tests/test_run.py (TestRunState) ──────────────────────
+
+
+def test_phases_order():
+    assert PHASES == ["encoder", "watermark", "extract"]
+    assert ALL_PHASES == [
+        "encoder",
+        "watermark",
+        "extract",
+        "generate-negative",
+        "token-channel-train",
+    ]
+
+
+def test_reset_clears_all(tmp_path):
+    state_file = tmp_path / "run_state.json"
+    state = RunStateManager(state_file)
+    state.mark_done("encoder")
+    state.reset()
+    assert state.is_done("encoder") is False
+
+
+def test_status_dict(tmp_path):
+    state_file = tmp_path / "run_state.json"
+    state = RunStateManager(state_file)
+    state.mark_done("encoder", checkpoint="x.pt")
+    status = state.status()
+    assert status["encoder"]["done"] is True
+    assert status["watermark"]["done"] is False
+    assert status["extract"]["done"] is False
+
+
+# ── Tests migrated from tests/test_run.py (TestCLI status/reset/offline) ──────
+
+
+def test_status_exits_zero():
+    result = subprocess.run(
+        ["conda", "run", "-n", "WFCLLM", "python", str(RUN_PY), "--status"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert "encoder" in result.stdout
+
+
+def test_reset_exits_zero(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = subprocess.run(
+        ["conda", "run", "-n", "WFCLLM", "python", str(RUN_PY), "--reset"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert "重置" in result.stdout or "reset" in result.stdout.lower()
+
+
+def test_unknown_phase_exits_nonzero():
+    result = subprocess.run(
+        ["conda", "run", "-n", "WFCLLM", "python", str(RUN_PY), "--phase", "invalid"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+
+
+def test_run_offline_analysis_writes_json_report(tmp_path):
+    from wfcllm.cli.runners import run_offline_analysis
+
+    left_summary = tmp_path / "left_summary.json"
+    right_summary = tmp_path / "right_summary.json"
+    left_details = tmp_path / "left_details.jsonl"
+    right_details = tmp_path / "right_details.jsonl"
+    left_watermarked = tmp_path / "left_watermarked.jsonl"
+    right_watermarked = tmp_path / "right_watermarked.jsonl"
+    report_output = tmp_path / "offline_analysis.json"
+
+    write_json(
+        left_summary,
+        {
+            "dataset": "HumanEval",
+            "watermark_params": {"lsh_d": 3, "lsh_gamma": 0.5},
+            "summary": {"watermark_rate": 1.0},
+        },
+    )
+    write_json(
+        right_summary,
+        {
+            "dataset": "HumanEval",
+            "watermark_params": {"lsh_d": 4, "lsh_gamma": 0.75},
+            "summary": {"watermark_rate": 0.0},
+        },
+    )
+    write_jsonl(
+        left_details,
+        [
+            {
+                "id": "HumanEval/0",
+                "is_watermarked": True,
+                "z_score": 2.4,
+                "p_value": 0.02,
+                "independent_blocks": 8,
+                "hits": 6,
+            }
+        ],
+    )
+    write_jsonl(
+        right_details,
+        [
+            {
+                "id": "HumanEval/0",
+                "is_watermarked": False,
+                "z_score": 1.0,
+                "p_value": 0.14,
+                "independent_blocks": 8,
+                "hits": 5,
+            }
+        ],
+    )
+    write_jsonl(
+        left_watermarked,
+        [
+            {
+                "id": "HumanEval/0",
+                "watermark_params": {"lsh_d": 3, "lsh_gamma": 0.5},
+                "total_blocks": 8,
+                "embedded_blocks": 6,
+                "failed_blocks": 0,
+                "fallback_blocks": 0,
+                "embed_rate": 0.75,
+            }
+        ],
+    )
+    write_jsonl(
+        right_watermarked,
+        [
+            {
+                "id": "HumanEval/0",
+                "watermark_params": {"lsh_d": 4, "lsh_gamma": 0.75},
+                "total_blocks": 8,
+                "embedded_blocks": 5,
+                "failed_blocks": 1,
+                "fallback_blocks": 0,
+                "embed_rate": 0.625,
+            }
+        ],
+    )
+
+    args = argparse.Namespace(
+        compare_summary_left=str(left_summary),
+        compare_details_left=str(left_details),
+        compare_watermarked_left=str(left_watermarked),
+        compare_summary_right=str(right_summary),
+        compare_details_right=str(right_details),
+        compare_watermarked_right=str(right_watermarked),
+        compare_output=str(report_output),
+    )
+
+    rc = run_offline_analysis(args)
+
+    assert rc == 0
+    assert report_output.exists()
+    report = json.loads(report_output.read_text(encoding="utf-8"))
+    assert set(report) == {
+        "compatibility",
+        "parameter_diff",
+        "detail_delta",
+        "embedding_delta",
+        "anomalies",
+        "regression_classification",
+    }
+
+
+# ── Tests migrated from tests/test_run_config.py (config loading) ─────────────
+
+
+def test_load_config_returns_dict(tmp_path):
+    from wfcllm.cli.config_resolver import load_config
+    cfg = {"encoder": {"lr": 0.001}, "watermark": {}, "extract": {}}
+    f = tmp_path / "cfg.json"
+    f.write_text(json.dumps(cfg))
+    result = load_config(f)
+    assert result["encoder"]["lr"] == 0.001
+
+
+def test_load_config_missing_phase_ok(tmp_path):
+    from wfcllm.cli.config_resolver import load_config
+    cfg = {"encoder": {"lr": 0.001}}
+    f = tmp_path / "cfg.json"
+    f.write_text(json.dumps(cfg))
+    result = load_config(f)
+    assert result.get("watermark", {}) == {}
+
+
+def test_load_config_file_not_found(tmp_path):
+    from wfcllm.cli.config_resolver import load_config
+    result = load_config(tmp_path / "nonexistent.json")
+    assert result == {}
+
+
+def test_load_config_invalid_json(tmp_path):
+    from wfcllm.cli.config_resolver import load_config
+    f = tmp_path / "bad.json"
+    f.write_text("{ not valid json }")
+    with pytest.raises(SystemExit):
+        load_config(f)
