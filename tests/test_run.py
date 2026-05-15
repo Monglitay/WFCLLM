@@ -138,7 +138,7 @@ class TestRunGenerateNegative:
         mock_gen = MagicMock()
         mock_gen.run.return_value = str(tmp_path / "neg.jsonl")
 
-        with patch("wfcllm.extract.negative_corpus.NegativeCorpusGenerator", return_value=mock_gen):
+        with patch("wfcllm.extract.calibration.negative_corpus.NegativeCorpusGenerator", return_value=mock_gen):
             rc = run_generate_negative(args, state)
 
         assert rc == 0
@@ -165,7 +165,7 @@ class TestRunGenerateNegative:
         mock_gen = MagicMock()
         mock_gen.run.return_value = out_jsonl
 
-        with patch("wfcllm.extract.negative_corpus.NegativeCorpusGenerator", return_value=mock_gen):
+        with patch("wfcllm.extract.calibration.negative_corpus.NegativeCorpusGenerator", return_value=mock_gen):
             rc = run_generate_negative(args, state)
 
         assert rc == 0
