@@ -1,2 +1,2 @@
 """Python language adapter."""
-# adapter.py will be created in Task 4; importing it triggers @register("python")
+from wfcllm.lang.python.adapter import PythonAdapter  # noqa: F401  (side-effect: @register)
