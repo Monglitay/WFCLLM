@@ -1,10 +1,14 @@
 """Offline benchmark evaluation: Pass@1, Pass@10, AUROC for code watermarking."""
 from __future__ import annotations
 
+import json
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+from wfcllm.evaluation.code_execution import compute_pass_at_k
 
 
 @dataclass
@@ -46,3 +50,45 @@ class TestExecutor:
     def execute_mbpp(self, generated_code: str, test_code: str) -> bool:
         """MBPP-style execution: code + assert statements."""
         return self.run_test(generated_code, test_code)
+
+
+@dataclass
+class BenchmarkConfig:
+    """Configuration for the benchmark evaluation."""
+
+    dataset: str
+    config_path: str
+    dataset_path: str = "data/datasets"
+    num_candidates: int = 10
+    timeout_per_test: float = 5.0
+    watermarked_dirs: list[str] | None = None
+    positive_details: str | None = None
+    negative_details: str | None = None
+    auto_generate: bool = False
+    negative_corpus: str | None = None
+    output_dir: str = "data/eval/benchmark"
+
+
+class BenchmarkRunner:
+    """Orchestrate benchmark evaluation: Pass@k + AUROC."""
+
+    def __init__(self, config: BenchmarkConfig):
+        self._config = config
+
+    def _compute_pass_at_k(
+        self,
+        records: list[dict[str, Any]],
+        correctness: list[bool],
+    ) -> dict[str, float]:
+        """Compute pass@1 and pass@10 from records + correctness annotations."""
+        annotated = []
+        for record, is_correct in zip(records, correctness):
+            annotated.append({**record, "is_correct": is_correct})
+
+        result: dict[str, float] = {}
+        result["pass_at_1"] = compute_pass_at_k(annotated, k=1)
+        k = min(10, self._config.num_candidates)
+        result[f"pass_at_{k}"] = compute_pass_at_k(annotated, k=k)
+        if k == 10:
+            result["pass_at_10"] = result[f"pass_at_{k}"]
+        return result

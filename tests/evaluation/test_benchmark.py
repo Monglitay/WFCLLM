@@ -59,3 +59,30 @@ def test_executor_syntax_error() -> None:
     code = "def broken(\n"
     test_code = "assert True\n"
     assert executor.run_test(code, test_code) is False
+
+
+from wfcllm.evaluation.benchmark import BenchmarkConfig, BenchmarkRunner
+
+
+def test_benchmark_runner_pass_at_k() -> None:
+    """BenchmarkRunner computes pass@k from execution results."""
+    config = BenchmarkConfig(
+        dataset="humaneval",
+        config_path="configs/base_config.json",
+        dataset_path="data/datasets",
+        num_candidates=2,
+        output_dir="/tmp/test_benchmark",
+    )
+    # Mock: 2 tasks, 2 candidates each. Task A: both pass. Task B: 1 pass, 1 fail.
+    mock_records = [
+        {"id": "HumanEval/0", "generated_code": "def f(): return 1", "candidate_index": 0},
+        {"id": "HumanEval/0", "generated_code": "def f(): return 1", "candidate_index": 1},
+        {"id": "HumanEval/1", "generated_code": "def g(): return 2", "candidate_index": 0},
+        {"id": "HumanEval/1", "generated_code": "def g(): return 2", "candidate_index": 1},
+    ]
+    correctness = [True, True, True, False]
+
+    runner = BenchmarkRunner(config)
+    result = runner._compute_pass_at_k(mock_records, correctness)
+    assert result["pass_at_1"] == pytest.approx(0.75)
+    assert result["pass_at_2"] == pytest.approx(1.0)
