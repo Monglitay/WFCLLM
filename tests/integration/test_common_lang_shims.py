@@ -45,3 +45,21 @@ def test_old_transform_engine_symbol_identity():
     import wfcllm.common.transform.engine as old
     import wfcllm.lang.python.transform.engine as new
     assert old.TransformEngine is new.TransformEngine
+
+
+def test_old_positive_rules_symbol_identity():
+    """Every public rule class re-exported from the old positive aggregator must be identity-equal to the new one."""
+    import wfcllm.common.transform.positive as old
+    import wfcllm.lang.python.transform.positive as new
+    assert old.get_all_positive_rules.__code__ is new.get_all_positive_rules.__code__ \
+        or old.get_all_positive_rules is new.get_all_positive_rules
+    # Spot-check a few representative classes — full equivalence is enforced by
+    # tests/common/transform/test_positive_rules.py.
+    for sym in ("VariableRename", "FixSpacing", "ListInit", "BranchFlip", "DeMorgan"):
+        assert getattr(old, sym) is getattr(new, sym), sym
+
+
+def test_old_positive_rules_count_equals_new():
+    import wfcllm.common.transform.positive as old
+    import wfcllm.lang.python.transform.positive as new
+    assert len(old.get_all_positive_rules()) == len(new.get_all_positive_rules())
