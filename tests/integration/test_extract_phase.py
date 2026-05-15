@@ -446,7 +446,7 @@ def test_run_extract_uses_resolved_gamma_for_calibration(monkeypatch, tmp_path):
             return {"fpr_threshold": 1.2, "n_samples": len(corpus)}
 
     class FakeDetector:
-        def __init__(self, config, encoder, tokenizer, device):
+        def __init__(self, config, encoder, tokenizer, device, **kwargs):
             captured["resolved_threshold"] = config.fpr_threshold
 
     class FakePipeline:
@@ -580,7 +580,7 @@ def test_run_extract_parses_token_channel_from_config(monkeypatch, tmp_path):
             return self
 
     class FakeDetector:
-        def __init__(self, config, encoder, tokenizer, device):
+        def __init__(self, config, encoder, tokenizer, device, **kwargs):
             captured["token_channel"] = config.token_channel
 
     class FakePipeline:
@@ -758,7 +758,7 @@ def test_run_extract_uses_adaptive_calibration_when_adaptive_detection_enabled(
             return {"fpr_threshold": 1.0, "n_samples": len(corpus)}
 
     class FakeDetector:
-        def __init__(self, config, encoder, tokenizer, device):
+        def __init__(self, config, encoder, tokenizer, device, **kwargs):
             captured["resolved_threshold"] = config.fpr_threshold
 
     class FakePipeline:
@@ -895,7 +895,7 @@ def test_run_extract_prefers_configured_fpr_when_cli_fpr_not_provided(
             return {"fpr_threshold": 1.0, "n_samples": len(corpus)}
 
     class FakeDetector:
-        def __init__(self, config, encoder, tokenizer, device):
+        def __init__(self, config, encoder, tokenizer, device, **kwargs):
             return None
 
     class FakePipeline:
@@ -1014,7 +1014,7 @@ def test_run_extract_allows_extract_only_validation_without_encoder_done(
             return self
 
     class FakeDetector:
-        def __init__(self, config, encoder, tokenizer, device):
+        def __init__(self, config, encoder, tokenizer, device, **kwargs):
             captured["resolved_threshold"] = config.fpr_threshold
 
     class FakePipeline:
