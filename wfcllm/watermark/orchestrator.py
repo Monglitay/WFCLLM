@@ -9,23 +9,22 @@ from dataclasses import dataclass, field
 
 import torch
 
-from wfcllm.common.ast_parser import extract_statement_blocks
 from wfcllm.common.block_contract import BlockContract, build_block_contracts
 from wfcllm.watermark.cascade import CascadeManager
 from wfcllm.watermark.config import WatermarkConfig
 from wfcllm.watermark.context import GenerationContext
 from wfcllm.watermark.diagnostics import (
     BlockLifecycleRecord,
-    FailureReason,
     hash_block_text,
     summarize_sample_diagnostics,
 )
-from wfcllm.watermark.adaptive_gamma.entropy import ENTROPY_SCALE, NodeEntropyEstimator
+from wfcllm.watermark.adaptive_gamma.entropy import NodeEntropyEstimator
 from wfcllm.watermark.adaptive_gamma.profile import EntropyProfile
-from wfcllm.watermark.adaptive_gamma.schedule import GammaResolution, PiecewiseQuantileSchedule, quantize_gamma
+from wfcllm.watermark.adaptive_gamma.schedule import PiecewiseQuantileSchedule
 from wfcllm.watermark.keying import WatermarkKeying
 from wfcllm.watermark.lsh_space import LSHSpace
 from wfcllm.watermark.retry_loop import RetryLoop, RetryDiagnostics, RetryResult
+from wfcllm.watermark.semantic_channel import SemanticChannel
 from wfcllm.watermark.token_channel.core.features import TokenChannelFeatures
 from wfcllm.watermark.token_channel.core.features import build_token_channel_features
 from wfcllm.watermark.token_channel.core.model import load_token_channel_artifact
@@ -120,6 +119,7 @@ class WatermarkGenerator:
         )
         self._entropy_profile: EntropyProfile | None = None
         self._gamma_schedule: PiecewiseQuantileSchedule | None = None
+        self._semantic = SemanticChannel(self)
         self._initialize_adaptive_gamma()
         self._cascade_rollback_counter = 0
         self._token_channel_artifact = None
@@ -660,33 +660,7 @@ class WatermarkGenerator:
         )
 
     def _verify_block(self, event):
-        """Verify a single block against LSH criteria."""
-        entropy_units = self._entropy_est.estimate_block_entropy_units(event.block_text)
-        block_entropy = entropy_units / ENTROPY_SCALE
-        margin = self._entropy_est.compute_margin(block_entropy, self._config)
-        gamma_resolution = self._resolve_gamma_for_entropy_units(entropy_units)
-        valid_set = self._keying.derive(
-            event.parent_node_type or "module",
-            k=gamma_resolution.k,
-        )
-        result = self._verifier.verify(event.block_text, valid_set, margin)
-
-        logger.debug(
-            "[simple block] node=%s parent=%s entropy=%.4f margin_thresh=%.4f "
-            "gamma_target=%.4f k=%d gamma_effective=%.4f\n"
-            "  sig=%s in_valid=%s valid_set_size=%d min_margin=%.4f passed=%s\n"
-            "  text=%r",
-            event.node_type, event.parent_node_type,
-            block_entropy, margin,
-            gamma_resolution.gamma_target,
-            gamma_resolution.k,
-            gamma_resolution.gamma_effective,
-            result.lsh_signature,
-            result.lsh_signature in valid_set,
-            len(valid_set), result.min_margin, result.passed,
-            event.block_text[:80],
-        )
-        return result
+        return self._semantic.verify_block(event)
 
     def _try_cascade(self, ctx, cascade_mgr, retry_loop, stats, pending_fallbacks):
         """Active cascade: rollback to compound block start, then resume main loop.
@@ -738,63 +712,29 @@ class WatermarkGenerator:
         }
 
     def _adaptive_mode(self) -> str:
-        """Return canonical adaptive metadata mode for the current config."""
-        if self._is_adaptive_runtime_enabled():
-            return self._config.adaptive_gamma.strategy
-        return "fixed"
+        return self._semantic.adaptive_mode()
 
     def _profile_id(self) -> str | None:
-        if not self._is_adaptive_runtime_enabled():
-            return None
-        return self._config.adaptive_gamma.profile_id
+        return self._semantic.profile_id()
 
     def _is_adaptive_runtime_enabled(self) -> bool:
-        return self._gamma_schedule is not None
+        return self._semantic.is_adaptive_runtime_enabled()
 
     def _initialize_adaptive_gamma(self) -> None:
-        adaptive_config = self._config.adaptive_gamma
-        if not adaptive_config.enabled:
-            return
-        if adaptive_config.profile_path is None:
-            return
-        if adaptive_config.strategy != "piecewise_quantile":
-            raise ValueError(
-                f"unsupported adaptive gamma strategy: {adaptive_config.strategy}"
-            )
+        self._semantic.initialize_adaptive_gamma()
 
-        self._entropy_profile = EntropyProfile.load(adaptive_config.profile_path)
-        anchor_quantiles = tuple(adaptive_config.anchors.keys())
-        anchor_gammas = tuple(
-            adaptive_config.anchors[quantile]
-            for quantile in anchor_quantiles
-        )
-        self._gamma_schedule = PiecewiseQuantileSchedule(
-            profile=self._entropy_profile,
-            anchor_quantiles=anchor_quantiles,
-            anchor_gammas=anchor_gammas,
-        )
+    def _resolve_gamma_for_block_text(self, block_text: str):
+        return self._semantic.resolve_gamma_for_block_text(block_text)
 
-    def _resolve_gamma_for_block_text(self, block_text: str) -> GammaResolution:
-        entropy_units = self._entropy_est.estimate_block_entropy_units(block_text)
-        return self._resolve_gamma_for_entropy_units(entropy_units)
-
-    def _resolve_gamma_for_entropy_units(self, entropy_units: int) -> GammaResolution:
-        if self._gamma_schedule is not None:
-            return self._gamma_schedule.resolve(entropy_units, self._config.lsh_d)
-        return quantize_gamma(self._config.lsh_gamma, self._config.lsh_d)
+    def _resolve_gamma_for_entropy_units(self, entropy_units: int):
+        return self._semantic.resolve_gamma_for_entropy_units(entropy_units)
 
     def _build_alignment_summary(
         self,
         runtime_total_blocks: int,
         block_contracts: list[BlockContract],
     ) -> dict[str, int | bool]:
-        """Summarize final AST block metadata vs generation-time counters."""
-        final_block_count = len(block_contracts)
-        return {
-            "final_block_count": final_block_count,
-            "generator_total_blocks": runtime_total_blocks,
-            "block_count_matches_total_blocks": final_block_count == runtime_total_blocks,
-        }
+        return self._semantic.build_alignment_summary(runtime_total_blocks, block_contracts)
 
     def _process_simple_block(
         self,
@@ -982,22 +922,7 @@ class WatermarkGenerator:
         cls._capture_block_identity(ledger_entry, retry_result.final_event)
 
     def _classify_failure_reason(self, event, verify_result) -> str:
-        if verify_result.passed:
-            return FailureReason.unknown.value
-        entropy_units = self._entropy_est.estimate_block_entropy_units(event.block_text)
-        block_entropy = entropy_units / ENTROPY_SCALE
-        margin_threshold = self._entropy_est.compute_margin(block_entropy, self._config)
-        in_valid_set = verify_result.in_valid_set
-        if in_valid_set is None:
-            return FailureReason.unknown.value
-        margin_passed = verify_result.min_margin > margin_threshold
-        if not in_valid_set and margin_passed:
-            return FailureReason.signature_miss.value
-        if in_valid_set and not margin_passed:
-            return FailureReason.margin_miss.value
-        if not in_valid_set and not margin_passed:
-            return FailureReason.signature_and_margin_miss.value
-        return FailureReason.unknown.value
+        return self._semantic.classify_failure_reason(event, verify_result)
 
     @staticmethod
     def _append_retry_attempts(
@@ -1228,35 +1153,4 @@ class WatermarkGenerator:
             stats.retry_diagnostics = list(retry_diagnostics)
 
     def _finalize_stats(self, final_code: str) -> tuple[int, int]:
-        """Recompute final simple-block totals from the emitted code."""
-        all_blocks = extract_statement_blocks(final_code)
-        simple_blocks = [block for block in all_blocks if block.block_type == "simple"]
-        if not simple_blocks:
-            return 0, 0
-        if not self._semantic_channel_enabled():
-            return len(simple_blocks), 0
-
-        block_by_id = {block.block_id: block for block in all_blocks}
-        embedded_blocks = 0
-        for block in simple_blocks:
-            parent_node_type = (
-                block_by_id[block.parent_id].node_type
-                if block.parent_id is not None
-                else "module"
-            )
-            event = type(
-                "_FinalBlockEvent",
-                (),
-                {
-                    "block_text": block.source,
-                    "block_type": "simple",
-                    "node_type": block.node_type,
-                    "parent_node_type": parent_node_type,
-                    "token_start_idx": 0,
-                    "token_count": 0,
-                },
-            )()
-            if self._verify_block(event).passed:
-                embedded_blocks += 1
-
-        return len(simple_blocks), embedded_blocks
+        return self._semantic.finalize_stats(final_code)
