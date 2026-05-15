@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from wfcllm.watermark.token_channel.training.trainer import TokenChannelEpochMetrics
-from wfcllm.watermark.token_channel import train_workflow
+from wfcllm.watermark.token_channel.training import workflow as train_workflow
 from wfcllm.watermark.token_channel.core.model import TokenChannelArtifactMetadata
 from wfcllm.watermark.token_channel.training.workflow import (
     TokenChannelTrainWorkflowConfig,

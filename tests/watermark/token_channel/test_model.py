@@ -319,7 +319,7 @@ def test_train_one_epoch_rejects_empty_validation_batches() -> None:
 def test_train_one_epoch_reports_train_and_validation_progress(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import wfcllm.watermark.token_channel.train as train_module
+    import wfcllm.watermark.token_channel.training.trainer as train_module
 
     progress_bars: list[SimpleNamespace] = []
 
