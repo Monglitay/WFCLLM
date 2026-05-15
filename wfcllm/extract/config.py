@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from wfcllm.watermark.config import AdaptiveGammaConfig
-from wfcllm.watermark.token_channel.config import TokenChannelConfig
+from wfcllm.watermark.token_channel.core.config import TokenChannelConfig
 
 if TYPE_CHECKING:
     from wfcllm.extract.alignment import AlignmentReport

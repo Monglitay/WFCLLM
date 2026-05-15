@@ -15,8 +15,8 @@ from wfcllm.extract.scorer import BlockScorer
 from wfcllm.extract.token_channel import ReplayTokenChannelDetector
 from wfcllm.watermark.keying import WatermarkKeying
 from wfcllm.watermark.lsh_space import LSHSpace
-from wfcllm.watermark.token_channel.model import load_token_channel_artifact
-from wfcllm.watermark.token_channel.runtime import TokenChannelRuntime
+from wfcllm.watermark.token_channel.core.model import load_token_channel_artifact
+from wfcllm.watermark.token_channel.runtime.injector import TokenChannelRuntime
 from wfcllm.watermark.verifier import ProjectionVerifier
 
 

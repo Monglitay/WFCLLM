@@ -741,13 +741,13 @@ def validate_token_channel_train_config(train_cfg: dict[str, object]) -> str | N
 def run_token_channel_train(args: argparse.Namespace, state: RunStateManager) -> int:
     """Run the token-channel training workflow."""
 
-    from wfcllm.watermark.token_channel.train_workflow import (
+    from wfcllm.watermark.token_channel.training.workflow import (
         TokenChannelTrainWorkflowConfig,
     )
-    from wfcllm.watermark.token_channel.train_workflow import (
+    from wfcllm.watermark.token_channel.training.workflow import (
         format_token_channel_train_workflow_summary,
     )
-    from wfcllm.watermark.token_channel.train_workflow import (
+    from wfcllm.watermark.token_channel.training.workflow import (
         run_token_channel_train_workflow,
     )
 

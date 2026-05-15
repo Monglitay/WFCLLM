@@ -100,7 +100,7 @@ def resolve_token_channel_config(
     section: dict | None,
     args: argparse.Namespace | None = None,
 ):
-    from wfcllm.watermark.token_channel.config import TokenChannelConfig
+    from wfcllm.watermark.token_channel.core.config import TokenChannelConfig
 
     if section is None:
         configured = {}

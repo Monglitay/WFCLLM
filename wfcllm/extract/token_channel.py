@@ -9,12 +9,12 @@ from scipy.stats import norm
 
 from wfcllm.extract.hypothesis import LexicalDetectionResult
 from wfcllm.extract.hypothesis import compute_z_score
-from wfcllm.watermark.token_channel.config import TokenChannelConfig
-from wfcllm.watermark.token_channel.features import TokenChannelFeatureContext
-from wfcllm.watermark.token_channel.features import TokenChannelFeatures
-from wfcllm.watermark.token_channel.features import build_token_channel_features_from_context
-from wfcllm.watermark.token_channel.features import prepare_token_channel_feature_context
-from wfcllm.watermark.token_channel.protocol import make_prefix_key
+from wfcllm.watermark.token_channel.core.config import TokenChannelConfig
+from wfcllm.watermark.token_channel.core.features import TokenChannelFeatureContext
+from wfcllm.watermark.token_channel.core.features import TokenChannelFeatures
+from wfcllm.watermark.token_channel.core.features import build_token_channel_features_from_context
+from wfcllm.watermark.token_channel.core.features import prepare_token_channel_feature_context
+from wfcllm.watermark.token_channel.core.protocol import make_prefix_key
 
 
 @dataclass(frozen=True)

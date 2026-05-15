@@ -26,10 +26,10 @@ from wfcllm.watermark.adaptive_gamma.schedule import GammaResolution, PiecewiseQ
 from wfcllm.watermark.keying import WatermarkKeying
 from wfcllm.watermark.lsh_space import LSHSpace
 from wfcllm.watermark.retry_loop import RetryLoop, RetryDiagnostics, RetryResult
-from wfcllm.watermark.token_channel.features import TokenChannelFeatures
-from wfcllm.watermark.token_channel.features import build_token_channel_features
-from wfcllm.watermark.token_channel.model import load_token_channel_artifact
-from wfcllm.watermark.token_channel.runtime import TokenChannelRuntime
+from wfcllm.watermark.token_channel.core.features import TokenChannelFeatures
+from wfcllm.watermark.token_channel.core.features import build_token_channel_features
+from wfcllm.watermark.token_channel.core.model import load_token_channel_artifact
+from wfcllm.watermark.token_channel.runtime.injector import TokenChannelRuntime
 from wfcllm.watermark.verifier import ProjectionVerifier
 
 logger = logging.getLogger(__name__)
