@@ -42,3 +42,16 @@ def test_humaneval_adapter_rejects_unsupported_language_at_iter():
 def test_mbpp_adapter_name():
     from wfcllm import datasets
     assert datasets.get("mbpp").name == "mbpp"
+
+
+def test_humanevalpack_iter_raises_not_implemented():
+    from wfcllm import datasets
+    adapter = datasets.get("humanevalpack")
+    with pytest.raises(NotImplementedError, match="HumanEvalPack"):
+        next(adapter.iter_samples())
+
+
+def test_humanevalpack_supports_four_languages():
+    from wfcllm import datasets
+    adapter = datasets.get("humanevalpack")
+    assert set(adapter.supported_languages) == {"python", "java", "cpp", "js"}
