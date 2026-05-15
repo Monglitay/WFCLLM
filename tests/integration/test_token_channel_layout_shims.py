@@ -180,3 +180,35 @@ def test_training_teacher_symbol_identity():
     from wfcllm.watermark.token_channel.teacher import extract_teacher_rows as old_fn
     from wfcllm.watermark.token_channel.training.teacher import extract_teacher_rows as new_fn
     assert old_fn is new_fn
+
+
+def test_training_trainer_new_path_importable():
+    from wfcllm.watermark.token_channel.training.trainer import train_one_epoch
+    assert callable(train_one_epoch)
+
+
+def test_training_trainer_old_path_emits_warning():
+    import importlib
+    import sys
+    key = "wfcllm.watermark.token_channel.train"
+    original = sys.modules.pop(key, None)
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            importlib.import_module(key)
+            assert any(
+                issubclass(w.category, DeprecationWarning)
+                and "training.trainer" in str(w.message)
+                for w in caught
+            )
+    finally:
+        if original is not None:
+            sys.modules[key] = original
+        else:
+            sys.modules.pop(key, None)
+
+
+def test_training_trainer_symbol_identity():
+    from wfcllm.watermark.token_channel.train import train_one_epoch as old_fn
+    from wfcllm.watermark.token_channel.training.trainer import train_one_epoch as new_fn
+    assert old_fn is new_fn
