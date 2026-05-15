@@ -56,7 +56,7 @@ Implementation details:
 - Attention masks are applied to handle variable-length sequences
 - Results are numerically equivalent to sequential inference (within float16 precision)
 
-For configuration and tuning guidance, see docs/token-channel-batch-inference.md
+For configuration and tuning guidance, see docs/design/token-channel-batch-inference.md
 """
 
 from __future__ import annotations
