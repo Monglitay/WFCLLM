@@ -257,7 +257,9 @@ class BenchmarkRunner:
         results: list[bool] = []
         for record in records:
             task_id = str(record.get("id", ""))
-            code = str(record.get("generated_code", ""))
+            prompt = str(record.get("prompt", ""))
+            body = str(record.get("generated_code", ""))
+            code = prompt + body if prompt else body
             tc = test_cases.get(task_id)
             if tc is None:
                 results.append(False)
