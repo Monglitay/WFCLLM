@@ -67,6 +67,7 @@ class BenchmarkConfig:
     auto_generate: bool = False
     negative_corpus: str | None = None
     output_dir: str = "data/eval/benchmark"
+    min_blocks: int = 0
 
 
 class BenchmarkRunner:
@@ -133,6 +134,17 @@ class BenchmarkRunner:
                 self._config.negative_details = neg_path
         else:
             watermarked_records = self._load_watermarked_records()
+
+        if self._config.min_blocks > 0:
+            before = len(watermarked_records)
+            watermarked_records = [
+                r for r in watermarked_records
+                if int(r.get("total_blocks", 0)) >= self._config.min_blocks
+            ]
+            skipped = before - len(watermarked_records)
+            if skipped:
+                import sys
+                print(f"[bench] min_blocks={self._config.min_blocks}: skipped {skipped}/{before} records", file=sys.stderr)
 
         executor = TestExecutor(timeout=self._config.timeout_per_test)
         correctness = self._evaluate_correctness(watermarked_records, test_cases, executor)

@@ -106,6 +106,7 @@ def _cmd_bench(args: argparse.Namespace) -> int:
         auto_generate=args.auto_generate,
         negative_corpus=args.negative_corpus,
         output_dir=args.output_dir,
+        min_blocks=args.min_blocks,
     )
     runner = BenchmarkRunner(config)
     report = runner.run()
@@ -177,6 +178,10 @@ def _build_parser() -> argparse.ArgumentParser:
     bench_parser.add_argument("--num-candidates", type=int, default=10)
     bench_parser.add_argument("--timeout", type=float, default=5.0)
     bench_parser.add_argument("--output-dir", default="data/eval/benchmark")
+    bench_parser.add_argument(
+        "--min-blocks", type=int, default=0,
+        help="skip records with total_blocks < MIN_BLOCKS",
+    )
     bench_parser.set_defaults(func=_cmd_bench)
 
     return parser
