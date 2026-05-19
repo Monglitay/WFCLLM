@@ -286,7 +286,7 @@ class TestRetryLoopUnit:
         mock_ctx.last_event = event
         mock_ctx.eos_id = 2
         mock_ctx.is_finished.return_value = False
-        mock_ctx.forward_and_sample.side_effect = lambda penalty_ids=None: call_order.append("sample") or 5
+        mock_ctx.forward_and_sample.side_effect = lambda penalty_ids=None, temperature_override=None: call_order.append("sample") or 5
 
         mock_verifier.verify.return_value = VerifyResult(passed=True, min_margin=0.1)
         mock_keying.derive.return_value = frozenset()

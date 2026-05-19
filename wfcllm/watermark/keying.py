@@ -20,8 +20,13 @@ class WatermarkKeying:
         self._d = d
         self._legacy_gamma = gamma
 
-    def derive(self, parent_node_type: str, k: int | object = _MISSING) -> frozenset[tuple[int, ...]]:
-        """Return valid LSH signature set G for a block with given parent node type.
+    def derive(
+        self,
+        parent_node_type: str,
+        k: int | object = _MISSING,
+        ordinal: int | None = None,
+    ) -> frozenset[tuple[int, ...]]:
+        """Return valid LSH signature set G for a block.
 
         Args:
             parent_node_type: AST type of the parent node (e.g. "module", "for_statement").
@@ -29,6 +34,11 @@ class WatermarkKeying:
             k: Number of valid regions to derive. Must satisfy 1 <= k < 2**d.
                 If omitted, legacy mode requires constructor `gamma` and uses
                 `round(gamma * 2**d)`.
+
+            ordinal: Global ordinal of the block within the code (0-based).
+                When provided, each block gets an independent G, eliminating
+                systematic embed-rate bias caused by encoder clustering.
+                When None, falls back to parent_node_type-only seed (legacy).
 
         Returns:
             frozenset of d-bit tuples that constitute the valid region set G.
@@ -44,7 +54,10 @@ class WatermarkKeying:
         if not (1 <= k < max_regions):
             raise ValueError("k must satisfy 1 <= k < 2**d")
 
-        message = parent_node_type.encode("utf-8")
+        if ordinal is not None:
+            message = f"{parent_node_type}:{ordinal}".encode("utf-8")
+        else:
+            message = parent_node_type.encode("utf-8")
         digest = hmac.new(self._key, message, hashlib.sha256).digest()
 
         seed = int.from_bytes(digest[:8], "big")

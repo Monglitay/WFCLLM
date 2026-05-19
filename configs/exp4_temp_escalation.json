@@ -7,15 +7,9 @@
     "lora_r": 16,
     "lora_alpha": 32,
     "lora_dropout": 0.1,
-    "lora_target_modules": [
-      "q",
-      "v"
-    ],
+    "lora_target_modules": ["q", "v"],
     "use_bf16": true,
-    "data_sources": [
-      "mbpp",
-      "humaneval"
-    ],
+    "data_sources": ["mbpp", "humaneval"],
     "max_seq_length": 256,
     "negative_ratio": 0.5,
     "lr": 2e-05,
@@ -44,7 +38,7 @@
     "encoder_device": "cuda",
     "margin_base": 0.001,
     "margin_alpha": 0.002,
-    "max_retries": 50,
+    "max_retries": 15,
     "temperature": 0.2,
     "top_p": 0.95,
     "top_k": 50,
@@ -54,10 +48,11 @@
     "cascade_max_depth": 1,
     "repetition_penalty": 1.1,
     "lsh_d": 4,
-    "lsh_gamma": 0.75,
+    "lsh_gamma": 0.375,
+    "retry_temperature_schedule": [[4, 0.2], [9, 0.5], [14, 0.8]],
     "token_channel": {
-      "enabled": true,
-      "channel_mode": "dual-channel",
+      "enabled": false,
+      "channel_mode": "semantic-only",
       "model_path": "data/models/token-channel",
       "switch_threshold": 0.3,
       "delta": 2.0,
@@ -69,14 +64,14 @@
       "strategy": "piecewise_quantile",
       "profile_path": "data/calibration/humaneval_entropy_profile.json",
       "profile_id": "humaneval_entropy_profile",
-      "gamma_min": 0.2,
-      "gamma_max": 0.8,
+      "gamma_min": 0.1875,
+      "gamma_max": 0.375,
       "anchors": {
-        "p10": 0.75,
-        "p50": 0.75,
-        "p75": 0.5,
-        "p90": 0.5,
-        "p95": 0.25
+        "p10": 0.375,
+        "p50": 0.375,
+        "p75": 0.3125,
+        "p90": 0.25,
+        "p95": 0.1875
       }
     }
   },
@@ -85,9 +80,9 @@
     "embed_dim": 128,
     "fpr_threshold": 3.0,
     "lsh_d": 4,
-    "lsh_gamma": 0.75,
+    "lsh_gamma": 0.375,
     "min_blocks": 3,
-    "calibration_corpus": "data/negative_corpus.jsonl",
+    "calibration_corpus": "data/negative_corpus_llm.jsonl",
     "fpr": 0.05,
     "input_file": null,
     "output_dir": "data/results",
@@ -100,8 +95,8 @@
       "exclude_invalid_samples": true
     },
     "token_channel": {
-      "enabled": true,
-      "channel_mode": "dual-channel",
+      "enabled": false,
+      "channel_mode": "semantic-only",
       "model_path": "data/models/token-channel",
       "switch_threshold": 0.3,
       "delta": 2.0,
@@ -116,33 +111,16 @@
     }
   },
   "generate_negative": {
-    "source_mode": "reference",
+    "source_mode": "llm",
     "lm_model_path": "data/models/deepseek-coder-7b-instruct/deepseek-ai/deepseek-coder-7b-instruct-v1___5",
     "dataset": "humaneval",
     "dataset_path": "data/datasets",
-    "output_path": "data/negative_corpus.jsonl",
+    "output_path": "data/negative_corpus_llm.jsonl",
     "max_new_tokens": 512,
     "temperature": 0.8,
     "top_p": 0.95,
     "top_k": 50,
     "device": "cuda",
     "limit": null
-  },
-  "token_channel_train": {
-    "dataset": "humaneval",
-    "dataset_path": "data/datasets",
-    "lm_model_path": "data/models/deepseek-coder-7b-instruct/deepseek-ai/deepseek-coder-7b-instruct-v1___5",
-    "model_path": "data/models/token-channel",
-    "cache_path": "data/token_channel/train_corpus.json",
-    "context_width": 128,
-    "hidden_size": 64,
-    "batch_size": 8192,
-    "epochs": 15,
-    "lr": 0.001,
-    "entropy_threshold": 0.5,
-    "diversity_threshold": 1,
-    "split_ratio": 0.9,
-    "seed": 0,
-    "max_variants": 5
   }
 }

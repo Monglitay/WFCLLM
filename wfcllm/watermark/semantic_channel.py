@@ -31,7 +31,7 @@ class SemanticChannel:
     def __init__(self, orchestrator: "WatermarkGenerator") -> None:
         self._orch = orchestrator
 
-    def verify_block(self, event):
+    def verify_block(self, event, ordinal: int | None = None):
         """Verify a single block against LSH criteria."""
         orch = self._orch
         entropy_units = orch._entropy_est.estimate_block_entropy_units(event.block_text)
@@ -41,6 +41,7 @@ class SemanticChannel:
         valid_set = orch._keying.derive(
             event.parent_node_type or "module",
             k=gamma_resolution.k,
+            ordinal=ordinal,
         )
         result = orch._verifier.verify(event.block_text, valid_set, margin)
 

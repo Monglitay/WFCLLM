@@ -224,6 +224,9 @@ def run_watermark(args: argparse.Namespace, state: RunStateManager) -> int:
     dataset_path = args.dataset_path or wm_cfg.get("dataset_path", "data/datasets")
     output_dir = args.output_dir or wm_cfg.get("output_dir", "data/watermarked")
     sample_limit = args.sample_limit if args.sample_limit is not None else wm_cfg.get("sample_limit")
+    sample_offset = getattr(args, "sample_offset", None)
+    if sample_offset is None:
+        sample_offset = wm_cfg.get("sample_offset")
     embed_dim = args.embed_dim or wm_cfg.get("encoder_embed_dim", 128)
     secret_key = args.secret_key or wm_cfg.get("secret_key", "")
     lm_model_path = args.lm_model_path or wm_cfg.get("lm_model_path", "")
@@ -286,6 +289,11 @@ def run_watermark(args: argparse.Namespace, state: RunStateManager) -> int:
         device_map="auto",
     )
 
+    raw_temp_schedule = wm_cfg.get("retry_temperature_schedule")
+    retry_temperature_schedule = None
+    if raw_temp_schedule is not None:
+        retry_temperature_schedule = [tuple(pair) for pair in raw_temp_schedule]
+
     wm_config = WatermarkConfig(
         secret_key=secret_key,
         encoder_embed_dim=embed_dim,
@@ -305,6 +313,8 @@ def run_watermark(args: argparse.Namespace, state: RunStateManager) -> int:
         lsh_gamma=wm_cfg.get("lsh_gamma", 0.5),
         adaptive_gamma=resolve_adaptive_gamma_config(args, wm_cfg),
         token_channel=token_channel_config,
+        retry_temperature_schedule=retry_temperature_schedule,
+        use_ordinal_keying=wm_cfg.get("use_ordinal_keying", False),
     )
     generator = WatermarkGenerator(lm_model, lm_tokenizer, encoder, encoder_tokenizer, wm_config)
 
@@ -315,6 +325,7 @@ def run_watermark(args: argparse.Namespace, state: RunStateManager) -> int:
         dataset_path=dataset_path,
         resume=resume,
         sample_limit=sample_limit,
+        sample_offset=sample_offset,
     )
     pipeline = WatermarkPipeline(generator=generator, config=pipeline_config)
 
@@ -531,6 +542,63 @@ def run_extract(args: argparse.Namespace, state: RunStateManager) -> int:
         )
         calib_result = calibrator.calibrate(corpus, fpr=fpr_target)
         fpr_threshold = calib_result["fpr_threshold"]
+
+        # ── Joint threshold calibration ──────────────────────────────────────
+        # Calibrate joint_threshold from the same negative corpus so it tracks
+        # the actual joint_score distribution (which depends on delta, weights,
+        # and support_factor) rather than relying on a hard-coded constant.
+        joint_threshold_calibrated: float | None = None
+        if token_channel_config.enabled and token_channel_config.mode == "dual-channel":
+            from wfcllm.extract.detector import WatermarkDetector
+            from wfcllm.extract.config import ExtractConfig as _ExtractConfig
+            import dataclasses as _dc
+
+            _tmp_config = _ExtractConfig(
+                secret_key=secret_key,
+                embed_dim=embed_dim,
+                fpr_threshold=fpr_threshold,
+                lsh_d=lsh_d,
+                lsh_gamma=lsh_gamma,
+                min_blocks=0,
+                adaptive_detection=adaptive_detection_config,
+                adaptive_gamma=adaptive_gamma_config,
+                token_channel=token_channel_config,
+            )
+            _tmp_detector = WatermarkDetector(
+                _tmp_config, encoder, tokenizer, device=device, lm_tokenizer=lm_tokenizer
+            )
+            _joint_scores: list[float] = []
+            for _rec in corpus:
+                _code = _rec.get("generated_code", "")
+                if not _code.strip():
+                    continue
+                try:
+                    _res = _tmp_detector.detect(_code)
+                    if _res.joint_result is not None:
+                        _joint_scores.append(_res.joint_result.joint_score)
+                except Exception:
+                    pass
+            if _joint_scores:
+                _sorted = sorted(_joint_scores)
+                _n = len(_sorted)
+                _p = 1.0 - fpr_target
+                _idx = _p * (_n - 1)
+                _lo = int(_idx)
+                _hi = min(_lo + 1, _n - 1)
+                joint_threshold_calibrated = _sorted[_lo] + (_sorted[_hi] - _sorted[_lo]) * (_idx - _lo)
+                # Inject calibrated threshold into token_channel_config
+                token_channel_config = _dc.replace(
+                    token_channel_config,
+                    joint=_dc.replace(
+                        token_channel_config.joint,
+                        threshold=joint_threshold_calibrated,
+                    ),
+                )
+                print(
+                    f"[校准] joint_threshold = {joint_threshold_calibrated:.4f}"
+                    f"（FPR={fpr_target}，样本数={len(_joint_scores)}）"
+                )
+
         calibration_summary_metadata = {
             "calibration": {
                 "source": str(calibration_corpus_path),
@@ -543,6 +611,11 @@ def run_extract(args: argparse.Namespace, state: RunStateManager) -> int:
                     else "m * gamma, m * gamma * (1 - gamma)"
                 ),
                 "decision_rule": "z_score >= threshold",
+                **(
+                    {"joint_threshold": float(joint_threshold_calibrated)}
+                    if joint_threshold_calibrated is not None
+                    else {}
+                ),
             }
         }
         print(

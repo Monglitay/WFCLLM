@@ -60,6 +60,7 @@ class WatermarkConfig:
     # LSH parameters
     lsh_d: int = 3
     lsh_gamma: float = 0.5
+    lsh_whitening_path: str | None = None  # ZCA whitening matrix (.npz); None = disabled
     adaptive_gamma: AdaptiveGammaConfig = field(default_factory=AdaptiveGammaConfig)
     token_channel: TokenChannelConfig = field(default_factory=TokenChannelConfig)
 
@@ -72,3 +73,17 @@ class WatermarkConfig:
 
     # Retry budget
     retry_token_budget: int | None = None  # max tokens per retry attempt; None = max_new_tokens // 2
+
+    # N-gram repetition prevention (0 = disabled)
+    no_repeat_ngram_size: int = 0
+
+    # Retry temperature schedule: list of (max_attempt_index, temperature) pairs.
+    # Attempts are 0-indexed. If attempt_i <= max_attempt_index, use that temperature.
+    # Example: [(4, 0.2), (9, 0.5), (14, 0.8)] means attempts 0-4 use 0.2, 5-9 use 0.5, 10-14 use 0.8.
+    # None = use base temperature for all retries.
+    retry_temperature_schedule: list[tuple[int, float]] | None = None
+
+    # Whether to use per-block ordinal in keying seed.
+    # True: seed = f"{parent_node_type}:{ordinal}" (each block gets independent G, low embed_rate).
+    # False: seed = parent_node_type only (legacy, higher embed_rate via encoder clustering).
+    use_ordinal_keying: bool = False

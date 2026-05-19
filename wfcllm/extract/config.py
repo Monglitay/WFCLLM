@@ -44,6 +44,7 @@ class ExtractConfig:
     # Prefer values resolved from watermark JSONL metadata when available.
     lsh_d: int = 3
     lsh_gamma: float = 0.5
+    lsh_whitening_path: str | None = None  # ZCA whitening matrix (.npz); None = disabled
     min_blocks: int = 2  # Minimum number of blocks required for detection
     adaptive_detection: AdaptiveDetectionConfig = field(default_factory=AdaptiveDetectionConfig)
     adaptive_gamma: AdaptiveGammaConfig = field(default_factory=AdaptiveGammaConfig)

@@ -31,6 +31,7 @@ class WatermarkPipelineConfig:
     dataset_path: str       # local datasets root, e.g. "data/datasets"
     resume: str | None = None
     sample_limit: int | None = None
+    sample_offset: int | None = None
 
     def __post_init__(self):
         if self.dataset not in SUPPORTED_DATASETS:
@@ -59,6 +60,70 @@ class WatermarkPipeline:
     def __init__(self, generator: WatermarkGenerator, config: WatermarkPipelineConfig):
         self._generator = generator
         self._config = config
+        self._chat_template_fn = self._build_chat_template_fn()
+
+    def _build_chat_template_fn(self):
+        """Return a function that formats a raw prompt for the LM.
+
+        For instruct models (those whose tokenizer exposes apply_chat_template),
+        we wrap the prompt in a chat message so the model knows to complete the
+        function body.  For base models we pass the prompt through unchanged.
+        """
+        tokenizer = getattr(self._generator, "_tokenizer", None)
+        if tokenizer is None or not callable(getattr(tokenizer, "apply_chat_template", None)):
+            self._is_instruct_model = False
+            return lambda p: p
+
+        self._is_instruct_model = True
+
+        def _fmt(prompt: str) -> str:
+            messages = [
+                {
+                    "role": "user",
+                    "content": (
+                        "Complete the following Python function. "
+                        "Output only the function body (indented), "
+                        "no extra function definitions, no main block.\n\n"
+                        + prompt
+                    ),
+                }
+            ]
+            return tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+
+        return _fmt
+
+    @staticmethod
+    def _extract_function_body(prompt: str, generated: str) -> str:
+        """For instruct models that output the full function, strip the repeated
+        function signature so that ``prompt + result`` is valid Python.
+
+        Strategy: find the last ``def`` line in the prompt, then look for the
+        same ``def`` line in the generated output and return everything after it
+        (i.e. the body only).  Falls back to returning ``generated`` unchanged
+        if the signature cannot be found.
+        """
+        import re
+        # Find the last def line in the prompt (the function we want to complete)
+        def_lines = [l for l in prompt.splitlines() if re.match(r'^def ', l)]
+        if not def_lines:
+            return generated
+
+        last_def = def_lines[-1].rstrip()
+        gen_lines = generated.splitlines(keepends=True)
+
+        # Find where the repeated def starts in the generated output
+        for i, line in enumerate(gen_lines):
+            if line.rstrip() == last_def:
+                # Skip the def line and any decorator/docstring repetition
+                # Return everything after the def line
+                rest = "".join(gen_lines[i + 1:])
+                # Strip leading blank line if present
+                return rest.lstrip("\n")
+
+        # Fallback: return as-is (base model behaviour or already body-only)
+        return generated
 
     def _load_prompts(self) -> list[dict]:
         """Load prompts from local dataset. Returns list of {"id", "prompt"}."""
@@ -466,6 +531,8 @@ class WatermarkPipeline:
             )
 
         all_prompts = self._load_prompts()
+        if self._config.sample_offset is not None:
+            all_prompts = all_prompts[self._config.sample_offset :]
         if self._config.sample_limit is not None:
             all_prompts = all_prompts[: self._config.sample_limit]
         prompts = [item for item in all_prompts if item["id"] not in processed_ids]
@@ -482,7 +549,12 @@ class WatermarkPipeline:
         with open(out_path, mode, encoding="utf-8") as f:
             with open(diagnostics_path, mode, encoding="utf-8") as diagnostics_file:
                 for item in iterator:
-                    result = self._generator.generate(item["prompt"])
+                    lm_prompt = self._chat_template_fn(item["prompt"])
+                    result = self._generator.generate(lm_prompt)
+                    # For instruct models, strip the repeated function signature
+                    generated_code = result.code
+                    if getattr(self, "_is_instruct_model", False):
+                        generated_code = self._extract_function_body(item["prompt"], generated_code)
                     embed_rate = (
                         result.embedded_blocks / result.total_blocks
                         if result.total_blocks > 0
@@ -492,7 +564,7 @@ class WatermarkPipeline:
                         "id": item["id"],
                         "dataset": self._config.dataset,
                         "prompt": item["prompt"],
-                        "generated_code": result.code,
+                        "generated_code": generated_code,
                         "blocks": [asdict(contract) for contract in result.block_contracts],
                         "adaptive_mode": result.adaptive_mode,
                         "profile_id": result.profile_id,

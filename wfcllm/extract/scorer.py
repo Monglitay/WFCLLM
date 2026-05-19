@@ -29,10 +29,11 @@ class BlockScorer:
     ) -> BlockScore:
         parent_node_type = self._resolve_parent_type(block, blocks)
         k = self._resolve_k(block_contract)
+        ordinal = self._resolve_ordinal(block_contract)
         if k is None:
-            valid_set = self._keying.derive(parent_node_type)
+            valid_set = self._keying.derive(parent_node_type, ordinal=ordinal)
         else:
-            valid_set = self._keying.derive(parent_node_type, k=k)
+            valid_set = self._keying.derive(parent_node_type, k=k, ordinal=ordinal)
         result = self._verifier.verify(block.source, valid_set, 0.0)
 
         score = 1 if result.passed else 0
@@ -82,4 +83,13 @@ class BlockScorer:
         k = block_contract.get("k")
         if isinstance(k, int) and k > 0:
             return k
+        return None
+
+    @staticmethod
+    def _resolve_ordinal(block_contract: dict | None) -> int | None:
+        if not isinstance(block_contract, dict):
+            return None
+        ordinal = block_contract.get("ordinal")
+        if isinstance(ordinal, int):
+            return ordinal
         return None

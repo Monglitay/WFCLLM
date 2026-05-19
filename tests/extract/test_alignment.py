@@ -67,6 +67,68 @@ class TestCompareBlockContracts:
         assert mismatch["rebuilt"] == rebuilt_contract["entropy_units"]
 
 
+def test_alignment_ignores_parent_node_type_context_shift():
+    """parent_node_type changes when generated_code is parsed without the prompt wrapper.
+
+    HumanEval prompts end with an open function signature (def f(...):).
+    During watermarking the parser sees prompt+generated_code, so the generated
+    statements are children of function_definition.  During extraction only
+    generated_code is parsed; the indented statements become top-level module
+    children.  Alignment must not treat this context-dependent field as a
+    structural mismatch.
+    """
+    # Prompt ends with open function body — generated code is indented inside it
+    prompt_code = "def f(x):\n    pass\n"
+    gen_code = "    result = x + 1\n    return result\n"
+
+    full_contracts = [asdict(c) for c in build_block_contracts(prompt_code + gen_code)]
+    gen_code_block_count = len(build_block_contracts(gen_code))
+    embedded = full_contracts[-gen_code_block_count:]
+
+    rebuilt = rebuild_block_contracts(gen_code)
+
+    # embedded has parent_node_type=function_definition; rebuilt has parent_node_type=module
+    assert any(b["parent_node_type"] == "function_definition" for b in embedded)
+    assert any(b["parent_node_type"] == "module" for b in rebuilt)
+
+    report = compare_block_contracts(embedded, rebuilt)
+
+    assert not report.structure_mismatch, (
+        f"structure_mismatch should be False but got: {report.structure_mismatches}"
+    )
+    assert report.contract_valid
+
+
+def test_alignment_ignores_context_dependent_fields():
+    """Blocks embedded in prompt+code context must align with blocks rebuilt from code-only.
+
+    During watermarking the parser runs on lm_prompt+generated_code, so block_id,
+    start_line, end_line, and ordinal are all offset by the prompt's blocks.
+    During extraction the parser runs on generated_code only, so those fields
+    restart from 0.  Alignment must not treat these position-dependent fields as
+    structural mismatches.
+    """
+    prompt_code = "x = 1\ny = 2\n"   # 2 simple blocks → IDs "0","1" in full context
+    gen_code = "z = 3\nw = 4\n"      # 2 simple blocks → IDs "2","3" in full context
+
+    # Simulate what the watermark pipeline stores: contracts built from full context,
+    # then only the generated-code portion is kept.
+    full_contracts = [asdict(c) for c in build_block_contracts(prompt_code + gen_code)]
+    # The last len(gen_code_blocks) contracts belong to generated_code
+    gen_code_block_count = len([c for c in build_block_contracts(gen_code)])
+    embedded = full_contracts[-gen_code_block_count:]
+
+    # Simulate extraction: rebuild from generated_code only
+    rebuilt = rebuild_block_contracts(gen_code)
+
+    report = compare_block_contracts(embedded, rebuilt)
+
+    assert not report.structure_mismatch, (
+        f"structure_mismatch should be False but got mismatches: {report.structure_mismatches}"
+    )
+    assert report.contract_valid
+
+
 def test_rebuild_block_contracts_matches_canonical_builder():
     code = (
         "def f(x):\n"

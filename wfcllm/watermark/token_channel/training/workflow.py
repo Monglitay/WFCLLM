@@ -298,26 +298,36 @@ def run_token_channel_train_workflow(
     # Get vocab_size for batch building
     vocab_size = _tokenizer_vocab_size(tokenizer)
 
-    # Build batches using streaming loader
-    print(f"[开始] 构建训练批次（batch_size={config.batch_size}）...")
-    train_batches = list(_build_batches_streaming(
-        cache_path=config.cache_path,
-        indices=train_indices,
-        batch_size=config.batch_size,
-        context_width=config.context_width,
-        vocab_size=vocab_size,
-    ))
-    print(f"[完成] 训练批次: {len(train_batches)}")
+    train_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    print(f"[开始] 构建验证批次...")
-    validation_batches = list(_build_batches_streaming(
-        cache_path=config.cache_path,
-        indices=validation_indices,
-        batch_size=config.batch_size,
-        context_width=config.context_width,
-        vocab_size=vocab_size,
-    ))
-    print(f"[完成] 验证批次: {len(validation_batches)}")
+    # Compute batch counts for logging (no materialisation)
+    n_train_batches = math.ceil(len(train_indices) / config.batch_size)
+    n_val_batches = math.ceil(len(validation_indices) / config.batch_size)
+    print(f"[信息] 训练批次数: {n_train_batches}, 验证批次数: {n_val_batches}（streaming，不预加载，device={train_device}）")
+
+    _train_device = str(train_device)
+
+    # Lazy factories — re-stream from disk each epoch to avoid OOM
+
+    def make_train_batches():
+        return _build_batches_streaming(
+            cache_path=config.cache_path,
+            indices=train_indices,
+            batch_size=config.batch_size,
+            context_width=config.context_width,
+            vocab_size=vocab_size,
+            device=_train_device,
+        )
+
+    def make_val_batches():
+        return _build_batches_streaming(
+            cache_path=config.cache_path,
+            indices=validation_indices,
+            batch_size=config.batch_size,
+            context_width=config.context_width,
+            vocab_size=vocab_size,
+            device=_train_device,
+        )
 
     _seed_training_runtime(config.seed)
 
@@ -335,7 +345,8 @@ def run_token_channel_train_workflow(
             if start_epoch <= config.epochs:
                 print(f"[恢复] 从 epoch {training_state['epoch']} 继续训练，将训练到 epoch {config.epochs}")
                 try:
-                    artifact = load_token_channel_artifact(config.model_path)
+                    _resume_device = "cuda" if torch.cuda.is_available() else "cpu"
+                    artifact = load_token_channel_artifact(config.model_path, map_location=_resume_device)
                     existing_model = artifact.model
                     print(f"[恢复] 成功加载模型权重")
                 except Exception as e:
@@ -362,16 +373,17 @@ def run_token_channel_train_workflow(
                     switch_target_negative_count=0,
                 )
 
-    print(f"[开始] 初始化模型（hidden_size={config.hidden_size}）...")
+    train_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[开始] 初始化模型（hidden_size={config.hidden_size}, device={train_device}）...")
     if existing_model is not None:
-        model = existing_model
+        model = existing_model.to(train_device)
         model.train()
     else:
         model = TokenChannelModel(
             vocab_size=vocab_size,
             context_width=config.context_width,
             hidden_size=config.hidden_size,
-        )
+        ).to(train_device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr)
     if existing_optimizer_state is not None:
@@ -389,8 +401,8 @@ def run_token_channel_train_workflow(
         epoch_metrics = train_one_epoch(
             model=model,
             optimizer=optimizer,
-            train_batches=train_batches,
-            validation_batches=validation_batches,
+            train_batches=make_train_batches(),
+            validation_batches=make_val_batches(),
             epoch=epoch,
             total_epochs=config.epochs,
         )
@@ -557,6 +569,7 @@ def _build_batches_streaming(
     batch_size: int,
     context_width: int,
     vocab_size: int,
+    device: str = "cpu",
 ) -> list[dict[str, object]]:
     """Build batches by streaming rows at specified indices.
 
@@ -580,6 +593,7 @@ def _build_batches_streaming(
                 batch_rows,
                 context_width=context_width,
                 vocab_size=vocab_size,
+                device=device,
             )
             batch_rows = []
 
@@ -589,6 +603,7 @@ def _build_batches_streaming(
             batch_rows,
             context_width=context_width,
             vocab_size=vocab_size,
+            device=device,
         )
 
 

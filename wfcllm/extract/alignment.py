@@ -11,13 +11,8 @@ from wfcllm.watermark.adaptive_gamma.profile import EntropyProfile
 from wfcllm.watermark.adaptive_gamma.schedule import PiecewiseQuantileSchedule
 
 _STRUCTURAL_FIELDS = (
-    "ordinal",
-    "block_id",
     "node_type",
-    "parent_node_type",
     "block_text_hash",
-    "start_line",
-    "end_line",
 )
 _NUMERIC_FIELDS = (
     "entropy_units",

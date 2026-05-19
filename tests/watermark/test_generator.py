@@ -134,7 +134,7 @@ class TestWatermarkGeneratorInit:
             def prefill(self, prompt):
                 return None
 
-            def forward_and_sample(self, penalty_ids=None):
+            def forward_and_sample(self, penalty_ids=None, temperature_override=None):
                 self._steps += 1
                 if self._steps == 1:
                     self.generated_text = "x = 1\n"
@@ -213,7 +213,7 @@ class TestWatermarkGeneratorInit:
             def prefill(self, prompt):
                 return None
 
-            def forward_and_sample(self, penalty_ids=None):
+            def forward_and_sample(self, penalty_ids=None, temperature_override=None):
                 self._steps += 1
                 if self._steps == 1:
                     self.generated_text = "x = 1\n"
@@ -277,7 +277,7 @@ class TestWatermarkGeneratorInit:
             def prefill(self, prompt):
                 return None
 
-            def forward_and_sample(self, penalty_ids=None):
+            def forward_and_sample(self, penalty_ids=None, temperature_override=None):
                 self._steps += 1
                 if self._steps == 1:
                     self.generated_text = "x = 1\n"
@@ -353,7 +353,7 @@ class TestWatermarkGeneratorInit:
             def prefill(self, prompt):
                 return None
 
-            def forward_and_sample(self, penalty_ids=None):
+            def forward_and_sample(self, penalty_ids=None, temperature_override=None):
                 self._steps += 1
                 if self._steps == 1:
                     self.generated_text = "pass"
@@ -416,7 +416,7 @@ class TestWatermarkGeneratorInit:
             def prefill(self, prompt):
                 return None
 
-            def forward_and_sample(self, penalty_ids=None):
+            def forward_and_sample(self, penalty_ids=None, temperature_override=None):
                 self._steps += 1
                 if self._steps == 1:
                     self.generated_text = "x = 1\n"
@@ -506,7 +506,7 @@ class TestWatermarkGeneratorInit:
             def prefill(self, prompt):
                 return None
 
-            def forward_and_sample(self, penalty_ids=None):
+            def forward_and_sample(self, penalty_ids=None, temperature_override=None):
                 self._steps += 1
                 if self._steps == 1:
                     self.generated_text = "return x"
@@ -586,7 +586,7 @@ class TestWatermarkGeneratorInit:
             def prefill(self, prompt):
                 return None
 
-            def forward_and_sample(self, penalty_ids=None):
+            def forward_and_sample(self, penalty_ids=None, temperature_override=None):
                 self._steps += 1
                 if self._steps == 1:
                     self.generated_text = "x = 1\n"
@@ -614,7 +614,7 @@ class TestWatermarkGeneratorInit:
             def __init__(self, **kwargs):
                 return None
 
-            def run(self, checkpoint, original_event):
+            def run(self, checkpoint, original_event, **kwargs):
                 return RetryResult(
                     success=True,
                     attempts=1,
@@ -689,7 +689,7 @@ class TestWatermarkGeneratorInit:
             def prefill(self, prompt):
                 return None
 
-            def forward_and_sample(self, penalty_ids=None):
+            def forward_and_sample(self, penalty_ids=None, temperature_override=None):
                 self._steps += 1
                 if self._steps == 1:
                     self.generated_text = "x = 1\n"
@@ -717,7 +717,7 @@ class TestWatermarkGeneratorInit:
             def __init__(self, **kwargs):
                 return None
 
-            def run(self, checkpoint, original_event):
+            def run(self, checkpoint, original_event, **kwargs):
                 replacement_event = InterceptEvent(
                     block_text="return x",
                     block_type="simple",
@@ -805,7 +805,7 @@ class TestWatermarkGeneratorInit:
             def prefill(self, prompt):
                 return None
 
-            def forward_and_sample(self, penalty_ids=None):
+            def forward_and_sample(self, penalty_ids=None, temperature_override=None):
                 self._steps += 1
                 if self._steps == 1:
                     self.generated_text = "x = 1\n"
@@ -833,7 +833,7 @@ class TestWatermarkGeneratorInit:
             def __init__(self, **kwargs):
                 return None
 
-            def run(self, checkpoint, original_event):
+            def run(self, checkpoint, original_event, **kwargs):
                 replacement_event = InterceptEvent(
                     block_text="return fallback",
                     block_type="simple",
@@ -913,7 +913,7 @@ class TestWatermarkGeneratorInit:
             def prefill(self, prompt):
                 return None
 
-            def forward_and_sample(self, penalty_ids=None):
+            def forward_and_sample(self, penalty_ids=None, temperature_override=None):
                 self._steps += 1
                 if self._steps == 1:
                     self.generated_text = "x = 1\n"
@@ -941,7 +941,7 @@ class TestWatermarkGeneratorInit:
             def __init__(self, **kwargs):
                 return None
 
-            def run(self, checkpoint, original_event):
+            def run(self, checkpoint, original_event, **kwargs):
                 return RetryResult(
                     success=False,
                     attempts=1,
@@ -1011,7 +1011,7 @@ class TestWatermarkGeneratorInit:
             def prefill(self, prompt):
                 return None
 
-            def forward_and_sample(self, penalty_ids=None):
+            def forward_and_sample(self, penalty_ids=None, temperature_override=None):
                 self._steps += 1
                 if self._steps == 1:
                     self.generated_text = "x = 1\n"
@@ -1048,7 +1048,7 @@ class TestWatermarkGeneratorInit:
             def __init__(self, **kwargs):
                 return None
 
-            def run(self, checkpoint, original_event):
+            def run(self, checkpoint, original_event, **kwargs):
                 return RetryResult(
                     success=False,
                     attempts=1,
@@ -1117,7 +1117,7 @@ class TestWatermarkGeneratorInit:
             def prefill(self, prompt):
                 return None
 
-            def forward_and_sample(self, penalty_ids=None):
+            def forward_and_sample(self, penalty_ids=None, temperature_override=None):
                 self._steps += 1
                 if self._steps == 1:
                     self.generated_text = "x = 1\n"
@@ -1145,7 +1145,7 @@ class TestWatermarkGeneratorInit:
             def __init__(self, **kwargs):
                 return None
 
-            def run(self, checkpoint, original_event):
+            def run(self, checkpoint, original_event, **kwargs):
                 stale_retry_event = InterceptEvent(
                     block_text="return x",
                     block_type="simple",
@@ -1265,7 +1265,7 @@ class TestWatermarkGeneratorInit:
                 self._cursor = 0
                 self._sequence = self._post_cascade_sequence()
 
-            def forward_and_sample(self, penalty_ids=None):
+            def forward_and_sample(self, penalty_ids=None, temperature_override=None):
                 self._steps += 1
                 if self._cursor >= len(self._sequence):
                     self.last_event = None
@@ -1310,7 +1310,7 @@ class TestWatermarkGeneratorInit:
             def __init__(self, **kwargs):
                 return None
 
-            def run(self, checkpoint, original_event):
+            def run(self, checkpoint, original_event, **kwargs):
                 return RetryResult(
                     success=False,
                     attempts=1,
@@ -1340,7 +1340,7 @@ class TestWatermarkGeneratorInit:
             encoder=encoder, encoder_tokenizer=enc_tok, config=config,
         )
 
-        def fake_verify_block(event):
+        def fake_verify_block(event, ordinal=None):
             return VerifyResult(
                 passed=event.block_text.strip() != "y = bad",
                 min_margin=0.2,
@@ -1476,7 +1476,7 @@ class TestBlockGammaRuntime:
             def prefill(self, prompt):
                 return None
 
-            def forward_and_sample(self, penalty_ids=None):
+            def forward_and_sample(self, penalty_ids=None, temperature_override=None):
                 self._steps += 1
                 if self._steps == 1:
                     self.generated_text = "x = 1\n"
@@ -1655,7 +1655,7 @@ class TestCascadeRegression:
                 self._cursor = 0
                 self._sequence = self._post_cascade_sequence()
 
-            def forward_and_sample(self, penalty_ids=None):
+            def forward_and_sample(self, penalty_ids=None, temperature_override=None):
                 self._steps += 1
                 if self._cursor >= len(self._sequence):
                     self.last_event = None
@@ -1688,7 +1688,7 @@ class TestCascadeRegression:
             def __init__(self, **kwargs):
                 return None
 
-            def run(self, checkpoint, original_event):
+            def run(self, checkpoint, original_event, **kwargs):
                 return RetryResult(
                     success=False,
                     attempts=1,
@@ -1721,7 +1721,7 @@ class TestCascadeRegression:
             config=config,
         )
 
-        def fake_verify_block(event):
+        def fake_verify_block(event, ordinal=None):
             stripped = event.block_text.strip()
             return VerifyResult(
                 passed=stripped != "x = bad",
@@ -1822,7 +1822,7 @@ class TestCascadeRegression:
                 self._cursor = 0
                 self._sequence = self._post_cascade_sequence()
 
-            def forward_and_sample(self, penalty_ids=None):
+            def forward_and_sample(self, penalty_ids=None, temperature_override=None):
                 self._steps += 1
                 if self._cursor >= len(self._sequence):
                     self.last_event = None
@@ -1855,7 +1855,7 @@ class TestCascadeRegression:
             def __init__(self, **kwargs):
                 return None
 
-            def run(self, checkpoint, original_event):
+            def run(self, checkpoint, original_event, **kwargs):
                 return RetryResult(
                     success=False,
                     attempts=1,
@@ -1888,7 +1888,7 @@ class TestCascadeRegression:
             config=config,
         )
 
-        def fake_verify_block(event):
+        def fake_verify_block(event, ordinal=None):
             stripped = event.block_text.strip()
             return VerifyResult(
                 passed=stripped != "x = bad",
@@ -1991,7 +1991,7 @@ class TestCascadeRegression:
                 self._cursor = 0
                 self._sequence = self._post_cascade_sequence()
 
-            def forward_and_sample(self, penalty_ids=None):
+            def forward_and_sample(self, penalty_ids=None, temperature_override=None):
                 self._steps += 1
                 if self._cursor >= len(self._sequence):
                     self.last_event = None
@@ -2024,7 +2024,7 @@ class TestCascadeRegression:
             def __init__(self, **kwargs):
                 return None
 
-            def run(self, checkpoint, original_event):
+            def run(self, checkpoint, original_event, **kwargs):
                 return RetryResult(
                     success=False,
                     attempts=1,
@@ -2057,7 +2057,7 @@ class TestCascadeRegression:
             config=config,
         )
 
-        def fake_verify_block(event):
+        def fake_verify_block(event, ordinal=None):
             stripped = event.block_text.strip()
             return VerifyResult(
                 passed=stripped != "x = bad",
@@ -2146,7 +2146,7 @@ class TestCascadeRegression:
                 self._cursor = 0
                 self._sequence = self._post_cascade_sequence()
 
-            def forward_and_sample(self, penalty_ids=None):
+            def forward_and_sample(self, penalty_ids=None, temperature_override=None):
                 self._steps += 1
                 if self._cursor >= len(self._sequence):
                     self.last_event = None
@@ -2191,7 +2191,7 @@ class TestCascadeRegression:
             def __init__(self, **kwargs):
                 return None
 
-            def run(self, checkpoint, original_event):
+            def run(self, checkpoint, original_event, **kwargs):
                 return RetryResult(
                     success=False,
                     attempts=1,
@@ -2224,7 +2224,7 @@ class TestCascadeRegression:
             config=config,
         )
 
-        def fake_verify_block(event):
+        def fake_verify_block(event, ordinal=None):
             return VerifyResult(
                 passed=event.block_text.strip() != "y = bad",
                 min_margin=0.2,
@@ -2318,7 +2318,7 @@ class TestCascadeRegression:
                 self._cursor = 0
                 self._sequence = self._post_cascade_sequence()
 
-            def forward_and_sample(self, penalty_ids=None):
+            def forward_and_sample(self, penalty_ids=None, temperature_override=None):
                 self._steps += 1
                 if self._cursor >= len(self._sequence):
                     self.last_event = None
@@ -2366,7 +2366,7 @@ class TestCascadeRegression:
                 self.calls = []
                 FakeRetryLoop.last_instance = self
 
-            def run(self, checkpoint, original_event):
+            def run(self, checkpoint, original_event, **kwargs):
                 self.calls.append((checkpoint, original_event.block_text))
                 return RetryResult(
                     success=False,
@@ -2392,7 +2392,7 @@ class TestCascadeRegression:
             config=config,
         )
 
-        def fake_verify_block(event):
+        def fake_verify_block(event, ordinal=None):
             return VerifyResult(
                 passed=event.block_text != "my_list.append(1)",
                 min_margin=0.01,
@@ -2789,7 +2789,7 @@ class TestTokenChannelGeneration:
             def prefill(self, prompt):
                 return None
 
-            def forward_and_sample(self, penalty_ids=None):
+            def forward_and_sample(self, penalty_ids=None, temperature_override=None):
                 self._steps += 1
                 if self._steps == 1:
                     self.generated_text = "x = 1\n"
@@ -2884,7 +2884,7 @@ class TestTokenChannelGeneration:
                 self.last_block_checkpoint = None
                 self._phase = "retry"
 
-            def forward_and_sample(self, penalty_ids=None):
+            def forward_and_sample(self, penalty_ids=None, temperature_override=None):
                 if self._phase == "initial":
                     self._phase = "initial-eos"
                     self.generated_text = "x = 1\n"
@@ -3074,7 +3074,7 @@ class TestTokenChannelGeneration:
             def prefill(self, prompt):
                 return None
 
-            def forward_and_sample(self, penalty_ids=None):
+            def forward_and_sample(self, penalty_ids=None, temperature_override=None):
                 self._steps += 1
                 if self._steps == 1:
                     self.generated_text = "x = 1\n"
@@ -3102,7 +3102,7 @@ class TestTokenChannelGeneration:
             def __init__(self, **kwargs):
                 return None
 
-            def run(self, checkpoint, original_event, attempt_pre_sample_hook_factory=None):
+            def run(self, checkpoint, original_event, attempt_pre_sample_hook_factory=None, **kwargs):
                 retry_ctx = SimpleNamespace(
                     generated_ids=[11, 12],
                     generated_text="retry = ",
@@ -3214,7 +3214,7 @@ class TestTokenChannelGeneration:
             def prefill(self, prompt):
                 return None
 
-            def forward_and_sample(self, penalty_ids=None):
+            def forward_and_sample(self, penalty_ids=None, temperature_override=None):
                 self._steps += 1
                 if self._steps == 1:
                     self.generated_text = "x = 1\n"
@@ -3242,7 +3242,7 @@ class TestTokenChannelGeneration:
             def __init__(self, **kwargs):
                 return None
 
-            def run(self, checkpoint, original_event, attempt_pre_sample_hook_factory=None):
+            def run(self, checkpoint, original_event, attempt_pre_sample_hook_factory=None, **kwargs):
                 retry_ctx = SimpleNamespace(
                     generated_ids=[11, 12],
                     generated_text="retry = ",
@@ -3359,7 +3359,7 @@ class TestTokenChannelGeneration:
             def prefill(self, prompt):
                 return None
 
-            def forward_and_sample(self, penalty_ids=None):
+            def forward_and_sample(self, penalty_ids=None, temperature_override=None):
                 self._steps += 1
                 if self._steps == 1:
                     self.generated_text = "x = 1\n"
@@ -3387,7 +3387,7 @@ class TestTokenChannelGeneration:
             def __init__(self, **kwargs):
                 self._calls = 0
 
-            def run(self, checkpoint, original_event, attempt_pre_sample_hook_factory=None):
+            def run(self, checkpoint, original_event, attempt_pre_sample_hook_factory=None, **kwargs):
                 self._calls += 1
                 if self._calls == 1:
                     retry_ctx = SimpleNamespace(
@@ -3530,7 +3530,7 @@ class TestTokenChannelGeneration:
                 self.last_block_checkpoint = None
                 self._phase = "retry-compound"
 
-            def forward_and_sample(self, penalty_ids=None):
+            def forward_and_sample(self, penalty_ids=None, temperature_override=None):
                 if self._phase == "initial":
                     self._phase = "initial-eos"
                     self.generated_text = "x = 1\n"
@@ -3786,7 +3786,7 @@ class TestTokenChannelGeneration:
                 self._cursor = 0
                 self._sequence = self._post_cascade_sequence()
 
-            def forward_and_sample(self, penalty_ids=None):
+            def forward_and_sample(self, penalty_ids=None, temperature_override=None):
                 self._steps += 1
                 if self._cursor >= len(self._sequence):
                     self.last_event = None
@@ -3831,7 +3831,7 @@ class TestTokenChannelGeneration:
             def __init__(self, **kwargs):
                 self.calls = []
 
-            def run(self, checkpoint, original_event):
+            def run(self, checkpoint, original_event, **kwargs):
                 self.calls.append((checkpoint, original_event.block_text))
                 return RetryResult(
                     success=False,
@@ -3857,7 +3857,7 @@ class TestTokenChannelGeneration:
             config=config,
         )
 
-        def fake_verify_block(event):
+        def fake_verify_block(event, ordinal=None):
             return VerifyResult(
                 passed=event.block_text != "    y = bad\n",
                 min_margin=0.01,

@@ -146,7 +146,11 @@ class GenerationContext:
         """Persist current step logits for the current generated_ids boundary."""
         self.store_step_checkpoint_logits(len(self.generated_ids))
 
-    def forward_and_sample(self, penalty_ids: list[int] | None = None) -> int:
+    def forward_and_sample(
+        self,
+        penalty_ids: list[int] | None = None,
+        temperature_override: float | None = None,
+    ) -> int:
         """Single-step forward + sample, atomically updating all state.
 
         Returns the sampled token id.
@@ -191,7 +195,7 @@ class GenerationContext:
             self.past_kv = output.past_key_values
 
         # Sample
-        next_id = self._sample(logits, penalty_ids)
+        next_id = self._sample(logits, penalty_ids, temperature_override=temperature_override)
 
         # Update generated state
         self.generated_ids.append(next_id)
@@ -285,6 +289,7 @@ class GenerationContext:
         self,
         logits: torch.Tensor,
         penalty_ids: list[int] | None = None,
+        temperature_override: float | None = None,
     ) -> int:
         """Sample a token with temperature, top-k, top-p, repetition penalty."""
         logits = logits.squeeze(0).float()
@@ -299,8 +304,21 @@ class GenerationContext:
                     else:
                         logits[tid] *= penalty
 
-        if self._config.temperature > 0:
-            logits = logits / self._config.temperature
+        # N-gram repetition prevention
+        ngram_size = getattr(self._config, "no_repeat_ngram_size", 0)
+        if ngram_size > 0 and len(self.generated_ids) >= ngram_size - 1:
+            prefix = tuple(self.generated_ids[-(ngram_size - 1):])
+            banned: set[int] = set()
+            for i in range(len(self.generated_ids) - ngram_size + 1):
+                if tuple(self.generated_ids[i:i + ngram_size - 1]) == prefix:
+                    banned.add(self.generated_ids[i + ngram_size - 1])
+            for tid in banned:
+                if 0 <= tid < logits.size(0):
+                    logits[tid] = float("-inf")
+
+        temperature = temperature_override if temperature_override is not None else self._config.temperature
+        if temperature > 0:
+            logits = logits / temperature
         else:
             # Greedy: return argmax
             return logits.argmax().item()

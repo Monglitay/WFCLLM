@@ -86,17 +86,29 @@ class RetryLoop:
             else config.max_new_tokens // 2
         )
 
+    def _resolve_attempt_temperature(self, attempt_i: int) -> float | None:
+        """Return temperature override for attempt_i (0-indexed), or None to use base."""
+        schedule = self._config.retry_temperature_schedule
+        if not schedule:
+            return None
+        for max_attempt_idx, temp in schedule:
+            if attempt_i <= max_attempt_idx:
+                return float(temp)
+        return float(schedule[-1][1])
+
     def run(
         self,
         checkpoint: Checkpoint,
         original_event: InterceptEvent,
         attempt_pre_sample_hook_factory: Callable[[int], Callable[[GenerationContext], None] | None] | None = None,
+        ordinal: int | None = None,
     ) -> RetryResult:
         """Run the retry loop from checkpoint.
 
         Args:
             checkpoint: State to rollback to before each retry.
             original_event: The failed event (used for parent_node_type to derive valid_set).
+            ordinal: Block ordinal for per-block keying (eliminates systematic bias).
 
         Returns:
             RetryResult with success status and diagnostics.
@@ -113,6 +125,9 @@ class RetryLoop:
             # Atomically restore all state
             self._ctx.rollback(checkpoint)
 
+            # Resolve temperature for this attempt (escalation schedule)
+            attempt_temperature = self._resolve_attempt_temperature(attempt_i)
+
             # Free-generate until a new simple block
             pre_sample_hook = self._pre_sample_hook
             if attempt_pre_sample_hook_factory is not None:
@@ -120,6 +135,7 @@ class RetryLoop:
             event = self._generate_until_block(
                 penalty_ids=prev_retry_ids,
                 pre_sample_hook=pre_sample_hook,
+                temperature_override=attempt_temperature,
             )
 
             if event is None:
@@ -142,7 +158,7 @@ class RetryLoop:
             block_entropy = self._entropy_est.estimate_block_entropy(event.block_text)
             margin = self._entropy_est.compute_margin(block_entropy, self._config)
             gamma_resolution = self._resolve_gamma(event.block_text)
-            valid_set = self._keying.derive(parent, k=gamma_resolution.k)
+            valid_set = self._keying.derive(parent, k=gamma_resolution.k, ordinal=ordinal)
             result = self._verifier.verify(event.block_text, valid_set, margin)
             failure_reason = None
             if not result.passed:
@@ -212,12 +228,16 @@ class RetryLoop:
         self,
         penalty_ids: list[int] | None,
         pre_sample_hook: Callable[[GenerationContext], None] | None = None,
+        temperature_override: float | None = None,
     ) -> InterceptEvent | None:
         """Free-generate tokens until a simple block is detected or budget exhausted."""
         for _ in range(self._retry_budget):
             if pre_sample_hook is not None:
                 pre_sample_hook(self._ctx)
-            next_id = self._ctx.forward_and_sample(penalty_ids=penalty_ids)
+            next_id = self._ctx.forward_and_sample(
+                penalty_ids=penalty_ids,
+                temperature_override=temperature_override,
+            )
             if next_id == self._ctx.eos_id:
                 return None
             event = self._ctx.last_event

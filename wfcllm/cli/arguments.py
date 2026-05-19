@@ -93,6 +93,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="仅处理前 N 条 watermark prompts（调试/子集验证用）",
     )
     parser.add_argument(
+        "--sample-offset",
+        type=int,
+        default=None,
+        help="从第 N 条 prompt 开始处理（并行分片用）",
+    )
+    parser.add_argument(
         "--gamma-strategy",
         choices=["piecewise_quantile"],
         default=None,

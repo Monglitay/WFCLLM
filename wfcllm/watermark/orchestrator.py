@@ -108,7 +108,8 @@ class WatermarkGenerator:
 
         self._entropy_est = NodeEntropyEstimator()
         self._lsh_space = LSHSpace(
-            config.secret_key, config.encoder_embed_dim, config.lsh_d
+            config.secret_key, config.encoder_embed_dim, config.lsh_d,
+            whitening_path=getattr(config, "lsh_whitening_path", None),
         )
         self._keying = WatermarkKeying(
             config.secret_key, config.lsh_d, config.lsh_gamma
@@ -660,8 +661,8 @@ class WatermarkGenerator:
             ),
         )
 
-    def _verify_block(self, event):
-        return self._semantic.verify_block(event)
+    def _verify_block(self, event, ordinal: int | None = None):
+        return self._semantic.verify_block(event, ordinal=ordinal)
 
     def _try_cascade(self, ctx, cascade_mgr, retry_loop, stats, pending_fallbacks):
         """Active cascade: rollback to compound block start, then resume main loop.
@@ -764,7 +765,8 @@ class WatermarkGenerator:
         record = ledger_entry["record"]
         self._capture_block_identity(ledger_entry, event)
 
-        verify_result = self._verify_block(event)
+        effective_ordinal = record.block_ordinal if self._config.use_ordinal_keying else None
+        verify_result = self._verify_block(event, ordinal=effective_ordinal)
         short_token_channel_block = self._is_short_token_channel_block(token_channel_state)
         if not reused_from_cascade and not record.initial_verify:
             record.initial_verify = {"passed": verify_result.passed}
@@ -806,7 +808,7 @@ class WatermarkGenerator:
             and "attempt_pre_sample_hook_factory" in inspect.signature(retry_loop.run).parameters
         ):
             retry_run_kwargs["attempt_pre_sample_hook_factory"] = retry_hook_factory
-        retry_result = retry_loop.run(block_cp, event, **retry_run_kwargs)
+        retry_result = retry_loop.run(block_cp, event, ordinal=effective_ordinal, **retry_run_kwargs)
         retry_state = retry_state_registry.get(retry_result.attempts)
         if (
             retry_result.success

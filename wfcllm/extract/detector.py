@@ -33,7 +33,10 @@ class WatermarkDetector:
     ):
         self._tokenizer = tokenizer
         self._lm_tokenizer = lm_tokenizer
-        lsh_space = LSHSpace(config.secret_key, config.embed_dim, config.lsh_d)
+        lsh_space = LSHSpace(
+            config.secret_key, config.embed_dim, config.lsh_d,
+            whitening_path=getattr(config, "lsh_whitening_path", None),
+        )
         keying = WatermarkKeying(config.secret_key, config.lsh_d, config.lsh_gamma)
         verifier = ProjectionVerifier(encoder, tokenizer, lsh_space=lsh_space, device=device)
         self._scorer = BlockScorer(keying, verifier, default_gamma=config.lsh_gamma)
