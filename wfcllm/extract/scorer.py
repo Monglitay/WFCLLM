@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
+
 from wfcllm.lang.python.parser import StatementBlock
 from wfcllm.extract.config import BlockScore
 from wfcllm.watermark.keying import WatermarkKeying
@@ -26,8 +28,14 @@ class BlockScorer:
         block: StatementBlock,
         blocks: list[StatementBlock],
         block_contract: dict | None = None,
+        block_contracts_by_hash: dict[str, dict] | None = None,
     ) -> BlockScore:
         parent_node_type = self._resolve_parent_type(block, blocks)
+        # Use hash-keyed contract as primary lookup (content-stable across
+        # embed/extract runs), fall back to block_id-keyed contract.
+        source_hash = sha256(block.source.encode("utf-8")).hexdigest()
+        if block_contracts_by_hash is not None and source_hash in block_contracts_by_hash:
+            block_contract = block_contracts_by_hash[source_hash]
         k = self._resolve_k(block_contract)
         ordinal = self._resolve_ordinal(block_contract)
         if k is None:
@@ -42,6 +50,7 @@ class BlockScorer:
             score=score,
             min_margin=result.min_margin,
             gamma_effective=self._resolve_gamma_effective(block_contract),
+            source_hash=source_hash,
         )
 
     def score_all(
@@ -51,6 +60,17 @@ class BlockScorer:
         block_contracts_by_id: dict[str, dict] | None = None,
     ) -> list[BlockScore]:
         """Score target blocks. all_blocks needed for parent_id → node_type lookup."""
+        # Build a hash-keyed index for content-stable lookup across embed/extract runs.
+        # block_id can shift when the generated code differs slightly between runs,
+        # but block_text_hash is stable as long as the source text is identical.
+        contracts_by_hash: dict[str, dict] | None = None
+        if block_contracts_by_id is not None:
+            contracts_by_hash = {}
+            for contract in block_contracts_by_id.values():
+                bh = contract.get("block_text_hash")
+                if bh:
+                    contracts_by_hash[str(bh)] = contract
+
         return [
             self.score_block(
                 b,
@@ -60,6 +80,7 @@ class BlockScorer:
                     if block_contracts_by_id is not None
                     else None
                 ),
+                block_contracts_by_hash=contracts_by_hash,
             )
             for b in target_blocks
         ]

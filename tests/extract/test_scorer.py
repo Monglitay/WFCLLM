@@ -127,5 +127,5 @@ class TestBlockScorer:
             block_contract={"k": 6, "gamma_effective": 0.375},
         )
 
-        keying.derive.assert_called_once_with("module", k=6)
+        keying.derive.assert_called_once_with("module", k=6, ordinal=None)
         assert result.gamma_effective == pytest.approx(0.375)

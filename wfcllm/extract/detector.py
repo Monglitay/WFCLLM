@@ -293,16 +293,28 @@ class WatermarkDetector:
         if not isinstance(block_contracts, list):
             return
 
-        gamma_by_block_id = {
-            contract.get("block_id"): float(contract["gamma_effective"])
-            for contract in block_contracts
-            if isinstance(contract, dict)
-            and contract.get("block_id") is not None
-            and "gamma_effective" in contract
-        }
+        # Index by block_id (primary) and block_text_hash (fallback).
+        # block_id can differ between embed-time and extract-time because the
+        # parser assigns IDs based on tree position which may shift when the
+        # generated code differs slightly. block_text_hash is content-stable.
+        gamma_by_block_id: dict[str, float] = {}
+        gamma_by_hash: dict[str, float] = {}
+        for contract in block_contracts:
+            if not isinstance(contract, dict) or "gamma_effective" not in contract:
+                continue
+            g = float(contract["gamma_effective"])
+            bid = contract.get("block_id")
+            if bid is not None:
+                gamma_by_block_id[str(bid)] = g
+            bh = contract.get("block_text_hash")
+            if bh is not None:
+                gamma_by_hash[str(bh)] = g
+
         for score in scores:
             if score.block_id in gamma_by_block_id:
                 score.gamma_effective = gamma_by_block_id[score.block_id]
+            elif score.source_hash and score.source_hash in gamma_by_hash:
+                score.gamma_effective = gamma_by_hash[score.source_hash]
 
     @staticmethod
     def _block_contracts_by_id(

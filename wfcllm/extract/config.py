@@ -60,6 +60,7 @@ class BlockScore:
     min_margin: float
     gamma_effective: float = 0.5
     selected: bool = False
+    source_hash: str = ""  # sha256 of block source text, for gamma_effective lookup
 
 
 @dataclass
