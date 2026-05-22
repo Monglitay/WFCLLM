@@ -551,9 +551,13 @@ class WatermarkPipeline:
                 for item in iterator:
                     lm_prompt = self._chat_template_fn(item["prompt"])
                     result = self._generator.generate(lm_prompt)
-                    # For instruct models, strip the repeated function signature
+                    # For instruct models, strip the repeated function signature.
+                    # Skip when token-channel is enabled: extraction must tokenize
+                    # the same text that was generated to reconstruct prefix_ids.
                     generated_code = result.code
-                    if getattr(self, "_is_instruct_model", False):
+                    tc_cfg = getattr(self._generator.config, "token_channel", None)
+                    tc_enabled = getattr(tc_cfg, "enabled", False)
+                    if getattr(self, "_is_instruct_model", False) and not tc_enabled:
                         generated_code = self._extract_function_body(item["prompt"], generated_code)
                     embed_rate = (
                         result.embedded_blocks / result.total_blocks
