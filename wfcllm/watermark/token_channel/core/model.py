@@ -42,9 +42,9 @@ class TokenChannelModelOutput:
 class TokenChannelLossWeights:
     """Relative weights for token and switch supervision."""
 
-    distillation: float = 1.0
-    ce: float = 1.0
-    switch: float = 1.0
+    distillation: float = 0.6
+    ce: float = 0.2
+    switch: float = 0.2
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -155,9 +155,32 @@ class TokenChannelCheckpointExport:
 
 
 class TokenChannelModel(nn.Module):
-    """Small dual-head network for lexical channel scoring."""
+    """Transformer-based dual-head network for lexical channel scoring.
 
-    def __init__(self, vocab_size: int, context_width: int, hidden_size: int = 64) -> None:
+    Architecture mirrors the reference implementation: token + position embeddings,
+    TransformerEncoder backbone, dual output heads for next-token preference and
+    switch prediction.
+
+    Args:
+        vocab_size: Vocabulary size of the target LM tokenizer.
+        context_width: Maximum prefix length (used as max_length for position embeddings).
+        hidden_size: Transformer d_model dimension (default 512).
+        num_layers: Number of TransformerEncoder layers (default 6).
+        nhead: Number of attention heads (default 8).
+        dim_feedforward: FFN hidden dimension (default 2048).
+        dropout: Dropout probability (default 0.2).
+    """
+
+    def __init__(
+        self,
+        vocab_size: int,
+        context_width: int,
+        hidden_size: int = 512,
+        num_layers: int = 6,
+        nhead: int = 8,
+        dim_feedforward: int = 2048,
+        dropout: float = 0.2,
+    ) -> None:
         super().__init__()
         if vocab_size <= 0:
             raise ValueError("vocab_size must be > 0")
@@ -170,14 +193,38 @@ class TokenChannelModel(nn.Module):
         self.context_width = context_width
         self.hidden_size = hidden_size
 
+        # Token + position embeddings (same as reference)
         self.token_embedding = nn.Embedding(vocab_size, hidden_size)
-        self.node_embedding = nn.Embedding(2048, hidden_size)
-        self.parent_embedding = nn.Embedding(2048, hidden_size)
-        self.language_embedding = nn.Embedding(64, hidden_size)
-        self.numeric_projection = nn.Linear(3, hidden_size)
-        self.hidden_projection = nn.Linear(hidden_size * 2, hidden_size)
+        self.position_embedding = nn.Embedding(context_width, hidden_size)
+        self.drop = nn.Dropout(dropout)
+
+        # Transformer encoder backbone
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_size,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            batch_first=True,
+            norm_first=True,
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.ln_f = nn.LayerNorm(hidden_size)
+
+        # Dual output heads
         self.switch_head = nn.Linear(hidden_size, 1)
         self.preference_head = nn.Linear(hidden_size, vocab_size)
+
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        for module in self.modules():
+            if isinstance(module, (nn.Linear, nn.Embedding)):
+                nn.init.kaiming_normal_(module.weight, a=0.01, mode="fan_in", nonlinearity="leaky_relu")
+                if isinstance(module, nn.Linear) and module.bias is not None:
+                    nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.LayerNorm):
+                nn.init.zeros_(module.bias)
+                nn.init.ones_(module.weight)
 
     def forward(
         self,
@@ -198,42 +245,31 @@ class TokenChannelModel(nn.Module):
         prefix_ids = prefix_ids.to(dtype=torch.long)
         device = prefix_ids.device
 
-        trimmed_prefix = prefix_ids[-self.context_width :]
-        if trimmed_prefix.numel() == 0:
-            token_summary = torch.zeros(self.hidden_size, dtype=torch.float32, device=device)
-        else:
-            token_summary = self.token_embedding(trimmed_prefix).mean(dim=0)
+        # Trim to context_width and build [1, seq_len] batch
+        trimmed = prefix_ids[-self.context_width :]
+        seq_len = trimmed.numel()
 
-        feature_summary = self._encode_features(features=features, device=device)
-        hidden = torch.tanh(
-            self.hidden_projection(torch.cat((token_summary, feature_summary), dim=0))
-        )
-        switch_logit = self.switch_head(hidden).squeeze(-1)
-        preference_logits = self.preference_head(hidden)
+        if seq_len == 0:
+            # No prefix: use a single zero token as placeholder
+            trimmed = torch.zeros(1, dtype=torch.long, device=device)
+            seq_len = 1
+
+        input_ids = trimmed.unsqueeze(0)  # [1, seq_len]
+        position_ids = torch.arange(seq_len, dtype=torch.long, device=device).unsqueeze(0)
+
+        hidden = self.token_embedding(input_ids) + self.position_embedding(position_ids)
+        hidden = self.drop(hidden)
+        hidden = self.transformer(hidden)          # [1, seq_len, d_model]
+        hidden = self.ln_f(hidden)
+
+        # Use last token position as the prediction vector (causal)
+        last_hidden = hidden[0, -1]               # [d_model]
+
+        switch_logit = self.switch_head(last_hidden).squeeze(-1)
+        preference_logits = self.preference_head(last_hidden)
         return TokenChannelModelOutput(
             switch_logit=switch_logit,
             preference_logits=preference_logits,
-        )
-
-    def _encode_features(self, features: TokenChannelFeatures, device: torch.device) -> torch.Tensor:
-        numeric_features = torch.tensor(
-            [
-                float(features.block_relative_offset),
-                float(features.in_code_body),
-                float(features.structure_mask),
-            ],
-            dtype=torch.float32,
-            device=device,
-        )
-        return (
-            self.node_embedding(_stable_feature_index(features.node_type, modulo=2048, device=device))
-            + self.parent_embedding(
-                _stable_feature_index(features.parent_node_type, modulo=2048, device=device)
-            )
-            + self.language_embedding(
-                _stable_feature_index(features.language, modulo=64, device=device)
-            )
-            + self.numeric_projection(numeric_features)
         )
 
     def compute_loss(
@@ -292,8 +328,14 @@ class TokenChannelModel(nn.Module):
             reduction="batchmean",
         )
 
-        ce_loss = F.cross_entropy(preference_logits, next_token)
-        switch_loss = F.binary_cross_entropy_with_logits(switch_logit, switch_target)
+        ce_loss = F.cross_entropy(preference_logits, next_token, label_smoothing=0.1)
+
+        # Upweight minority class (switch=1) to counteract class imbalance
+        importance_weights = torch.ones_like(switch_target)
+        importance_weights[switch_target >= 0.5] = 2.0
+        switch_loss = F.binary_cross_entropy_with_logits(
+            switch_logit, switch_target, weight=importance_weights, reduction="mean"
+        )
         total_loss = (
             weights.distillation * distillation_loss
             + weights.ce * ce_loss

@@ -1,0 +1,47 @@
+{
+  "meta": {
+    "input_file": "data/watermarked_exp2/humaneval_merged.jsonl",
+    "total_samples": 132,
+    "scored_samples": 126,
+    "invalid_samples": 6,
+    "calibration": {
+      "source": "data/negative_corpus.jsonl",
+      "fpr": 0.05,
+      "threshold": 1.6618704668760815,
+      "hypothesis_mode": "adaptive",
+      "statistic_definition": "sum(gamma_i), sum(gamma_i*(1-gamma_i))",
+      "decision_rule": "z_score >= threshold",
+      "joint_threshold": 1.2909944487358056
+    }
+  },
+  "summary": {
+    "watermark_rate": 0.2619047619047619,
+    "watermark_rate_ci_95": [
+      0.192995,
+      0.344904
+    ],
+    "mean_z_score": 0.8192255580951175,
+    "std_z_score": 2.4021559968090944,
+    "mean_p_value": 0.35137965299529966,
+    "mean_blocks": 16.30952380952381,
+    "embed_rate_distribution": {
+      "mean": 0.625231,
+      "std": 0.264409,
+      "p25": 0.425325,
+      "p50": 0.666667,
+      "p75": 0.833333
+    },
+    "mean_lexical_z_score": -0.023851092715076405,
+    "mean_green_fraction": 0.012197656840513982,
+    "mean_joint_score": 0.800466492516772,
+    "joint_prediction_rate": 0.36507936507936506,
+    "mode_counts": {
+      "fixed": 0,
+      "adaptive": 132
+    },
+    "invalid_reason_counts": {
+      "alignment_failed": 6,
+      "adaptive_contract_invalid": 0
+    }
+  }
+}

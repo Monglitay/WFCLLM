@@ -82,6 +82,7 @@ class GenerationContext:
 
     def prefill(self, prompt: str) -> None:
         """Run model forward on prompt to initialize KV cache."""
+        self._prompt_text = prompt
         input_ids = self._tokenizer.encode(prompt, return_tensors="pt")
         if isinstance(input_ids, list):
             input_ids = torch.tensor([input_ids], dtype=torch.long)

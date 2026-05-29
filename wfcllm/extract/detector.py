@@ -48,11 +48,12 @@ class WatermarkDetector:
         self,
         code: str,
         watermark_metadata: dict | None = None,
+        prompt: str = "",
     ) -> DetectionResult:
         self._validate_token_channel_metadata(watermark_metadata)
         if self._is_lexical_only_mode():
             result = self._empty_result("fixed")
-            lexical_result = self._detect_lexical(code)
+            lexical_result = self._detect_lexical(code, prompt=prompt)
             joint_result = lexical_result.to_joint_equivalent(
                 threshold=self._config.token_channel.joint_threshold,
             )
@@ -105,14 +106,14 @@ class WatermarkDetector:
         result = self._with_alignment(result, code, watermark_metadata)
         return self._attach_channel_results(result, code)
 
-    def _attach_channel_results(self, result: DetectionResult, code: str) -> DetectionResult:
+    def _attach_channel_results(self, result: DetectionResult, code: str, prompt: str = "") -> DetectionResult:
         result.semantic_result = semantic_detection_from_result(result)
         if not self._is_dual_channel_mode():
             result.lexical_result = None
             result.joint_result = None
             return result
 
-        lexical_result = self._detect_lexical(code)
+        lexical_result = self._detect_lexical(code, prompt=prompt)
         result.lexical_result = lexical_result
         result.joint_result = fuse_joint_detection(
             semantic_z_score=result.z_score,
@@ -124,13 +125,13 @@ class WatermarkDetector:
         result.is_watermarked = result.joint_result.prediction
         return result
 
-    def _detect_lexical(self, code: str):
+    def _detect_lexical(self, code: str, prompt: str = ""):
         detector = self._get_lexical_detector()
         if detector is None:
             from wfcllm.extract.hypothesis import LexicalDetectionResult
 
             return LexicalDetectionResult.empty()
-        return detector.detect(code)
+        return detector.detect(code, prompt=prompt)
 
     def _get_lexical_detector(self) -> ReplayTokenChannelDetector | None:
         if not self._config.token_channel.enabled or self._config.token_channel.mode == "semantic-only":
@@ -173,9 +174,13 @@ class WatermarkDetector:
 
     def _get_token_channel_artifact(self):
         if self._token_channel_artifact is None:
+            import torch
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             self._token_channel_artifact = load_token_channel_artifact(
-                self._config.token_channel.model_path
+                self._config.token_channel.model_path,
+                map_location=device,
             )
+            self._token_channel_artifact.model.to(device)
         return self._token_channel_artifact
 
     def _assert_token_channel_pin_matches(self, token_channel: dict) -> None:

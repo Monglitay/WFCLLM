@@ -33,20 +33,41 @@ class ReplayTokenChannelDetector:
         self._tokenizer = tokenizer
         self._config = config
 
-    def detect(self, code: str) -> LexicalDetectionResult:
+    def detect(self, code: str, prompt: str = "") -> LexicalDetectionResult:
         token_rows = self._tokenize(code)
         if not token_rows:
             return LexicalDetectionResult.empty()
 
+        # Determine how many leading tokens are prompt-repeated (not model-generated).
+        # These tokens were never biased during generation, so skip them for scoring.
+        skip_tokens = self._compute_prompt_overlap_tokens(code, prompt)
+
         seen_prefixes: set[tuple[int, ...]] = set()
         seen_ngrams: set[tuple[int, ...]] = set()
         prefix_ids: list[int] = []
+
+        # Try to parse code alone; if it fails (indented snippet), prepend prompt.
+        # If both fail (e.g. code contains markdown backticks), feature_context stays
+        # None and we fall back to structure_mask=True for all tokens — matching the
+        # embedding-time fallback in _fallback_runtime_token_features().
         feature_context = self._prepare_feature_context(code)
+        prompt_offset = 0
+        if feature_context is None and prompt:
+            full_code = prompt + code
+            feature_context = self._prepare_feature_context(full_code)
+            if feature_context is not None:
+                prompt_offset = len(prompt)
 
         num_positions_scored = 0
         num_green_hits = 0
 
-        for row in token_rows:
+        for idx, row in enumerate(token_rows):
+            # Skip prompt-repeated tokens: they were never biased during generation.
+            # Still add to prefix_ids so subsequent partitions are computed correctly.
+            if idx < skip_tokens:
+                prefix_ids.append(row.token_id)
+                continue
+
             prefix_key = make_prefix_key(prefix_ids)
             if self._config.ignore_repeated_prefixes and prefix_key in seen_prefixes:
                 prefix_ids.append(row.token_id)
@@ -57,10 +78,22 @@ class ReplayTokenChannelDetector:
                 prefix_ids.append(row.token_id)
                 continue
 
-            features = self._build_features(feature_context, code, row.start, row.end)
+            features = self._build_features(
+                feature_context, code if prompt_offset == 0 else prompt + code,
+                row.start + prompt_offset, row.end + prompt_offset,
+            )
+            # If parse failed entirely (feature_context is None) or structure_mask is
+            # False, fall back to structure_mask=True — matching the embedding-time
+            # _fallback_runtime_token_features() so the switch head acts as the only gate.
             if features is None or not features.structure_mask:
-                prefix_ids.append(row.token_id)
-                continue
+                from wfcllm.watermark.token_channel.core.features import TokenChannelFeatures as _TCF
+                features = _TCF(
+                    node_type="module",
+                    parent_node_type="module",
+                    block_relative_offset=0,
+                    in_code_body=True,
+                    structure_mask=True,
+                )
 
             decision = self._runtime.score_prefix(prefix_ids, features=features)
             seen_prefixes.add(prefix_key)
@@ -125,12 +158,70 @@ class ReplayTokenChannelDetector:
             raise ValueError("offset_mapping entries must be (start, end) pairs")
         return int(offset[0]), int(offset[1])
 
+    def _is_gap_within_delta(self, decision) -> bool:
+        """Check if the gap between best red and best green in top-k is <= delta."""
+        pref_logits = decision.preference_logits
+        if pref_logits is None:
+            return True
+        logits_1d = pref_logits[0] if pref_logits.ndim == 2 else pref_logits
+        top_k = 50
+        topk_vals, topk_idx = logits_1d.topk(min(top_k, logits_1d.shape[0]))
+        green_set = decision.partition.green_token_ids
+        best_green = None
+        best_red = None
+        for val, idx in zip(topk_vals.tolist(), topk_idx.tolist()):
+            if idx in green_set:
+                if best_green is None:
+                    best_green = val
+            else:
+                if best_red is None:
+                    best_red = val
+            if best_green is not None and best_red is not None:
+                break
+        if best_green is None or best_red is None:
+            return True
+        gap = best_red - best_green
+        return gap <= self._config.delta
+
     @staticmethod
     def _prepare_feature_context(code: str) -> TokenChannelFeatureContext | None:
         try:
             return prepare_token_channel_feature_context(code)
         except SyntaxError:
             return None
+
+    def _compute_prompt_overlap_tokens(self, code: str, prompt: str) -> int:
+        """Count leading tokens in code that repeat the function signature from prompt.
+
+        The instruct model often regenerates the 'def ...:' line that already exists
+        in the prompt. These tokens were produced by the model copying the prompt,
+        not by biased sampling, so they should be excluded from scoring.
+        """
+        if not prompt:
+            return 0
+        import re
+        # Find the def line in the prompt
+        def_lines = [l for l in prompt.splitlines() if re.match(r'\s*def\s+', l)]
+        if not def_lines:
+            return 0
+        last_def = def_lines[-1].rstrip()
+        # Check if code starts with this def line (possibly with leading whitespace stripped)
+        code_lines = code.split('\n')
+        overlap_end = 0
+        for line in code_lines:
+            if line.rstrip() == last_def.rstrip():
+                overlap_end = code.index('\n', code.index(line)) + 1
+                break
+            elif line.strip() and not line.strip().startswith(('def ', '#', '"""', "'''")):
+                break
+        if overlap_end == 0:
+            return 0
+        overlap_text = code[:overlap_end]
+        overlap_ids = self._tokenizer(overlap_text, add_special_tokens=False)
+        ids = overlap_ids["input_ids"]
+        if ids and isinstance(ids[0], list):
+            ids = ids[0]
+        return len(ids)
 
     @staticmethod
     def _build_features(

@@ -196,8 +196,8 @@ class TokenChannelConfig:
             raise ValueError(f"mode must be one of {sorted(valid_modes)}")
         if self.context_width <= 0:
             raise ValueError("context_width must be > 0")
-        if self.switch_threshold < 0:
-            raise ValueError("switch_threshold must be >= 0")
+        if self.switch_threshold > 20:
+            raise ValueError("switch_threshold must be <= 20")
         if self.delta < 0:
             raise ValueError("delta must be >= 0")
         if self.lexical_min_block_tokens <= 0:

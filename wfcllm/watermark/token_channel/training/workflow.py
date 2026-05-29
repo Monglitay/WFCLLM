@@ -11,7 +11,7 @@ import random
 from typing import Literal
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, get_cosine_schedule_with_warmup
 
 from wfcllm.datasets.loaders.local import load_reference_solutions
 from wfcllm.watermark.token_channel.core.features import FEATURE_VERSION
@@ -385,10 +385,23 @@ def run_token_channel_train_workflow(
             hidden_size=config.hidden_size,
         ).to(train_device)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr, weight_decay=0.01)
     if existing_optimizer_state is not None:
         optimizer.load_state_dict(existing_optimizer_state)
         print(f"[恢复] 成功恢复 optimizer 状态")
+
+    # Cosine LR schedule with warmup (same as reference)
+    remaining_epochs = config.epochs - start_epoch + 1
+    steps_per_epoch = math.ceil(len(train_indices) / config.batch_size)
+    total_steps = remaining_epochs * steps_per_epoch
+    warmup_steps = min(1000, total_steps // 10)
+    scheduler = get_cosine_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=warmup_steps,
+        num_training_steps=total_steps,
+        num_cycles=0.5,
+    )
+    print(f"[信息] LR scheduler: cosine warmup={warmup_steps} steps, total={total_steps} steps")
 
     print(f"[信息] 模型参数量: {sum(p.numel() for p in model.parameters()):,}")
 
@@ -405,6 +418,7 @@ def run_token_channel_train_workflow(
             validation_batches=make_val_batches(),
             epoch=epoch,
             total_epochs=config.epochs,
+            scheduler=scheduler,
         )
         epochs.append(epoch_metrics)
         print(f"[Epoch {epoch}] train_loss={epoch_metrics.train_loss:.4f}, "

@@ -1,0 +1,14 @@
+{
+  "dataset": "humaneval",
+  "num_candidates": 1,
+  "num_tasks": 164,
+  "metrics": {
+    "pass_at_1": 0.4621212121212121,
+    "detection": {}
+  },
+  "details": {
+    "execution_results_path": "data/results_exp2/humaneval_exec_results.jsonl",
+    "positive_details_path": null,
+    "negative_details_path": null
+  }
+}

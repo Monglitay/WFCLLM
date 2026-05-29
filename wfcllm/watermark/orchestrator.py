@@ -535,7 +535,30 @@ class WatermarkGenerator:
                 state.disabled_for_block = True
                 state.low_gate_fraction_shutdown = True
             return False
-        ctx._next_logits[:, green_token_ids] += delta
+        # Adaptive delta: ensure the best green token in top-k beats the best red.
+        # Cap at max_delta to preserve code quality.
+        logits_1d = ctx._next_logits[0] if ctx._next_logits.ndim == 2 else ctx._next_logits
+        top_k = self._config.top_k or 50
+        topk_vals, topk_idx = logits_1d.topk(top_k)
+        green_set = set(green_token_ids)
+        best_green = None
+        best_red = None
+        for val, idx in zip(topk_vals.tolist(), topk_idx.tolist()):
+            if idx in green_set:
+                if best_green is None:
+                    best_green = val
+            else:
+                if best_red is None:
+                    best_red = val
+            if best_green is not None and best_red is not None:
+                break
+        if best_green is not None and best_red is not None and best_red > best_green:
+            gap = best_red - best_green
+            max_delta = delta * 2.25
+            effective_delta = min(gap + 1.0, max_delta)
+        else:
+            effective_delta = delta
+        ctx._next_logits[:, green_token_ids] += effective_delta
         state.biased_tokens += 1
         self._store_block_start_checkpoint_logits_if_supported(ctx, state)
         if self._should_disable_token_channel_for_low_gate_fraction(state):
@@ -753,10 +776,8 @@ class WatermarkGenerator:
             return
 
         retry_run_kwargs = {}
-        retry_hook_factory = None
         retry_state_registry: dict[int, TokenChannelRuntimeState] = {}
-        if not short_token_channel_block:
-            retry_hook_factory = self._build_retry_token_channel_hook_factory(retry_state_registry)
+        retry_hook_factory = self._build_retry_token_channel_hook_factory(retry_state_registry)
         if (
             retry_hook_factory is not None
             and "attempt_pre_sample_hook_factory" in inspect.signature(retry_loop.run).parameters

@@ -120,6 +120,7 @@ def run_training_step(
     batch: dict[str, torch.Tensor],
     features: TokenChannelFeatures | None = None,
     loss_weights: TokenChannelLossWeights | None = None,
+    scheduler: object | None = None,
 ) -> dict[str, float]:
     """Run one optimizer step and return scalar loss terms."""
 
@@ -128,7 +129,10 @@ def run_training_step(
     output = _forward_batch(model=model, batch=batch, features=features)
     losses = model.compute_loss(batch=batch, output=output, loss_weights=loss_weights)
     losses["total_loss"].backward()
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     optimizer.step()
+    if scheduler is not None:
+        scheduler.step()
     return {name: float(value.detach().cpu().item()) for name, value in losses.items()}
 
 
@@ -142,6 +146,7 @@ def train_one_epoch(
     total_epochs: int | None = None,
     features: TokenChannelFeatures | None = None,
     loss_weights: TokenChannelLossWeights | None = None,
+    scheduler: object | None = None,
 ) -> TokenChannelEpochMetrics:
     """Train and evaluate one epoch, returning validation evidence."""
 
@@ -165,6 +170,7 @@ def train_one_epoch(
             batch=batch,
             features=features,
             loss_weights=loss_weights,
+            scheduler=scheduler,
         )
         train_losses.append(step_losses["total_loss"])
         switch_losses.append(step_losses["switch_loss"])
