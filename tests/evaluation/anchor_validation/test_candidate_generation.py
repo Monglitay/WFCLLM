@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from wfcllm.evaluation.anchor_validation.candidate_generation import (
     GenerationContextSource,
+    _first_nonempty_line,
     build_block_completion_prompt,
     extract_generation_contexts,
     generate_candidate_rows,
@@ -72,3 +73,7 @@ def test_generate_candidate_rows_filters_invalid_and_preserves_indentation():
     assert rows[0]["block_text"] == "    y = 1 + x"
     assert rows[0]["syntax_valid"] is True
     assert rows[0]["parse_valid"] is True
+
+
+def test_first_nonempty_line_skips_leading_blank_generation():
+    assert _first_nonempty_line("\n\nreturn x\nreturn y") == "return x"

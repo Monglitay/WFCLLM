@@ -195,9 +195,17 @@ def build_hf_sampler(model, tokenizer, max_new_tokens: int = 64) -> Sampler:
         )
         new_ids = output_ids[0, input_ids.shape[1] :]
         text = tokenizer.decode(new_ids, skip_special_tokens=True)
-        return text.splitlines()[0] if text.splitlines() else text.strip()
+        return _first_nonempty_line(text)
 
     return sample
+
+
+def _first_nonempty_line(text: str) -> str:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return text.strip()
 
 
 def _candidate_is_parseable(source_code: str) -> tuple[bool, bool]:
