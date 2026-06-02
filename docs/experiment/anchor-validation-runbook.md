@@ -59,6 +59,18 @@ Empirical gamma calibration is diagnostic-only in this revision. For every
 context/method/key/gamma it reports `target_gamma`, `empirical_gamma`, and
 `delta` in the summary aggregation. It does not change candidate selection.
 
+All `scripts/anchor_validation.py` experiment commands emit INFO-level
+intermediate logs by default. Long loops also show `tqdm` progress bars:
+
+- `generate-pool`: source-level and block-context-level candidate generation
+  progress.
+- `build-pool`: input-file reading and candidate-context construction progress.
+- `run-diagnostics`: candidate-context diagnostics progress.
+
+Use `--no-progress` on any subcommand when running in CI or when log capture
+should not include progress bars. INFO logs remain enabled so batch runs still
+show intermediate milestones.
+
 ## Main Method Set
 
 The default `run-diagnostics` method set is:
@@ -105,6 +117,16 @@ python scripts/anchor_validation.py build-pool \
   --input-jsonl data/diagnostics/anchor_validation/per_block_candidates.jsonl \
   --output data/diagnostics/anchor_validation/candidate_pools.jsonl \
   --min-candidates 8
+```
+
+Disable progress bars, but keep logs:
+
+```bash
+python scripts/anchor_validation.py build-pool \
+  --input-jsonl data/diagnostics/anchor_validation/per_block_candidates.jsonl \
+  --output data/diagnostics/anchor_validation/candidate_pools.jsonl \
+  --min-candidates 8 \
+  --no-progress
 ```
 
 ## Conservative Whole-Program Fallback

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,6 +34,13 @@ from wfcllm.watermark.anchor_lsh import (
 from wfcllm.watermark.keying import WatermarkKeying
 from wfcllm.watermark.lsh_space import LSHSpace
 
+try:
+    from tqdm import tqdm
+except ImportError:  # pragma: no cover - tqdm is in requirements, fallback for minimal envs.
+    tqdm = None  # type: ignore[assignment]
+
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class AnchorValidationConfig:
@@ -50,6 +58,7 @@ class AnchorValidationConfig:
     encoder_device: str = "cpu"
     max_length: int = 256
     use_ordinal_keying: bool = True
+    show_progress: bool = False
 
 
 @dataclass(frozen=True)
@@ -64,7 +73,14 @@ class AnchorValidationRunner:
         self._config = config
 
     def run(self) -> AnchorValidationResult:
+        logger.info("loading candidate pool: %s", self._config.pool_path)
         contexts = load_candidate_contexts(self._config.pool_path)
+        logger.info("loaded %d candidate contexts", len(contexts))
+        logger.info(
+            "building %s embedding provider with embed_dim=%d",
+            self._config.embedding_mode,
+            self._config.embed_dim,
+        )
         provider = _build_embedding_provider(self._config)
         metrics_rows = []
         selection_rows = []
@@ -72,7 +88,13 @@ class AnchorValidationRunner:
         agreement_counts: dict[str, list[bool]] = {}
         embeddings_by_context: dict[str, list[tuple[str, tuple[float, ...]]]] = {}
 
-        for context in contexts:
+        context_iterable = _progress(
+            contexts,
+            enabled=self._config.show_progress,
+            desc="Anchor diagnostics contexts",
+            unit="context",
+        )
+        for context in context_iterable:
             block_embeddings = {
                 candidate.candidate_id: provider.embed(candidate.block_text)
                 for candidate in context.candidates
@@ -186,6 +208,12 @@ class AnchorValidationRunner:
                             )
 
         self._config.output_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(
+            "writing %d metric rows and %d selection rows to %s",
+            len(metrics_rows),
+            len(selection_rows),
+            self._config.output_dir,
+        )
         metrics_path = write_jsonl(
             self._config.output_dir / "region_metrics.jsonl",
             metrics_rows,
@@ -224,6 +252,7 @@ class AnchorValidationRunner:
             }
         )
         summary_path = self._write_summary(summary_payload)
+        logger.info("wrote anchor validation summary: %s", summary_path)
         return AnchorValidationResult(metrics_path, selection_path, summary_path)
 
     def _write_summary(self, payload: dict) -> Path:
@@ -280,6 +309,24 @@ def _mean_bool(values: list[bool]) -> float:
     if not values:
         return 0.0
     return sum(1.0 if value else 0.0 for value in values) / len(values)
+
+
+def _progress(
+    values,
+    *,
+    enabled: bool,
+    desc: str,
+    unit: str,
+):
+    if not enabled or tqdm is None:
+        return values
+    return tqdm(
+        values,
+        total=len(values),
+        desc=desc,
+        unit=unit,
+        dynamic_ncols=True,
+    )
 
 
 def _signatures_for_method(

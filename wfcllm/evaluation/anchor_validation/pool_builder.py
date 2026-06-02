@@ -10,13 +10,23 @@ from wfcllm.evaluation.anchor_validation.anchors import mask_code_skeleton
 from wfcllm.evaluation.anchor_validation.schema import CandidateBlock, CandidateContext
 from wfcllm.lang.python.parser import StatementBlock, extract_statement_blocks
 
+try:
+    from tqdm import tqdm
+except ImportError:  # pragma: no cover - tqdm is in requirements, fallback for minimal envs.
+    tqdm = None  # type: ignore[assignment]
+
 
 def build_candidate_contexts_from_records(
     records: list[dict[str, Any]],
     min_candidates: int = 2,
     max_contexts_per_task: int | None = None,
+    show_progress: bool = False,
 ) -> list[CandidateContext]:
-    explicit_contexts = _build_explicit_candidate_contexts(records, min_candidates)
+    explicit_contexts = _build_explicit_candidate_contexts(
+        records,
+        min_candidates,
+        show_progress=show_progress,
+    )
     if explicit_contexts:
         return explicit_contexts
 
@@ -27,7 +37,14 @@ def build_candidate_contexts_from_records(
             grouped[task_id].append(record)
 
     contexts: list[CandidateContext] = []
-    for task_id, task_records in sorted(grouped.items()):
+    grouped_items = sorted(grouped.items())
+    task_iterable = _progress(
+        grouped_items,
+        enabled=show_progress,
+        desc="Building candidate pool tasks",
+        unit="task",
+    )
+    for task_id, task_records in task_iterable:
         per_context: dict[str, list[CandidateBlock]] = defaultdict(list)
         context_examples: dict[str, CandidateContext] = {}
         ordinal_hashes: dict[int, list[str]] = defaultdict(list)
@@ -150,6 +167,7 @@ def _reject_ambiguous_whole_program_grouping(
 def _build_explicit_candidate_contexts(
     records: list[dict[str, Any]],
     min_candidates: int,
+    show_progress: bool = False,
 ) -> list[CandidateContext]:
     if not records or not all("candidate_context_id" in record for record in records):
         return []
@@ -158,7 +176,14 @@ def _build_explicit_candidate_contexts(
         grouped[str(record["candidate_context_id"])].append(record)
 
     contexts: list[CandidateContext] = []
-    for context_id, rows in sorted(grouped.items()):
+    grouped_items = sorted(grouped.items())
+    context_iterable = _progress(
+        grouped_items,
+        enabled=show_progress,
+        desc="Building explicit candidate contexts",
+        unit="context",
+    )
+    for context_id, rows in context_iterable:
         if len(rows) < min_candidates:
             continue
         first = rows[0]
@@ -366,3 +391,15 @@ def _ast_path(block: StatementBlock, blocks: list[StatementBlock]) -> tuple[str,
 def _line_indent(source: str) -> str:
     first_line = source.splitlines()[0] if source.splitlines() else ""
     return first_line[: len(first_line) - len(first_line.lstrip())]
+
+
+def _progress(
+    values,
+    *,
+    enabled: bool,
+    desc: str,
+    unit: str,
+):
+    if not enabled or tqdm is None:
+        return values
+    return tqdm(values, total=len(values), desc=desc, unit=unit, dynamic_ncols=True)

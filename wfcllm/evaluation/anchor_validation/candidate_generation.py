@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
+try:
+    from tqdm import tqdm
+except ImportError:  # pragma: no cover - tqdm is in requirements, fallback for minimal envs.
+    tqdm = None  # type: ignore[assignment]
+
 from wfcllm.evaluation.anchor_validation.pool_builder import (
     _ast_path,
     _context_parts,
@@ -100,14 +105,28 @@ def generate_candidate_rows(
     temperatures: tuple[float, ...] = (0.2, 0.4, 0.7),
     candidates_per_temperature: int = 16,
     max_contexts_per_source: int | None = None,
+    show_progress: bool = False,
 ) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
-    for source in sources:
+    source_iterable = _progress(
+        sources,
+        enabled=show_progress,
+        desc="Generating anchor candidate sources",
+        unit="source",
+    )
+    for source in source_iterable:
         contexts = extract_generation_contexts(
             source,
             max_contexts=max_contexts_per_source,
         )
-        for context in contexts:
+        context_iterable = _progress(
+            contexts,
+            enabled=show_progress,
+            desc="Generating anchor block candidates",
+            unit="context",
+            leave=False,
+        )
+        for context in context_iterable:
             completion_prompt = build_block_completion_prompt(context)
             for temperature in temperatures:
                 for sample_index in range(candidates_per_temperature):
@@ -242,3 +261,23 @@ def _infer_target_indent(context: BlockGenerationContext) -> str:
                 if inferred:
                     return inferred
     return ""
+
+
+def _progress(
+    values,
+    *,
+    enabled: bool,
+    desc: str,
+    unit: str,
+    leave: bool = True,
+):
+    if not enabled or tqdm is None:
+        return values
+    return tqdm(
+        values,
+        total=len(values),
+        desc=desc,
+        unit=unit,
+        dynamic_ncols=True,
+        leave=leave,
+    )
