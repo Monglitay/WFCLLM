@@ -43,7 +43,7 @@ def mask_code_skeleton(source: str) -> str:
                 continue
             else:
                 tokens.append(token_text)
-    except tokenize.TokenError:
+    except (IndentationError, tokenize.TokenError):
         return source.strip()
     return " ".join(tokens).replace("( ", "(").replace(" )", ")").strip()
 

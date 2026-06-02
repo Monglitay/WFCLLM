@@ -33,6 +33,12 @@ def test_mask_code_skeleton_masks_identifiers_and_literals():
     assert mask_code_skeleton("total = x + 42") == "<NAME> = <NAME> + <NUMBER>"
 
 
+def test_mask_code_skeleton_falls_back_on_indentation_errors():
+    source = "if x:\n    y = 1\n  z = 2\n"
+
+    assert mask_code_skeleton(source) == source.strip()
+
+
 def test_slot_context_anchor_is_prompt_free_and_does_not_include_secret_key():
     text = build_anchor_text(
         AnchorMethod.SLOT_CONTEXT,
