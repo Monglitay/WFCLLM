@@ -75,5 +75,28 @@ def test_generate_candidate_rows_filters_invalid_and_preserves_indentation():
     assert rows[0]["parse_valid"] is True
 
 
+def test_generate_candidate_rows_filters_empty_candidates():
+    source = GenerationContextSource(
+        dataset="humaneval",
+        task_id="HumanEval/0",
+        prompt="def f(x):\n",
+        source_code="def f(x):\n    y = x + 1\n    return y\n",
+    )
+
+    def sampler(prompt: str, temperature: float, sample_index: int) -> str:
+        return "\n\n" if sample_index == 0 else "y = 1 + x"
+
+    rows = generate_candidate_rows(
+        sources=(source,),
+        sampler=sampler,
+        temperatures=(0.2,),
+        candidates_per_temperature=2,
+        max_contexts_per_source=1,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["block_text"].strip()
+
+
 def test_first_nonempty_line_skips_leading_blank_generation():
     assert _first_nonempty_line("\n\nreturn x\nreturn y") == "return x"

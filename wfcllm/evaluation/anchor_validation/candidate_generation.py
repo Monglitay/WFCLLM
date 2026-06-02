@@ -117,6 +117,8 @@ def generate_candidate_rows(
                         sample_index,
                     ).strip("\n")
                     candidate = indent_candidate_block(context, raw_candidate)
+                    if not candidate.strip():
+                        continue
                     full_code = replace_target_block(context, candidate)
                     syntax_valid, parse_valid = _candidate_is_parseable(full_code)
                     if not syntax_valid or not parse_valid:
