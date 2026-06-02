@@ -13,6 +13,9 @@ def _metric(
     key_id: str | None = None,
     gamma_deviation: float | None = None,
     projection_key_id: str = "proj-00",
+    node_type: str | None = "return_statement",
+    candidate_count: int = 16,
+    block_ordinal: int | None = 0,
 ):
     return RegionMetricRow(
         context_id=context_id,
@@ -22,13 +25,15 @@ def _metric(
         projection_key_id=projection_key_id,
         key_id=key_id,
         gamma=0.5 if key_id else None,
-        candidate_count=16,
+        candidate_count=candidate_count,
         normalized_entropy=entropy,
         collapse_ratio=1.0 - entropy,
         effective_region_count=2.0,
         hamming_diversity=0.5,
+        node_type=node_type,
         valid_hit_rate=0.5 if key_id else None,
         gamma_deviation=gamma_deviation,
+        block_ordinal=block_ordinal,
     )
 
 
@@ -221,3 +226,77 @@ def test_summary_reports_method_oracle_agreement_and_gamma_calibration():
     evidence = summary["go_no_go"]["evidence"]
     assert evidence["method_oracle_agreement"]["role_aware_slot_context"]["agreement_rate"] == pytest.approx(0.25)
     assert evidence["gamma_calibration"]["role_aware_slot_context"]["mean_delta"] == pytest.approx(0.2)
+
+
+def test_summary_reports_random_gap_for_codet5_methods():
+    metrics = [
+        _metric("ctx1", "vanilla", 0.20),
+        _metric("ctx1", "random", 0.30),
+        _metric("ctx1", "codet5_masked_code", 0.45),
+        _metric("ctx1", "context_centroid_oracle", 0.55),
+        _metric("ctx1", "seqmark_oracle", 0.60),
+        _metric(
+            "ctx1",
+            "candidate_centroid_oracle",
+            0.58,
+            key_id="key-00",
+            gamma_deviation=0.10,
+        ),
+    ]
+
+    summary = build_anchor_validation_summary(
+        metrics,
+        [],
+        context_count=1,
+        methods=(
+            "vanilla",
+            "random",
+            "codet5_masked_code",
+            "context_centroid_oracle",
+            "seqmark_oracle",
+            "candidate_centroid_oracle",
+        ),
+    )
+
+    random_gap = summary["go_no_go"]["evidence"]["random_anchor_gap"]
+    assert random_gap["codet5_masked_code_minus_random"]["mean"] == pytest.approx(0.15)
+    assert "vanilla_minus_random" not in random_gap
+    assert "seqmark_oracle_minus_random" not in random_gap
+    assert "candidate_centroid_oracle_minus_random" not in random_gap
+    assert "context_centroid_oracle_minus_random" not in random_gap
+
+
+def test_summary_reports_stratified_anchor_diagnostics():
+    metrics = [
+        _metric("ctx0", "vanilla", 0.10, candidate_count=2, block_ordinal=0),
+        _metric("ctx0", "slot_context", 0.25, candidate_count=2, block_ordinal=0),
+        _metric("ctx0", "seqmark_oracle", 0.45, candidate_count=2, block_ordinal=0),
+        _metric("ctx1", "vanilla", 0.20, candidate_count=4, block_ordinal=0),
+        _metric("ctx1", "slot_context", 0.40, candidate_count=4, block_ordinal=0),
+        _metric("ctx1", "seqmark_oracle", 0.60, candidate_count=4, block_ordinal=0),
+        _metric("ctx1", "slot_context", 0.40, key_id="key-00", gamma_deviation=0.10),
+        _metric("ctx2", "vanilla", 0.50, candidate_count=25, block_ordinal=12),
+        _metric("ctx2", "slot_context", 0.30, candidate_count=25, block_ordinal=12),
+        _metric("ctx2", "seqmark_oracle", 0.70, candidate_count=25, block_ordinal=12),
+        _metric("ctx2", "slot_context", 0.30, key_id="key-00", gamma_deviation=0.20),
+    ]
+
+    summary = build_anchor_validation_summary(
+        metrics,
+        [],
+        context_count=2,
+        methods=("vanilla", "slot_context", "seqmark_oracle"),
+    )
+
+    diagnostics = summary["anchor_diagnostics"]
+    assert diagnostics["by_method"]["slot_context"]["mean_entropy"] == pytest.approx(0.3166667)
+    assert diagnostics["by_node_type"]["return_statement"]["slot_context"] == pytest.approx(0.3166667)
+    assert diagnostics["by_candidate_count_bucket"]["1-3"]["slot_context"] == pytest.approx(0.25)
+    assert diagnostics["by_candidate_count_bucket"]["4-8"]["slot_context"] == pytest.approx(0.40)
+    assert diagnostics["by_candidate_count_bucket"]["25+"]["slot_context"] == pytest.approx(0.30)
+    assert diagnostics["by_block_ordinal_bucket"]["0-3"]["slot_context"] == pytest.approx(0.325)
+    assert diagnostics["by_block_ordinal_bucket"]["12+"]["slot_context"] == pytest.approx(0.30)
+    assert diagnostics["top_contexts"]["seqmark_oracle_minus_method_largest"][0]["context_id"] == "ctx2"
+    assert diagnostics["top_contexts"]["method_minus_vanilla_largest"][0]["context_id"] == "ctx1"
+    assert diagnostics["top_contexts"]["method_minus_vanilla_most_negative"][0]["context_id"] == "ctx2"
+    assert diagnostics["valid_hit_balance_by_gamma"]["slot_context"]["0.5"]["mean_delta_gamma"] == pytest.approx(0.15)

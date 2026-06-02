@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+
 from wfcllm.evaluation.anchor_validation.anchors import (
     build_anchor_text,
     infer_semantic_role,
@@ -31,6 +33,39 @@ def _context() -> CandidateContext:
         temperature=0.2,
         candidates=(CandidateBlock("c0", "return x + 1", 0),),
     )
+
+
+def _context_for_node(
+    node_type: str,
+    block_text: str,
+    *,
+    context_before: str = "from math import sqrt\n\ndef f(x):\n",
+    context_after: str = "    return x\n",
+    parent_node_type: str = "function_definition",
+    import_and_helper_signatures: tuple[str, ...] = ("from math import sqrt", "def helper(v):"),
+) -> CandidateContext:
+    return CandidateContext(
+        context_id=f"ctx-{node_type}",
+        dataset="humaneval",
+        task_id="HumanEval/1",
+        prompt="def f(x):\n",
+        function_signature="def f(x):",
+        ast_path=("function_definition", node_type),
+        node_type=node_type,
+        parent_node_type=parent_node_type,
+        block_ordinal=3,
+        context_hash="ctxhash-node",
+        temperature=0.2,
+        candidates=(CandidateBlock("c0", block_text, 0),),
+        context_before=context_before,
+        context_after=context_after,
+        masked_parent_context="def f(<NAME>):\n    <TARGET_BLOCK>",
+        import_and_helper_signatures=import_and_helper_signatures,
+    )
+
+
+def _assert_parseable_anchor(text: str) -> None:
+    ast.parse(text.replace("<extra_id_0>", "pass"))
 
 
 def test_mask_code_skeleton_masks_identifiers_and_literals():
@@ -108,3 +143,141 @@ def test_role_aware_skeleton_anchor_includes_masked_candidate_skeleton():
 
     assert "role=return final value" in text
     assert "skeleton=return <NAME> + <NUMBER>" in text
+
+
+def test_codet5_masked_code_anchor_is_code_like_deterministic_and_secret_free():
+    context = _context_for_node("return_statement", "return x + 1")
+
+    first = build_anchor_text(
+        AnchorMethod.CODET5_MASKED_CODE,
+        context,
+        context.candidates[0],
+        secret_key="do-not-leak",
+    )
+    second = build_anchor_text(AnchorMethod.CODET5_MASKED_CODE, context, context.candidates[0])
+
+    assert first == second
+    assert "do-not-leak" not in first
+    assert "from math import sqrt" in first
+    assert "def helper(v):" in first
+    assert "def f(x):" in first
+    assert "<extra_id_0>" in first
+    assert "return x + 1" not in first
+    assert "Fill" not in first
+    assert first.count("from math import sqrt") == 1
+    assert first.count("def f(x):") == 1
+    assert "def helper(v):\ndef f(x):" not in first
+    _assert_parseable_anchor(first)
+
+
+def test_codet5_valid_skeleton_anchor_handles_statement_node_types_without_secret_leakage():
+    cases = [
+        ("expression_statement", "total += x", "_ = None"),
+        ("return_statement", "return x", "return None"),
+        ("import_from_statement", "from math import sqrt", "from math import sqrt"),
+    ]
+
+    for node_type, block_text, expected in cases:
+        context = _context_for_node(node_type, block_text)
+        text = build_anchor_text(
+            AnchorMethod.CODET5_VALID_SKELETON,
+            context,
+            context.candidates[0],
+            secret_key="do-not-leak",
+        )
+
+        assert "do-not-leak" not in text
+        assert expected in text
+        assert "<extra_id_0>" not in text
+        assert text.count("from math import sqrt") == 1
+        assert text.count("def f(x):") == 1
+        assert "def helper(v):\ndef f(x):" not in text
+        _assert_parseable_anchor(text)
+
+
+def test_codet5_comment_anchor_keeps_code_adjacent_compact_metadata():
+    context = _context_for_node("return_statement", "return x")
+    text = build_anchor_text(
+        AnchorMethod.CODET5_COMMENT_ANCHOR,
+        context,
+        context.candidates[0],
+        secret_key="do-not-leak",
+    )
+
+    assert "do-not-leak" not in text
+    assert "# wfcllm role=return" in text
+    assert "slot=3" in text
+    assert "ctx=ctxhash-node" in text
+    assert "return None" in text
+    assert text.index("# wfcllm") < text.index("return None")
+    assert text.count("from math import sqrt") == 1
+    assert text.count("def f(x):") == 1
+    assert "def helper(v):\ndef f(x):" not in text
+    _assert_parseable_anchor(text)
+
+
+def test_codet5_identifier_anchor_uses_identifier_shaped_tokens_for_metadata():
+    context = _context_for_node("return_statement", "return x")
+    text = build_anchor_text(
+        AnchorMethod.CODET5_IDENTIFIER_ANCHOR,
+        context,
+        context.candidates[0],
+        secret_key="do-not-leak",
+    )
+
+    assert "do-not-leak" not in text
+    assert "_wfcllm_slot_return_3 = None" in text
+    assert "_wfcllm_ctx_ctxhash_node = None" in text
+    assert "return None" in text
+    assert text.count("from math import sqrt") == 1
+    assert text.count("def f(x):") == 1
+    assert "def helper(v):\ndef f(x):" not in text
+    _assert_parseable_anchor(text)
+
+
+def test_codet5_valid_skeleton_preserves_relative_import_from_shape():
+    cases = [
+        ("from .utils import helper", "from .utils import helper"),
+        ("from ..pkg import name", "from ..pkg import name"),
+        ("from . import helper", "from . import helper"),
+        ("from .. import name", "from .. import name"),
+    ]
+
+    for block_text, expected in cases:
+        context = _context_for_node(
+            "import_from_statement",
+            block_text,
+            context_before="",
+            context_after="",
+            parent_node_type="module",
+        )
+        text = build_anchor_text(
+            AnchorMethod.CODET5_VALID_SKELETON,
+            context,
+            context.candidates[0],
+        )
+
+        assert expected in text
+
+
+def test_codet5_anchors_do_not_prefix_orphan_pass_when_function_context_exists():
+    context = _context_for_node(
+        "return_statement",
+        "return x",
+        context_before="def f(x):\n",
+        context_after="",
+        import_and_helper_signatures=(),
+    )
+    methods_and_markers = [
+        (AnchorMethod.CODET5_MASKED_CODE, "<extra_id_0>"),
+        (AnchorMethod.CODET5_VALID_SKELETON, "return None"),
+        (AnchorMethod.CODET5_COMMENT_ANCHOR, "# wfcllm"),
+        (AnchorMethod.CODET5_IDENTIFIER_ANCHOR, "_wfcllm_slot_return_3 = None"),
+    ]
+
+    for method, marker in methods_and_markers:
+        text = build_anchor_text(method, context, context.candidates[0])
+
+        assert not text.startswith("pass\n")
+        assert text.index("def f(x):") < text.index(marker)
+        _assert_parseable_anchor(text)

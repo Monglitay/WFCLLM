@@ -65,6 +65,7 @@ def summarize_signature_metrics(
     gamma: float | None,
     valid_set: frozenset[tuple[int, ...]] | None,
     node_type: str | None = None,
+    block_ordinal: int | None = None,
 ) -> RegionMetricRow:
     normalized_entropy = normalized_region_entropy(signatures, region_count)
     balance = (
@@ -88,6 +89,7 @@ def summarize_signature_metrics(
         node_type=node_type,
         valid_hit_rate=balance.hit_rate if balance else None,
         gamma_deviation=balance.gamma_deviation if balance else None,
+        block_ordinal=block_ordinal,
     )
 
 

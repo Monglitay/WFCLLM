@@ -12,6 +12,15 @@ from wfcllm.evaluation.anchor_validation.schema import (
     SelectionSimulationRow,
 )
 
+_GAMMA_SCOPED_METHODS = {"candidate_centroid_oracle"}
+_RANDOM_GAP_EXCLUDED_METHODS = {
+    "vanilla",
+    "random",
+    "seqmark_oracle",
+    "candidate_centroid_oracle",
+    "context_centroid_oracle",
+}
+
 
 def build_anchor_validation_summary(
     metrics_rows: list[RegionMetricRow],
@@ -23,6 +32,7 @@ def build_anchor_validation_summary(
     method_oracle_agreement: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     oracle_gap = _oracle_gap(metrics_rows)
+    anchor_diagnostics = build_anchor_diagnostics(metrics_rows)
     evidence = {
         "paired_entropy_delta": _paired_entropy_delta(metrics_rows, baseline="vanilla"),
         "random_anchor_gap": _random_anchor_gap(metrics_rows),
@@ -54,6 +64,7 @@ def build_anchor_validation_summary(
             },
             "pool_quality": pool_quality or {},
         },
+        "anchor_diagnostics": anchor_diagnostics,
         "go_no_go": {
             "first_stage_passed": first_stage_passed,
             "end_to_end_followup_allowed": first_stage_passed,
@@ -63,8 +74,29 @@ def build_anchor_validation_summary(
     }
 
 
+def build_anchor_diagnostics(rows: list[RegionMetricRow]) -> dict[str, Any]:
+    return {
+        "by_method": _diagnostics_by_method(rows),
+        "by_node_type": _node_type_summary(rows),
+        "by_candidate_count_bucket": _bucketed_entropy(
+            rows,
+            lambda row: _candidate_count_bucket(row.candidate_count),
+        ),
+        "by_block_ordinal_bucket": _bucketed_entropy(
+            rows,
+            lambda row: _block_ordinal_bucket(row.block_ordinal),
+        ),
+        "top_contexts": _top_context_deltas(rows),
+        "valid_hit_balance_by_gamma": _valid_hit_balance_by_gamma(rows),
+    }
+
+
 def _unkeyed(rows: list[RegionMetricRow]) -> list[RegionMetricRow]:
-    return [row for row in rows if row.key_id is None]
+    return [
+        row
+        for row in rows
+        if row.key_id is None and row.method not in _GAMMA_SCOPED_METHODS
+    ]
 
 
 def _mean(values: list[float]) -> float:
@@ -76,6 +108,26 @@ def _mean_entropy_by_method(rows: list[RegionMetricRow]) -> dict[str, float]:
     for row in _unkeyed(rows):
         grouped[row.method].append(row.normalized_entropy)
     return {method: _mean(values) for method, values in sorted(grouped.items())}
+
+
+def _diagnostics_by_method(rows: list[RegionMetricRow]) -> dict[str, dict[str, float]]:
+    grouped: dict[str, list[RegionMetricRow]] = defaultdict(list)
+    for row in _unkeyed(rows):
+        grouped[row.method].append(row)
+    return {
+        method: {
+            "context_count": float(len({row.context_id for row in method_rows})),
+            "mean_entropy": _mean([row.normalized_entropy for row in method_rows]),
+            "mean_collapse_ratio": _mean([row.collapse_ratio for row in method_rows]),
+            "mean_effective_region_count": _mean(
+                [row.effective_region_count for row in method_rows]
+            ),
+            "mean_hamming_diversity": _mean(
+                [row.hamming_diversity for row in method_rows]
+            ),
+        }
+        for method, method_rows in sorted(grouped.items())
+    }
 
 
 def _context_method_means(rows: list[RegionMetricRow]) -> dict[tuple[str, str], float]:
@@ -114,7 +166,7 @@ def _random_anchor_gap(rows: list[RegionMetricRow]) -> dict[str, dict[str, float
     return {
         key.replace("_vs_random", "_minus_random"): value
         for key, value in paired.items()
-        if key.startswith(("slot", "context", "skeleton", "prompt", "role_aware"))
+        if key.removesuffix("_vs_random") not in _RANDOM_GAP_EXCLUDED_METHODS
     }
 
 
@@ -259,6 +311,121 @@ def _node_type_summary(rows: list[RegionMetricRow]) -> dict[str, dict[str, float
         node_type: _mean_entropy_by_method(node_rows)
         for node_type, node_rows in sorted(grouped.items())
     }
+
+
+def _bucketed_entropy(
+    rows: list[RegionMetricRow],
+    bucket_fn,
+) -> dict[str, dict[str, float]]:
+    grouped: dict[str, list[RegionMetricRow]] = defaultdict(list)
+    for row in _unkeyed(rows):
+        bucket = bucket_fn(row)
+        if bucket is not None:
+            grouped[bucket].append(row)
+    return {
+        bucket: _mean_entropy_by_method(bucket_rows)
+        for bucket, bucket_rows in sorted(grouped.items())
+    }
+
+
+def _candidate_count_bucket(candidate_count: int) -> str:
+    if candidate_count <= 3:
+        return "1-3"
+    if candidate_count <= 8:
+        return "4-8"
+    if candidate_count <= 16:
+        return "9-16"
+    if candidate_count <= 24:
+        return "17-24"
+    return "25+"
+
+
+def _block_ordinal_bucket(block_ordinal: int | None) -> str | None:
+    if block_ordinal is None:
+        return None
+    if block_ordinal <= 3:
+        return "0-3"
+    if block_ordinal <= 7:
+        return "4-7"
+    if block_ordinal <= 11:
+        return "8-11"
+    return "12+"
+
+
+def _top_context_deltas(rows: list[RegionMetricRow]) -> dict[str, list[dict[str, Any]]]:
+    by_context = _context_method_means(rows)
+    contexts = sorted({row.context_id for row in _unkeyed(rows)})
+    methods = sorted({row.method for row in _unkeyed(rows)} - {"vanilla", "seqmark_oracle"})
+    oracle_minus_method: list[dict[str, Any]] = []
+    method_minus_vanilla: list[dict[str, Any]] = []
+    for context_id in contexts:
+        vanilla = by_context.get((context_id, "vanilla"))
+        oracle = by_context.get((context_id, "seqmark_oracle"))
+        for method in methods:
+            current = by_context.get((context_id, method))
+            if current is None:
+                continue
+            if oracle is not None:
+                oracle_minus_method.append(
+                    {
+                        "context_id": context_id,
+                        "method": method,
+                        "delta": oracle - current,
+                    }
+                )
+            if vanilla is not None:
+                method_minus_vanilla.append(
+                    {
+                        "context_id": context_id,
+                        "method": method,
+                        "delta": current - vanilla,
+                    }
+                )
+    return {
+        "seqmark_oracle_minus_method_largest": sorted(
+            oracle_minus_method,
+            key=lambda item: item["delta"],
+            reverse=True,
+        )[:10],
+        "method_minus_vanilla_largest": sorted(
+            method_minus_vanilla,
+            key=lambda item: item["delta"],
+            reverse=True,
+        )[:10],
+        "method_minus_vanilla_most_negative": sorted(
+            method_minus_vanilla,
+            key=lambda item: item["delta"],
+        )[:10],
+    }
+
+
+def _valid_hit_balance_by_gamma(
+    rows: list[RegionMetricRow],
+) -> dict[str, dict[str, dict[str, float]]]:
+    grouped: dict[tuple[str, str], list[RegionMetricRow]] = defaultdict(list)
+    for row in rows:
+        if row.key_id is None or row.gamma is None:
+            continue
+        grouped[(row.method, f"{row.gamma:g}")].append(row)
+    result: dict[str, dict[str, dict[str, float]]] = defaultdict(dict)
+    for (method, gamma), gamma_rows in sorted(grouped.items()):
+        hit_rates = [
+            row.valid_hit_rate
+            for row in gamma_rows
+            if row.valid_hit_rate is not None
+        ]
+        deltas = [
+            row.gamma_deviation
+            for row in gamma_rows
+            if row.gamma_deviation is not None
+        ]
+        result[method][gamma] = {
+            "row_count": float(len(gamma_rows)),
+            "mean_valid_hit_rate": _mean([float(value) for value in hit_rates]),
+            "mean_delta_gamma": _mean([float(value) for value in deltas]),
+            "max_delta_gamma": max(deltas) if deltas else 0.0,
+        }
+    return {method: values for method, values in sorted(result.items())}
 
 
 def _passes_first_stage(evidence: dict[str, Any]) -> bool:

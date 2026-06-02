@@ -21,6 +21,12 @@ class AnchorMethod(StrEnum):
     ROLE_AWARE_SLOT_CONTEXT_SKELETON = "role_aware_slot_context_skeleton"
     PROMPT_AWARE = "prompt_aware"
     SEQMARK_ORACLE = "seqmark_oracle"
+    CANDIDATE_CENTROID_ORACLE = "candidate_centroid_oracle"
+    CONTEXT_CENTROID_ORACLE = "context_centroid_oracle"
+    CODET5_MASKED_CODE = "codet5_masked_code"
+    CODET5_VALID_SKELETON = "codet5_valid_skeleton"
+    CODET5_COMMENT_ANCHOR = "codet5_comment_anchor"
+    CODET5_IDENTIFIER_ANCHOR = "codet5_identifier_anchor"
 
 
 @dataclass(frozen=True)
@@ -73,6 +79,7 @@ class RegionMetricRow:
     node_type: str | None = None
     valid_hit_rate: float | None = None
     gamma_deviation: float | None = None
+    block_ordinal: int | None = None
 
 
 @dataclass(frozen=True)

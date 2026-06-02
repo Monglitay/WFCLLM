@@ -141,6 +141,8 @@ def _cmd_run_diagnostics(args: argparse.Namespace) -> int:
     print(f"[anchor-validation] metrics: {result.metrics_path}")
     print(f"[anchor-validation] selection: {result.selection_path}")
     print(f"[anchor-validation] summary: {result.summary_path}")
+    print(f"[anchor-validation] anchor text debug: {result.anchor_text_debug_path}")
+    print(f"[anchor-validation] anchor diagnostics: {result.anchor_diagnostics_path}")
     return 0
 
 
