@@ -16,6 +16,10 @@ from wfcllm.evaluation.anchor_validation.embedding import (
 )
 from wfcllm.evaluation.anchor_validation.io import load_candidate_contexts, write_jsonl
 from wfcllm.evaluation.anchor_validation.metrics import summarize_signature_metrics
+from wfcllm.evaluation.anchor_validation.pool_diagnostics import (
+    build_pool_quality_summary,
+    enrich_pool_quality_with_embedding_diversity,
+)
 from wfcllm.evaluation.anchor_validation.schema import AnchorMethod
 from wfcllm.evaluation.anchor_validation.selection import simulate_retry_selection
 from wfcllm.evaluation.anchor_validation.summary import build_anchor_validation_summary
@@ -64,12 +68,19 @@ class AnchorValidationRunner:
         provider = _build_embedding_provider(self._config)
         metrics_rows = []
         selection_rows = []
+        empirical_gamma_rows: list[dict] = []
+        agreement_counts: dict[str, list[bool]] = {}
+        embeddings_by_context: dict[str, list[tuple[str, tuple[float, ...]]]] = {}
 
         for context in contexts:
             block_embeddings = {
                 candidate.candidate_id: provider.embed(candidate.block_text)
                 for candidate in context.candidates
             }
+            embeddings_by_context[context.context_id] = [
+                (candidate_id, tuple(float(value) for value in embedding.tolist()))
+                for candidate_id, embedding in block_embeddings.items()
+            ]
             oracle_anchor = _mean_embedding(tuple(block_embeddings.values()))
             for method_name in self._config.methods:
                 method = AnchorMethod(method_name)
@@ -89,6 +100,20 @@ class AnchorValidationRunner:
                         secret_key=secret_key,
                         oracle_anchor=oracle_anchor,
                     )
+                    if method != AnchorMethod.SEQMARK_ORACLE:
+                        oracle_signatures = _signatures_for_method(
+                            method=AnchorMethod.SEQMARK_ORACLE,
+                            context=context,
+                            block_embeddings=block_embeddings,
+                            provider=provider,
+                            planes=lsh.planes,
+                            secret_key=secret_key,
+                            oracle_anchor=oracle_anchor,
+                        )
+                        agreement_counts.setdefault(method.value, []).append(
+                            _top_candidate_signature(signatures, context)
+                            == _top_candidate_signature(oracle_signatures, context)
+                        )
                     signature_list = [
                         signatures[candidate.candidate_id]
                         for candidate in context.candidates
@@ -122,20 +147,29 @@ class AnchorValidationRunner:
                             k=gamma_resolution.k,
                             ordinal=ordinal,
                         )
-                        metrics_rows.append(
-                            summarize_signature_metrics(
-                                context_id=context.context_id,
-                                dataset=context.dataset,
-                                task_id=context.task_id,
-                                method=method.value,
-                                signatures=signature_list,
-                                region_count=region_count,
-                                projection_key_id=key_id,
-                                key_id=key_id,
-                                gamma=gamma_resolution.gamma_effective,
-                                valid_set=valid_set,
-                                node_type=context.node_type,
-                            )
+                        balance_row = summarize_signature_metrics(
+                            context_id=context.context_id,
+                            dataset=context.dataset,
+                            task_id=context.task_id,
+                            method=method.value,
+                            signatures=signature_list,
+                            region_count=region_count,
+                            projection_key_id=key_id,
+                            key_id=key_id,
+                            gamma=gamma_resolution.gamma_effective,
+                            valid_set=valid_set,
+                            node_type=context.node_type,
+                        )
+                        metrics_rows.append(balance_row)
+                        empirical_gamma_rows.append(
+                            {
+                                "context_id": context.context_id,
+                                "method": method.value,
+                                "key_id": key_id,
+                                "target_gamma": gamma_resolution.gamma_effective,
+                                "empirical_gamma": balance_row.valid_hit_rate,
+                                "delta": balance_row.gamma_deviation,
+                            }
                         )
                         for budget in self._config.retry_budgets:
                             selection_rows.append(
@@ -160,11 +194,25 @@ class AnchorValidationRunner:
             self._config.output_dir / "selection_simulation.jsonl",
             selection_rows,
         )
+        pool_quality = enrich_pool_quality_with_embedding_diversity(
+            build_pool_quality_summary(contexts),
+            embeddings_by_context,
+        )
         summary_payload = build_anchor_validation_summary(
             metrics_rows,
             selection_rows,
             context_count=len(contexts),
             methods=tuple(self._config.methods),
+            pool_quality=pool_quality,
+            empirical_gamma_rows=empirical_gamma_rows,
+            method_oracle_agreement={
+                method: {
+                    "proxy": "top_rank_candidate_signature_match",
+                    "agreement_rate": _mean_bool(values),
+                    "comparison_count": len(values),
+                }
+                for method, values in sorted(agreement_counts.items())
+            },
         )
         summary_payload["meta"].update(
             {
@@ -218,6 +266,20 @@ def _mean_embedding(values: tuple[torch.Tensor, ...]) -> torch.Tensor:
     if not values:
         raise ValueError("at least one candidate embedding is required")
     return torch.stack(values).mean(dim=0)
+
+
+def _top_candidate_signature(
+    signatures: dict[str, tuple[int, ...]],
+    context,
+) -> tuple[int, ...]:
+    top_candidate = min(context.candidates, key=lambda candidate: candidate.rank)
+    return signatures[top_candidate.candidate_id]
+
+
+def _mean_bool(values: list[bool]) -> float:
+    if not values:
+        return 0.0
+    return sum(1.0 if value else 0.0 for value in values) / len(values)
 
 
 def _signatures_for_method(

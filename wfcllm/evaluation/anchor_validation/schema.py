@@ -17,6 +17,8 @@ class AnchorMethod(StrEnum):
     SKELETON = "skeleton"
     SLOT_CONTEXT = "slot_context"
     SLOT_CONTEXT_SKELETON = "slot_context_skeleton"
+    ROLE_AWARE_SLOT_CONTEXT = "role_aware_slot_context"
+    ROLE_AWARE_SLOT_CONTEXT_SKELETON = "role_aware_slot_context_skeleton"
     PROMPT_AWARE = "prompt_aware"
     SEQMARK_ORACLE = "seqmark_oracle"
 

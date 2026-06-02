@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from wfcllm.evaluation.anchor_validation.anchors import build_anchor_text, mask_code_skeleton
+from wfcllm.evaluation.anchor_validation.anchors import (
+    build_anchor_text,
+    infer_semantic_role,
+    mask_code_skeleton,
+)
 from wfcllm.evaluation.anchor_validation.schema import (
     AnchorMethod,
     CandidateBlock,
@@ -67,3 +71,40 @@ def test_context_anchor_uses_surrounding_context_not_only_signature():
 
     assert context != slot
     assert "<TARGET_BLOCK>" in context
+
+
+def test_infer_semantic_role_from_node_type_and_block_text():
+    assert infer_semantic_role("return total", "return_statement", "function_definition") == "return final value"
+    assert infer_semantic_role("if n <= 1:", "if_statement", "function_definition") == "branch condition / guard"
+    assert infer_semantic_role("total += item", "expression_statement", "for_statement") == "accumulator update"
+    assert infer_semantic_role("items.append(x)", "expression_statement", "for_statement") == "function call side effect"
+    assert infer_semantic_role("import math", "import_statement", "module") == "import/dependency"
+    assert infer_semantic_role("assert value >= 0", "assert_statement", "function_definition") == "assertion/invariant check"
+    assert infer_semantic_role("raise ValueError('bad')", "raise_statement", "except_clause") == "exception/error handling"
+
+
+def test_role_aware_anchor_includes_role_and_structural_context_without_raw_candidate():
+    text = build_anchor_text(
+        AnchorMethod.ROLE_AWARE_SLOT_CONTEXT,
+        _context(),
+        _context().candidates[0],
+        secret_key="do-not-leak",
+    )
+
+    assert "do-not-leak" not in text
+    assert "role=return final value" in text
+    assert "signature=def f(x):" in text
+    assert "ast_path=function_definition/return_statement" in text
+    assert "masked_parent=def f(<NAME>):" in text
+    assert "return x + 1" not in text
+
+
+def test_role_aware_skeleton_anchor_includes_masked_candidate_skeleton():
+    text = build_anchor_text(
+        AnchorMethod.ROLE_AWARE_SLOT_CONTEXT_SKELETON,
+        _context(),
+        _context().candidates[0],
+    )
+
+    assert "role=return final value" in text
+    assert "skeleton=return <NAME> + <NUMBER>" in text

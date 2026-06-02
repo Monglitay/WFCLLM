@@ -29,6 +29,17 @@ from wfcllm.evaluation.anchor_validation.runner import (  # noqa: E402
     AnchorValidationRunner,
 )
 
+DEFAULT_MAIN_METHODS = (
+    "vanilla",
+    "random",
+    "context",
+    "slot_context",
+    "slot_context_skeleton",
+    "role_aware_slot_context",
+    "role_aware_slot_context_skeleton",
+    "seqmark_oracle",
+)
+
 
 def _cmd_generate_pool(args: argparse.Namespace) -> int:
     sources = _load_generation_sources(tuple(Path(path) for path in args.source_jsonl))
@@ -153,7 +164,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="derive valid sets from parent node type only; default uses block ordinal",
     )
-    run.add_argument("--methods", nargs="+", required=True)
+    run.add_argument("--methods", nargs="+", default=list(DEFAULT_MAIN_METHODS))
     run.add_argument("--gammas", nargs="+", default=["0.5"])
     run.add_argument("--retry-budgets", nargs="+", default=["1", "4", "8", "16"])
     run.set_defaults(func=_cmd_run_diagnostics)
