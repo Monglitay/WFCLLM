@@ -552,6 +552,8 @@ def _anchor_cache_candidate_id(method: AnchorMethod, candidate) -> str | None:
         AnchorMethod.ROLE_AWARE_SLOT_CONTEXT_SKELETON,
         AnchorMethod.CODET5_VALID_SKELETON,
         AnchorMethod.CODET5_COMMENT_ANCHOR,
+        AnchorMethod.CODET5_COMMENT_MINIMAL,
+        AnchorMethod.CODET5_COMMENT_CONTEXTUAL,
         AnchorMethod.CODET5_IDENTIFIER_ANCHOR,
     }:
         return candidate.candidate_id

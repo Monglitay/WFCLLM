@@ -28,6 +28,8 @@ _ACCUMULATOR_NAMES = {
 _CODET5_CANDIDATE_ANCHOR_METHODS = {
     AnchorMethod.CODET5_VALID_SKELETON,
     AnchorMethod.CODET5_COMMENT_ANCHOR,
+    AnchorMethod.CODET5_COMMENT_MINIMAL,
+    AnchorMethod.CODET5_COMMENT_CONTEXTUAL,
     AnchorMethod.CODET5_IDENTIFIER_ANCHOR,
 }
 
@@ -164,6 +166,46 @@ def _build_codet5_comment_anchor(
     ).strip()
 
 
+def _build_codet5_comment_minimal_anchor(
+    context: CandidateContext,
+    candidate: CandidateBlock,
+) -> str:
+    skeleton = _skeleton_for_node(context.node_type, candidate.block_text)
+    metadata = (
+        "# wfcllm: "
+        f"{_metadata_literal_token(context.node_type)} "
+        f"ordinal_{context.block_ordinal}"
+    )
+    return _format_code_lines(
+        [
+            *_context_prefix_lines(context),
+            _indent_like_context(context.context_before, metadata),
+            _indent_like_context(context.context_before, skeleton),
+        ]
+    ).strip()
+
+
+def _build_codet5_comment_contextual_anchor(
+    context: CandidateContext,
+    candidate: CandidateBlock,
+) -> str:
+    skeleton = _skeleton_for_node(context.node_type, candidate.block_text)
+    metadata = (
+        "# wfcllm: "
+        f"{_metadata_literal_token(context.node_type)} "
+        f"ordinal_{context.block_ordinal} "
+        f"parent_{_metadata_literal_token(context.parent_node_type)}"
+    )
+    return _format_code_lines(
+        [
+            *_context_prefix_lines(context),
+            _indent_like_context(context.context_before, metadata),
+            _indent_like_context(context.context_before, skeleton),
+            *_nonempty_lines((context.context_after,)),
+        ]
+    ).strip()
+
+
 def _build_codet5_identifier_anchor(
     context: CandidateContext,
     candidate: CandidateBlock,
@@ -217,6 +259,16 @@ def _import_from_skeleton(source: str) -> str:
 def _metadata_token(value: str) -> str:
     token = re.sub(r"_?statement$", "", value.lower())
     token = re.sub(r"[^0-9a-zA-Z_]+", "_", token)
+    token = re.sub(r"_+", "_", token).strip("_")
+    if not token:
+        return "unknown"
+    if token[0].isdigit():
+        return f"n_{token}"
+    return token
+
+
+def _metadata_literal_token(value: str) -> str:
+    token = re.sub(r"[^0-9a-zA-Z_]+", "_", value.lower())
     token = re.sub(r"_+", "_", token).strip("_")
     if not token:
         return "unknown"
@@ -338,6 +390,10 @@ def build_anchor_text(
         return _build_codet5_valid_skeleton_anchor(context, candidate)
     if method == AnchorMethod.CODET5_COMMENT_ANCHOR:
         return _build_codet5_comment_anchor(context, candidate)
+    if method == AnchorMethod.CODET5_COMMENT_MINIMAL:
+        return _build_codet5_comment_minimal_anchor(context, candidate)
+    if method == AnchorMethod.CODET5_COMMENT_CONTEXTUAL:
+        return _build_codet5_comment_contextual_anchor(context, candidate)
     if method == AnchorMethod.CODET5_IDENTIFIER_ANCHOR:
         return _build_codet5_identifier_anchor(context, candidate)
 

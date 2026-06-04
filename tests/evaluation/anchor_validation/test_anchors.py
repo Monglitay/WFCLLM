@@ -216,6 +216,68 @@ def test_codet5_comment_anchor_keeps_code_adjacent_compact_metadata():
     _assert_parseable_anchor(text)
 
 
+def test_codet5_comment_minimal_is_short_parseable_and_secret_free():
+    context = _context_for_node("return_statement", "return x + 1")
+    text = build_anchor_text(
+        AnchorMethod.CODET5_COMMENT_MINIMAL,
+        context,
+        context.candidates[0],
+        secret_key="do-not-leak",
+    )
+
+    assert "do-not-leak" not in text
+    assert "ctxhash" not in text
+    assert "return x + 1" not in text
+    assert "# wfcllm:" in text
+    assert "return_statement" in text
+    assert "ordinal_3" in text
+    assert "return None" in text
+    _assert_parseable_anchor(text)
+
+
+def test_codet5_comment_contextual_keeps_context_after_parseable():
+    context = _context_for_node(
+        "expression_statement",
+        "total += x",
+        context_before="def f(x):\n    total = 0\n",
+        context_after="    return total\n",
+    )
+    text = build_anchor_text(
+        AnchorMethod.CODET5_COMMENT_CONTEXTUAL,
+        context,
+        context.candidates[0],
+        secret_key="do-not-leak",
+    )
+
+    assert "do-not-leak" not in text
+    assert "total += x" not in text
+    assert "def f(x):" in text
+    assert "# wfcllm:" in text
+    assert "_ = None" in text
+    assert "return total" in text
+    assert text.index("# wfcllm:") < text.index("_ = None")
+    assert text.index("_ = None") < text.index("return total")
+    _assert_parseable_anchor(text)
+
+
+def test_new_codet5_comment_variants_handle_import_from_statement():
+    context = _context_for_node(
+        "import_from_statement",
+        "from .utils import helper",
+        context_before="",
+        context_after="",
+        parent_node_type="module",
+    )
+
+    for method in (
+        AnchorMethod.CODET5_COMMENT_MINIMAL,
+        AnchorMethod.CODET5_COMMENT_CONTEXTUAL,
+    ):
+        text = build_anchor_text(method, context, context.candidates[0])
+        assert "from .utils import helper" in text
+        _assert_parseable_anchor(text)
+
+
 def test_codet5_identifier_anchor_uses_identifier_shaped_tokens_for_metadata():
     context = _context_for_node("return_statement", "return x")
     text = build_anchor_text(
@@ -272,6 +334,8 @@ def test_codet5_anchors_do_not_prefix_orphan_pass_when_function_context_exists()
         (AnchorMethod.CODET5_MASKED_CODE, "<extra_id_0>"),
         (AnchorMethod.CODET5_VALID_SKELETON, "return None"),
         (AnchorMethod.CODET5_COMMENT_ANCHOR, "# wfcllm"),
+        (AnchorMethod.CODET5_COMMENT_MINIMAL, "# wfcllm:"),
+        (AnchorMethod.CODET5_COMMENT_CONTEXTUAL, "# wfcllm:"),
         (AnchorMethod.CODET5_IDENTIFIER_ANCHOR, "_wfcllm_slot_return_3 = None"),
     ]
 

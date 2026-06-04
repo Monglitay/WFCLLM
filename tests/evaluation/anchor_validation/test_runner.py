@@ -558,6 +558,71 @@ def test_runner_caches_context_only_anchor_embeddings(tmp_path, monkeypatch):
     assert provider.calls.count(anchor_text) == 1
 
 
+def test_runner_caches_new_codet5_comment_variants_per_candidate(tmp_path, monkeypatch):
+    pool_path = tmp_path / "candidate_pools.jsonl"
+    output_dir = tmp_path / "out"
+    write_candidate_contexts(
+        pool_path,
+        [
+            CandidateContext(
+                context_id="ctx",
+                dataset="humaneval",
+                task_id="HumanEval/0",
+                prompt="def f(x):\n",
+                function_signature="def f(x):",
+                ast_path=("function_definition", "return_statement"),
+                node_type="return_statement",
+                parent_node_type="function_definition",
+                block_ordinal=0,
+                context_hash="ctxhash",
+                context_before="def f(x):\n",
+                context_after="",
+                masked_parent_context="def f(x):\n    <TARGET_BLOCK>",
+                temperature=0.2,
+                candidates=(
+                    CandidateBlock("c0", "valid-a", 0),
+                    CandidateBlock("c1", "valid-b", 1),
+                    CandidateBlock("c2", "invalid-a", 2),
+                ),
+            )
+        ],
+    )
+    provider = _FixedProvider()
+    monkeypatch.setattr(runner_module, "_build_embedding_provider", lambda config: provider)
+    monkeypatch.setattr(runner_module, "LSHSpace", _FixedLSHSpace)
+
+    AnchorValidationRunner(
+        AnchorValidationConfig(
+            pool_path=pool_path,
+            output_dir=output_dir,
+            secret_keys=("secret-value",),
+            gammas=(0.5,),
+            methods=(
+                "vanilla",
+                "random",
+                "codet5_comment_minimal",
+                "codet5_comment_contextual",
+                "seqmark_oracle",
+            ),
+            retry_budgets=(1,),
+            primary_method="codet5_comment_minimal",
+            lsh_d=1,
+            embed_dim=2,
+            embedding_mode="hash",
+        )
+    ).run()
+
+    assert sum(
+        "# wfcllm: return_statement ordinal_0" in call
+        and "parent_function_definition" not in call
+        for call in provider.calls
+    ) == 3
+    assert sum(
+        "# wfcllm: return_statement ordinal_0 parent_function_definition" in call
+        for call in provider.calls
+    ) == 3
+
+
 def test_runner_can_show_context_progress_bar(tmp_path, monkeypatch):
     pool_path = tmp_path / "candidate_pools.jsonl"
     output_dir = tmp_path / "out"

@@ -78,6 +78,8 @@ def test_anchor_validation_cli_build_pool_and_run_diagnostics(tmp_path):
             "codet5_masked_code",
             "codet5_valid_skeleton",
             "codet5_comment_anchor",
+            "codet5_comment_minimal",
+            "codet5_comment_contextual",
             "codet5_identifier_anchor",
             "candidate_centroid_oracle",
             "context_centroid_oracle",

@@ -26,6 +26,8 @@ class AnchorMethod(StrEnum):
     CODET5_MASKED_CODE = "codet5_masked_code"
     CODET5_VALID_SKELETON = "codet5_valid_skeleton"
     CODET5_COMMENT_ANCHOR = "codet5_comment_anchor"
+    CODET5_COMMENT_MINIMAL = "codet5_comment_minimal"
+    CODET5_COMMENT_CONTEXTUAL = "codet5_comment_contextual"
     CODET5_IDENTIFIER_ANCHOR = "codet5_identifier_anchor"
 
 
