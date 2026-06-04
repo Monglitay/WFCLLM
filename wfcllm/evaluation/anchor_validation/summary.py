@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from math import ceil
 from statistics import variance
 from typing import Any
 
@@ -100,6 +101,7 @@ def build_anchor_diagnostics(rows: list[RegionMetricRow]) -> dict[str, Any]:
         ),
         "top_contexts": _top_context_deltas(rows),
         "valid_hit_balance_by_gamma": _valid_hit_balance_by_gamma(rows),
+        "balance_skew": _balance_skew(rows),
     }
 
 
@@ -462,6 +464,106 @@ def _valid_hit_balance_by_gamma(
             "max_delta_gamma": max(deltas) if deltas else 0.0,
         }
     return {method: values for method, values in sorted(result.items())}
+
+
+def _balance_skew(rows: list[RegionMetricRow]) -> dict[str, Any]:
+    keyed_rows = [
+        row
+        for row in rows
+        if row.key_id is not None
+        and row.gamma is not None
+        and row.valid_hit_rate is not None
+    ]
+    detail_rows = [_balance_skew_detail(row) for row in keyed_rows]
+    return {
+        "by_method": _balance_skew_group(detail_rows, lambda row: row["method"]),
+        "by_gamma": _balance_skew_group(
+            detail_rows,
+            lambda row: f"{row['target_gamma']:g}",
+        ),
+        "by_key_id": _balance_skew_group(detail_rows, lambda row: row["key_id"]),
+        "by_node_type": _balance_skew_group(
+            detail_rows,
+            lambda row: row.get("node_type") or "unknown",
+        ),
+        "by_block_ordinal_bucket": _balance_skew_group(
+            detail_rows,
+            lambda row: _block_ordinal_bucket(row.get("block_ordinal")) or "unknown",
+        ),
+        "by_candidate_count_bucket": _balance_skew_group(
+            detail_rows,
+            lambda row: _candidate_count_bucket(int(row["candidate_count"])),
+        ),
+        "top_extreme_contexts": sorted(
+            detail_rows,
+            key=lambda row: row["abs_gamma_delta"],
+            reverse=True,
+        )[:10],
+    }
+
+
+def _balance_skew_detail(row: RegionMetricRow) -> dict[str, Any]:
+    valid_hit_rate = float(row.valid_hit_rate or 0.0)
+    gamma = float(row.gamma or 0.0)
+    signed_delta = valid_hit_rate - gamma
+    return {
+        "context_id": row.context_id,
+        "dataset": row.dataset,
+        "task_id": row.task_id,
+        "method": row.method,
+        "key_id": row.key_id,
+        "key": row.key_id,
+        "projection_key_id": row.projection_key_id,
+        "gamma": gamma,
+        "target_gamma": gamma,
+        "valid_hit_rate": valid_hit_rate,
+        "empirical_hit_rate": valid_hit_rate,
+        "signed_gamma_delta": signed_delta,
+        "abs_gamma_delta": abs(signed_delta),
+        "node_type": row.node_type,
+        "block_ordinal": row.block_ordinal,
+        "candidate_count": float(row.candidate_count),
+    }
+
+
+def _balance_skew_group(
+    detail_rows: list[dict[str, Any]],
+    key_fn,
+) -> dict[str, dict[str, float]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in detail_rows:
+        grouped[str(key_fn(row))].append(row)
+    return {
+        key: _balance_skew_stats(group_rows)
+        for key, group_rows in sorted(grouped.items())
+    }
+
+
+def _balance_skew_stats(rows: list[dict[str, Any]]) -> dict[str, float]:
+    abs_values = sorted(float(row["abs_gamma_delta"]) for row in rows)
+    signed_values = [float(row["signed_gamma_delta"]) for row in rows]
+    return {
+        "row_count": float(len(rows)),
+        "mean_abs_delta": _mean(abs_values),
+        "median_abs_delta": _percentile_nearest(abs_values, 0.50),
+        "p90_abs_delta": _percentile_nearest(abs_values, 0.90),
+        "p95_abs_delta": _percentile_nearest(abs_values, 0.95),
+        "fraction_abs_delta_ge_0.50": _mean(
+            [1.0 if value >= 0.50 else 0.0 for value in abs_values]
+        ),
+        "fraction_abs_delta_ge_0.75": _mean(
+            [1.0 if value >= 0.75 else 0.0 for value in abs_values]
+        ),
+        "mean_signed_delta": _mean(signed_values),
+    }
+
+
+def _percentile_nearest(values: list[float], q: float) -> float:
+    if not values:
+        return 0.0
+    index = ceil(q * (len(values) - 1))
+    index = min(len(values) - 1, max(0, index))
+    return values[index]
 
 
 def _primary_method_evidence(

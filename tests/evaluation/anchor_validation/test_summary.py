@@ -420,3 +420,83 @@ def test_summary_reports_stratified_anchor_diagnostics():
     assert diagnostics["top_contexts"]["method_minus_vanilla_largest"][0]["context_id"] == "ctx1"
     assert diagnostics["top_contexts"]["method_minus_vanilla_most_negative"][0]["context_id"] == "ctx2"
     assert diagnostics["valid_hit_balance_by_gamma"]["slot_context"]["0.5"]["mean_delta_gamma"] == pytest.approx(0.15)
+
+
+def test_summary_reports_signed_balance_skew_distribution():
+    metrics = [
+        _metric("ctx1", "vanilla", 0.20),
+        _metric("ctx1", "random", 0.25),
+        _metric("ctx1", "codet5_comment_anchor", 0.40),
+        _metric("ctx1", "seqmark_oracle", 0.70),
+        _metric(
+            "ctx1",
+            "codet5_comment_anchor",
+            0.40,
+            key_id="key-00",
+            gamma_deviation=0.25,
+            candidate_count=4,
+            block_ordinal=0,
+            node_type="return_statement",
+        ),
+        _metric(
+            "ctx2",
+            "codet5_comment_anchor",
+            0.30,
+            key_id="key-01",
+            gamma_deviation=0.75,
+            candidate_count=20,
+            block_ordinal=8,
+            node_type="expression_statement",
+        ),
+    ]
+    metrics[-2] = RegionMetricRow(
+        **{
+            **metrics[-2].__dict__,
+            "gamma": 0.25,
+            "valid_hit_rate": 0.50,
+            "gamma_deviation": 0.25,
+        }
+    )
+    metrics[-1] = RegionMetricRow(
+        **{
+            **metrics[-1].__dict__,
+            "gamma": 0.75,
+            "valid_hit_rate": 0.00,
+            "gamma_deviation": 0.75,
+        }
+    )
+
+    summary = build_anchor_validation_summary(
+        metrics,
+        [],
+        context_count=2,
+        methods=("vanilla", "random", "codet5_comment_anchor", "seqmark_oracle"),
+        primary_method="codet5_comment_anchor",
+    )
+
+    skew = summary["anchor_diagnostics"]["balance_skew"]
+    method = skew["by_method"]["codet5_comment_anchor"]
+    assert method["row_count"] == 2.0
+    assert method["mean_abs_delta"] == pytest.approx(0.50)
+    assert method["median_abs_delta"] == pytest.approx(0.75)
+    assert method["p90_abs_delta"] == pytest.approx(0.75)
+    assert method["p95_abs_delta"] == pytest.approx(0.75)
+    assert method["fraction_abs_delta_ge_0.50"] == pytest.approx(0.50)
+    assert method["fraction_abs_delta_ge_0.75"] == pytest.approx(0.50)
+    assert method["mean_signed_delta"] == pytest.approx(-0.25)
+    assert skew["by_gamma"]["0.25"]["mean_signed_delta"] == pytest.approx(0.25)
+    assert skew["by_gamma"]["0.75"]["mean_signed_delta"] == pytest.approx(-0.75)
+    assert skew["by_key_id"]["key-00"]["mean_abs_delta"] == pytest.approx(0.25)
+    assert skew["by_node_type"]["return_statement"]["row_count"] == 1.0
+    assert skew["by_block_ordinal_bucket"]["0-3"]["mean_abs_delta"] == pytest.approx(0.25)
+    assert skew["by_candidate_count_bucket"]["17-24"]["mean_abs_delta"] == pytest.approx(0.75)
+    assert skew["top_extreme_contexts"][0]["context_id"] == "ctx2"
+    assert skew["top_extreme_contexts"][0]["method"] == "codet5_comment_anchor"
+    assert skew["top_extreme_contexts"][0]["key_id"] == "key-01"
+    assert skew["top_extreme_contexts"][0]["target_gamma"] == pytest.approx(0.75)
+    assert skew["top_extreme_contexts"][0]["empirical_hit_rate"] == pytest.approx(0.00)
+    assert skew["top_extreme_contexts"][0]["signed_gamma_delta"] == pytest.approx(-0.75)
+    assert skew["top_extreme_contexts"][0]["abs_gamma_delta"] == pytest.approx(0.75)
+    assert skew["top_extreme_contexts"][0]["node_type"] == "expression_statement"
+    assert skew["top_extreme_contexts"][0]["block_ordinal"] == 8
+    assert skew["top_extreme_contexts"][0]["candidate_count"] == 20.0
