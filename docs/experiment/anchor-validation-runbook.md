@@ -216,3 +216,74 @@ PY
 Use the pool-quality section before interpreting entropy results. A narrow
 node-type distribution or low candidate count can explain weak role-aware
 anchor gains even when the oracle remains strong.
+
+## R003.5 CodeT5 Primary Anchor and Keying Balance Diagnostic
+
+R003.5 uses the existing R002 candidate pool. Do not regenerate candidates.
+
+The objective is diagnostic, not production go/no-go:
+
+- `codet5_comment_anchor` is the primary text anchor.
+- `candidate_centroid_oracle` and `context_centroid_oracle` measure headroom.
+- Run A uses default ordinal keying.
+- Run B uses `--legacy-parent-keying`.
+- `first_stage_passed` remains constrained by the data-quality gate.
+
+### R003.5A: Ordinal Keying
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+/root/miniconda3/bin/conda run -n WFCLLM python scripts/anchor_validation.py run-diagnostics \
+  --pool data/diagnostics/anchor_validation/candidate_pools_r002.jsonl \
+  --output-dir data/diagnostics/anchor_validation/encoder_r0035_codet5_primary_ordinal \
+  --embedding-mode encoder \
+  --encoder-model-path data/models/codet5-base \
+  --encoder-checkpoint data/models/encoder/best_model.pt \
+  --encoder-device cuda \
+  --embed-dim 128 \
+  --lsh-d 3 \
+  --secret-key anchor-key-00 anchor-key-01 anchor-key-02 anchor-key-03 anchor-key-04 \
+  --methods vanilla random seqmark_oracle context_centroid_oracle candidate_centroid_oracle role_aware_slot_context role_aware_slot_context_skeleton codet5_comment_anchor codet5_comment_minimal codet5_comment_contextual \
+  --primary-method codet5_comment_anchor \
+  --gammas 0.25 0.5 0.75 \
+  --retry-budgets 1 4 8
+```
+
+### R003.5B: Parent-Only Keying
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+/root/miniconda3/bin/conda run -n WFCLLM python scripts/anchor_validation.py run-diagnostics \
+  --pool data/diagnostics/anchor_validation/candidate_pools_r002.jsonl \
+  --output-dir data/diagnostics/anchor_validation/encoder_r0035_codet5_primary_parent_only \
+  --embedding-mode encoder \
+  --encoder-model-path data/models/codet5-base \
+  --encoder-checkpoint data/models/encoder/best_model.pt \
+  --encoder-device cuda \
+  --embed-dim 128 \
+  --lsh-d 3 \
+  --secret-key anchor-key-00 anchor-key-01 anchor-key-02 anchor-key-03 anchor-key-04 \
+  --methods vanilla random seqmark_oracle context_centroid_oracle candidate_centroid_oracle role_aware_slot_context role_aware_slot_context_skeleton codet5_comment_anchor codet5_comment_minimal codet5_comment_contextual \
+  --primary-method codet5_comment_anchor \
+  --legacy-parent-keying \
+  --gammas 0.25 0.5 0.75 \
+  --retry-budgets 1 4 8
+```
+
+### Interpretation
+
+Treat R003.5 as diagnostic even if primary-method gates improve. The R002 pool
+has 39 contexts and 3 node-type categories, so the production data-quality gate
+should remain failed until the pool is broadened.
+
+Read these fields first:
+
+- `go_no_go.primary_method_evidence`: CodeT5 primary anchor evidence against
+  vanilla, random, oracle headroom, balance, and retry.
+- `go_no_go.primary_method_gates`: positive diagnostic and stricter gate
+  checks for the configured primary method.
+- `anchor_diagnostics.balance_skew`: signed and absolute valid-set/gamma
+  imbalance by method, key, gamma, node type, block ordinal bucket, and
+  candidate-count bucket.
+- `anchor_diagnostics.balance_skew.top_extreme_contexts`: contexts driving
+  the largest balance errors.
