@@ -30,7 +30,9 @@ def build_anchor_validation_summary(
     pool_quality: dict[str, Any] | None = None,
     empirical_gamma_rows: list[dict[str, Any]] | None = None,
     method_oracle_agreement: dict[str, dict[str, Any]] | None = None,
+    primary_method: str = "role_aware_slot_context",
 ) -> dict[str, Any]:
+    validate_primary_method_rows(metrics_rows, methods, primary_method)
     oracle_gap = _oracle_gap(metrics_rows)
     anchor_diagnostics = build_anchor_diagnostics(metrics_rows)
     evidence = {
@@ -49,12 +51,19 @@ def build_anchor_validation_summary(
         "low_entropy": _low_entropy_summary(metrics_rows),
         "node_type": _node_type_summary(metrics_rows),
     }
-    gates = _layered_gates(evidence, pool_quality or {"context_count": context_count})
+    primary_method_evidence = _primary_method_evidence(evidence, primary_method)
+    primary_method_gates = _primary_method_gates(primary_method_evidence)
+    gates = _layered_gates(
+        evidence,
+        pool_quality or {"context_count": context_count},
+        primary_method=primary_method,
+    )
     first_stage_passed = all(gate["passed"] for gate in gates.values())
     return {
         "meta": {
             "context_count": context_count,
             "methods": list(methods),
+            "primary_method": primary_method,
         },
         "summary": {
             "mean_entropy_by_method": _mean_entropy_by_method(metrics_rows),
@@ -68,6 +77,9 @@ def build_anchor_validation_summary(
         "go_no_go": {
             "first_stage_passed": first_stage_passed,
             "end_to_end_followup_allowed": first_stage_passed,
+            "primary_method": primary_method,
+            "primary_method_evidence": primary_method_evidence,
+            "primary_method_gates": primary_method_gates,
             "gates": gates,
             "evidence": evidence,
         },
@@ -97,6 +109,30 @@ def _unkeyed(rows: list[RegionMetricRow]) -> list[RegionMetricRow]:
         for row in rows
         if row.key_id is None and row.method not in _GAMMA_SCOPED_METHODS
     ]
+
+
+def validate_primary_method_rows(
+    rows: list[RegionMetricRow],
+    methods: tuple[str, ...],
+    primary_method: str,
+) -> None:
+    if primary_method not in methods:
+        raise ValueError(f"primary_method {primary_method!r} is not present in methods")
+    unkeyed_methods = {row.method for row in _unkeyed(rows)}
+    missing_baselines = [
+        method
+        for method in ("vanilla", "random", "seqmark_oracle")
+        if method not in unkeyed_methods
+    ]
+    if missing_baselines:
+        raise ValueError(
+            "required baseline methods missing unkeyed metric rows: "
+            + ", ".join(missing_baselines)
+        )
+    if primary_method not in unkeyed_methods:
+        raise ValueError(
+            f"primary_method {primary_method!r} is not present in unkeyed metric rows"
+        )
 
 
 def _mean(values: list[float]) -> float:
@@ -428,71 +464,93 @@ def _valid_hit_balance_by_gamma(
     return {method: values for method, values in sorted(result.items())}
 
 
-def _passes_first_stage(evidence: dict[str, Any]) -> bool:
-    deterministic = ("slot_context", "slot_context_skeleton")
-    paired = evidence["paired_entropy_delta"]
-    random_gap = evidence["random_anchor_gap"]
-    oracle_ratio = evidence["seqmark_oracle_gain_ratio"]
-    balance = evidence["valid_hit_balance"]
-    retry = evidence["retry"]
-    low_entropy = evidence["low_entropy"]
-    node_type = evidence["node_type"]
-    for method in deterministic:
-        if paired.get(f"{method}_vs_vanilla", {}).get("mean", 0.0) < 0.10:
-            continue
-        if low_entropy.get(method, 0.0) - low_entropy.get("vanilla", 0.0) < 0.15:
-            continue
-        node_type_wins = sum(
-            1
-            for values in node_type.values()
-            if values.get(method, 0.0) - values.get("vanilla", 0.0) >= 0.05
-        )
-        if node_type_wins < 2:
-            continue
-        if random_gap.get(f"{method}_minus_random", {}).get("mean", 0.0) < 0.05:
-            continue
-        if oracle_ratio.get(method, 0.0) < 0.50:
-            continue
-        if balance.get(method, {}).get("max_delta_gamma", 1.0) > 0.05:
-            continue
-        method_retry_gain = max(
-            retry.get(method, {}).get("budget_4_hit_acquisition", 0.0),
-            retry.get(method, {}).get("budget_8_hit_acquisition", 0.0),
-        )
-        vanilla_retry_gain = max(
-            retry.get("vanilla", {}).get("budget_4_hit_acquisition", 0.0),
-            retry.get("vanilla", {}).get("budget_8_hit_acquisition", 0.0),
-        )
-        random_retry_gain = max(
-            retry.get("random", {}).get("budget_4_hit_acquisition", 0.0),
-            retry.get("random", {}).get("budget_8_hit_acquisition", 0.0),
-        )
-        if method_retry_gain <= vanilla_retry_gain:
-            continue
-        if method_retry_gain <= random_retry_gain:
-            continue
-        if retry.get(method, {}).get("overall_z_proxy", -999.0) <= retry.get("vanilla", {}).get("overall_z_proxy", -999.0):
-            continue
-        if retry.get(method, {}).get("overall_fallback_rate", 1.0) > retry.get("vanilla", {}).get("overall_fallback_rate", 1.0) + 0.05:
-            continue
-        if not _quality_non_regression(retry, method, baseline="vanilla"):
-            continue
-        if retry.get(method, {}).get("mean_selected_rank", 999.0) > 8.0:
-            continue
-        return True
-    return False
+def _primary_method_evidence(
+    evidence: dict[str, Any],
+    primary_method: str,
+) -> dict[str, Any]:
+    return {
+        "vs_vanilla": dict(
+            evidence["paired_entropy_delta"].get(
+                f"{primary_method}_vs_vanilla",
+                _empty_delta(),
+            )
+        ),
+        "minus_random": dict(
+            evidence["random_anchor_gap"].get(
+                f"{primary_method}_minus_random",
+                _empty_delta(),
+            )
+        ),
+        "oracle_gap": dict(evidence["oracle_gap"].get(primary_method, {})),
+        "gain_ratio": evidence["seqmark_oracle_gain_ratio"].get(primary_method, 0.0),
+        "valid_hit_balance": dict(
+            evidence["valid_hit_balance"].get(primary_method, {})
+        ),
+        "retry": dict(evidence["retry"].get(primary_method, {})),
+    }
+
+
+def _empty_delta() -> dict[str, float | list[float]]:
+    return {
+        "mean": 0.0,
+        "median": 0.0,
+        "win_rate": 0.0,
+        "bootstrap_ci_95": [0.0, 0.0],
+    }
+
+
+def _primary_method_gates(
+    primary_evidence: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    vs_vanilla = primary_evidence["vs_vanilla"]
+    minus_random = primary_evidence["minus_random"]
+    diagnostic_reasons: list[str] = []
+    gate_reasons: list[str] = []
+    vs_mean = float(vs_vanilla.get("mean", 0.0))
+    random_mean = float(minus_random.get("mean", 0.0))
+    vs_ci_lower = _ci_lower(vs_vanilla)
+    random_ci_lower = _ci_lower(minus_random)
+    vs_win_rate = float(vs_vanilla.get("win_rate", 0.0))
+    random_win_rate = float(minus_random.get("win_rate", 0.0))
+    if vs_mean <= 0.0:
+        diagnostic_reasons.append(f"vs_vanilla mean {vs_mean:.4f} <= 0")
+    if vs_ci_lower < -0.002:
+        diagnostic_reasons.append(f"vs_vanilla CI lower {vs_ci_lower:.4f} < -0.002")
+    if random_mean <= 0.0:
+        diagnostic_reasons.append(f"minus_random mean {random_mean:.4f} <= 0")
+    if vs_ci_lower < 0.0:
+        gate_reasons.append(f"vs_vanilla CI lower {vs_ci_lower:.4f} < 0")
+    if random_ci_lower < 0.0:
+        gate_reasons.append(f"minus_random CI lower {random_ci_lower:.4f} < 0")
+    if vs_win_rate < 0.60:
+        gate_reasons.append(f"vs_vanilla win_rate {vs_win_rate:.4f} < 0.60")
+    if random_win_rate < 0.60:
+        gate_reasons.append(f"minus_random win_rate {random_win_rate:.4f} < 0.60")
+    return {
+        "diagnostic_positive": _gate(not diagnostic_reasons, diagnostic_reasons),
+        "gate_positive": _gate(not gate_reasons, gate_reasons),
+    }
+
+
+def _ci_lower(delta: dict[str, float | list[float]]) -> float:
+    ci = delta.get("bootstrap_ci_95", [0.0, 0.0])
+    if isinstance(ci, list) and ci:
+        return float(ci[0])
+    return 0.0
 
 
 def _layered_gates(
     evidence: dict[str, Any],
     pool_quality: dict[str, Any],
+    *,
+    primary_method: str,
 ) -> dict[str, dict[str, Any]]:
     return {
         "data_quality_gate": _data_quality_gate(pool_quality),
-        "anchor_signal_gate": _anchor_signal_gate(evidence),
-        "vanilla_improvement_gate": _vanilla_improvement_gate(evidence),
-        "balance_gate": _balance_gate(evidence),
-        "retry_gate": _retry_gate(evidence),
+        "anchor_signal_gate": _anchor_signal_gate(evidence, primary_method),
+        "vanilla_improvement_gate": _vanilla_improvement_gate(evidence, primary_method),
+        "balance_gate": _balance_gate(evidence, primary_method),
+        "retry_gate": _retry_gate(evidence, primary_method),
     }
 
 
@@ -519,38 +577,40 @@ def _data_quality_gate(pool_quality: dict[str, Any]) -> dict[str, Any]:
     return _gate(not reasons, reasons)
 
 
-def _anchor_signal_gate(evidence: dict[str, Any]) -> dict[str, Any]:
+def _anchor_signal_gate(evidence: dict[str, Any], primary_method: str) -> dict[str, Any]:
     reasons: list[str] = []
-    delta = evidence["random_anchor_gap"].get("role_aware_slot_context_minus_random", {})
+    gap_key = f"{primary_method}_minus_random"
+    delta = evidence["random_anchor_gap"].get(gap_key, {})
     ci = delta.get("bootstrap_ci_95", [0.0, 0.0])
     ci_lower = float(ci[0]) if ci else 0.0
     win_rate = float(delta.get("win_rate", 0.0))
     if ci_lower <= 0.0:
-        reasons.append(f"role_aware_slot_context_minus_random CI lower {ci_lower:.4f} <= 0")
+        reasons.append(f"{gap_key} CI lower {ci_lower:.4f} <= 0")
     if win_rate < 0.60:
-        reasons.append(f"role_aware_slot_context_minus_random win_rate {win_rate:.4f} < 0.60")
+        reasons.append(f"{gap_key} win_rate {win_rate:.4f} < 0.60")
     return _gate(not reasons, reasons)
 
 
-def _vanilla_improvement_gate(evidence: dict[str, Any]) -> dict[str, Any]:
+def _vanilla_improvement_gate(evidence: dict[str, Any], primary_method: str) -> dict[str, Any]:
     reasons: list[str] = []
-    delta = evidence["paired_entropy_delta"].get("role_aware_slot_context_vs_vanilla", {})
+    delta_key = f"{primary_method}_vs_vanilla"
+    delta = evidence["paired_entropy_delta"].get(delta_key, {})
     ci = delta.get("bootstrap_ci_95", [0.0, 0.0])
     mean_delta = float(delta.get("mean", 0.0))
     ci_lower = float(ci[0]) if ci else 0.0
-    gain_ratio = float(evidence["oracle_gap"].get("role_aware_slot_context", {}).get("gain_ratio", 0.0))
+    gain_ratio = float(evidence["oracle_gap"].get(primary_method, {}).get("gain_ratio", 0.0))
     if mean_delta <= 0.03:
-        reasons.append(f"role_aware_slot_context_vs_vanilla mean {mean_delta:.4f} <= 0.03")
+        reasons.append(f"{delta_key} mean {mean_delta:.4f} <= 0.03")
     if ci_lower < 0.0:
-        reasons.append(f"role_aware_slot_context_vs_vanilla CI lower {ci_lower:.4f} < 0")
+        reasons.append(f"{delta_key} CI lower {ci_lower:.4f} < 0")
     if gain_ratio < 0.15:
         reasons.append(f"gain_ratio {gain_ratio:.4f} < 0.15")
     return _gate(not reasons, reasons)
 
 
-def _balance_gate(evidence: dict[str, Any]) -> dict[str, Any]:
+def _balance_gate(evidence: dict[str, Any], primary_method: str) -> dict[str, Any]:
     reasons: list[str] = []
-    balance = evidence["valid_hit_balance"].get("role_aware_slot_context", {})
+    balance = evidence["valid_hit_balance"].get(primary_method, {})
     max_delta = float(balance.get("max_delta_gamma", 1.0))
     mean_delta = float(balance.get("mean_delta_gamma", 1.0))
     if max_delta > 0.35:
@@ -560,10 +620,10 @@ def _balance_gate(evidence: dict[str, Any]) -> dict[str, Any]:
     return _gate(not reasons, reasons)
 
 
-def _retry_gate(evidence: dict[str, Any]) -> dict[str, Any]:
+def _retry_gate(evidence: dict[str, Any], primary_method: str) -> dict[str, Any]:
     reasons: list[str] = []
     retry = evidence["retry"]
-    method = retry.get("role_aware_slot_context", {})
+    method = retry.get(primary_method, {})
     vanilla = retry.get("vanilla", {})
     random = retry.get("random", {})
     method_hit = float(method.get("budget_4_hit_acquisition", 0.0))

@@ -79,6 +79,7 @@ def test_summary_computes_required_anchor_gate_fields():
         selection,
         context_count=1,
         methods=("vanilla", "random", "slot_context", "seqmark_oracle"),
+        primary_method="slot_context",
     )
 
     evidence = summary["go_no_go"]["evidence"]
@@ -93,13 +94,16 @@ def test_summary_computes_required_anchor_gate_fields():
 def test_summary_averages_geometry_across_projection_keys():
     row_a = _metric("ctx1", "vanilla", 0.20, projection_key_id="proj-00")
     row_b = _metric("ctx1", "vanilla", 0.40, projection_key_id="proj-01")
+    random = _metric("ctx1", "random", 0.35)
     slot = _metric("ctx1", "slot_context", 0.50)
+    oracle = _metric("ctx1", "seqmark_oracle", 0.70)
 
     summary = build_anchor_validation_summary(
-        [row_a, row_b, slot],
+        [row_a, row_b, random, slot, oracle],
         [],
         context_count=1,
-        methods=("vanilla", "slot_context"),
+        methods=("vanilla", "random", "slot_context", "seqmark_oracle"),
+        primary_method="slot_context",
     )
 
     assert summary["summary"]["mean_entropy_by_method"]["vanilla"] == pytest.approx(0.30)
@@ -195,6 +199,7 @@ def test_summary_passes_layered_gates_for_role_aware_signal():
 def test_summary_reports_method_oracle_agreement_and_gamma_calibration():
     metrics = [
         _metric("ctx1", "vanilla", 0.20),
+        _metric("ctx1", "random", 0.30),
         _metric("ctx1", "role_aware_slot_context", 0.40),
         _metric("ctx1", "seqmark_oracle", 0.60),
         _metric("ctx1", "role_aware_slot_context", 0.40, key_id="key-00", gamma_deviation=0.20),
@@ -204,7 +209,7 @@ def test_summary_reports_method_oracle_agreement_and_gamma_calibration():
         metrics,
         [],
         context_count=1,
-        methods=("vanilla", "role_aware_slot_context", "seqmark_oracle"),
+        methods=("vanilla", "random", "role_aware_slot_context", "seqmark_oracle"),
         empirical_gamma_rows=[
             {
                 "context_id": "ctx1",
@@ -256,6 +261,7 @@ def test_summary_reports_random_gap_for_codet5_methods():
             "seqmark_oracle",
             "candidate_centroid_oracle",
         ),
+        primary_method="codet5_masked_code",
     )
 
     random_gap = summary["go_no_go"]["evidence"]["random_anchor_gap"]
@@ -266,16 +272,129 @@ def test_summary_reports_random_gap_for_codet5_methods():
     assert "context_centroid_oracle_minus_random" not in random_gap
 
 
+def test_summary_reports_primary_method_evidence_without_changing_data_quality_gate():
+    metrics = []
+    selection = []
+    for index in range(5):
+        context_id = f"ctx{index}"
+        metrics.extend(
+            [
+                _metric(context_id, "vanilla", 0.40),
+                _metric(context_id, "random", 0.42),
+                _metric(context_id, "codet5_comment_anchor", 0.50),
+                _metric(context_id, "seqmark_oracle", 0.70),
+                _metric(
+                    context_id,
+                    "codet5_comment_anchor",
+                    0.50,
+                    key_id="key-00",
+                    gamma_deviation=0.10,
+                ),
+            ]
+        )
+        selection.extend(
+            [
+                _selection(context_id, "vanilla", 4, hit=False, fallback=True),
+                _selection(context_id, "random", 4, hit=False, fallback=True),
+                _selection(context_id, "codet5_comment_anchor", 4, hit=True, fallback=False),
+            ]
+        )
+
+    summary = build_anchor_validation_summary(
+        metrics,
+        selection,
+        context_count=5,
+        methods=("vanilla", "random", "codet5_comment_anchor", "seqmark_oracle"),
+        primary_method="codet5_comment_anchor",
+    )
+
+    assert summary["meta"]["primary_method"] == "codet5_comment_anchor"
+    go_no_go = summary["go_no_go"]
+    assert go_no_go["primary_method"] == "codet5_comment_anchor"
+    assert go_no_go["first_stage_passed"] is False
+    assert go_no_go["end_to_end_followup_allowed"] is False
+    assert go_no_go["gates"]["data_quality_gate"]["passed"] is False
+    evidence = go_no_go["primary_method_evidence"]
+    assert evidence["vs_vanilla"]["mean"] == pytest.approx(0.10)
+    assert evidence["minus_random"]["mean"] == pytest.approx(0.08)
+    assert evidence["oracle_gap"]["gain_vs_vanilla"] == pytest.approx(0.10)
+    assert evidence["gain_ratio"] == pytest.approx(1.0 / 3.0)
+    assert evidence["valid_hit_balance"]["max_delta_gamma"] == pytest.approx(0.10)
+    assert evidence["retry"]["budget_4_hit_acquisition"] == pytest.approx(1.0)
+    assert go_no_go["primary_method_gates"]["diagnostic_positive"]["passed"] is True
+    assert go_no_go["primary_method_gates"]["gate_positive"]["passed"] is True
+
+
+def test_summary_rejects_missing_primary_method():
+    metrics = [
+        _metric("ctx1", "vanilla", 0.20),
+        _metric("ctx1", "random", 0.25),
+        _metric("ctx1", "seqmark_oracle", 0.50),
+    ]
+
+    with pytest.raises(ValueError, match="primary_method.*is not present"):
+        build_anchor_validation_summary(
+            metrics,
+            [],
+            context_count=1,
+            methods=("vanilla", "random", "seqmark_oracle"),
+            primary_method="codet5_comment_anchor",
+        )
+
+
+def test_summary_rejects_primary_method_without_required_baselines():
+    metrics = [
+        _metric("ctx1", "vanilla", 0.20),
+        _metric("ctx1", "codet5_comment_anchor", 0.35),
+    ]
+
+    with pytest.raises(ValueError, match="required baseline methods"):
+        build_anchor_validation_summary(
+            metrics,
+            [],
+            context_count=1,
+            methods=("vanilla", "codet5_comment_anchor"),
+            primary_method="codet5_comment_anchor",
+        )
+
+
+def test_summary_rejects_primary_method_without_unkeyed_row():
+    metrics = [
+        _metric("ctx1", "vanilla", 0.20),
+        _metric("ctx1", "random", 0.25),
+        _metric("ctx1", "seqmark_oracle", 0.50),
+        _metric(
+            "ctx1",
+            "codet5_comment_anchor",
+            0.35,
+            key_id="key-00",
+            gamma_deviation=0.10,
+        ),
+    ]
+
+    with pytest.raises(ValueError, match="primary_method.*is not present"):
+        build_anchor_validation_summary(
+            metrics,
+            [],
+            context_count=1,
+            methods=("vanilla", "random", "codet5_comment_anchor", "seqmark_oracle"),
+            primary_method="codet5_comment_anchor",
+        )
+
+
 def test_summary_reports_stratified_anchor_diagnostics():
     metrics = [
         _metric("ctx0", "vanilla", 0.10, candidate_count=2, block_ordinal=0),
+        _metric("ctx0", "random", 0.15, candidate_count=2, block_ordinal=0),
         _metric("ctx0", "slot_context", 0.25, candidate_count=2, block_ordinal=0),
         _metric("ctx0", "seqmark_oracle", 0.45, candidate_count=2, block_ordinal=0),
         _metric("ctx1", "vanilla", 0.20, candidate_count=4, block_ordinal=0),
+        _metric("ctx1", "random", 0.25, candidate_count=4, block_ordinal=0),
         _metric("ctx1", "slot_context", 0.40, candidate_count=4, block_ordinal=0),
         _metric("ctx1", "seqmark_oracle", 0.60, candidate_count=4, block_ordinal=0),
         _metric("ctx1", "slot_context", 0.40, key_id="key-00", gamma_deviation=0.10),
         _metric("ctx2", "vanilla", 0.50, candidate_count=25, block_ordinal=12),
+        _metric("ctx2", "random", 0.45, candidate_count=25, block_ordinal=12),
         _metric("ctx2", "slot_context", 0.30, candidate_count=25, block_ordinal=12),
         _metric("ctx2", "seqmark_oracle", 0.70, candidate_count=25, block_ordinal=12),
         _metric("ctx2", "slot_context", 0.30, key_id="key-00", gamma_deviation=0.20),
@@ -285,7 +404,8 @@ def test_summary_reports_stratified_anchor_diagnostics():
         metrics,
         [],
         context_count=2,
-        methods=("vanilla", "slot_context", "seqmark_oracle"),
+        methods=("vanilla", "random", "slot_context", "seqmark_oracle"),
+        primary_method="slot_context",
     )
 
     diagnostics = summary["anchor_diagnostics"]

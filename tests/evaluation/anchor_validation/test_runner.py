@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 import wfcllm.evaluation.anchor_validation.runner as runner_module
@@ -49,6 +50,37 @@ class _FixedKeying:
         return frozenset({(1,)})
 
 
+def test_runner_rejects_invalid_primary_config_before_loading_pool(tmp_path, monkeypatch):
+    output_dir = tmp_path / "out"
+    load_calls = []
+    monkeypatch.setattr(
+        runner_module,
+        "load_candidate_contexts",
+        lambda path: load_calls.append(path),
+    )
+
+    runner = AnchorValidationRunner(
+        AnchorValidationConfig(
+            pool_path=tmp_path / "missing.jsonl",
+            output_dir=output_dir,
+            secret_keys=("k0",),
+            gammas=(0.5,),
+            methods=("vanilla", "random", "seqmark_oracle"),
+            retry_budgets=(1,),
+            primary_method="codet5_comment_anchor",
+            lsh_d=2,
+            embed_dim=8,
+            embedding_mode="hash",
+        )
+    )
+
+    with pytest.raises(ValueError, match="primary_method.*is not present"):
+        runner.run()
+
+    assert load_calls == []
+    assert not output_dir.exists()
+
+
 def test_runner_writes_metrics_simulation_and_summary(tmp_path):
     pool_path = tmp_path / "candidate_pools.jsonl"
     output_dir = tmp_path / "out"
@@ -87,6 +119,7 @@ def test_runner_writes_metrics_simulation_and_summary(tmp_path):
             gammas=(0.5,),
             methods=("vanilla", "random", "slot_context", "seqmark_oracle"),
             retry_budgets=(1, 2),
+            primary_method="slot_context",
             lsh_d=2,
             embed_dim=8,
             embedding_mode="hash",
@@ -166,7 +199,13 @@ def test_runner_supports_role_aware_methods(tmp_path):
             output_dir=output_dir,
             secret_keys=("k0",),
             gammas=(0.5,),
-            methods=("role_aware_slot_context", "role_aware_slot_context_skeleton"),
+            methods=(
+                "vanilla",
+                "random",
+                "role_aware_slot_context",
+                "role_aware_slot_context_skeleton",
+                "seqmark_oracle",
+            ),
             retry_budgets=(1,),
             lsh_d=2,
             embed_dim=8,
@@ -176,9 +215,66 @@ def test_runner_supports_role_aware_methods(tmp_path):
 
     summary = json.loads(result.summary_path.read_text(encoding="utf-8"))
     assert summary["meta"]["methods"] == [
+        "vanilla",
+        "random",
         "role_aware_slot_context",
         "role_aware_slot_context_skeleton",
+        "seqmark_oracle",
     ]
+
+
+def test_runner_writes_primary_method_diagnostic_evidence(tmp_path):
+    pool_path = tmp_path / "candidate_pools.jsonl"
+    output_dir = tmp_path / "out"
+    write_candidate_contexts(
+        pool_path,
+        [
+            CandidateContext(
+                context_id="ctx",
+                dataset="humaneval",
+                task_id="HumanEval/0",
+                prompt="def f(x):\n",
+                function_signature="def f(x):",
+                ast_path=("function_definition", "return_statement"),
+                node_type="return_statement",
+                parent_node_type="function_definition",
+                block_ordinal=0,
+                context_hash="ctxhash",
+                context_before="def f(x):\n",
+                context_after="",
+                masked_parent_context="def f(<NAME>):\n    <TARGET_BLOCK>",
+                import_and_helper_signatures=("import math",),
+                temperature=0.2,
+                candidates=(
+                    CandidateBlock("c0", "return x", 0),
+                    CandidateBlock("c1", "return x + 1", 1),
+                ),
+            )
+        ],
+    )
+
+    result = AnchorValidationRunner(
+        AnchorValidationConfig(
+            pool_path=pool_path,
+            output_dir=output_dir,
+            secret_keys=("k0",),
+            gammas=(0.5,),
+            methods=("vanilla", "random", "codet5_comment_anchor", "seqmark_oracle"),
+            primary_method="codet5_comment_anchor",
+            retry_budgets=(1,),
+            lsh_d=2,
+            embed_dim=8,
+            embedding_mode="hash",
+        )
+    ).run()
+
+    summary = json.loads(result.summary_path.read_text(encoding="utf-8"))
+    assert summary["meta"]["primary_method"] == "codet5_comment_anchor"
+    assert summary["go_no_go"]["primary_method"] == "codet5_comment_anchor"
+    assert summary["go_no_go"]["primary_method_evidence"]["vs_vanilla"]
+    assert summary["go_no_go"]["primary_method_evidence"]["minus_random"]
+    assert "diagnostic_positive" in summary["go_no_go"]["primary_method_gates"]
+    assert "gate_positive" in summary["go_no_go"]["primary_method_gates"]
 
 
 def test_runner_supports_centroid_oracle_methods(tmp_path):
@@ -216,11 +312,14 @@ def test_runner_supports_centroid_oracle_methods(tmp_path):
             secret_keys=("secret-value",),
             gammas=(0.5,),
             methods=(
+                "vanilla",
+                "random",
                 "candidate_centroid_oracle",
                 "context_centroid_oracle",
                 "seqmark_oracle",
             ),
             retry_budgets=(1,),
+            primary_method="context_centroid_oracle",
             lsh_d=2,
             embed_dim=8,
             embedding_mode="hash",
@@ -229,6 +328,8 @@ def test_runner_supports_centroid_oracle_methods(tmp_path):
 
     summary = json.loads(result.summary_path.read_text(encoding="utf-8"))
     assert summary["meta"]["methods"] == [
+        "vanilla",
+        "random",
         "candidate_centroid_oracle",
         "context_centroid_oracle",
         "seqmark_oracle",
@@ -244,6 +345,62 @@ def test_runner_supports_centroid_oracle_methods(tmp_path):
     assert "anchor_embedding_by_gamma" in oracle_row
     assert "cosine_distribution_by_gamma" in oracle_row
     assert "secret-value" not in result.anchor_text_debug_path.read_text(encoding="utf-8")
+
+
+def test_runner_rejects_primary_method_without_unkeyed_row_before_writing(tmp_path):
+    pool_path = tmp_path / "candidate_pools.jsonl"
+    output_dir = tmp_path / "out"
+    write_candidate_contexts(
+        pool_path,
+        [
+            CandidateContext(
+                context_id="ctx",
+                dataset="humaneval",
+                task_id="HumanEval/0",
+                prompt="def f(x):\n",
+                function_signature="def f(x):",
+                ast_path=("function_definition", "return_statement"),
+                node_type="return_statement",
+                parent_node_type="function_definition",
+                block_ordinal=0,
+                context_hash="ctxhash",
+                temperature=0.2,
+                candidates=(
+                    CandidateBlock("c0", "return x", 0),
+                    CandidateBlock("c1", "return x + 1", 1),
+                    CandidateBlock("c2", "return x - 1", 2),
+                    CandidateBlock("c3", "return 0", 3),
+                ),
+            )
+        ],
+    )
+
+    runner = AnchorValidationRunner(
+        AnchorValidationConfig(
+            pool_path=pool_path,
+            output_dir=output_dir,
+            secret_keys=("secret-value",),
+            gammas=(0.5,),
+            methods=(
+                "vanilla",
+                "random",
+                "candidate_centroid_oracle",
+                "seqmark_oracle",
+            ),
+            retry_budgets=(1,),
+            primary_method="candidate_centroid_oracle",
+            lsh_d=2,
+            embed_dim=8,
+            embedding_mode="hash",
+        )
+    )
+
+    with pytest.raises(ValueError, match="primary_method.*is not present"):
+        runner.run()
+
+    assert not (output_dir / "region_metrics.jsonl").exists()
+    assert not (output_dir / "selection_simulation.jsonl").exists()
+    assert not (output_dir / "anchor_text_debug.jsonl").exists()
 
 
 def test_candidate_centroid_oracle_is_gamma_scoped_and_debugs_candidate_geometry(
@@ -287,8 +444,15 @@ def test_candidate_centroid_oracle_is_gamma_scoped_and_debugs_candidate_geometry
             output_dir=output_dir,
             secret_keys=("secret-value",),
             gammas=(0.5,),
-            methods=("candidate_centroid_oracle", "context_centroid_oracle"),
+            methods=(
+                "vanilla",
+                "random",
+                "candidate_centroid_oracle",
+                "context_centroid_oracle",
+                "seqmark_oracle",
+            ),
             retry_budgets=(1,),
+            primary_method="context_centroid_oracle",
             lsh_d=1,
             embed_dim=2,
             embedding_mode="hash",
@@ -381,8 +545,9 @@ def test_runner_caches_context_only_anchor_embeddings(tmp_path, monkeypatch):
             output_dir=output_dir,
             secret_keys=("secret-value",),
             gammas=(0.5,),
-            methods=("codet5_masked_code",),
+            methods=("vanilla", "random", "codet5_masked_code", "seqmark_oracle"),
             retry_budgets=(1,),
+            primary_method="codet5_masked_code",
             lsh_d=1,
             embed_dim=2,
             embedding_mode="hash",
@@ -432,8 +597,9 @@ def test_runner_can_show_context_progress_bar(tmp_path, monkeypatch):
             output_dir=output_dir,
             secret_keys=("k0",),
             gammas=(0.5,),
-            methods=("vanilla",),
+            methods=("vanilla", "random", "seqmark_oracle"),
             retry_budgets=(1,),
+            primary_method="vanilla",
             lsh_d=2,
             embed_dim=8,
             embedding_mode="hash",

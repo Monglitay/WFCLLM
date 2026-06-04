@@ -82,6 +82,8 @@ def test_anchor_validation_cli_build_pool_and_run_diagnostics(tmp_path):
             "candidate_centroid_oracle",
             "context_centroid_oracle",
             "seqmark_oracle",
+            "--primary-method",
+            "codet5_comment_anchor",
             "--gammas",
             "0.5",
             "--retry-budgets",
@@ -96,6 +98,8 @@ def test_anchor_validation_cli_build_pool_and_run_diagnostics(tmp_path):
     assert (out / "anchor_validation_summary.json").exists()
     assert "[anchor-validation] INFO running diagnostics" in run.stderr
     assert "Anchor diagnostics contexts" in run.stderr
+    summary = json.loads((out / "anchor_validation_summary.json").read_text(encoding="utf-8"))
+    assert summary["meta"]["primary_method"] == "codet5_comment_anchor"
 
 
 def test_anchor_validation_cli_generate_pool_echo_mode(tmp_path):

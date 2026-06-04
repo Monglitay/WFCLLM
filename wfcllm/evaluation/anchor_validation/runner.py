@@ -25,7 +25,10 @@ from wfcllm.evaluation.anchor_validation.pool_diagnostics import (
 )
 from wfcllm.evaluation.anchor_validation.schema import AnchorMethod
 from wfcllm.evaluation.anchor_validation.selection import simulate_retry_selection
-from wfcllm.evaluation.anchor_validation.summary import build_anchor_validation_summary
+from wfcllm.evaluation.anchor_validation.summary import (
+    build_anchor_validation_summary,
+    validate_primary_method_rows,
+)
 from wfcllm.watermark.adaptive_gamma.schedule import quantize_gamma
 from wfcllm.watermark.anchor_lsh import (
     anchored_signature,
@@ -52,6 +55,7 @@ class AnchorValidationConfig:
     gammas: tuple[float, ...]
     methods: tuple[str, ...]
     retry_budgets: tuple[int, ...]
+    primary_method: str = "role_aware_slot_context"
     lsh_d: int = 3
     embed_dim: int = 128
     embedding_mode: str = "hash"
@@ -77,6 +81,7 @@ class AnchorValidationRunner:
         self._config = config
 
     def run(self) -> AnchorValidationResult:
+        _validate_primary_method_config(self._config)
         logger.info("loading candidate pool: %s", self._config.pool_path)
         contexts = load_candidate_contexts(self._config.pool_path)
         logger.info("loaded %d candidate contexts", len(contexts))
@@ -291,6 +296,11 @@ class AnchorValidationRunner:
                         )
                     )
 
+        validate_primary_method_rows(
+            metrics_rows,
+            tuple(self._config.methods),
+            self._config.primary_method,
+        )
         self._config.output_dir.mkdir(parents=True, exist_ok=True)
         logger.info(
             "writing %d metric rows and %d selection rows to %s",
@@ -319,6 +329,7 @@ class AnchorValidationRunner:
             selection_rows,
             context_count=len(contexts),
             methods=tuple(self._config.methods),
+            primary_method=self._config.primary_method,
             pool_quality=pool_quality,
             empirical_gamma_rows=empirical_gamma_rows,
             method_oracle_agreement={
@@ -372,6 +383,23 @@ class AnchorValidationRunner:
         path = self._config.output_dir / "anchor_diagnostics.json"
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return path
+
+
+def _validate_primary_method_config(config: AnchorValidationConfig) -> None:
+    if config.primary_method not in config.methods:
+        raise ValueError(
+            f"primary_method {config.primary_method!r} is not present in methods"
+        )
+    missing_baselines = [
+        method
+        for method in ("vanilla", "random", "seqmark_oracle")
+        if method not in config.methods
+    ]
+    if missing_baselines:
+        raise ValueError(
+            "required baseline methods missing from config methods: "
+            + ", ".join(missing_baselines)
+        )
 
 
 def _build_embedding_provider(config: AnchorValidationConfig) -> EmbeddingProvider:

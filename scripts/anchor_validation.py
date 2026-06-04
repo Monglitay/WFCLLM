@@ -127,6 +127,7 @@ def _cmd_run_diagnostics(args: argparse.Namespace) -> int:
         gammas=tuple(float(value) for value in args.gammas),
         methods=tuple(args.methods),
         retry_budgets=tuple(int(value) for value in args.retry_budgets),
+        primary_method=args.primary_method,
         lsh_d=args.lsh_d,
         embed_dim=args.embed_dim,
         embedding_mode=args.embedding_mode,
@@ -188,6 +189,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="derive valid sets from parent node type only; default uses block ordinal",
     )
     run.add_argument("--methods", nargs="+", default=list(DEFAULT_MAIN_METHODS))
+    run.add_argument("--primary-method", default="role_aware_slot_context")
     run.add_argument("--gammas", nargs="+", default=["0.5"])
     run.add_argument("--retry-budgets", nargs="+", default=["1", "4", "8", "16"])
     run.add_argument("--no-progress", action="store_true", help="disable tqdm progress bars")
