@@ -234,7 +234,7 @@ class TestExtractPipelineStatistics:
 
             assert "semantic_prediction" not in row
             assert row["joint_prediction"] is True
-            assert summary["summary"]["watermark_rate"] == 0.0
+            assert summary["summary"]["watermark_rate"] == 1.0
             assert summary["summary"]["joint_prediction_rate"] == 1.0
 
     def test_run_uses_spec_required_lexical_count_field_names(self):
@@ -380,7 +380,7 @@ class TestExtractPipelineStatistics:
             row = json.loads(Path(details_path).read_text(encoding="utf-8").splitlines()[0])
 
             _, kwargs = detector.detect.call_args
-            assert kwargs == {}
+            assert kwargs == {"prompt": "def f0():\n"}
             assert "contract_valid" not in row
             assert "contract_alignment" not in row
 

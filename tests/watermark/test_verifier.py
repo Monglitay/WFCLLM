@@ -41,6 +41,15 @@ class TestVerifyResult:
 
 
 class TestProjectionVerifier:
+    def test_init_switches_encoder_to_eval_mode(self):
+        encoder = _make_encoder_returning(torch.randn(128))
+
+        ProjectionVerifier(
+            encoder, _make_tokenizer(), lsh_space=_make_lsh_space(), device="cpu"
+        )
+
+        encoder.eval.assert_called_once_with()
+
     def test_verify_pass_when_sign_in_valid_set_and_margin_ok(self):
         """verify passes when sign ∈ valid_set and min_margin > margin."""
         lsh = _make_lsh_space(d=3)

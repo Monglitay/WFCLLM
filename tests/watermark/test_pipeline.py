@@ -116,6 +116,7 @@ class TestWatermarkPipelineRun:
     def _build_generator(mock_result):
         generator = MagicMock()
         generator.generate.return_value = mock_result
+        generator._tokenizer = None
         generator.config = SimpleNamespace(
             lsh_d=4,
             lsh_gamma=0.75,
@@ -1119,6 +1120,7 @@ class TestWatermarkPipelineRun:
             tokenizer.encode = MagicMock(return_value=[1, 2, 3])
             tokenizer.decode = MagicMock(return_value="")
             tokenizer.eos_token_id = 2
+            tokenizer.apply_chat_template = None
 
             generator = WatermarkGenerator(
                 model=model,

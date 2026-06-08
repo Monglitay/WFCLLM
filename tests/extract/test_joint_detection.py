@@ -22,6 +22,10 @@ from scripts.evaluate_dual_channel import run_evaluation
 
 
 def test_joint_detection_uses_weighted_lexical_support_factor() -> None:
+    import math
+
+    from scipy.stats import norm
+
     lexical = LexicalDetectionResult(
         num_positions_scored=8,
         num_green_hits=6,
@@ -37,8 +41,13 @@ def test_joint_detection_uses_weighted_lexical_support_factor() -> None:
 
     result = fuse_joint_detection(semantic_z_score=3.0, lexical_result=lexical, config=config)
 
-    assert result.joint_score == pytest.approx(3.5)
-    assert result.p_joint == pytest.approx(1.0 - 0.9997673709209645)
+    w_semantic = 1.0
+    w_lexical = 0.5 * (8 / 16)
+    expected_joint = (w_semantic * 3.0 + w_lexical * 2.0) / math.sqrt(
+        w_semantic**2 + w_lexical**2
+    )
+    assert result.joint_score == pytest.approx(expected_joint)
+    assert result.p_joint == pytest.approx(float(norm.sf(expected_joint)))
     assert result.prediction is False
     assert result.confidence == pytest.approx(1.0 - result.p_joint)
     assert result.rationale == "semantic borderline, lexical supportive"

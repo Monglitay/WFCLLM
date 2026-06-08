@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from wfcllm.orchestration.state import RunStateManager, ALL_PHASES, PHASES
+from wfcllm.orchestration.state import RunStateManager, ALL_PHASES, OPTIONAL_PHASES, PHASES
 from tests.integration.conftest import PROJECT_ROOT, RUN_PY, write_json, write_jsonl
 
 
@@ -323,13 +323,13 @@ def test_run_state_manager_tracks_build_entropy_profile(tmp_path):
 
 def test_phases_order():
     assert PHASES == ["encoder", "watermark", "extract"]
-    assert ALL_PHASES == [
-        "encoder",
-        "watermark",
-        "extract",
+    assert OPTIONAL_PHASES == [
+        "pretrain",
         "generate-negative",
         "token-channel-train",
+        "build-entropy-profile",
     ]
+    assert ALL_PHASES == PHASES + OPTIONAL_PHASES
 
 
 def test_reset_clears_all(tmp_path):

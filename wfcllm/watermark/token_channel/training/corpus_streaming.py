@@ -162,10 +162,10 @@ def split_training_cache_streaming(
 
     # Split indices
     split_index = min(total_rows - 1, max(1, int(total_rows * split_ratio)))
-    train_indices = set(indices[:split_index])
-    validation_indices = set(indices[split_index:])
+    train_indices = indices[:split_index]
+    validation_indices = indices[split_index:]
 
-    return sorted(train_indices), sorted(validation_indices)
+    return train_indices, validation_indices
 
 
 def load_rows_by_indices(
@@ -176,7 +176,7 @@ def load_rows_by_indices(
 
     Args:
         path: Path to the training cache JSON file
-        indices: Sorted list of row indices to load
+        indices: Row indices to load, yielded in the same order as requested
 
     Yields:
         Training rows at the specified indices
@@ -185,13 +185,24 @@ def load_rows_by_indices(
         return
 
     indices_set = set(indices)
+    max_index = max(indices_set)
+    rows_by_index: dict[int, dict[str, object]] = {}
     current_index = 0
 
     for row in stream_training_cache(path):
         if current_index in indices_set:
-            yield row
+            rows_by_index[current_index] = row
+            if len(rows_by_index) == len(indices_set):
+                break
         current_index += 1
 
         # Early exit if we've loaded all requested indices
-        if current_index > max(indices):
+        if current_index > max_index:
             break
+
+    missing_indices = [index for index in indices if index not in rows_by_index]
+    if missing_indices:
+        raise ValueError(f"training cache is missing requested row indices: {missing_indices}")
+
+    for index in indices:
+        yield rows_by_index[index]

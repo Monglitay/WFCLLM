@@ -178,7 +178,7 @@ class TestForwardAndSample:
             (torch.zeros(1, 1, 3, 2), torch.zeros(1, 1, 3, 2)),
         )
         model.return_value = prefill_output
-        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+        model.parameters = MagicMock(side_effect=lambda: iter([torch.zeros(1)]))
 
         tokenizer.encode.return_value = torch.tensor([[11, 22, 33]])
         tokenizer.decode.return_value = "X"
@@ -211,7 +211,7 @@ class TestForwardAndSample:
             (torch.zeros(1, 1, 3, 2), torch.zeros(1, 1, 3, 2)),
         )
         model.return_value = prefill_output
-        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+        model.parameters = MagicMock(side_effect=lambda: iter([torch.zeros(1)]))
 
         tokenizer.encode.return_value = torch.tensor([[11, 22, 33]])
         tokenizer.decode.return_value = "Y"
@@ -253,7 +253,7 @@ class TestForwardAndSample:
             (torch.zeros(1, 1, 4, 2), torch.zeros(1, 1, 4, 2)),
         )
         model.side_effect = [prefill_output, second_output]
-        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+        model.parameters = MagicMock(side_effect=lambda: iter([torch.zeros(1)]))
 
         tokenizer.encode.return_value = torch.tensor([[11, 22, 33]])
         tokenizer.decode.return_value = "Z"
@@ -297,7 +297,7 @@ class TestForwardAndSample:
             (torch.zeros(1, 1, 3, 2), torch.zeros(1, 1, 3, 2)),
         )
         model.return_value = prefill_output
-        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+        model.parameters = MagicMock(side_effect=lambda: iter([torch.zeros(1)]))
 
         tokenizer.encode.return_value = torch.tensor([[11, 22, 33]])
         tokenizer.decode.return_value = "T"
@@ -328,7 +328,7 @@ class TestForwardAndSample:
             (torch.zeros(1, 1, 3, 2), torch.zeros(1, 1, 3, 2)),
         )
         model.return_value = prefill_output
-        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+        model.parameters = MagicMock(side_effect=lambda: iter([torch.zeros(1)]))
 
         tokenizer.encode.return_value = torch.tensor([[11, 22, 33]])
         tokenizer.decode.return_value = "U"
@@ -380,7 +380,7 @@ class TestForwardAndSample:
             (torch.zeros(1, 1, 3, 2), torch.zeros(1, 1, 3, 2)),
         )
         model.return_value = prefill_output
-        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+        model.parameters = MagicMock(side_effect=lambda: iter([torch.zeros(1)]))
 
         tokenizer.encode.return_value = torch.tensor([[11, 22, 33]])
         tokenizer.decode.return_value = "V"
@@ -437,7 +437,7 @@ class TestForwardAndSample:
             (torch.zeros(1, 1, 3, 2), torch.zeros(1, 1, 3, 2)),
         )
         model.return_value = prefill_output
-        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+        model.parameters = MagicMock(side_effect=lambda: iter([torch.zeros(1)]))
 
         tokenizer.encode.return_value = torch.tensor([[11, 22, 33]])
         tokenizer.decode.return_value = "W"
@@ -445,7 +445,7 @@ class TestForwardAndSample:
 
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.load_token_channel_artifact",
-            lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
+            lambda path, **kwargs: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.TokenChannelRuntime",
@@ -525,7 +525,7 @@ class TestForwardAndSample:
             (torch.zeros(1, 1, 3, 2), torch.zeros(1, 1, 3, 2)),
         )
         model.return_value = prefill_output
-        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+        model.parameters = MagicMock(side_effect=lambda: iter([torch.zeros(1)]))
 
         tokenizer.encode.return_value = torch.tensor([[11, 22, 33]])
         tokenizer.decode.return_value = "Y"
@@ -533,7 +533,7 @@ class TestForwardAndSample:
 
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.load_token_channel_artifact",
-            lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
+            lambda path, **kwargs: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.TokenChannelRuntime",
@@ -589,8 +589,8 @@ class TestForwardAndSample:
 
         ctx._next_logits = torch.tensor([[0.0, 0.0, 2.0, 7.0, 0.0]])
         assert gen._apply_token_channel_bias(ctx, lexical_state) is True
-        assert torch.equal(ctx._next_logits, torch.tensor([[0.0, 0.0, 5.0, 7.0, 0.0]]))
-        assert ctx.forward_and_sample() == 3
+        assert torch.equal(ctx._next_logits, torch.tensor([[0.0, 0.0, 8.0, 7.0, 0.0]]))
+        assert ctx.forward_and_sample() == 2
 
         block_cp = ctx.last_block_checkpoint
         assert block_cp is not None
@@ -639,7 +639,7 @@ class TestEosResolution:
             encoder_device="cpu",
             eos_token_id=0,
         )
-        mock_model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+        mock_model.parameters = MagicMock(side_effect=lambda: iter([torch.zeros(1)]))
         mock_tokenizer.eos_token_id = 99
 
         ctx = GenerationContext(

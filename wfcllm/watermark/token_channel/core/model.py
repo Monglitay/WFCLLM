@@ -188,10 +188,13 @@ class TokenChannelModel(nn.Module):
             raise ValueError("context_width must be > 0")
         if hidden_size <= 0:
             raise ValueError("hidden_size must be > 0")
+        if nhead <= 0:
+            raise ValueError("nhead must be > 0")
 
         self.vocab_size = vocab_size
         self.context_width = context_width
         self.hidden_size = hidden_size
+        self.nhead = _resolve_attention_heads(hidden_size=hidden_size, requested_nhead=nhead)
 
         # Token + position embeddings (same as reference)
         self.token_embedding = nn.Embedding(vocab_size, hidden_size)
@@ -201,7 +204,7 @@ class TokenChannelModel(nn.Module):
         # Transformer encoder backbone
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=hidden_size,
-            nhead=nhead,
+            nhead=self.nhead,
             dim_feedforward=dim_feedforward,
             dropout=dropout,
             batch_first=True,
@@ -419,11 +422,10 @@ def check_token_channel_compatibility(
             "schema_version mismatch: "
             f"expected {TOKEN_CHANNEL_SCHEMA_VERSION!r}, got {metadata.schema_version!r}"
         )
-    # Skip tokenizer_name check - only vocab_size matters for compatibility
-    # if metadata.tokenizer_name != tokenizer_name:
-    #     reasons.append(
-    #         f"tokenizer_name mismatch: expected {tokenizer_name!r}, got {metadata.tokenizer_name!r}"
-    #     )
+    if metadata.tokenizer_name != tokenizer_name:
+        reasons.append(
+            f"tokenizer_name mismatch: expected {tokenizer_name!r}, got {metadata.tokenizer_name!r}"
+        )
     if metadata.tokenizer_vocab_size != tokenizer_vocab_size:
         reasons.append(
             "tokenizer_vocab_size mismatch: "
@@ -525,6 +527,16 @@ def _infer_hidden_size_from_state_dict(state_dict: Mapping[str, torch.Tensor]) -
     if embedding is None or embedding.ndim != 2:
         raise ValueError("Token-channel checkpoint is missing token_embedding.weight")
     return int(embedding.shape[1])
+
+
+def _resolve_attention_heads(*, hidden_size: int, requested_nhead: int) -> int:
+    if hidden_size % requested_nhead == 0:
+        return requested_nhead
+    max_candidate = min(hidden_size, requested_nhead)
+    for candidate in range(max_candidate, 0, -1):
+        if hidden_size % candidate == 0:
+            return candidate
+    return 1
 
 
 def _load_checkpoint_state_dict(

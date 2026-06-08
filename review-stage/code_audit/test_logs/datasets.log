@@ -1,0 +1,18 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.14, pytest-9.0.2, pluggy-1.6.0 -- /root/miniconda3/envs/WFCLLM/bin/python3.11
+cachedir: .pytest_cache
+rootdir: /root/autodl-tmp/WFCLLM
+plugins: anyio-4.12.1, xdist-3.8.0
+collecting ... collected 9 items
+
+tests/datasets/test_adapters.py::test_humaneval_registered PASSED        [ 11%]
+tests/datasets/test_adapters.py::test_mbpp_registered PASSED             [ 22%]
+tests/datasets/test_adapters.py::test_humanevalpack_registered PASSED    [ 33%]
+tests/datasets/test_adapters.py::test_unknown_dataset_raises PASSED      [ 44%]
+tests/datasets/test_adapters.py::test_humaneval_adapter_supports_python_only PASSED [ 55%]
+tests/datasets/test_adapters.py::test_humaneval_adapter_rejects_unsupported_language_at_iter PASSED [ 66%]
+tests/datasets/test_adapters.py::test_mbpp_adapter_name PASSED           [ 77%]
+tests/datasets/test_adapters.py::test_humanevalpack_iter_raises_not_implemented PASSED [ 88%]
+tests/datasets/test_adapters.py::test_humanevalpack_supports_four_languages PASSED [100%]
+
+============================== 9 passed in 0.67s ===============================

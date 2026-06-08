@@ -24,6 +24,9 @@ class ProjectionVerifier:
 
     def __init__(self, encoder, tokenizer, lsh_space: LSHSpace, device: str = "cuda"):
         self._encoder = encoder
+        eval_fn = getattr(self._encoder, "eval", None)
+        if callable(eval_fn):
+            eval_fn()
         self._tokenizer = tokenizer
         self._lsh_space = lsh_space
         self._device = device

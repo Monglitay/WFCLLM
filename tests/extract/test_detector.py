@@ -273,6 +273,25 @@ class TestWatermarkDetector:
         assert result.joint_result.joint_score == pytest.approx(expected_joint)
         assert result.semantic_result.z_score == result.z_score
 
+    def test_detect_forwards_prompt_to_dual_channel_lexical_replay(
+        self, config, mock_encoder, mock_tokenizer
+    ):
+        config.token_channel.enabled = True
+        config.token_channel.mode = "dual-channel"
+        detector = WatermarkDetector(config, mock_encoder, mock_tokenizer, device="cpu")
+        lexical_result = LexicalDetectionResult(
+            num_positions_scored=4,
+            num_green_hits=2,
+            green_fraction=0.5,
+            lexical_z_score=1.0,
+            lexical_p_value=0.2,
+        )
+
+        with patch.object(detector, "_detect_lexical", return_value=lexical_result) as detect_lexical:
+            detector.detect("    return x\n", prompt="def f(x):\n")
+
+        detect_lexical.assert_called_once_with("    return x\n", prompt="def f(x):\n")
+
     def test_detect_uses_lexical_only_mode_without_semantic_scores(
         self, config, mock_encoder, mock_tokenizer
     ):
@@ -435,7 +454,10 @@ class TestWatermarkDetector:
             first = detector.detect("x = 1\n")
             second = detector.detect("x = 1\n")
 
-        load_artifact.assert_called_once_with(config.token_channel.model_path)
+        load_artifact.assert_called_once()
+        assert load_artifact.call_args.args == (config.token_channel.model_path,)
+        expected_device = "cuda" if torch.cuda.is_available() else "cpu"
+        assert load_artifact.call_args.kwargs["map_location"].type == expected_device
         runtime_cls.assert_called_once_with(
             model=artifact.model,
             config=config.token_channel,

@@ -76,10 +76,14 @@ def _setup_minimal_workflow_mocks(
     monkeypatch.setattr(
         train_workflow,
         "build_token_channel_batch",
-        lambda rows, *, context_width: {"rows": rows},
+        lambda rows, *, context_width, vocab_size, device="cpu": {"rows": rows},
     )
-    monkeypatch.setattr(train_workflow, "TokenChannelModel", lambda **kwargs: MagicMock())
-    monkeypatch.setattr(train_workflow.torch.optim, "AdamW", lambda params, lr: MagicMock())
+    token_model = MagicMock()
+    token_model.to.return_value = token_model
+    monkeypatch.setattr(train_workflow, "TokenChannelModel", lambda **kwargs: token_model)
+    monkeypatch.setattr(train_workflow.torch.optim, "AdamW", lambda params, lr, **kwargs: MagicMock())
+    monkeypatch.setattr(train_workflow, "get_cosine_schedule_with_warmup", lambda *args, **kwargs: MagicMock())
+    monkeypatch.setattr(train_workflow, "export_token_channel_checkpoint", lambda **kwargs: None)
     monkeypatch.setattr(train_workflow, "train_one_epoch", lambda **kwargs: epoch_metrics)
     monkeypatch.setattr(
         train_workflow,
@@ -421,6 +425,7 @@ def test_run_token_channel_train_workflow_orchestrates_training_and_export(
 
     teacher_model = MagicMock(name="teacher_model")
     token_model = MagicMock(name="token_channel_model")
+    token_model.to.return_value = token_model
     optimizer = MagicMock(name="optimizer")
     batch_calls: list[list[dict[str, object]]] = []
     saved_artifacts: dict[str, object] = {}
@@ -432,18 +437,33 @@ def test_run_token_channel_train_workflow_orchestrates_training_and_export(
     monkeypatch.setattr(train_workflow, "save_training_cache", lambda path, rows: Path(path).write_text("cache", encoding="utf-8"))
     monkeypatch.setattr(train_workflow, "load_training_cache", lambda path: cached_rows)
 
-    def fake_build_batch(rows: list[dict[str, object]], *, context_width: int) -> dict[str, object]:
+    def fake_build_batch(
+        rows: list[dict[str, object]],
+        *,
+        context_width: int,
+        vocab_size: int,
+        device: str = "cpu",
+    ) -> dict[str, object]:
         batch_calls.append(rows)
-        batch = {"rows": list(rows), "context_width": context_width}
+        batch = {
+            "rows": list(rows),
+            "context_width": context_width,
+            "vocab_size": vocab_size,
+            "device": device,
+        }
         built_batches.append(batch)
         return batch
 
     monkeypatch.setattr(train_workflow, "build_token_channel_batch", fake_build_batch)
     monkeypatch.setattr(train_workflow, "TokenChannelModel", lambda **kwargs: token_model)
-    monkeypatch.setattr(train_workflow.torch.optim, "AdamW", lambda params, lr: optimizer)
+    monkeypatch.setattr(train_workflow.torch.optim, "AdamW", lambda params, lr, **kwargs: optimizer)
+    monkeypatch.setattr(train_workflow, "get_cosine_schedule_with_warmup", lambda *args, **kwargs: MagicMock())
+    monkeypatch.setattr(train_workflow, "export_token_channel_checkpoint", lambda **kwargs: None)
     epoch_calls: list[dict[str, object]] = []
 
     def fake_train_one_epoch(**kwargs):
+        kwargs["train_batches"] = list(kwargs["train_batches"])
+        kwargs["validation_batches"] = list(kwargs["validation_batches"])
         epoch_calls.append(kwargs)
         return epochs[kwargs["epoch"] - 1]
 
@@ -495,13 +515,18 @@ def test_run_token_channel_train_workflow_orchestrates_training_and_export(
         switch_target_negative_count=1,
     )
     assert config.cache_path.exists()
-    shuffled_rows = list(cached_rows)
+    shuffled_rows = list(training_rows)
     random.Random(config.seed).shuffle(shuffled_rows)
     expected_train_rows = shuffled_rows[:2]
     expected_validation_rows = shuffled_rows[2:]
-    assert batch_calls == [expected_train_rows, expected_validation_rows]
-    assert [call["train_batches"] for call in epoch_calls] == [[built_batches[0]], [built_batches[0]]]
-    assert [call["validation_batches"] for call in epoch_calls] == [[built_batches[1]], [built_batches[1]]]
+    assert batch_calls == [
+        expected_train_rows,
+        expected_validation_rows,
+        expected_train_rows,
+        expected_validation_rows,
+    ]
+    assert [call["train_batches"] for call in epoch_calls] == [[built_batches[0]], [built_batches[2]]]
+    assert [call["validation_batches"] for call in epoch_calls] == [[built_batches[1]], [built_batches[3]]]
     assert saved_artifacts["checkpoint_dir"] == config.model_path
     assert saved_artifacts["model"] is token_model
     assert saved_artifacts["evidence"] is evidence
@@ -636,16 +661,28 @@ def test_run_token_channel_train_workflow_batches_by_configured_batch_size(
 
     batch_calls: list[list[dict[str, object]]] = []
 
-    def fake_build_batch(rows: list[dict[str, object]], *, context_width: int) -> dict[str, object]:
+    def fake_build_batch(
+        rows: list[dict[str, object]],
+        *,
+        context_width: int,
+        vocab_size: int,
+        device: str = "cpu",
+    ) -> dict[str, object]:
         batch_calls.append(list(rows))
         return {"rows": list(rows)}
 
     monkeypatch.setattr(train_workflow, "build_token_channel_batch", fake_build_batch)
-    monkeypatch.setattr(train_workflow, "TokenChannelModel", lambda **kwargs: MagicMock())
-    monkeypatch.setattr(train_workflow.torch.optim, "AdamW", lambda params, lr: MagicMock())
+    token_model = MagicMock()
+    token_model.to.return_value = token_model
+    monkeypatch.setattr(train_workflow, "TokenChannelModel", lambda **kwargs: token_model)
+    monkeypatch.setattr(train_workflow.torch.optim, "AdamW", lambda params, lr, **kwargs: MagicMock())
+    monkeypatch.setattr(train_workflow, "get_cosine_schedule_with_warmup", lambda *args, **kwargs: MagicMock())
+    monkeypatch.setattr(train_workflow, "export_token_channel_checkpoint", lambda **kwargs: None)
     epoch_calls: list[dict[str, object]] = []
 
     def fake_train_one_epoch(**kwargs):
+        kwargs["train_batches"] = list(kwargs["train_batches"])
+        kwargs["validation_batches"] = list(kwargs["validation_batches"])
         epoch_calls.append(kwargs)
         return epoch
 
@@ -838,9 +875,17 @@ def test_run_token_channel_train_workflow_propagates_compatibility_failure(
             {"switch_target": 0, "prefix_tokens": [2], "next_token": 1, "teacher_logits": [0.8, 0.2]},
         ],
     )
-    monkeypatch.setattr(train_workflow, "build_token_channel_batch", lambda rows, *, context_width: {"rows": rows})
-    monkeypatch.setattr(train_workflow, "TokenChannelModel", lambda **kwargs: MagicMock())
-    monkeypatch.setattr(train_workflow.torch.optim, "AdamW", lambda params, lr: MagicMock())
+    monkeypatch.setattr(
+        train_workflow,
+        "build_token_channel_batch",
+        lambda rows, *, context_width, vocab_size, device="cpu": {"rows": rows},
+    )
+    token_model = MagicMock()
+    token_model.to.return_value = token_model
+    monkeypatch.setattr(train_workflow, "TokenChannelModel", lambda **kwargs: token_model)
+    monkeypatch.setattr(train_workflow.torch.optim, "AdamW", lambda params, lr, **kwargs: MagicMock())
+    monkeypatch.setattr(train_workflow, "get_cosine_schedule_with_warmup", lambda *args, **kwargs: MagicMock())
+    monkeypatch.setattr(train_workflow, "export_token_channel_checkpoint", lambda **kwargs: None)
     monkeypatch.setattr(train_workflow, "train_one_epoch", lambda **kwargs: epoch)
     monkeypatch.setattr(
         train_workflow,
@@ -932,13 +977,23 @@ def test_workflow_with_batch_inference_integration(
 
     batch_calls: list[list[dict[str, object]]] = []
 
-    def fake_build_batch(rows: list[dict[str, object]], *, context_width: int) -> dict[str, object]:
+    def fake_build_batch(
+        rows: list[dict[str, object]],
+        *,
+        context_width: int,
+        vocab_size: int,
+        device: str = "cpu",
+    ) -> dict[str, object]:
         batch_calls.append(list(rows))
         return {"rows": list(rows)}
 
     monkeypatch.setattr(train_workflow, "build_token_channel_batch", fake_build_batch)
-    monkeypatch.setattr(train_workflow, "TokenChannelModel", lambda **kwargs: MagicMock())
-    monkeypatch.setattr(train_workflow.torch.optim, "AdamW", lambda params, lr: MagicMock())
+    token_model = MagicMock()
+    token_model.to.return_value = token_model
+    monkeypatch.setattr(train_workflow, "TokenChannelModel", lambda **kwargs: token_model)
+    monkeypatch.setattr(train_workflow.torch.optim, "AdamW", lambda params, lr, **kwargs: MagicMock())
+    monkeypatch.setattr(train_workflow, "get_cosine_schedule_with_warmup", lambda *args, **kwargs: MagicMock())
+    monkeypatch.setattr(train_workflow, "export_token_channel_checkpoint", lambda **kwargs: None)
     monkeypatch.setattr(train_workflow, "train_one_epoch", lambda **kwargs: epoch)
     monkeypatch.setattr(
         train_workflow,

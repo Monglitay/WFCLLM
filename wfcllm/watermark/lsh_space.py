@@ -10,6 +10,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from wfcllm.watermark.anchor_lsh import min_margin_with_planes, sign_with_planes
+
 
 class LSHSpace:
     """Manage d global hyperplanes derived from a secret key.
@@ -35,6 +37,11 @@ class LSHSpace:
         self._mu: torch.Tensor | None = None
         if whitening_path is not None:
             self._load_whitening(whitening_path)
+
+    @property
+    def planes(self) -> torch.Tensor:
+        """Return a defensive copy of the normalized LSH hyperplanes."""
+        return self._planes.clone()
 
     @staticmethod
     def _init_planes(secret_key: str, embed_dim: int, d: int) -> torch.Tensor:
@@ -64,13 +71,9 @@ class LSHSpace:
     def sign(self, u: torch.Tensor) -> tuple[int, ...]:
         """Compute d-bit LSH signature for embedding vector u."""
         u = self._whiten(u.float())
-        u_norm = F.normalize(u.unsqueeze(0), dim=1)
-        dots = (self._planes.float() @ u_norm.T).squeeze(1)
-        return tuple((dots > 0).int().tolist())
+        return sign_with_planes(u, self._planes)
 
     def min_margin(self, u: torch.Tensor) -> float:
         """Return minimum absolute cosine distance from u to all hyperplanes."""
         u = self._whiten(u.float())
-        u_norm = F.normalize(u.unsqueeze(0), dim=1)
-        dots = (self._planes.float() @ u_norm.T).squeeze(1)
-        return dots.abs().min().item()
+        return min_margin_with_planes(u, self._planes)
