@@ -1,0 +1,273 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.14, pytest-9.0.2, pluggy-1.6.0 -- /root/miniconda3/envs/WFCLLM/bin/python3.11
+cachedir: .pytest_cache
+rootdir: /root/autodl-tmp/WFCLLM
+plugins: anyio-4.12.1, xdist-3.8.0
+collecting ... collected 130 items
+
+tests/extract/test_adaptive_roundtrip.py::test_adaptive_roundtrip_preserves_contracts PASSED [  0%]
+tests/extract/test_adaptive_roundtrip.py::test_saved_historical_best_anchor_region_roundtrips_without_numeric_mismatch PASSED [  1%]
+tests/extract/test_adaptive_roundtrip.py::test_tampered_adaptive_metadata_is_marked_invalid PASSED [  2%]
+tests/extract/test_adaptive_roundtrip.py::test_adaptive_roundtrip_uses_extract_config_when_schedule_metadata_missing PASSED [  3%]
+tests/extract/test_alignment.py::TestCompareBlockContracts::test_reports_block_count_mismatch PASSED [  3%]
+tests/extract/test_alignment.py::TestCompareBlockContracts::test_reports_numeric_mismatch_without_structure_mismatch PASSED [  4%]
+tests/extract/test_alignment.py::test_alignment_ignores_parent_node_type_context_shift PASSED [  5%]
+tests/extract/test_alignment.py::test_alignment_ignores_context_dependent_fields PASSED [  6%]
+tests/extract/test_alignment.py::test_rebuild_block_contracts_matches_canonical_builder PASSED [  6%]
+tests/extract/test_alignment.py::test_rebuild_block_contracts_uses_adaptive_gamma_metadata PASSED [  7%]
+tests/extract/test_calibrator.py::TestThresholdCalibrator::test_calibrate_returns_dict_with_required_keys PASSED [  8%]
+tests/extract/test_calibrator.py::TestThresholdCalibrator::test_calibrate_fpr_01_returns_99th_percentile PASSED [  9%]
+tests/extract/test_calibrator.py::TestThresholdCalibrator::test_calibrate_fpr_05_returns_95th_percentile PASSED [ 10%]
+tests/extract/test_calibrator.py::TestThresholdCalibrator::test_calibrate_empty_corpus_raises PASSED [ 10%]
+tests/extract/test_calibrator.py::TestThresholdCalibrator::test_calibrate_skips_no_block_samples PASSED [ 11%]
+tests/extract/test_calibrator.py::TestThresholdCalibrator::test_calibrate_filters_simple_blocks_only PASSED [ 12%]
+tests/extract/test_calibrator.py::TestThresholdCalibrator::test_calibrator_uses_shared_hypothesis_z_score_helper PASSED [ 13%]
+tests/extract/test_calibrator.py::TestThresholdCalibrator::test_calibrator_uses_shared_hypothesis_distribution_helper PASSED [ 13%]
+tests/extract/test_calibrator.py::TestThresholdCalibrator::test_calibrate_adaptive_mode_uses_gamma_sequence_mean_and_variance PASSED [ 14%]
+tests/extract/test_calibrator.py::TestThresholdCalibrator::test_calibrate_adaptive_mode_passes_block_contracts_to_scorer PASSED [ 15%]
+tests/extract/test_config.py::TestExtractConfig::test_defaults PASSED    [ 16%]
+tests/extract/test_config.py::TestExtractConfig::test_adaptive_detection_defaults PASSED [ 16%]
+tests/extract/test_config.py::TestExtractConfig::test_custom_threshold PASSED [ 17%]
+tests/extract/test_config.py::TestExtractConfig::test_token_channel_defaults PASSED [ 18%]
+tests/extract/test_config.py::TestExtractConfig::test_token_channel_can_be_overridden PASSED [ 19%]
+tests/extract/test_config.py::TestBlockScore::test_fields PASSED         [ 20%]
+tests/extract/test_config.py::test_block_score_has_min_margin PASSED     [ 20%]
+tests/extract/test_config.py::test_block_score_no_projection_field PASSED [ 21%]
+tests/extract/test_config.py::TestDetectionResult::test_watermarked PASSED [ 22%]
+tests/extract/test_config.py::TestPublicAPI::test_high_level_imports PASSED [ 23%]
+tests/extract/test_config.py::TestPublicAPI::test_low_level_imports PASSED [ 23%]
+tests/extract/test_detector.py::TestWatermarkDetector::test_detect_returns_detection_result PASSED [ 24%]
+tests/extract/test_detector.py::TestWatermarkDetector::test_detection_result_exposes_typed_channel_fields_by_default PASSED [ 25%]
+tests/extract/test_detector.py::TestWatermarkDetector::test_detect_empty_code PASSED [ 26%]
+tests/extract/test_detector.py::TestWatermarkDetector::test_block_details_include_simple_blocks PASSED [ 26%]
+tests/extract/test_detector.py::TestWatermarkDetector::test_selected_flag_set PASSED [ 27%]
+tests/extract/test_detector.py::TestWatermarkDetector::test_detect_surfaces_contract_alignment_when_metadata_present PASSED [ 28%]
+tests/extract/test_detector.py::TestWatermarkDetector::test_detect_without_metadata_keeps_legacy_path_unchanged PASSED [ 29%]
+tests/extract/test_detector.py::TestWatermarkDetector::test_detect_compares_fixed_mode_metadata_when_blocks_present PASSED [ 30%]
+tests/extract/test_detector.py::TestWatermarkDetector::test_detect_wires_adaptive_mode_and_block_gamma_from_metadata PASSED [ 30%]
+tests/extract/test_detector.py::TestWatermarkDetector::test_detect_scores_with_block_specific_k_from_metadata PASSED [ 31%]
+tests/extract/test_detector.py::TestWatermarkDetector::test_detect_attaches_lexical_and_joint_results PASSED [ 32%]
+tests/extract/test_detector.py::TestWatermarkDetector::test_detect_uses_lexical_only_mode_without_semantic_scores PASSED [ 33%]
+tests/extract/test_detector.py::TestWatermarkDetector::test_detect_rejects_token_altering_postprocess_metadata PASSED [ 33%]
+tests/extract/test_detector.py::TestWatermarkDetector::test_detect_rejects_mismatched_pinned_token_channel_artifact FAILED [ 34%]
+tests/extract/test_detector.py::TestWatermarkDetector::test_detect_allows_token_altering_postprocess_in_semantic_only_mode PASSED [ 35%]
+tests/extract/test_detector.py::TestWatermarkDetector::test_detect_lazily_initializes_real_lexical_detector_path FAILED [ 36%]
+tests/extract/test_dp_selector.py::TestDPSelector::test_single_leaf_block PASSED [ 36%]
+tests/extract/test_dp_selector.py::TestDPSelector::test_two_independent_roots PASSED [ 37%]
+tests/extract/test_dp_selector.py::TestDPSelector::test_parent_beats_children PASSED [ 38%]
+tests/extract/test_dp_selector.py::TestDPSelector::test_children_beat_parent PASSED [ 39%]
+tests/extract/test_dp_selector.py::TestDPSelector::test_three_level_nesting PASSED [ 40%]
+tests/extract/test_dp_selector.py::TestDPSelector::test_empty_blocks PASSED [ 40%]
+tests/extract/test_dp_selector.py::TestDPSelector::test_tie_prefers_children PASSED [ 41%]
+tests/extract/test_extract_param_resolution.py::test_extract_prefers_embedded_metadata_over_stale_config PASSED [ 42%]
+tests/extract/test_extract_param_resolution.py::test_extract_uses_config_defaults_when_metadata_missing PASSED [ 43%]
+tests/extract/test_extract_param_resolution.py::test_extract_config_accepts_explicit_lsh_fields PASSED [ 43%]
+tests/extract/test_extract_param_resolution.py::test_extract_rejects_invalid_lsh_values PASSED [ 44%]
+tests/extract/test_hypothesis.py::TestHypothesisTester::test_empty_blocks PASSED [ 45%]
+tests/extract/test_hypothesis.py::TestHypothesisTester::test_all_hits PASSED [ 46%]
+tests/extract/test_hypothesis.py::TestHypothesisTester::test_half_hits PASSED [ 46%]
+tests/extract/test_hypothesis.py::TestHypothesisTester::test_custom_threshold PASSED [ 47%]
+tests/extract/test_hypothesis.py::TestHypothesisTester::test_p_value_decreases_with_z PASSED [ 48%]
+tests/extract/test_hypothesis.py::TestHypothesisTester::test_result_includes_block_details PASSED [ 49%]
+tests/extract/test_hypothesis.py::TestHypothesisTester::test_compute_z_score_is_exposed_for_cross_module_reuse PASSED [ 50%]
+tests/extract/test_hypothesis.py::TestHypothesisTester::test_distribution_parameters_is_exposed_for_cross_module_reuse PASSED [ 50%]
+tests/extract/test_hypothesis.py::TestHypothesisTester::test_hypothesis_tester_uses_shared_compute_z_score_helper PASSED [ 51%]
+tests/extract/test_hypothesis.py::TestHypothesisTester::test_hypothesis_tester_uses_shared_distribution_helper PASSED [ 52%]
+tests/extract/test_hypothesis.py::TestHypothesisTesterGamma::test_custom_gamma_z_score PASSED [ 53%]
+tests/extract/test_hypothesis.py::TestHypothesisTesterGamma::test_default_gamma_is_half PASSED [ 53%]
+tests/extract/test_hypothesis.py::TestHypothesisTesterGamma::test_fixed_mode_matches_legacy_formula PASSED [ 54%]
+tests/extract/test_hypothesis.py::TestHypothesisTesterGamma::test_adaptive_mode_uses_gamma_sequence_mean_and_variance PASSED [ 55%]
+tests/extract/test_hypothesis.py::TestHypothesisTesterGamma::test_result_exposes_adaptive_statistics_fields PASSED [ 56%]
+tests/extract/test_joint_detection.py::test_joint_detection_uses_weighted_lexical_support_factor FAILED [ 56%]
+tests/extract/test_joint_detection.py::test_lexical_result_can_be_promoted_for_lexical_only_mode PASSED [ 57%]
+tests/extract/test_joint_detection.py::test_compute_pass_at_k_uses_grouped_local_correctness_rows PASSED [ 58%]
+tests/extract/test_joint_detection.py::test_annotate_correctness_from_references_uses_generated_code PASSED [ 59%]
+tests/extract/test_joint_detection.py::test_distribution_metrics_cover_roc_auc_and_tpr_at_one_percent_fpr PASSED [ 60%]
+tests/extract/test_joint_detection.py::test_evaluate_dual_channel_builds_all_three_modes PASSED [ 60%]
+tests/extract/test_joint_detection.py::test_safe_perturbations_preserve_runtime_behavior PASSED [ 61%]
+tests/extract/test_negative_corpus.py::TestNegativeCorpusConfig::test_default_values PASSED [ 62%]
+tests/extract/test_negative_corpus.py::TestNegativeCorpusConfig::test_custom_values PASSED [ 63%]
+tests/extract/test_negative_corpus.py::TestNegativeCorpusConfig::test_unsupported_dataset_raises PASSED [ 63%]
+tests/extract/test_negative_corpus.py::TestNegativeCorpusGeneratorGenerate::test_generate_returns_string PASSED [ 64%]
+tests/extract/test_negative_corpus.py::TestNegativeCorpusGeneratorRun::test_run_reference_mode_writes_dataset_solutions PASSED [ 65%]
+tests/extract/test_negative_corpus.py::TestNegativeCorpusGeneratorRun::test_run_writes_jsonl PASSED [ 66%]
+tests/extract/test_negative_corpus.py::TestNegativeCorpusGeneratorRun::test_run_respects_limit PASSED [ 66%]
+tests/extract/test_offline_analysis.py::test_compare_run_parameters_prefers_saved_watermarked_metadata PASSED [ 67%]
+tests/extract/test_offline_analysis.py::test_artifact_compatibility_requires_same_id_set_and_comparable_details PASSED [ 68%]
+tests/extract/test_offline_analysis.py::test_build_detail_delta_report_flags_true_to_false_detection_flip PASSED [ 69%]
+tests/extract/test_offline_analysis.py::test_build_detail_delta_report_calculates_z_score_delta PASSED [ 70%]
+tests/extract/test_offline_analysis.py::test_build_detail_delta_report_rejects_non_boolean_is_watermarked PASSED [ 70%]
+tests/extract/test_offline_analysis.py::test_load_detail_artifact_rejects_duplicate_ids PASSED [ 71%]
+tests/extract/test_offline_analysis.py::test_load_watermarked_artifact_preserves_optional_route_one_summary PASSED [ 72%]
+tests/extract/test_offline_analysis.py::test_load_watermarked_artifact_keeps_older_rows_compatible PASSED [ 73%]
+tests/extract/test_offline_analysis.py::test_build_offline_regression_report_includes_regression_classification_keys PASSED [ 73%]
+tests/extract/test_offline_analysis.py::test_build_offline_regression_report_classifies_parameter_drift_without_implementation_bug_as_branch_a PASSED [ 74%]
+tests/extract/test_offline_analysis.py::test_build_offline_regression_report_marks_incompatible_comparison_unresolved PASSED [ 75%]
+tests/extract/test_offline_analysis.py::test_build_offline_regression_report_surfaces_route_one_anomalies_and_deltas PASSED [ 76%]
+tests/extract/test_offline_analysis.py::test_build_offline_regression_report_keeps_legacy_watermarked_rows_compatible PASSED [ 76%]
+tests/extract/test_offline_analysis.py::test_build_offline_regression_report_does_not_flag_unchanged_cascade_no_recovery PASSED [ 77%]
+tests/extract/test_pipeline.py::TestExtractPipelineConfig::test_default_fields PASSED [ 78%]
+tests/extract/test_pipeline.py::TestExtractPipelineStatistics::test_run_creates_details_and_summary_files PASSED [ 79%]
+tests/extract/test_pipeline.py::TestExtractPipelineStatistics::test_run_names_semantic_and_joint_predictions_explicitly PASSED [ 80%]
+tests/extract/test_pipeline.py::TestExtractPipelineStatistics::test_run_keeps_semantic_prediction_absent_in_lexical_only_mode FAILED [ 80%]
+tests/extract/test_pipeline.py::TestExtractPipelineStatistics::test_run_uses_spec_required_lexical_count_field_names PASSED [ 81%]
+tests/extract/test_pipeline.py::TestExtractPipelineStatistics::test_summary_includes_declared_calibration_regime PASSED [ 82%]
+tests/extract/test_pipeline.py::TestExtractPipelineStatistics::test_watermark_rate_ci_lower_le_upper PASSED [ 83%]
+tests/extract/test_pipeline.py::TestExtractPipelineStatistics::test_run_surfaces_contract_alignment_fields_when_metadata_present FAILED [ 83%]
+tests/extract/test_pipeline.py::TestExtractPipelineStatistics::test_run_without_metadata_keeps_detail_rows_legacy_shaped FAILED [ 84%]
+tests/extract/test_pipeline.py::TestExtractPipelineStatistics::test_summary_excludes_invalid_samples_when_policy_enabled FAILED [ 85%]
+tests/extract/test_pipeline.py::TestExtractPipelineStatistics::test_summary_distinguishes_modes_and_invalid_reasons FAILED [ 86%]
+tests/extract/test_pipeline.py::test_calibrated_threshold_smoke_range PASSED [ 86%]
+tests/extract/test_pipeline.py::test_debug_extract_alignment_smoke_resolves_embedded_params_without_diag PASSED [ 87%]
+tests/extract/test_pipeline.py::test_debug_extract_alignment_auto_discovers_diag_details PASSED [ 88%]
+tests/extract/test_pipeline.py::test_debug_extract_alignment_cli_runs_from_script_path PASSED [ 89%]
+tests/extract/test_pipeline_checkpoint.py::test_resume_latest_appends_remaining_details_and_rebuilds_summary PASSED [ 90%]
+tests/extract/test_pipeline_checkpoint.py::test_resume_all_processed_regenerates_summary PASSED [ 90%]
+tests/extract/test_pipeline_checkpoint.py::test_resume_explicit_with_wrong_input_stem_raises PASSED [ 91%]
+tests/extract/test_scorer.py::TestBlockScorer::test_score_single_block_hit PASSED [ 92%]
+tests/extract/test_scorer.py::TestBlockScorer::test_score_single_block_miss PASSED [ 93%]
+tests/extract/test_scorer.py::TestBlockScorer::test_verify_called_with_margin_zero PASSED [ 93%]
+tests/extract/test_scorer.py::TestBlockScorer::test_root_block_uses_module_parent PASSED [ 94%]
+tests/extract/test_scorer.py::TestBlockScorer::test_nested_block_uses_parent_node_type PASSED [ 95%]
+tests/extract/test_scorer.py::TestBlockScorer::test_score_all_returns_all_blocks PASSED [ 96%]
+tests/extract/test_scorer.py::TestBlockScorer::test_score_block_uses_block_specific_k_when_present PASSED [ 96%]
+tests/extract/test_token_channel.py::test_replay_detector_replays_green_hits PASSED [ 97%]
+tests/extract/test_token_channel.py::test_replay_detector_respects_repeated_prefixes_and_ngrams PASSED [ 98%]
+tests/extract/test_token_channel.py::test_replay_detector_skips_structure_masked_tokens FAILED [ 99%]
+tests/extract/test_token_channel.py::test_replay_detector_fails_closed_when_ast_feature_prep_fails FAILED [100%]
+
+=================================== FAILURES ===================================
+_ TestWatermarkDetector.test_detect_rejects_mismatched_pinned_token_channel_artifact _
+tests/extract/test_detector.py:357: in test_detect_rejects_mismatched_pinned_token_channel_artifact
+    detector.detect(
+wfcllm/extract/detector.py:53: in detect
+    self._validate_token_channel_metadata(watermark_metadata)
+wfcllm/extract/detector.py:173: in _validate_token_channel_metadata
+    self._assert_token_channel_pin_matches(token_channel)
+wfcllm/extract/detector.py:202: in _assert_token_channel_pin_matches
+    artifact = self._get_token_channel_artifact()
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+wfcllm/extract/detector.py:183: in _get_token_channel_artifact
+    self._token_channel_artifact.model.to(device)
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: 'object' object has no attribute 'to'
+_ TestWatermarkDetector.test_detect_lazily_initializes_real_lexical_detector_path _
+tests/extract/test_detector.py:435: in test_detect_lazily_initializes_real_lexical_detector_path
+    first = detector.detect("x = 1\n")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+wfcllm/extract/detector.py:107: in detect
+    return self._attach_channel_results(result, code)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+wfcllm/extract/detector.py:116: in _attach_channel_results
+    lexical_result = self._detect_lexical(code, prompt=prompt)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+wfcllm/extract/detector.py:129: in _detect_lexical
+    detector = self._get_lexical_detector()
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+wfcllm/extract/detector.py:140: in _get_lexical_detector
+    artifact = self._get_token_channel_artifact()
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+wfcllm/extract/detector.py:183: in _get_token_channel_artifact
+    self._token_channel_artifact.model.to(device)
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: 'object' object has no attribute 'to'
+__________ test_joint_detection_uses_weighted_lexical_support_factor ___________
+tests/extract/test_joint_detection.py:40: in test_joint_detection_uses_weighted_lexical_support_factor
+    assert result.joint_score == pytest.approx(3.5)
+E   assert 3.395498750508662 == 3.5 ± 3.5e-06
+E
+E     comparison failed
+E     Obtained: 3.395498750508662
+E     Expected: 3.5 ± 3.5e-06
+_ TestExtractPipelineStatistics.test_run_keeps_semantic_prediction_absent_in_lexical_only_mode _
+tests/extract/test_pipeline.py:237: in test_run_keeps_semantic_prediction_absent_in_lexical_only_mode
+    assert summary["summary"]["watermark_rate"] == 0.0
+E   assert 1.0 == 0.0
+----------------------------- Captured stderr call -----------------------------
+
+Extracting:   0%|          | 0/1 [00:00<?, ?sample/s]  ✓ HumanEval/0 | z=4.20 | blocks=0 | watermarked=True
+
+Extracting: 100%|██████████| 1/1 [00:00<00:00, 6944.21sample/s]
+_ TestExtractPipelineStatistics.test_run_surfaces_contract_alignment_fields_when_metadata_present _
+tests/extract/test_pipeline.py:353: in test_run_surfaces_contract_alignment_fields_when_metadata_present
+    details_path = pipeline.run()
+                   ^^^^^^^^^^^^^^
+wfcllm/extract/pipeline.py:198: in run
+    if "blocks" in item and len(item["blocks"]) < self._detector._config.min_blocks:
+                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   TypeError: '<' not supported between instances of 'int' and 'MagicMock'
+----------------------------- Captured stderr call -----------------------------
+
+Extracting:   0%|          | 0/1 [00:00<?, ?sample/s]
+Extracting:   0%|          | 0/1 [00:00<?, ?sample/s]
+_ TestExtractPipelineStatistics.test_run_without_metadata_keeps_detail_rows_legacy_shaped _
+tests/extract/test_pipeline.py:383: in test_run_without_metadata_keeps_detail_rows_legacy_shaped
+    assert kwargs == {}
+E   AssertionError: assert {'prompt': 'def f0():\n'} == {}
+E
+E     Left contains 1 more item:
+E     {'prompt': 'def f0():\n'}
+E
+E     Full diff:
+E     - {}
+E     + {
+E     +     'prompt': 'def f0():\n',
+E     + }
+----------------------------- Captured stderr call -----------------------------
+
+Extracting:   0%|          | 0/1 [00:00<?, ?sample/s]  ✓ HumanEval/0 | z=4.50 | blocks=8 | watermarked=True
+
+Extracting: 100%|██████████| 1/1 [00:00<00:00, 6423.13sample/s]
+_ TestExtractPipelineStatistics.test_summary_excludes_invalid_samples_when_policy_enabled _
+tests/extract/test_pipeline.py:457: in test_summary_excludes_invalid_samples_when_policy_enabled
+    details_path = pipeline.run()
+                   ^^^^^^^^^^^^^^
+wfcllm/extract/pipeline.py:198: in run
+    if "blocks" in item and len(item["blocks"]) < self._detector._config.min_blocks:
+                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   TypeError: '<' not supported between instances of 'int' and 'MagicMock'
+----------------------------- Captured stderr call -----------------------------
+
+Extracting:   0%|          | 0/2 [00:00<?, ?sample/s]
+Extracting:   0%|          | 0/2 [00:00<?, ?sample/s]
+_ TestExtractPipelineStatistics.test_summary_distinguishes_modes_and_invalid_reasons _
+tests/extract/test_pipeline.py:570: in test_summary_distinguishes_modes_and_invalid_reasons
+    details_path = pipeline.run()
+                   ^^^^^^^^^^^^^^
+wfcllm/extract/pipeline.py:198: in run
+    if "blocks" in item and len(item["blocks"]) < self._detector._config.min_blocks:
+                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   TypeError: '<' not supported between instances of 'int' and 'MagicMock'
+----------------------------- Captured stderr call -----------------------------
+
+Extracting:   0%|          | 0/3 [00:00<?, ?sample/s]
+Extracting:   0%|          | 0/3 [00:00<?, ?sample/s]
+______________ test_replay_detector_skips_structure_masked_tokens ______________
+tests/extract/test_token_channel.py:129: in test_replay_detector_skips_structure_masked_tokens
+    assert result.num_positions_scored == 2
+E   assert 3 == 2
+E    +  where 3 = LexicalDetectionResult(num_positions_scored=3, num_green_hits=2, green_fraction=0.6666666666666666, lexical_z_score=0.5773502691896258, lexical_p_value=0.28185143082538655).num_positions_scored
+________ test_replay_detector_fails_closed_when_ast_feature_prep_fails _________
+tests/extract/test_token_channel.py:147: in test_replay_detector_fails_closed_when_ast_feature_prep_fails
+    assert result.num_positions_scored == 0
+E   assert 2 == 0
+E    +  where 2 = LexicalDetectionResult(num_positions_scored=2, num_green_hits=2, green_fraction=1.0, lexical_z_score=1.414213562373095, lexical_p_value=0.07864960352514258).num_positions_scored
+=============================== warnings summary ===============================
+tests/extract/test_joint_detection.py:20
+  /root/autodl-tmp/WFCLLM/tests/extract/test_joint_detection.py:20: DeprecationWarning: scripts/evaluate_dual_channel.py is deprecated; use 'python scripts/evaluate.py dual ...' instead.
+    from scripts.evaluate_dual_channel import CommandRunResult
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/extract/test_detector.py::TestWatermarkDetector::test_detect_rejects_mismatched_pinned_token_channel_artifact
+FAILED tests/extract/test_detector.py::TestWatermarkDetector::test_detect_lazily_initializes_real_lexical_detector_path
+FAILED tests/extract/test_joint_detection.py::test_joint_detection_uses_weighted_lexical_support_factor
+FAILED tests/extract/test_pipeline.py::TestExtractPipelineStatistics::test_run_keeps_semantic_prediction_absent_in_lexical_only_mode
+FAILED tests/extract/test_pipeline.py::TestExtractPipelineStatistics::test_run_surfaces_contract_alignment_fields_when_metadata_present
+FAILED tests/extract/test_pipeline.py::TestExtractPipelineStatistics::test_run_without_metadata_keeps_detail_rows_legacy_shaped
+FAILED tests/extract/test_pipeline.py::TestExtractPipelineStatistics::test_summary_excludes_invalid_samples_when_policy_enabled
+FAILED tests/extract/test_pipeline.py::TestExtractPipelineStatistics::test_summary_distinguishes_modes_and_invalid_reasons
+FAILED tests/extract/test_token_channel.py::test_replay_detector_skips_structure_masked_tokens
+FAILED tests/extract/test_token_channel.py::test_replay_detector_fails_closed_when_ast_feature_prep_fails
+================== 10 failed, 120 passed, 1 warning in 3.19s ===================
+ERROR conda.cli.main_run:execute(124): `conda run pytest tests/extract/ -v --tb=short` failed. (See above for error)

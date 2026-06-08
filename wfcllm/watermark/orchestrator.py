@@ -200,6 +200,12 @@ class WatermarkGenerator:
                 continue
 
             if not self._semantic_channel_enabled():
+                if self._rollback_short_token_channel_block_without_bias(
+                    ctx,
+                    event,
+                    token_channel_state,
+                ):
+                    continue
                 stats.total_blocks += 1
                 self._reset_token_channel_state(token_channel_state)
                 continue
@@ -364,6 +370,38 @@ class WatermarkGenerator:
             return False
         gate_fraction = state.gated_tokens / state.scorable_tokens
         return gate_fraction < token_channel_config.lexical_gate_min_fraction
+
+    def _is_short_token_channel_block(
+        self,
+        event,
+        state: TokenChannelRuntimeState,
+    ) -> bool:
+        if not self._lexical_channel_enabled():
+            return False
+        if state.biased_tokens <= 0:
+            return False
+        token_count = getattr(event, "token_count", state.current_block_tokens)
+        try:
+            block_tokens = int(token_count)
+        except (TypeError, ValueError):
+            block_tokens = state.current_block_tokens
+        return block_tokens < self._config.token_channel.lexical_min_block_tokens
+
+    def _rollback_short_token_channel_block_without_bias(
+        self,
+        ctx,
+        event,
+        state: TokenChannelRuntimeState,
+    ) -> bool:
+        if not self._is_short_token_channel_block(event, state):
+            return False
+        block_cp = ctx.last_block_checkpoint
+        if block_cp is None:
+            return False
+        ctx.rollback(block_cp)
+        self._reset_token_channel_state(state)
+        state.disabled_for_block = True
+        return True
 
     def _build_runtime_token_features(self, ctx) -> TokenChannelFeatures:
         token_span = self._resolve_runtime_token_span(ctx)
@@ -537,8 +575,15 @@ class WatermarkGenerator:
             return False
         # Adaptive delta: ensure the best green token in top-k beats the best red.
         # Cap at max_delta to preserve code quality.
-        logits_1d = ctx._next_logits[0] if ctx._next_logits.ndim == 2 else ctx._next_logits
-        top_k = self._config.top_k or 50
+        next_logits = getattr(ctx, "_next_logits", None)
+        if not isinstance(next_logits, torch.Tensor):
+            self._store_block_start_checkpoint_logits_if_supported(ctx, state)
+            return False
+        logits_1d = next_logits[0] if next_logits.ndim == 2 else next_logits
+        configured_top_k = getattr(self._config, "top_k", 50)
+        if type(configured_top_k) is not int or configured_top_k <= 0:
+            configured_top_k = 50
+        top_k = min(configured_top_k, logits_1d.numel())
         topk_vals, topk_idx = logits_1d.topk(top_k)
         green_set = set(green_token_ids)
         best_green = None
@@ -743,6 +788,10 @@ class WatermarkGenerator:
         record = ledger_entry["record"]
         self._capture_block_identity(ledger_entry, event)
 
+        short_token_channel_block = self._is_short_token_channel_block(
+            event,
+            token_channel_state,
+        )
         effective_ordinal = record.block_ordinal if self._config.use_ordinal_keying else None
         verify_result = self._verify_block(event, ordinal=effective_ordinal)
         if not reused_from_cascade and not record.initial_verify:
@@ -754,6 +803,42 @@ class WatermarkGenerator:
                 )
 
         if verify_result.passed:
+            block_cp = ctx.last_block_checkpoint
+            if short_token_channel_block and block_cp is not None:
+                retry_result = retry_loop.run(
+                    block_cp,
+                    event,
+                    ordinal=effective_ordinal,
+                )
+                stats.retry_diagnostics.append(retry_result.diagnostics)
+                self._append_retry_attempts(record, retry_result.diagnostics)
+                self._sync_retry_terminal_identity(
+                    ledger_entry,
+                    retry_result,
+                )
+                if retry_result.success:
+                    stats.embedded_blocks += 1
+                    pending_fallbacks.clear()
+                    self._mark_block_success(
+                        record,
+                        rescued_by_retry=True,
+                        rescued_by_cascade=reused_from_cascade,
+                    )
+                    logger.debug(
+                        "[RETRY OK] short token-channel block #%d after %d attempts",
+                        stats.total_blocks, retry_result.attempts,
+                    )
+                    return
+
+                stats.failed_blocks += 1
+                pending_fallbacks.append(event.block_text)
+                self._mark_block_failure(
+                    record,
+                    failure_reason=FailureReason.unknown.value,
+                    exhausted_retries=True,
+                )
+                return
+
             stats.embedded_blocks += 1
             pending_fallbacks.clear()
             self._mark_block_success(
@@ -790,6 +875,32 @@ class WatermarkGenerator:
             ledger_entry,
             retry_result,
         )
+
+        if retry_result.success:
+            retry_state = retry_state_registry.get(retry_result.attempts)
+            if (
+                retry_result.final_event is not None
+                and retry_state is not None
+                and self._is_short_token_channel_block(
+                    retry_result.final_event,
+                    retry_state,
+                )
+            ):
+                unbiased_retry_result = retry_loop.run(
+                    block_cp,
+                    event,
+                    ordinal=effective_ordinal,
+                )
+                stats.retry_diagnostics.append(unbiased_retry_result.diagnostics)
+                self._append_retry_attempts(record, unbiased_retry_result.diagnostics)
+                self._sync_retry_terminal_identity(
+                    ledger_entry,
+                    unbiased_retry_result,
+                )
+                retry_result = self._merge_retry_results(
+                    retry_result,
+                    unbiased_retry_result,
+                )
 
         if retry_result.success:
             stats.embedded_blocks += 1

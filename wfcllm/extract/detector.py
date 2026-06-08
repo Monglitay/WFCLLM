@@ -73,7 +73,7 @@ class WatermarkDetector:
                 code,
                 watermark_metadata,
             )
-            return self._attach_channel_results(result, code)
+            return self._attach_channel_results(result, code, prompt=prompt)
 
         # Only simple blocks carry watermark signal
         simple_blocks = [b for b in blocks if b.block_type == "simple"]
@@ -83,7 +83,7 @@ class WatermarkDetector:
                 code,
                 watermark_metadata,
             )
-            return self._attach_channel_results(result, code)
+            return self._attach_channel_results(result, code, prompt=prompt)
 
         # all_blocks passed for parent_id → node_type lookup
         scores = self._scorer.score_all(
@@ -104,7 +104,7 @@ class WatermarkDetector:
             s.selected = True
         result.block_details = scores
         result = self._with_alignment(result, code, watermark_metadata)
-        return self._attach_channel_results(result, code)
+        return self._attach_channel_results(result, code, prompt=prompt)
 
     def _attach_channel_results(self, result: DetectionResult, code: str, prompt: str = "") -> DetectionResult:
         result.semantic_result = semantic_detection_from_result(result)
@@ -180,7 +180,9 @@ class WatermarkDetector:
                 self._config.token_channel.model_path,
                 map_location=device,
             )
-            self._token_channel_artifact.model.to(device)
+            to_device = getattr(self._token_channel_artifact.model, "to", None)
+            if callable(to_device):
+                to_device(device)
         return self._token_channel_artifact
 
     def _assert_token_channel_pin_matches(self, token_channel: dict) -> None:

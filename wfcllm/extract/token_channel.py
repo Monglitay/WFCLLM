@@ -57,6 +57,8 @@ class ReplayTokenChannelDetector:
             feature_context = self._prepare_feature_context(full_code)
             if feature_context is not None:
                 prompt_offset = len(prompt)
+        if feature_context is None:
+            return LexicalDetectionResult.empty()
 
         num_positions_scored = 0
         num_green_hits = 0
@@ -82,18 +84,9 @@ class ReplayTokenChannelDetector:
                 feature_context, code if prompt_offset == 0 else prompt + code,
                 row.start + prompt_offset, row.end + prompt_offset,
             )
-            # If parse failed entirely (feature_context is None) or structure_mask is
-            # False, fall back to structure_mask=True — matching the embedding-time
-            # _fallback_runtime_token_features() so the switch head acts as the only gate.
             if features is None or not features.structure_mask:
-                from wfcllm.watermark.token_channel.core.features import TokenChannelFeatures as _TCF
-                features = _TCF(
-                    node_type="module",
-                    parent_node_type="module",
-                    block_relative_offset=0,
-                    in_code_body=True,
-                    structure_mask=True,
-                )
+                prefix_ids.append(row.token_id)
+                continue
 
             decision = self._runtime.score_prefix(prefix_ids, features=features)
             seen_prefixes.add(prefix_key)

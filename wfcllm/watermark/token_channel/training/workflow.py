@@ -16,6 +16,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, get_cosine_schedul
 from wfcllm.datasets.loaders.local import load_reference_solutions
 from wfcllm.watermark.token_channel.core.features import FEATURE_VERSION
 from wfcllm.watermark.token_channel.core.model import TokenChannelModel
+from wfcllm.watermark.token_channel.core.model import export_token_channel_checkpoint
 from wfcllm.watermark.token_channel.core.model import load_token_channel_artifact
 from wfcllm.watermark.token_channel.core.model import load_training_state
 from wfcllm.watermark.token_channel.core.model import require_token_channel_compatibility
@@ -26,6 +27,7 @@ from wfcllm.watermark.token_channel.training.trainer import save_token_channel_t
 from wfcllm.watermark.token_channel.training.trainer import train_one_epoch
 from wfcllm.watermark.token_channel.training.corpus import build_training_rows
 from wfcllm.watermark.token_channel.training.corpus import load_training_cache
+from wfcllm.watermark.token_channel.training.corpus import save_training_cache
 from wfcllm.watermark.token_channel.training.corpus import save_training_cache_streaming
 from wfcllm.watermark.token_channel.training.corpus_streaming import count_training_cache_rows
 from wfcllm.watermark.token_channel.training.corpus_streaming import load_rows_by_indices
@@ -427,7 +429,6 @@ def run_token_channel_train_workflow(
 
         # Save checkpoint after each epoch (for resuming)
         print(f"[保存] 保存 epoch {epoch} checkpoint...")
-        from wfcllm.watermark.token_channel.core.model import export_token_channel_checkpoint
         metadata = _build_training_artifact_metadata(config=config, tokenizer=tokenizer)
         config.model_path.mkdir(parents=True, exist_ok=True)
         export_token_channel_checkpoint(
@@ -589,30 +590,14 @@ def _build_batches_streaming(
 
     This function loads rows in chunks to avoid loading all rows at once.
     """
-    from wfcllm.watermark.token_channel.training.trainer import build_token_channel_batch
-
     if batch_size <= 0:
         raise ValueError("batch_size must be > 0")
     if not indices:
         return []
 
-    # Load rows in batches
-    batch_rows = []
-    for row in load_rows_by_indices(cache_path, indices):
-        batch_rows.append(row)
-
-        if len(batch_rows) >= batch_size:
-            # Yield complete batch
-            yield build_token_channel_batch(
-                batch_rows,
-                context_width=context_width,
-                vocab_size=vocab_size,
-                device=device,
-            )
-            batch_rows = []
-
-    # Yield remaining rows as final batch
-    if batch_rows:
+    for start in range(0, len(indices), batch_size):
+        batch_indices = indices[start : start + batch_size]
+        batch_rows = list(load_rows_by_indices(cache_path, batch_indices))
         yield build_token_channel_batch(
             batch_rows,
             context_width=context_width,
@@ -631,4 +616,3 @@ def _load_sample_rows(cache_path: Path, sample_size: int) -> list[dict[str, obje
             break
         rows.append(row)
     return rows
-

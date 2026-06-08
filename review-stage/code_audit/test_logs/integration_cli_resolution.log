@@ -1,0 +1,30 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.14, pytest-9.0.2, pluggy-1.6.0 -- /root/miniconda3/envs/WFCLLM/bin/python3.11
+cachedir: .pytest_cache
+rootdir: /root/autodl-tmp/WFCLLM
+plugins: anyio-4.12.1, xdist-3.8.0
+collecting ... collected 21 items
+
+tests/integration/test_cli_resolution.py::test_build_parser_returns_argparse PASSED [  4%]
+tests/integration/test_cli_resolution.py::test_parser_accepts_phase_choice PASSED [  9%]
+tests/integration/test_cli_resolution.py::test_parser_rejects_unknown_phase PASSED [ 14%]
+tests/integration/test_cli_resolution.py::test_parser_status_flag PASSED [ 19%]
+tests/integration/test_cli_resolution.py::test_parser_reset_flag PASSED  [ 23%]
+tests/integration/test_cli_resolution.py::test_parser_secret_key_override PASSED [ 28%]
+tests/integration/test_cli_resolution.py::test_load_config_reads_json PASSED [ 33%]
+tests/integration/test_cli_resolution.py::test_load_config_missing_file_returns_empty PASSED [ 38%]
+tests/integration/test_cli_resolution.py::test_parse_optional_bool_true PASSED [ 42%]
+tests/integration/test_cli_resolution.py::test_parse_optional_bool_false PASSED [ 47%]
+tests/integration/test_cli_resolution.py::test_populate_phase_registry_registers_all_phases PASSED [ 52%]
+tests/integration/test_cli_resolution.py::test_main_status_returns_zero PASSED [ 57%]
+tests/integration/test_cli_resolution.py::test_main_reset_returns_zero PASSED [ 61%]
+tests/integration/test_cli_resolution.py::test_main_compare_only_mode_forces_phase_rerun PASSED [ 66%]
+tests/integration/test_cli_resolution.py::test_cli_subprocess_invocations_do_not_use_bare_run_py_script_name PASSED [ 71%]
+tests/integration/test_cli_resolution.py::test_build_parser_parses_resume_argument PASSED [ 76%]
+tests/integration/test_cli_resolution.py::test_build_parser_accepts_token_channel_flags PASSED [ 80%]
+tests/integration/test_cli_resolution.py::test_build_parser_accepts_token_channel_train_phase_and_flags PASSED [ 85%]
+tests/integration/test_cli_resolution.py::test_parser_default_config PASSED [ 90%]
+tests/integration/test_cli_resolution.py::test_parser_custom_config PASSED [ 95%]
+tests/integration/test_cli_resolution.py::test_parser_accepts_adaptive_watermark_and_extract_flags PASSED [100%]
+
+============================== 21 passed in 0.05s ==============================

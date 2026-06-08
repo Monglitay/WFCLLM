@@ -266,7 +266,7 @@ def test_build_training_rows_skips_syntax_invalid_positive_variants() -> None:
     source = "value = a\n"
     tokenizer.register_text(source)
 
-    rows = build_training_rows(
+    rows = list(build_training_rows(
         samples=[{"source_code": source}],
         tokenizer=tokenizer,
         teacher_model=FakeTeacherModel(tokenizer),
@@ -274,7 +274,7 @@ def test_build_training_rows_skips_syntax_invalid_positive_variants() -> None:
         transform_engine=FakeTransformEngine("for item in items:\nprint(item)\n"),
         entropy_threshold=0.0,
         diversity_threshold=1,
-    )
+    ))
 
     assert len(rows) == len(source)
 
@@ -348,7 +348,7 @@ def test_build_training_rows_reuses_precomputed_variant_parse_state(monkeypatch)
 
     monkeypatch.setattr("wfcllm.watermark.token_channel.core.features.ast.parse", counting_parse)
 
-    build_training_rows(
+    list(build_training_rows(
         samples=[{"source_code": "value = a\n"}],
         tokenizer=tokenizer,
         teacher_model=FakeTeacherModel(tokenizer),
@@ -356,7 +356,7 @@ def test_build_training_rows_reuses_precomputed_variant_parse_state(monkeypatch)
         transform_engine=FakeTransformEngine("value = b\n"),
         entropy_threshold=1.0,
         diversity_threshold=2,
-    )
+    ))
 
     assert parse_calls <= 2
 
@@ -404,7 +404,7 @@ def test_build_training_rows_uses_batch_inference(monkeypatch) -> None:
         mock_batch_extract,
     )
 
-    rows = build_training_rows(
+    rows = list(build_training_rows(
         samples=[{"source_code": "value = a\n"}],
         tokenizer=tokenizer,
         teacher_model=teacher_model,
@@ -413,7 +413,7 @@ def test_build_training_rows_uses_batch_inference(monkeypatch) -> None:
         entropy_threshold=1.0,
         diversity_threshold=2,
         teacher_batch_size=8,
-    )
+    ))
 
     # Verify batch_extract_teacher_rows was called
     assert len(batch_calls) == 1, "batch_extract_teacher_rows should be called once per sample"

@@ -1,0 +1,61 @@
+ERROR conda.cli.main_run:execute(124): `conda run pytest tests/integration/test_orchestration.py -v --tb=short` failed. (See above for error)
+============================= test session starts ==============================
+platform linux -- Python 3.11.14, pytest-9.0.2, pluggy-1.6.0 -- /root/miniconda3/envs/WFCLLM/bin/python3.11
+cachedir: .pytest_cache
+rootdir: /root/autodl-tmp/WFCLLM
+plugins: anyio-4.12.1, xdist-3.8.0
+collecting ... collected 35 items
+
+tests/integration/test_orchestration.py::test_initial_state_all_phases_pending PASSED [  2%]
+tests/integration/test_orchestration.py::test_mark_done_persists_and_records_metadata PASSED [  5%]
+tests/integration/test_orchestration.py::test_reset_clears_all_phases PASSED [  8%]
+tests/integration/test_orchestration.py::test_status_returns_full_dict_with_all_phases PASSED [ 11%]
+tests/integration/test_orchestration.py::test_default_path_is_data_run_state_json PASSED [ 14%]
+tests/integration/test_orchestration.py::test_phase_registry_register_and_lookup PASSED [ 17%]
+tests/integration/test_orchestration.py::test_phase_registry_unknown_phase_raises PASSED [ 20%]
+tests/integration/test_orchestration.py::test_phase_registry_phases_lists_registered PASSED [ 22%]
+tests/integration/test_orchestration.py::test_prereq_check_satisfied_does_nothing PASSED [ 25%]
+tests/integration/test_orchestration.py::test_prereq_unsatisfied_triggers_fix PASSED [ 28%]
+tests/integration/test_orchestration.py::test_prereq_no_registered_for_phase_is_noop PASSED [ 31%]
+tests/integration/test_orchestration.py::test_prereq_registry_is_module_singleton PASSED [ 34%]
+tests/integration/test_orchestration.py::test_orchestrator_runs_all_main_phases_when_phase_unspecified PASSED [ 37%]
+tests/integration/test_orchestration.py::test_orchestrator_skips_completed_phase PASSED [ 40%]
+tests/integration/test_orchestration.py::test_orchestrator_force_reruns_completed_phase PASSED [ 42%]
+tests/integration/test_orchestration.py::test_orchestrator_fails_fast_on_nonzero PASSED [ 45%]
+tests/integration/test_orchestration.py::test_orchestrator_runs_single_phase_when_specified PASSED [ 48%]
+tests/integration/test_orchestration.py::test_orchestrator_invokes_prereqs_before_phase PASSED [ 51%]
+tests/integration/test_orchestration.py::test_dispatch_phase_invokes_registered_runner PASSED [ 54%]
+tests/integration/test_orchestration.py::test_dispatch_phase_unknown_phase_raises PASSED [ 57%]
+tests/integration/test_orchestration.py::test_dispatch_phase_propagates_nonzero_return PASSED [ 60%]
+tests/integration/test_orchestration.py::test_dispatch_phase_skips_prereq_check PASSED [ 62%]
+tests/integration/test_orchestration.py::test_all_phases_includes_build_entropy_profile PASSED [ 65%]
+tests/integration/test_orchestration.py::test_run_state_manager_tracks_build_entropy_profile PASSED [ 68%]
+tests/integration/test_orchestration.py::test_phases_order FAILED        [ 71%]
+tests/integration/test_orchestration.py::test_reset_clears_all PASSED    [ 74%]
+tests/integration/test_orchestration.py::test_status_dict PASSED         [ 77%]
+tests/integration/test_orchestration.py::test_status_exits_zero PASSED   [ 80%]
+tests/integration/test_orchestration.py::test_reset_exits_zero PASSED    [ 82%]
+tests/integration/test_orchestration.py::test_unknown_phase_exits_nonzero PASSED [ 85%]
+tests/integration/test_orchestration.py::test_run_offline_analysis_writes_json_report PASSED [ 88%]
+tests/integration/test_orchestration.py::test_load_config_returns_dict PASSED [ 91%]
+tests/integration/test_orchestration.py::test_load_config_missing_phase_ok PASSED [ 94%]
+tests/integration/test_orchestration.py::test_load_config_file_not_found PASSED [ 97%]
+tests/integration/test_orchestration.py::test_load_config_invalid_json PASSED [100%]
+
+=================================== FAILURES ===================================
+______________________________ test_phases_order _______________________________
+tests/integration/test_orchestration.py:326: in test_phases_order
+    assert ALL_PHASES == [
+E   AssertionError: assert ['encoder', '...l-train', ...] == ['encoder', '...hannel-train']
+E
+E     At index 3 diff: 'pretrain' != 'generate-negative'
+E     Left contains 2 more items, first extra item: 'token-channel-train'
+E
+E     Full diff:
+E       [
+E           'encoder',...
+E
+E     ...Full output truncated (7 lines hidden), use '-vv' to show
+=========================== short test summary info ============================
+FAILED tests/integration/test_orchestration.py::test_phases_order - Assertion...
+========================= 1 failed, 34 passed in 1.96s =========================

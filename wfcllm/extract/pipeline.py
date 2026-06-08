@@ -126,6 +126,11 @@ class ExtractPipeline:
         adaptive_config = getattr(detector_config, "adaptive_detection", None)
         return bool(getattr(adaptive_config, "exclude_invalid_samples", False))
 
+    def _min_blocks(self) -> int:
+        detector_config = getattr(self._detector, "_config", None)
+        min_blocks = getattr(detector_config, "min_blocks", 0)
+        return min_blocks if isinstance(min_blocks, int) else 0
+
     @staticmethod
     def _mode_counts(rows: list[dict]) -> dict[str, int]:
         return {
@@ -195,9 +200,10 @@ class ExtractPipeline:
         with open(details_path, mode, encoding="utf-8") as f:
             for item in iterator:
                 # Filter samples with insufficient blocks
-                if "blocks" in item and len(item["blocks"]) < self._detector._config.min_blocks:
+                min_blocks = self._min_blocks()
+                if "blocks" in item and len(item["blocks"]) < min_blocks:
                     print(
-                        f"  ⊘ {item['id']} | blocks={len(item['blocks'])} < min_blocks={self._detector._config.min_blocks} | skipped",
+                        f"  ⊘ {item['id']} | blocks={len(item['blocks'])} < min_blocks={min_blocks} | skipped",
                         file=sys.stderr,
                     )
                     continue

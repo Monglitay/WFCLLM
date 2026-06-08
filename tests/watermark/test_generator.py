@@ -105,7 +105,7 @@ class TestWatermarkGeneratorInit:
         mock_output.logits = logits
         mock_output.past_key_values = past_kv
         model.return_value = mock_output
-        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+        model.parameters = MagicMock(side_effect=lambda: iter([torch.zeros(1)]))
 
         gen = WatermarkGenerator(
             model=model, tokenizer=tokenizer,
@@ -125,6 +125,7 @@ class TestWatermarkGeneratorInit:
                 self.generated_ids = []
                 self.last_event = None
                 self.last_block_checkpoint = None
+                self._next_logits = torch.zeros(1, 8)
                 self._steps = 0
 
             @property
@@ -204,6 +205,7 @@ class TestWatermarkGeneratorInit:
                 self.generated_ids = []
                 self.last_event = None
                 self.last_block_checkpoint = None
+                self._next_logits = torch.zeros(1, 8)
                 self._steps = 0
 
             @property
@@ -268,6 +270,7 @@ class TestWatermarkGeneratorInit:
                 self.generated_ids = []
                 self.last_event = None
                 self.last_block_checkpoint = None
+                self._next_logits = torch.zeros(1, 8)
                 self._steps = 0
 
             @property
@@ -344,6 +347,7 @@ class TestWatermarkGeneratorInit:
                 self.generated_ids = []
                 self.last_event = None
                 self.last_block_checkpoint = None
+                self._next_logits = torch.zeros(1, 8)
                 self._steps = 0
 
             @property
@@ -407,6 +411,7 @@ class TestWatermarkGeneratorInit:
                 self.generated_ids = []
                 self.last_event = None
                 self.last_block_checkpoint = None
+                self._next_logits = torch.zeros(1, 8)
                 self._steps = 0
 
             @property
@@ -497,6 +502,7 @@ class TestWatermarkGeneratorInit:
                 self.generated_ids = []
                 self.last_event = None
                 self.last_block_checkpoint = None
+                self._next_logits = torch.zeros(1, 8)
                 self._steps = 0
 
             @property
@@ -577,6 +583,7 @@ class TestWatermarkGeneratorInit:
                 self.generated_ids = []
                 self.last_event = None
                 self.last_block_checkpoint = None
+                self._next_logits = torch.zeros(1, 8)
                 self._steps = 0
 
             @property
@@ -680,6 +687,7 @@ class TestWatermarkGeneratorInit:
                 self.generated_ids = []
                 self.last_event = None
                 self.last_block_checkpoint = None
+                self._next_logits = torch.zeros(1, 8)
                 self._steps = 0
 
             @property
@@ -796,6 +804,7 @@ class TestWatermarkGeneratorInit:
                 self.generated_ids = []
                 self.last_event = None
                 self.last_block_checkpoint = None
+                self._next_logits = torch.zeros(1, 8)
                 self._steps = 0
 
             @property
@@ -904,6 +913,7 @@ class TestWatermarkGeneratorInit:
                 self.generated_ids = []
                 self.last_event = None
                 self.last_block_checkpoint = None
+                self._next_logits = torch.zeros(1, 8)
                 self._steps = 0
 
             @property
@@ -1002,6 +1012,7 @@ class TestWatermarkGeneratorInit:
                 self.generated_ids = []
                 self.last_event = None
                 self.last_block_checkpoint = None
+                self._next_logits = torch.zeros(1, 8)
                 self._steps = 0
 
             @property
@@ -1108,6 +1119,7 @@ class TestWatermarkGeneratorInit:
                 self.generated_ids = []
                 self.last_event = None
                 self.last_block_checkpoint = None
+                self._next_logits = torch.zeros(1, 8)
                 self._steps = 0
 
             @property
@@ -1467,6 +1479,7 @@ class TestBlockGammaRuntime:
                 self.generated_ids = []
                 self.last_event = None
                 self.last_block_checkpoint = None
+                self._next_logits = torch.zeros(1, 8)
                 self._steps = 0
 
             @property
@@ -1551,7 +1564,7 @@ class TestFallbackDeprecated:
         from wfcllm.watermark.config import WatermarkConfig
         config = WatermarkConfig(secret_key="k", encoder_device="cpu")
         model = MagicMock()
-        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+        model.parameters = MagicMock(side_effect=lambda: iter([torch.zeros(1)]))
         tokenizer = MagicMock()
         tokenizer.encode = MagicMock(return_value=[1])
         encoder = MagicMock()
@@ -1589,7 +1602,7 @@ class TestCascadeRegression:
         )
 
         model = MagicMock()
-        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+        model.parameters = MagicMock(side_effect=lambda: iter([torch.zeros(1)]))
         tokenizer = MagicMock()
         tokenizer.encode = MagicMock(return_value=[1])
         tokenizer.decode = MagicMock(return_value="")
@@ -1760,7 +1773,7 @@ class TestCascadeRegression:
         )
 
         model = MagicMock()
-        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+        model.parameters = MagicMock(side_effect=lambda: iter([torch.zeros(1)]))
         tokenizer = MagicMock()
         tokenizer.encode = MagicMock(return_value=[1])
         tokenizer.decode = MagicMock(return_value="")
@@ -1925,7 +1938,7 @@ class TestCascadeRegression:
         )
 
         model = MagicMock()
-        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+        model.parameters = MagicMock(side_effect=lambda: iter([torch.zeros(1)]))
         tokenizer = MagicMock()
         tokenizer.encode = MagicMock(return_value=[1])
         tokenizer.decode = MagicMock(return_value="")
@@ -2090,7 +2103,7 @@ class TestCascadeRegression:
         )
 
         model = MagicMock()
-        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+        model.parameters = MagicMock(side_effect=lambda: iter([torch.zeros(1)]))
         tokenizer = MagicMock()
         tokenizer.encode = MagicMock(return_value=[1])
         tokenizer.decode = MagicMock(return_value="")
@@ -2252,7 +2265,7 @@ class TestCascadeRegression:
         )
 
         model = MagicMock()
-        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+        model.parameters = MagicMock(side_effect=lambda: iter([torch.zeros(1)]))
         tokenizer = MagicMock()
         tokenizer.encode = MagicMock(return_value=[1])
         tokenizer.decode = MagicMock(return_value="")
@@ -2409,7 +2422,7 @@ class TestTokenChannelGeneration:
         tokenizer = MagicMock()
         encoder = MagicMock()
         encoder_tokenizer = MagicMock()
-        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+        model.parameters = MagicMock(side_effect=lambda: iter([torch.zeros(1)]))
         tokenizer.encode = MagicMock(return_value=[1, 2, 3])
         tokenizer.decode = MagicMock(return_value="")
         tokenizer.eos_token_id = 2
@@ -2441,7 +2454,7 @@ class TestTokenChannelGeneration:
 
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.load_token_channel_artifact",
-            lambda path: artifact,
+            lambda path, **kwargs: artifact,
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.TokenChannelRuntime",
@@ -2476,7 +2489,7 @@ class TestTokenChannelGeneration:
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.load_token_channel_artifact",
-            lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
+            lambda path, **kwargs: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.TokenChannelRuntime",
@@ -2509,7 +2522,10 @@ class TestTokenChannelGeneration:
         applied = gen._apply_token_channel_bias(ctx, lexical_state)
 
         assert applied is False
-        gen._token_channel_runtime.score_prefix.assert_not_called()
+        gen._token_channel_runtime.score_prefix.assert_called_once()
+        features = gen._token_channel_runtime.score_prefix.call_args.kwargs["features"]
+        assert features.structure_mask is True
+        assert features.node_type == "module"
 
     def test_apply_token_channel_bias_scores_first_scorable_token_without_min_block_delay(
         self,
@@ -2529,7 +2545,7 @@ class TestTokenChannelGeneration:
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.load_token_channel_artifact",
-            lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
+            lambda path, **kwargs: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.TokenChannelRuntime",
@@ -2583,7 +2599,7 @@ class TestTokenChannelGeneration:
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.load_token_channel_artifact",
-            lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
+            lambda path, **kwargs: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.TokenChannelRuntime",
@@ -2649,7 +2665,7 @@ class TestTokenChannelGeneration:
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.load_token_channel_artifact",
-            lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
+            lambda path, **kwargs: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.TokenChannelRuntime",
@@ -2712,7 +2728,7 @@ class TestTokenChannelGeneration:
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.load_token_channel_artifact",
-            lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
+            lambda path, **kwargs: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.TokenChannelRuntime",
@@ -2780,6 +2796,7 @@ class TestTokenChannelGeneration:
                 self.generated_ids = []
                 self.last_event = None
                 self.last_block_checkpoint = None
+                self._next_logits = torch.zeros(1, 8)
                 self._steps = 0
 
             @property
@@ -2819,7 +2836,7 @@ class TestTokenChannelGeneration:
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.load_token_channel_artifact",
-            lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
+            lambda path, **kwargs: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.TokenChannelRuntime",
@@ -2866,6 +2883,7 @@ class TestTokenChannelGeneration:
                 self.generated_ids = []
                 self.last_event = None
                 self.last_block_checkpoint = None
+                self._next_logits = torch.zeros(1, 8)
                 self._phase = "initial"
                 self.rollback_calls = 0
 
@@ -2882,6 +2900,7 @@ class TestTokenChannelGeneration:
                 self.generated_text = checkpoint.generated_text
                 self.last_event = None
                 self.last_block_checkpoint = None
+                self._next_logits = torch.zeros(1, 8)
                 self._phase = "retry"
 
             def forward_and_sample(self, penalty_ids=None, temperature_override=None):
@@ -2931,7 +2950,7 @@ class TestTokenChannelGeneration:
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.load_token_channel_artifact",
-            lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
+            lambda path, **kwargs: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.TokenChannelRuntime",
@@ -2984,7 +3003,7 @@ class TestTokenChannelGeneration:
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.load_token_channel_artifact",
-            lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
+            lambda path, **kwargs: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.TokenChannelRuntime",
@@ -3021,7 +3040,7 @@ class TestTokenChannelGeneration:
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.load_token_channel_artifact",
-            lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
+            lambda path, **kwargs: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.TokenChannelRuntime",
@@ -3065,6 +3084,7 @@ class TestTokenChannelGeneration:
                 self.generated_ids = []
                 self.last_event = None
                 self.last_block_checkpoint = None
+                self._next_logits = torch.zeros(1, 8)
                 self._steps = 0
 
             @property
@@ -3137,7 +3157,7 @@ class TestTokenChannelGeneration:
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.load_token_channel_artifact",
-            lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
+            lambda path, **kwargs: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.TokenChannelRuntime",
@@ -3205,6 +3225,7 @@ class TestTokenChannelGeneration:
                 self.generated_ids = []
                 self.last_event = None
                 self.last_block_checkpoint = None
+                self._next_logits = torch.zeros(1, 8)
                 self._steps = 0
 
             @property
@@ -3279,7 +3300,7 @@ class TestTokenChannelGeneration:
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.load_token_channel_artifact",
-            lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
+            lambda path, **kwargs: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.TokenChannelRuntime",
@@ -3350,6 +3371,7 @@ class TestTokenChannelGeneration:
                 self.generated_ids = []
                 self.last_event = None
                 self.last_block_checkpoint = None
+                self._next_logits = torch.zeros(1, 8)
                 self._steps = 0
 
             @property
@@ -3441,7 +3463,7 @@ class TestTokenChannelGeneration:
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.load_token_channel_artifact",
-            lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
+            lambda path, **kwargs: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.TokenChannelRuntime",
@@ -3514,6 +3536,7 @@ class TestTokenChannelGeneration:
                 self.generated_ids = []
                 self.last_event = None
                 self.last_block_checkpoint = None
+                self._next_logits = torch.zeros(1, 8)
                 self._phase = "initial"
 
             @property
@@ -3528,6 +3551,7 @@ class TestTokenChannelGeneration:
                 self.generated_text = checkpoint.generated_text
                 self.last_event = None
                 self.last_block_checkpoint = None
+                self._next_logits = torch.zeros(1, 8)
                 self._phase = "retry-compound"
 
             def forward_and_sample(self, penalty_ids=None, temperature_override=None):
@@ -3588,7 +3612,7 @@ class TestTokenChannelGeneration:
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.load_token_channel_artifact",
-            lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
+            lambda path, **kwargs: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.TokenChannelRuntime",
@@ -3647,7 +3671,7 @@ class TestTokenChannelGeneration:
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.load_token_channel_artifact",
-            lambda path: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
+            lambda path, **kwargs: SimpleNamespace(model=MagicMock(), metadata=MagicMock()),
         )
         monkeypatch.setattr(
             "wfcllm.watermark.orchestrator.TokenChannelRuntime",
@@ -3675,7 +3699,7 @@ class TestTokenChannelGeneration:
             enable_cascade=True,
         )
         model = MagicMock()
-        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+        model.parameters = MagicMock(side_effect=lambda: iter([torch.zeros(1)]))
         tokenizer = MagicMock()
         tokenizer.encode = MagicMock(return_value=[1])
         tokenizer.decode = MagicMock(return_value="")
@@ -3729,7 +3753,7 @@ class TestTokenChannelGeneration:
             enable_cascade=True,
         )
         model = MagicMock()
-        model.parameters = MagicMock(return_value=iter([torch.zeros(1)]))
+        model.parameters = MagicMock(side_effect=lambda: iter([torch.zeros(1)]))
         tokenizer = MagicMock()
         tokenizer.encode = MagicMock(return_value=[1])
         tokenizer.decode = MagicMock(return_value="")
