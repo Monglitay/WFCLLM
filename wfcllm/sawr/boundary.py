@@ -92,10 +92,6 @@ class PromptAwareBoundaryDetector:
 
     def _collect_candidates(self, *, final_flush: bool) -> list[Candidate]:
         source, generated_base = self._source_for_parse()
-        tree = self._parser.parse(source)
-        if tree.root_node.has_error:
-            return []
-
         body = self._controlled_body(source)
         if body is None:
             return []
@@ -131,7 +127,11 @@ class PromptAwareBoundaryDetector:
 
     def _controlled_body(self, source: str) -> _ControlledBody | None:
         tree = self._parser.parse(source)
-        functions = list(_walk_nodes(tree.root_node, node_type="function_definition"))
+        functions = [
+            child
+            for child in tree.root_node.children
+            if child.type == "function_definition"
+        ]
         if not functions:
             return None
         function_node = functions[-1] if self._dataset == "humaneval" else functions[0]
@@ -184,6 +184,8 @@ class PromptAwareBoundaryDetector:
         generated_base: int,
         final_flush: bool,
     ) -> tuple[int | None, int | None]:
+        if node.start_byte < generated_base:
+            return None, None
         statement_start = max(
             _line_start_byte(source_bytes, node.start_byte),
             generated_base,
@@ -227,14 +229,5 @@ class PromptAwareBoundaryDetector:
 
     def _generated_byte_length(self) -> int:
         return len(self._generated_text.encode("utf-8"))
-
-
-def _walk_nodes(node: Any, *, node_type: str) -> list[Any]:
-    matches = [node] if node.type == node_type else []
-    for child in node.children:
-        matches.extend(_walk_nodes(child, node_type=node_type))
-    return matches
-
-
 def _line_start_byte(source_bytes: bytes, byte_offset: int) -> int:
     return source_bytes.rfind(b"\n", 0, byte_offset) + 1

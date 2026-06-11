@@ -56,6 +56,39 @@ def test_humaneval_detector_accepts_prompt_supplied_indentation():
     assert events[0].token_count == len("return x\n")
 
 
+def test_detector_emits_complete_statement_before_later_incomplete_fragment():
+    detector = PromptAwareBoundaryDetector(prompt="def f():\n", dataset="humaneval")
+
+    events = detector.feed_text("    a = 1\n    if ")
+
+    assert [event.text for event in events] == ["a = 1"]
+
+
+def test_humaneval_detector_rejects_prompt_owned_statement_syntax():
+    detector = PromptAwareBoundaryDetector(
+        prompt="def f():\n    return ",
+        dataset="humaneval",
+    )
+
+    events = detector.feed_text("x\n")
+
+    assert events == []
+
+
+def test_humaneval_detector_uses_outer_top_level_function_body():
+    prompt = """def outer():
+    def inner():
+"""
+    detector = PromptAwareBoundaryDetector(prompt=prompt, dataset="humaneval")
+
+    events = []
+    for ch in "        value = 1\n    return 1\n":
+        events.extend(detector.feed_text(ch))
+
+    assert [event.text for event in events] == ["return 1"]
+    assert events[0].position_id == "module.outer.body"
+
+
 def test_detector_emits_return_statement_on_final_flush():
     detector = PromptAwareBoundaryDetector(prompt=HUMANEVAL_PROMPT, dataset="humaneval")
     detector.feed_text("    return x + 1")
