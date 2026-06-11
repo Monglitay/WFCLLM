@@ -7,8 +7,12 @@ from wfcllm.sawr.config import (
     SawrPipelineConfig,
     SawrRuleConfig,
 )
+from wfcllm.sawr.rules import HashEmbeddingRule, RuleDecision, RuleRequest
 
 __all__ = [
+    "HashEmbeddingRule",
+    "RuleDecision",
+    "RuleRequest",
     "SawrGenerationConfig",
     "SawrPipelineConfig",
     "SawrRuleConfig",
