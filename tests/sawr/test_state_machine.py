@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 
+import pytest
+
 from wfcllm.sawr import Candidate, RuleDecision, RuleRequest
 from wfcllm.sawr.state_machine import AuditEvent, SawrStateMachine
 
@@ -56,6 +58,13 @@ def _event_names(state_machine: SawrStateMachine[FakeCheckpoint]) -> list[str]:
 
 def _candidate_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def test_state_machine_types_are_exported_from_package_root() -> None:
+    from wfcllm.sawr import CheckpointT, DecisionAction
+
+    assert CheckpointT.__name__ == "CheckpointT"
+    assert DecisionAction is not None
 
 
 def test_state_machine_clears_group_after_hit() -> None:
@@ -144,6 +153,14 @@ def test_state_machine_requests_rollback_when_full_group_misses_with_retry_left(
     ]
     assert events[-1].decision == "miss"
     assert events[-1].group_statement_count == 1
+
+
+def test_state_machine_rejects_missing_rollback_checkpoint() -> None:
+    rule = SequenceRule([False])
+    state_machine = _state_machine(rule, max_group_statements=1, retry_budget=1)
+
+    with pytest.raises(ValueError, match="rollback checkpoint must be set"):
+        state_machine.observe_candidate(_candidate("return x"), None)
 
 
 def test_state_machine_falls_back_after_retry_exhaustion() -> None:
@@ -263,6 +280,22 @@ def test_state_machine_falls_back_after_replacement_miss_exhausts_retry() -> Non
     ]
     assert events[-1].decision == "miss"
     assert events[-1].group_statement_count == 1
+
+
+def test_state_machine_honors_retry_budget_above_one() -> None:
+    rule = SequenceRule([False, False, False])
+    state_machine = _state_machine(rule, max_group_statements=1, retry_budget=2)
+
+    first = state_machine.observe_candidate(_candidate("return x"), FakeCheckpoint("c0"))
+    second = state_machine.observe_candidate(_candidate("return y"), FakeCheckpoint("c1"))
+    third = state_machine.observe_candidate(_candidate("return z"), FakeCheckpoint("c2"))
+
+    assert first.action == "rollback"
+    assert second.action == "rollback"
+    assert third.action == "fallback"
+    assert state_machine.retry_count == 2
+    assert state_machine.current_retry_count == 0
+    assert state_machine.fallback_count == 1
 
 
 def test_state_machine_rolls_back_multistatement_group_to_group_start() -> None:

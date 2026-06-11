@@ -16,6 +16,8 @@ from wfcllm.sawr.rules import (
 )
 from wfcllm.sawr.state_machine import (
     AuditEvent,
+    CheckpointT,
+    DecisionAction,
     SawrStateMachine,
     StateMachineDecision,
 )
@@ -23,6 +25,8 @@ from wfcllm.sawr.state_machine import (
 __all__ = [
     "AuditEvent",
     "Candidate",
+    "CheckpointT",
+    "DecisionAction",
     "EmbeddingRule",
     "HashEmbeddingRule",
     "RuleDecision",
