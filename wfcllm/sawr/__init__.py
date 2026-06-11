@@ -8,6 +8,16 @@ from wfcllm.sawr.config import (
     SawrPipelineConfig,
     SawrRuleConfig,
 )
+from wfcllm.sawr.generator import (
+    SawrCheckpoint,
+    SawrGenerateResult,
+    SawrGenerator,
+    SawrModelContext,
+    build_chat_prompt,
+    load_sawr_model,
+    resolve_torch_dtype,
+    strip_repeated_prompt_function,
+)
 from wfcllm.sawr.rules import (
     EmbeddingRule,
     HashEmbeddingRule,
@@ -31,9 +41,17 @@ __all__ = [
     "HashEmbeddingRule",
     "RuleDecision",
     "RuleRequest",
+    "SawrCheckpoint",
+    "SawrGenerateResult",
     "SawrGenerationConfig",
+    "SawrGenerator",
+    "SawrModelContext",
     "SawrPipelineConfig",
     "SawrRuleConfig",
     "SawrStateMachine",
     "StateMachineDecision",
+    "build_chat_prompt",
+    "load_sawr_model",
+    "resolve_torch_dtype",
+    "strip_repeated_prompt_function",
 ]
