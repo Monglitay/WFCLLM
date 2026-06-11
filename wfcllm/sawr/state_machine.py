@@ -163,6 +163,24 @@ class SawrStateMachine(Generic[CheckpointT]):
         self._clear_group(reset_retry=True)
         return StateMachineDecision(action="fallback")
 
+    def observe_final_candidate(
+        self,
+        candidate: Candidate,
+    ) -> StateMachineDecision[CheckpointT]:
+        self._current_group.append(candidate)
+        self.candidate_count += 1
+        self._audit_events.append(
+            self._audit_event(
+                event="candidate_observed",
+                final_flush=True,
+                decision=None,
+                reason=None,
+                rule_name=None,
+                candidate=candidate,
+            )
+        )
+        return StateMachineDecision(action="continue")
+
     def flush(self) -> StateMachineDecision[CheckpointT]:
         if not self._current_group:
             return StateMachineDecision(action="close")

@@ -275,7 +275,8 @@ class SawrGenerator:
                 continue
 
         final_candidates = context.boundary.flush()
-        self._handle_candidates(final_candidates, context, state_machine)
+        for candidate in final_candidates:
+            state_machine.observe_final_candidate(candidate)
         state_machine.flush()
         if not saw_controlled_body and not context.boundary.saw_controlled_body:
             state_machine.record_no_controlled_body()

@@ -225,6 +225,65 @@ def test_generator_falls_back_when_rule_misses_and_no_retry_budget(
     )
 
 
+def test_generator_closes_final_flush_miss_without_rollback(tmp_path: Path) -> None:
+    tokenizer = FakeTokenizer(["", "    ", "return", " ", "1"])
+    model = FakeModel([1, 2, 3, 4])
+    generator = SawrGenerator(
+        config=_generation_config(tmp_path, max_new_tokens=4),
+        rule=AlwaysMissRule(),
+        model=model,
+        tokenizer=tokenizer,
+    )
+
+    result = generator.generate(
+        sample_id="HumanEval/0",
+        prompt="def foo():\n",
+        dataset="humaneval",
+        max_group_statements=1,
+        retry_budget=1,
+    )
+
+    assert result.final_code == "def foo():\n    return 1"
+    assert result.closed_without_hit_count == 1
+    assert [event.event for event in result.audit_events] == [
+        "candidate_observed",
+        "closed_without_hit",
+    ]
+    assert result.audit_events[-1].final_flush is True
+    assert "rollback_requested" not in [
+        event.event for event in result.audit_events
+    ]
+
+
+def test_generator_accepts_final_flush_hit_without_truncating_code(
+    tmp_path: Path,
+) -> None:
+    tokenizer = FakeTokenizer(["", "    ", "return", " ", "1"])
+    model = FakeModel([1, 2, 3, 4])
+    generator = SawrGenerator(
+        config=_generation_config(tmp_path, max_new_tokens=4),
+        rule=AlwaysHitRule(),
+        model=model,
+        tokenizer=tokenizer,
+    )
+
+    result = generator.generate(
+        sample_id="HumanEval/0",
+        prompt="def foo():\n",
+        dataset="humaneval",
+        max_group_statements=1,
+        retry_budget=1,
+    )
+
+    assert result.final_code == "def foo():\n    return 1"
+    assert result.accepted_hit_count == 1
+    assert [event.event for event in result.audit_events] == [
+        "candidate_observed",
+        "accepted_generation_time_group",
+    ]
+    assert result.audit_events[-1].final_flush is True
+
+
 def test_generator_rolls_back_to_group_start_and_skips_empty_decoded_chunks(
     tmp_path: Path,
 ) -> None:
