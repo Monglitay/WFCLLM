@@ -14,8 +14,14 @@ from wfcllm.sawr.rules import (
     RuleDecision,
     RuleRequest,
 )
+from wfcllm.sawr.state_machine import (
+    AuditEvent,
+    SawrStateMachine,
+    StateMachineDecision,
+)
 
 __all__ = [
+    "AuditEvent",
     "Candidate",
     "EmbeddingRule",
     "HashEmbeddingRule",
@@ -24,4 +30,6 @@ __all__ = [
     "SawrGenerationConfig",
     "SawrPipelineConfig",
     "SawrRuleConfig",
+    "SawrStateMachine",
+    "StateMachineDecision",
 ]
