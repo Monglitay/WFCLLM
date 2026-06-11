@@ -65,8 +65,8 @@ class PromptAwareBoundaryDetector:
 
     @property
     def saw_controlled_body(self) -> bool:
-        source, _ = self._source_for_parse()
-        return self._controlled_body(source) is not None
+        source, generated_base = self._source_for_parse()
+        return self._controlled_body(source, generated_base) is not None
 
     def feed_text(self, token_text: str) -> list[Candidate]:
         self._generated_text += token_text
@@ -92,7 +92,7 @@ class PromptAwareBoundaryDetector:
 
     def _collect_candidates(self, *, final_flush: bool) -> list[Candidate]:
         source, generated_base = self._source_for_parse()
-        body = self._controlled_body(source)
+        body = self._controlled_body(source, generated_base)
         if body is None:
             return []
 
@@ -125,13 +125,23 @@ class PromptAwareBoundaryDetector:
             )
         return self._generated_text, 0
 
-    def _controlled_body(self, source: str) -> _ControlledBody | None:
+    def _controlled_body(
+        self,
+        source: str,
+        generated_base: int,
+    ) -> _ControlledBody | None:
         tree = self._parser.parse(source)
         functions = [
             child
             for child in tree.root_node.children
             if child.type == "function_definition"
         ]
+        if self._dataset == "humaneval":
+            functions = [
+                function
+                for function in functions
+                if function.start_byte < generated_base
+            ]
         if not functions:
             return None
         function_node = functions[-1] if self._dataset == "humaneval" else functions[0]

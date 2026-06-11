@@ -89,6 +89,15 @@ def test_humaneval_detector_uses_outer_top_level_function_body():
     assert events[0].position_id == "module.outer.body"
 
 
+def test_humaneval_detector_ignores_generated_top_level_function_body():
+    detector = PromptAwareBoundaryDetector(prompt="def f():\n", dataset="humaneval")
+
+    events = detector.feed_text("    return 1\ndef helper():\n    x = 1\n")
+
+    assert [event.text for event in events] == ["return 1"]
+    assert events[0].position_id == "module.f.body"
+
+
 def test_detector_emits_return_statement_on_final_flush():
     detector = PromptAwareBoundaryDetector(prompt=HUMANEVAL_PROMPT, dataset="humaneval")
     detector.feed_text("    return x + 1")
