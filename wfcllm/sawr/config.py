@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from wfcllm.datasets.loaders.local import SUPPORTED_DATASETS
+from wfcllm.datasets.constants import SUPPORTED_DATASETS
 
 
 _ALLOWED_TORCH_DTYPES = ("auto", "fp32", "fp16", "bf16")
@@ -54,6 +55,14 @@ class SawrRuleConfig:
             raise ValueError("rule_name must be 'hash'")
         if not 0 <= self.target_accept_rate <= 1:
             raise ValueError("target_accept_rate must be in [0, 1]")
+        try:
+            parameters_json = json.dumps(self.parameters)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("parameters must be JSON-serializable") from exc
+        object.__setattr__(self, "parameters", json.loads(parameters_json))
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
 
 
 @dataclass(frozen=True)

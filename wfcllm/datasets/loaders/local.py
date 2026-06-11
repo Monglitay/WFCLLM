@@ -6,7 +6,7 @@ from pathlib import Path
 
 from datasets import load_dataset
 
-SUPPORTED_DATASETS = ("humaneval", "mbpp")
+from wfcllm.datasets.constants import SUPPORTED_DATASETS
 
 
 def load_prompts(
