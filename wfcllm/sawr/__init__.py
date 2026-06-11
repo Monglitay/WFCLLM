@@ -18,6 +18,11 @@ from wfcllm.sawr.generator import (
     resolve_torch_dtype,
     strip_repeated_prompt_function,
 )
+from wfcllm.sawr.pipeline import (
+    ALLOWED_AUDIT_EVENTS,
+    FORBIDDEN_FINAL_FIELDS,
+    SawrPipeline,
+)
 from wfcllm.sawr.rules import (
     EmbeddingRule,
     HashEmbeddingRule,
@@ -34,10 +39,12 @@ from wfcllm.sawr.state_machine import (
 
 __all__ = [
     "AuditEvent",
+    "ALLOWED_AUDIT_EVENTS",
     "Candidate",
     "CheckpointT",
     "DecisionAction",
     "EmbeddingRule",
+    "FORBIDDEN_FINAL_FIELDS",
     "HashEmbeddingRule",
     "RuleDecision",
     "RuleRequest",
@@ -46,6 +53,7 @@ __all__ = [
     "SawrGenerationConfig",
     "SawrGenerator",
     "SawrModelContext",
+    "SawrPipeline",
     "SawrPipelineConfig",
     "SawrRuleConfig",
     "SawrStateMachine",
