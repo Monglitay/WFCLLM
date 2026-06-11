@@ -55,8 +55,10 @@ class SawrRuleConfig:
             raise ValueError("rule_name must be 'hash'")
         if not 0 <= self.target_accept_rate <= 1:
             raise ValueError("target_accept_rate must be in [0, 1]")
+        if not isinstance(self.parameters, dict):
+            raise ValueError("parameters must be a dict")
         try:
-            parameters_json = json.dumps(self.parameters)
+            parameters_json = json.dumps(self.parameters, allow_nan=False)
         except (TypeError, ValueError) as exc:
             raise ValueError("parameters must be JSON-serializable") from exc
         object.__setattr__(self, "parameters", json.loads(parameters_json))
@@ -81,6 +83,10 @@ class SawrPipelineConfig:
     resume: str | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.generation, SawrGenerationConfig):
+            raise ValueError("generation must be SawrGenerationConfig")
+        if not isinstance(self.rule, SawrRuleConfig):
+            raise ValueError("rule must be SawrRuleConfig")
         if self.dataset not in SUPPORTED_DATASETS:
             raise ValueError(
                 f"dataset must be one of {SUPPORTED_DATASETS}, got '{self.dataset}'"

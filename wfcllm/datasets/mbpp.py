@@ -4,7 +4,6 @@ from __future__ import annotations
 from typing import Iterator
 
 from wfcllm.datasets.adapter import CodeSample, DatasetAdapter
-from wfcllm.datasets.loaders.local import load_reference_solutions
 from wfcllm.datasets.registry import register
 
 
@@ -17,6 +16,8 @@ class MBPPAdapter(DatasetAdapter):
         self._dataset_path = dataset_path
 
     def iter_samples(self, language: str | None = None) -> Iterator[CodeSample]:
+        from wfcllm.datasets.loaders.local import load_reference_solutions
+
         if language is not None and language not in self.supported_languages:
             raise ValueError(
                 f"MBPPAdapter does not support language={language!r}; "

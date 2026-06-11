@@ -4,6 +4,13 @@ from __future__ import annotations
 import pytest
 
 
+def test_direct_registry_names_include_builtins_after_package_import():
+    import wfcllm.datasets  # noqa: F401
+    from wfcllm.datasets.registry import names as registry_names
+
+    assert {"humaneval", "mbpp"}.issubset(registry_names())
+
+
 def test_humaneval_registered():
     from wfcllm import datasets
     assert "humaneval" in datasets.names()

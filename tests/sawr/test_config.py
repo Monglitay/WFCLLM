@@ -105,6 +105,11 @@ def test_rule_config_rejects_non_json_serializable_parameters():
         SawrRuleConfig(parameters={"x": object()})
 
 
+def test_rule_config_rejects_non_dict_parameters():
+    with pytest.raises(ValueError, match="parameters must be a dict"):
+        SawrRuleConfig(parameters=[1, 2])
+
+
 def test_rule_config_copies_parameters_before_caller_mutation():
     parameters = {"x": {"enabled": True}}
     config = SawrRuleConfig(parameters=parameters)
@@ -135,6 +140,28 @@ def test_pipeline_config_rejects_invalid_values(tmp_path, kwargs, message):
         "dataset_path": str(tmp_path / "datasets"),
         "output_dir": str(tmp_path / "outputs"),
         "generation": generation,
+    }
+    pipeline_kwargs.update(kwargs)
+
+    with pytest.raises(ValueError, match=message):
+        SawrPipelineConfig(**pipeline_kwargs)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"generation": {"model_path": "missing"}}, "generation must be SawrGenerationConfig"),
+        ({"rule": {"target_accept_rate": 0.5}}, "rule must be SawrRuleConfig"),
+    ],
+)
+def test_pipeline_config_rejects_raw_nested_config_dicts(tmp_path, kwargs, message):
+    model_path = tmp_path / "local-model"
+    model_path.mkdir()
+    pipeline_kwargs = {
+        "dataset": "humaneval",
+        "dataset_path": str(tmp_path / "datasets"),
+        "output_dir": str(tmp_path / "outputs"),
+        "generation": SawrGenerationConfig(model_path=str(model_path)),
     }
     pipeline_kwargs.update(kwargs)
 
