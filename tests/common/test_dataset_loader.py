@@ -56,6 +56,38 @@ class TestLoadPrompts:
         assert prompts[0]["id"] == "mbpp/1"
         assert prompts[0]["prompt"] == "Write a function"
 
+    @patch("wfcllm.datasets.loaders.local.load_dataset")
+    def test_load_prompts_applies_offset_and_limit(self, mock_load):
+        fake_split = [
+            {"task_id": "HumanEval/0", "prompt": "def a():\n"},
+            {"task_id": "HumanEval/1", "prompt": "def b():\n"},
+            {"task_id": "HumanEval/2", "prompt": "def c():\n"},
+        ]
+        mock_load.return_value = {"test": fake_split}
+
+        prompts = load_prompts(
+            "humaneval",
+            "data/datasets",
+            sample_offset=1,
+            sample_limit=1,
+        )
+
+        assert prompts == [{"id": "HumanEval/1", "prompt": "def b():\n"}]
+
+    @patch("wfcllm.datasets.loaders.local.load_dataset")
+    def test_load_prompts_rejects_negative_offset(self, mock_load):
+        mock_load.return_value = {"test": []}
+
+        with pytest.raises(ValueError, match="sample_offset must be non-negative"):
+            load_prompts("humaneval", "data/datasets", sample_offset=-1)
+
+    @patch("wfcllm.datasets.loaders.local.load_dataset")
+    def test_load_prompts_rejects_negative_limit(self, mock_load):
+        mock_load.return_value = {"test": []}
+
+        with pytest.raises(ValueError, match="sample_limit must be non-negative"):
+            load_prompts("humaneval", "data/datasets", sample_limit=-1)
+
 
 class TestLoadReferenceSolutions:
     @patch("wfcllm.datasets.loaders.local.load_dataset")

@@ -9,23 +9,35 @@ from datasets import load_dataset
 SUPPORTED_DATASETS = ("humaneval", "mbpp")
 
 
-def load_prompts(dataset: str, dataset_path: str) -> list[dict]:
+def load_prompts(
+    dataset: str,
+    dataset_path: str,
+    sample_limit: int | None = None,
+    sample_offset: int | None = None,
+) -> list[dict]:
     """Load prompts from local HumanEval or MBPP dataset.
 
     Args:
         dataset: One of "humaneval" or "mbpp".
         dataset_path: Root directory containing local dataset caches.
+        sample_limit: Optional maximum number of prompt rows to return.
+        sample_offset: Optional number of prompt rows to skip before limiting.
 
     Returns:
         List of dicts with keys "id" (str) and "prompt" (str).
 
     Raises:
-        ValueError: If dataset is not in SUPPORTED_DATASETS.
+        ValueError: If dataset is not in SUPPORTED_DATASETS or slicing args
+            are negative.
     """
     if dataset not in SUPPORTED_DATASETS:
         raise ValueError(
             f"dataset must be one of {SUPPORTED_DATASETS}, got '{dataset}'"
         )
+    if sample_offset is not None and sample_offset < 0:
+        raise ValueError("sample_offset must be non-negative")
+    if sample_limit is not None and sample_limit < 0:
+        raise ValueError("sample_limit must be non-negative")
 
     path = str(Path(dataset_path) / dataset)
 
@@ -39,7 +51,7 @@ def load_prompts(dataset: str, dataset_path: str) -> list[dict]:
         for split in ds:
             for item in ds[split]:
                 prompts.append({"id": item["task_id"], "prompt": item["prompt"]})
-        return prompts
+        return _slice_prompt_rows(prompts, sample_limit, sample_offset)
 
     # mbpp
     ds = load_dataset(
@@ -52,7 +64,19 @@ def load_prompts(dataset: str, dataset_path: str) -> list[dict]:
     for split in ds:
         for item in ds[split]:
             prompts.append({"id": f"mbpp/{item['task_id']}", "prompt": item["text"]})
-    return prompts
+    return _slice_prompt_rows(prompts, sample_limit, sample_offset)
+
+
+def _slice_prompt_rows(
+    rows: list[dict],
+    sample_limit: int | None,
+    sample_offset: int | None,
+) -> list[dict]:
+    if sample_offset is not None:
+        rows = rows[sample_offset:]
+    if sample_limit is not None:
+        rows = rows[:sample_limit]
+    return rows
 
 
 def load_reference_solutions(dataset: str, dataset_path: str) -> list[dict]:
