@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 from wfcllm.sawr import Candidate, RuleDecision, RuleRequest
@@ -53,6 +54,10 @@ def _event_names(state_machine: SawrStateMachine[FakeCheckpoint]) -> list[str]:
     return [event.event for event in state_machine.drain_audit_events()]
 
 
+def _candidate_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def test_state_machine_clears_group_after_hit() -> None:
     rule = SequenceRule([True])
     state_machine = _state_machine(rule)
@@ -63,11 +68,23 @@ def test_state_machine_clears_group_after_hit() -> None:
     assert decision.rollback_checkpoint is None
     assert state_machine.current_group_size == 0
     assert state_machine.retry_count == 0
+    assert state_machine.current_retry_count == 0
     assert state_machine.accepted_hit_count == 1
-    assert _event_names(state_machine) == [
+    events = state_machine.drain_audit_events()
+    assert [event.event for event in events] == [
         "candidate_observed",
         "accepted_generation_time_group",
     ]
+    assert events[0].decision is None
+    assert events[0].reason is None
+    assert events[0].rule_name is None
+    assert events[1].decision == "hit"
+    assert events[1].rule_name == "sequence"
+    assert events[1].reason == "hit=True"
+    assert events[1].position_id == "module.foo.body"
+    assert events[1].candidate_type == "simple_statement"
+    assert events[1].candidate_hash == _candidate_hash("return x")
+    assert events[1].group_statement_count == 1
 
 
 def test_state_machine_does_not_reuse_candidates_from_previous_hit() -> None:
@@ -101,6 +118,7 @@ def test_state_machine_waits_when_group_misses_below_max_size() -> None:
     assert decision.action == "continue"
     assert state_machine.current_group_size == 1
     assert state_machine.retry_count == 0
+    assert state_machine.current_retry_count == 0
     assert _event_names(state_machine) == [
         "candidate_observed",
         "group_rule_miss",
@@ -117,11 +135,15 @@ def test_state_machine_requests_rollback_when_full_group_misses_with_retry_left(
     assert decision.rollback_checkpoint == FakeCheckpoint("c0")
     assert state_machine.current_group_size == 0
     assert state_machine.retry_count == 1
-    assert _event_names(state_machine) == [
+    assert state_machine.current_retry_count == 1
+    events = state_machine.drain_audit_events()
+    assert [event.event for event in events] == [
         "candidate_observed",
         "group_rule_miss",
         "rollback_requested",
     ]
+    assert events[-1].decision == "miss"
+    assert events[-1].group_statement_count == 1
 
 
 def test_state_machine_falls_back_after_retry_exhaustion() -> None:
@@ -134,12 +156,16 @@ def test_state_machine_falls_back_after_retry_exhaustion() -> None:
     assert decision.rollback_checkpoint is None
     assert state_machine.current_group_size == 0
     assert state_machine.retry_count == 0
+    assert state_machine.current_retry_count == 0
     assert state_machine.fallback_count == 1
-    assert _event_names(state_machine) == [
+    events = state_machine.drain_audit_events()
+    assert [event.event for event in events] == [
         "candidate_observed",
         "group_rule_miss",
         "fallback_committed_without_hit",
     ]
+    assert events[-1].decision == "miss"
+    assert events[-1].group_statement_count == 1
 
 
 def test_state_machine_flushes_partial_group_at_generation_end_hit() -> None:
@@ -153,6 +179,7 @@ def test_state_machine_flushes_partial_group_at_generation_end_hit() -> None:
     assert decision.action == "accept"
     assert state_machine.current_group_size == 0
     assert state_machine.accepted_hit_count == 1
+    assert state_machine.current_retry_count == 0
     events = state_machine.drain_audit_events()
     assert [event.event for event in events] == [
         "candidate_observed",
@@ -173,6 +200,7 @@ def test_state_machine_flushes_partial_group_at_generation_end_miss() -> None:
     assert decision.action == "close"
     assert state_machine.current_group_size == 0
     assert state_machine.closed_without_hit_count == 1
+    assert state_machine.current_retry_count == 0
     events = state_machine.drain_audit_events()
     assert [event.event for event in events] == [
         "candidate_observed",
@@ -181,6 +209,84 @@ def test_state_machine_flushes_partial_group_at_generation_end_miss() -> None:
     ]
     assert events[-1].final_flush is True
     assert events[-1].decision == "miss"
+
+
+def test_state_machine_accepts_replacement_hit_after_rollback() -> None:
+    rule = SequenceRule([False, True])
+    state_machine = _state_machine(rule, max_group_statements=1, retry_budget=1)
+
+    rollback = state_machine.observe_candidate(_candidate("return x"), FakeCheckpoint("c0"))
+    accept = state_machine.observe_candidate(_candidate("return y"), FakeCheckpoint("c1"))
+
+    assert rollback.action == "rollback"
+    assert accept.action == "accept"
+    assert state_machine.accepted_hit_count == 1
+    assert state_machine.retry_count == 1
+    assert state_machine.current_retry_count == 0
+    assert [request.candidates for request in rule.requests] == [
+        (_candidate("return x"),),
+        (_candidate("return y"),),
+    ]
+    assert _event_names(state_machine) == [
+        "candidate_observed",
+        "group_rule_miss",
+        "rollback_requested",
+        "candidate_observed",
+        "accepted_generation_time_group",
+    ]
+
+
+def test_state_machine_falls_back_after_replacement_miss_exhausts_retry() -> None:
+    rule = SequenceRule([False, False])
+    state_machine = _state_machine(rule, max_group_statements=1, retry_budget=1)
+
+    rollback = state_machine.observe_candidate(_candidate("return x"), FakeCheckpoint("c0"))
+    fallback = state_machine.observe_candidate(_candidate("return y"), FakeCheckpoint("c1"))
+
+    assert rollback.action == "rollback"
+    assert fallback.action == "fallback"
+    assert state_machine.fallback_count == 1
+    assert state_machine.retry_count == 1
+    assert state_machine.current_retry_count == 0
+    assert [request.candidates for request in rule.requests] == [
+        (_candidate("return x"),),
+        (_candidate("return y"),),
+    ]
+    events = state_machine.drain_audit_events()
+    assert [event.event for event in events] == [
+        "candidate_observed",
+        "group_rule_miss",
+        "rollback_requested",
+        "candidate_observed",
+        "group_rule_miss",
+        "fallback_committed_without_hit",
+    ]
+    assert events[-1].decision == "miss"
+    assert events[-1].group_statement_count == 1
+
+
+def test_state_machine_rolls_back_multistatement_group_to_group_start() -> None:
+    rule = SequenceRule([False, False])
+    state_machine = _state_machine(rule, max_group_statements=2, retry_budget=1)
+
+    first = state_machine.observe_candidate(_candidate("x = 1"), FakeCheckpoint("c0"))
+    rollback = state_machine.observe_candidate(_candidate("return x"), FakeCheckpoint("c1"))
+
+    assert first.action == "continue"
+    assert rollback.action == "rollback"
+    assert rollback.rollback_checkpoint == FakeCheckpoint("c0")
+    assert state_machine.retry_count == 1
+    assert state_machine.current_retry_count == 1
+    events = state_machine.drain_audit_events()
+    assert [event.event for event in events] == [
+        "candidate_observed",
+        "group_rule_miss",
+        "candidate_observed",
+        "group_rule_miss",
+        "rollback_requested",
+    ]
+    assert events[-1].decision == "miss"
+    assert events[-1].group_statement_count == 2
 
 
 def test_state_machine_can_record_no_controlled_body_close() -> None:

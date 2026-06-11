@@ -54,6 +54,7 @@ class SawrStateMachine(Generic[CheckpointT]):
         self._rule = rule
         self._current_group: list[Candidate] = []
         self._group_start_checkpoint: CheckpointT | None = None
+        self._current_retry_count = 0
         self._retry_count = 0
         self._audit_events: list[AuditEvent] = []
 
@@ -69,6 +70,10 @@ class SawrStateMachine(Generic[CheckpointT]):
     @property
     def retry_count(self) -> int:
         return self._retry_count
+
+    @property
+    def current_retry_count(self) -> int:
+        return self._current_retry_count
 
     def observe_candidate(
         self,
@@ -122,7 +127,10 @@ class SawrStateMachine(Generic[CheckpointT]):
             return StateMachineDecision(action="continue")
 
         checkpoint = self._group_start_checkpoint
-        if self._retry_count < self._retry_budget:
+        if self._current_retry_count < self._retry_budget:
+            if checkpoint is None:
+                raise ValueError("rollback checkpoint must be set")
+            self._current_retry_count += 1
             self._retry_count += 1
             self._clear_group(reset_retry=False)
             self._audit_events.append(
@@ -256,7 +264,7 @@ class SawrStateMachine(Generic[CheckpointT]):
         self._current_group.clear()
         self._group_start_checkpoint = None
         if reset_retry:
-            self._retry_count = 0
+            self._current_retry_count = 0
 
     def _candidate_hash(self, candidate: Candidate) -> str:
         return hashlib.sha256(candidate.text.encode("utf-8")).hexdigest()
