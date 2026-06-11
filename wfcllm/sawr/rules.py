@@ -59,15 +59,19 @@ class HashEmbeddingRule:
         return value / float(1 << 64)
 
     def _payload(self, request: RuleRequest) -> bytes:
-        normalized_group = "\n".join(
-            _normalize_candidate_text(candidate.text)
-            for candidate in request.candidates
-        )
         payload = {
             "seed": request.seed,
             "sample_id": request.sample_id,
             "position_id": request.position_id,
-            "candidate_group_text": normalized_group,
+            "candidate_group": [
+                {
+                    "text": _normalize_candidate_text(candidate.text),
+                    "candidate_type": candidate.candidate_type,
+                    "node_type": candidate.node_type,
+                    "position_id": candidate.position_id,
+                }
+                for candidate in request.candidates
+            ],
             "final_flush": request.final_flush,
         }
         return json.dumps(

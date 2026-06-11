@@ -134,6 +134,26 @@ def test_hash_rule_payload_framing_handles_separator_characters() -> None:
     assert rule._payload(first) != rule._payload(second)
 
 
+def test_hash_rule_payload_framing_preserves_candidate_group_structure() -> None:
+    rule = HashEmbeddingRule(target_accept_rate=0.5)
+    first = RuleRequest(
+        sample_id="sample-1",
+        position_id="module.foo.body",
+        candidates=(_candidate("return x"), _candidate("return y")),
+        seed=17,
+        final_flush=False,
+    )
+    second = RuleRequest(
+        sample_id="sample-1",
+        position_id="module.foo.body",
+        candidates=(_candidate("return x\nreturn y"),),
+        seed=17,
+        final_flush=False,
+    )
+
+    assert rule._payload(first) != rule._payload(second)
+
+
 def test_hash_rule_target_accept_rate_boundaries() -> None:
     request = RuleRequest(
         sample_id="sample-1",
