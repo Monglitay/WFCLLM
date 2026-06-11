@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -62,16 +63,19 @@ class HashEmbeddingRule:
             _normalize_candidate_text(candidate.text)
             for candidate in request.candidates
         )
-        text = "\x1f".join(
-            (
-                str(request.seed),
-                request.sample_id,
-                request.position_id,
-                normalized_group,
-                "final_flush=1" if request.final_flush else "final_flush=0",
-            )
-        )
-        return text.encode("utf-8")
+        payload = {
+            "seed": request.seed,
+            "sample_id": request.sample_id,
+            "position_id": request.position_id,
+            "candidate_group_text": normalized_group,
+            "final_flush": request.final_flush,
+        }
+        return json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
 
 
 def _normalize_candidate_text(text: str) -> str:
