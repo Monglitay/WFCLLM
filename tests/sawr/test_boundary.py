@@ -35,6 +35,27 @@ def test_humaneval_detector_does_not_emit_prompt_existing_docstring():
     assert events == []
 
 
+def test_humaneval_detector_reports_prompt_controlled_body_immediately():
+    detector = PromptAwareBoundaryDetector(prompt=HUMANEVAL_PROMPT, dataset="humaneval")
+
+    assert detector.saw_controlled_body is True
+
+
+def test_humaneval_detector_accepts_prompt_supplied_indentation():
+    prompt = 'def f(x):\n    """doc"""\n    '
+    detector = PromptAwareBoundaryDetector(prompt=prompt, dataset="humaneval")
+
+    events = []
+    for ch in "return x\n":
+        events.extend(detector.feed_text(ch))
+
+    assert len(events) == 1
+    assert events[0].text == "return x"
+    assert events[0].position_id == "module.f.body"
+    assert events[0].token_start_idx == 0
+    assert events[0].token_count == len("return x\n")
+
+
 def test_detector_emits_return_statement_on_final_flush():
     detector = PromptAwareBoundaryDetector(prompt=HUMANEVAL_PROMPT, dataset="humaneval")
     detector.feed_text("    return x + 1")

@@ -62,11 +62,11 @@ class PromptAwareBoundaryDetector:
         self._generated_text = ""
         self._emitted_keys: set[tuple[int, int, str]] = set()
         self._token_boundaries: list[int] = []
-        self._saw_controlled_body = False
 
     @property
     def saw_controlled_body(self) -> bool:
-        return self._saw_controlled_body
+        source, _ = self._source_for_parse()
+        return self._controlled_body(source) is not None
 
     def feed_text(self, token_text: str) -> list[Candidate]:
         self._generated_text += token_text
@@ -89,9 +89,6 @@ class PromptAwareBoundaryDetector:
         self._generated_text = checkpoint.generated_text
         self._emitted_keys = set(checkpoint.emitted_keys)
         self._token_boundaries = list(checkpoint.token_boundaries)
-        source, _ = self._source_for_parse()
-        body = self._controlled_body(source)
-        self._saw_controlled_body = body is not None
 
     def _collect_candidates(self, *, final_flush: bool) -> list[Candidate]:
         source, generated_base = self._source_for_parse()
@@ -100,7 +97,6 @@ class PromptAwareBoundaryDetector:
             return []
 
         body = self._controlled_body(source)
-        self._saw_controlled_body = body is not None
         if body is None:
             return []
 
@@ -188,7 +184,10 @@ class PromptAwareBoundaryDetector:
         generated_base: int,
         final_flush: bool,
     ) -> tuple[int | None, int | None]:
-        statement_start = _line_start_byte(source_bytes, node.start_byte)
+        statement_start = max(
+            _line_start_byte(source_bytes, node.start_byte),
+            generated_base,
+        )
         statement_end = node.end_byte
         has_trailing_newline = statement_end < len(source_bytes) and (
             source_bytes[statement_end : statement_end + 1] == b"\n"
