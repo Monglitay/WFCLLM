@@ -58,6 +58,8 @@ def test_run_sawr_smoke_cli_builds_pipeline_config(
                 "1",
                 "--target-accept-rate",
                 "0.25",
+                "--prompt-mode",
+                "completion",
             ]
         )
 
@@ -90,6 +92,8 @@ def test_run_sawr_smoke_cli_builds_pipeline_config(
     assert config.generation.seed == 9
     assert config.generation.load_in_4bit is True
     assert config.generation.eos_token_id == 2
+    assert config.generation.prompt_mode == "completion"
+    assert "\nprint" in config.generation.stop_sequences
 
     captured = capsys.readouterr()
     assert str(output_path) in captured.err

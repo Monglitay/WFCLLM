@@ -12,9 +12,11 @@ from wfcllm.sawr.generator import (
     SawrGenerator,
     SawrModelContext,
     build_chat_prompt,
+    build_generation_prompt,
     load_sawr_model,
     resolve_torch_dtype,
     strip_repeated_prompt_function,
+    truncate_at_stop_sequences,
 )
 from wfcllm.sawr.rules import RuleDecision, RuleRequest
 
@@ -143,6 +145,30 @@ def test_build_chat_prompt_falls_back_to_raw_prompt() -> None:
     assert build_chat_prompt("def foo():\n", tokenizer) == "def foo():\n"
 
 
+def test_build_generation_prompt_defaults_to_completion_prompt() -> None:
+    tokenizer = FakeTokenizer([])
+
+    prompt = build_generation_prompt("def foo():\n", tokenizer, prompt_mode="completion")
+
+    assert prompt == "def foo():\n"
+    assert tokenizer.apply_chat_template_calls == 0
+
+
+def test_build_generation_prompt_can_use_chat_template() -> None:
+    tokenizer = FakeTokenizer([])
+
+    prompt = build_generation_prompt("def foo():\n", tokenizer, prompt_mode="chat")
+
+    assert prompt.startswith("CHAT:")
+    assert tokenizer.apply_chat_template_calls == 1
+
+
+def test_truncate_at_stop_sequences_removes_humaneval_extra_code() -> None:
+    generated = "    return False\n\nprint(has_close_elements([1.0], 0.5))"
+
+    assert truncate_at_stop_sequences(generated, ("\nprint",)) == "    return False\n"
+
+
 def test_strip_repeated_prompt_function_removes_duplicate_def_line() -> None:
     prompt = "def foo(x):\n"
     generated = "def foo(x):\n    return x\n"
@@ -196,6 +222,27 @@ def test_generator_accepts_simple_statement_group(tmp_path: Path) -> None:
         "candidate_observed",
         "accepted_generation_time_group",
     ]
+
+
+def test_generator_uses_completion_prompt_by_default(tmp_path: Path) -> None:
+    tokenizer = FakeTokenizer(["", "    ", "return", " ", "1", "\n", ""])
+    model = FakeModel([1, 2, 3, 4, 5, 6])
+    generator = SawrGenerator(
+        config=_generation_config(tmp_path, max_new_tokens=6, eos_token_id=6),
+        rule=AlwaysHitRule(),
+        model=model,
+        tokenizer=tokenizer,
+    )
+
+    generator.generate(
+        sample_id="HumanEval/0",
+        prompt="def foo():\n",
+        dataset="humaneval",
+        max_group_statements=2,
+        retry_budget=1,
+    )
+
+    assert tokenizer.apply_chat_template_calls == 0
 
 
 def test_generator_falls_back_when_rule_misses_and_no_retry_budget(
@@ -282,6 +329,35 @@ def test_generator_accepts_final_flush_hit_without_truncating_code(
         "accepted_generation_time_group",
     ]
     assert result.audit_events[-1].final_flush is True
+
+
+def test_generator_truncates_final_code_at_humaneval_stop_sequence(
+    tmp_path: Path,
+) -> None:
+    tokenizer = FakeTokenizer(
+        ["", "    ", "return", " ", "False", "\n", "\nprint", "(", "1", ")"]
+    )
+    model = FakeModel([1, 2, 3, 4, 5, 6, 7, 8, 9])
+    generator = SawrGenerator(
+        config=_generation_config(
+            tmp_path,
+            max_new_tokens=9,
+            stop_sequences=("\nprint",),
+        ),
+        rule=AlwaysHitRule(),
+        model=model,
+        tokenizer=tokenizer,
+    )
+
+    result = generator.generate(
+        sample_id="HumanEval/0",
+        prompt="def foo():\n",
+        dataset="humaneval",
+        max_group_statements=1,
+        retry_budget=0,
+    )
+
+    assert result.final_code == "def foo():\n    return False\n"
 
 
 def test_generator_rolls_back_to_group_start_and_skips_empty_decoded_chunks(

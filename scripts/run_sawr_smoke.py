@@ -44,6 +44,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--load-in-4bit", action="store_true")
     parser.add_argument("--eos-token-id", type=int, default=None)
+    parser.add_argument(
+        "--prompt-mode",
+        default="completion",
+        choices=["completion", "chat"],
+        help="Prompt formatting mode. Use completion for official HumanEval prompt completion.",
+    )
     parser.add_argument("--max-group-statements", type=int, default=2)
     parser.add_argument("--retry-budget", type=int, default=1)
     parser.add_argument("--target-accept-rate", type=float, default=0.5)
@@ -65,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
             seed=args.seed,
             load_in_4bit=args.load_in_4bit,
             eos_token_id=args.eos_token_id,
+            prompt_mode=args.prompt_mode,
         )
         rule_config = SawrRuleConfig(
             rule_name="hash",

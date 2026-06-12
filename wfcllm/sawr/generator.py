@@ -247,7 +247,11 @@ class SawrGenerator:
         retry_budget: int,
     ) -> SawrGenerateResult:
         torch.manual_seed(self.config.seed)
-        lm_prompt = build_chat_prompt(prompt, self._tokenizer)
+        lm_prompt = build_generation_prompt(
+            prompt,
+            self._tokenizer,
+            prompt_mode=self.config.prompt_mode,
+        )
         context = SawrModelContext(self._model, self._tokenizer, self.config)
         context.boundary = PromptAwareBoundaryDetector(prompt=prompt, dataset=dataset)
         context.prefill(lm_prompt)
@@ -273,6 +277,8 @@ class SawrGenerator:
             )
             if self._handle_candidates(candidates, context, state_machine):
                 continue
+            if _contains_stop_sequence(context.generated_text, self.config.stop_sequences):
+                break
 
         final_candidates = context.boundary.flush()
         for candidate in final_candidates:
@@ -282,6 +288,7 @@ class SawrGenerator:
             state_machine.record_no_controlled_body()
 
         generated = strip_repeated_prompt_function(prompt, context.generated_text)
+        generated = truncate_at_stop_sequences(generated, self.config.stop_sequences)
         return SawrGenerateResult(
             final_code=prompt + generated,
             accepted_hit_count=state_machine.accepted_hit_count,
@@ -326,6 +333,19 @@ def build_chat_prompt(prompt: str, tokenizer: Any) -> str:
     return apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
 
+def build_generation_prompt(
+    prompt: str,
+    tokenizer: Any,
+    *,
+    prompt_mode: str = "completion",
+) -> str:
+    if prompt_mode == "completion":
+        return prompt
+    if prompt_mode == "chat":
+        return build_chat_prompt(prompt, tokenizer)
+    raise ValueError(f"unsupported prompt_mode: {prompt_mode}")
+
+
 def strip_repeated_prompt_function(prompt: str, generated: str) -> str:
     def_lines = [line for line in prompt.splitlines() if re.match(r"^def ", line)]
     if not def_lines:
@@ -336,6 +356,21 @@ def strip_repeated_prompt_function(prompt: str, generated: str) -> str:
         if line.rstrip() == last_def:
             return "".join(generated_lines[index + 1 :]).lstrip("\n")
     return generated
+
+
+def truncate_at_stop_sequences(generated: str, stop_sequences: tuple[str, ...]) -> str:
+    stop_positions = [
+        position
+        for stop_sequence in stop_sequences
+        if (position := generated.find(stop_sequence)) != -1
+    ]
+    if not stop_positions:
+        return generated
+    return generated[: min(stop_positions)]
+
+
+def _contains_stop_sequence(generated: str, stop_sequences: tuple[str, ...]) -> bool:
+    return any(stop_sequence in generated for stop_sequence in stop_sequences)
 
 
 def resolve_torch_dtype(value: str) -> torch.dtype | None:

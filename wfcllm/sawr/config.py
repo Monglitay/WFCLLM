@@ -8,6 +8,8 @@ from wfcllm.datasets.constants import SUPPORTED_DATASETS
 
 
 _ALLOWED_TORCH_DTYPES = ("auto", "fp32", "fp16", "bf16")
+_ALLOWED_PROMPT_MODES = ("completion", "chat")
+DEFAULT_HUMANEVAL_STOP_SEQUENCES = ("\nclass", "\ndef", "\n#", "\nif", "\nprint")
 
 
 @dataclass(frozen=True)
@@ -24,6 +26,8 @@ class SawrGenerationConfig:
     seed: int = 0
     load_in_4bit: bool = False
     eos_token_id: int | None = None
+    prompt_mode: str = "completion"
+    stop_sequences: tuple[str, ...] = DEFAULT_HUMANEVAL_STOP_SEQUENCES
 
     def __post_init__(self) -> None:
         if not Path(self.model_path).exists():
@@ -40,6 +44,21 @@ class SawrGenerationConfig:
             raise ValueError(
                 f"torch_dtype must be one of {_ALLOWED_TORCH_DTYPES}, got {self.torch_dtype!r}"
             )
+        if self.prompt_mode not in _ALLOWED_PROMPT_MODES:
+            raise ValueError(
+                f"prompt_mode must be one of {_ALLOWED_PROMPT_MODES}, got {self.prompt_mode!r}"
+            )
+        if isinstance(self.stop_sequences, str) or not isinstance(
+            self.stop_sequences,
+            (tuple, list),
+        ):
+            raise ValueError("stop_sequences must be a sequence of strings")
+        if any(
+            not isinstance(stop_sequence, str) or not stop_sequence
+            for stop_sequence in self.stop_sequences
+        ):
+            raise ValueError("stop_sequences entries must be non-empty strings")
+        object.__setattr__(self, "stop_sequences", tuple(self.stop_sequences))
 
 
 @dataclass(frozen=True)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from wfcllm.sawr.boundary import Candidate
 from wfcllm.sawr.config import (
+    DEFAULT_HUMANEVAL_STOP_SEQUENCES,
     SawrGenerationConfig,
     SawrPipelineConfig,
     SawrRuleConfig,
@@ -14,9 +15,11 @@ from wfcllm.sawr.generator import (
     SawrGenerator,
     SawrModelContext,
     build_chat_prompt,
+    build_generation_prompt,
     load_sawr_model,
     resolve_torch_dtype,
     strip_repeated_prompt_function,
+    truncate_at_stop_sequences,
 )
 from wfcllm.sawr.pipeline import (
     ALLOWED_AUDIT_EVENTS,
@@ -42,6 +45,7 @@ __all__ = [
     "ALLOWED_AUDIT_EVENTS",
     "Candidate",
     "CheckpointT",
+    "DEFAULT_HUMANEVAL_STOP_SEQUENCES",
     "DecisionAction",
     "EmbeddingRule",
     "FORBIDDEN_FINAL_FIELDS",
@@ -59,7 +63,9 @@ __all__ = [
     "SawrStateMachine",
     "StateMachineDecision",
     "build_chat_prompt",
+    "build_generation_prompt",
     "load_sawr_model",
     "resolve_torch_dtype",
     "strip_repeated_prompt_function",
+    "truncate_at_stop_sequences",
 ]

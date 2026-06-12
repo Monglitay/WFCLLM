@@ -62,6 +62,8 @@ def test_generation_config_accepts_local_model_path(tmp_path):
     assert config.device == "cpu"
     assert config.seed == 123
     assert config.load_in_4bit is False
+    assert config.prompt_mode == "completion"
+    assert "\nprint" in config.stop_sequences
 
 
 @pytest.mark.parametrize(
@@ -72,6 +74,9 @@ def test_generation_config_accepts_local_model_path(tmp_path):
         ("top_p", 1.5, r"top_p must be in \(0, 1\]"),
         ("top_k", -1, "top_k must be non-negative"),
         ("torch_dtype", "float64", "torch_dtype must be one of"),
+        ("prompt_mode", "assistant", "prompt_mode must be one of"),
+        ("stop_sequences", "\nprint", "stop_sequences must be a sequence"),
+        ("stop_sequences", ("",), "stop_sequences entries must be non-empty strings"),
     ],
 )
 def test_generation_config_rejects_invalid_sampling_values(
