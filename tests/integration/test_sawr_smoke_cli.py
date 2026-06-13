@@ -56,6 +56,10 @@ def test_run_sawr_smoke_cli_builds_pipeline_config(
                 "2",
                 "--retry-budget",
                 "1",
+                "--global-rollback-budget",
+                "5",
+                "--max-total-sampled-tokens",
+                "321",
                 "--target-accept-rate",
                 "0.25",
                 "--prompt-mode",
@@ -80,6 +84,8 @@ def test_run_sawr_smoke_cli_builds_pipeline_config(
     assert config.sample_offset == 2
     assert config.max_group_statements == 2
     assert config.retry_budget == 1
+    assert config.global_rollback_budget == 5
+    assert config.max_total_sampled_tokens == 321
     assert config.rule.target_accept_rate == 0.25
     assert config.generation is generator_config
     assert config.generation.model_path == str(model_path)
@@ -97,6 +103,40 @@ def test_run_sawr_smoke_cli_builds_pipeline_config(
 
     captured = capsys.readouterr()
     assert str(output_path) in captured.err
+
+
+def test_run_sawr_smoke_cli_derives_bounded_generation_defaults(
+    tmp_path: Path,
+) -> None:
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+    output_path = tmp_path / "sawr" / "humaneval_sawr_final_20260611_010101.jsonl"
+    pipeline = MagicMock()
+    pipeline.run.return_value = str(output_path)
+
+    with (
+        patch("scripts.run_sawr_smoke.SawrGenerator"),
+        patch("scripts.run_sawr_smoke.SawrPipeline", return_value=pipeline) as pipeline_cls,
+    ):
+        rc = sawr_cli.main(
+            [
+                "--dataset",
+                "humaneval",
+                "--dataset-path",
+                "data/datasets",
+                "--model-path",
+                str(model_path),
+                "--max-new-tokens",
+                "64",
+                "--retry-budget",
+                "3",
+            ]
+        )
+
+    assert rc == 0
+    config = pipeline_cls.call_args.kwargs["config"]
+    assert config.global_rollback_budget == 3
+    assert config.max_total_sampled_tokens == 320
 
 
 def test_run_sawr_smoke_cli_returns_one_for_invalid_config(
@@ -145,3 +185,91 @@ def test_run_sawr_smoke_cli_passes_resume_latest(tmp_path: Path) -> None:
 
     assert rc == 0
     assert pipeline_cls.call_args.kwargs["config"].resume == "latest"
+
+
+def test_run_sawr_smoke_cli_builds_semantic_lsh_rule(
+    tmp_path: Path,
+) -> None:
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+    encoder_model_path = tmp_path / "codet5"
+    encoder_model_path.mkdir()
+    encoder_checkpoint_path = tmp_path / "encoder.pt"
+    encoder_checkpoint_path.write_bytes(b"checkpoint")
+    semantic_rule = object()
+    pipeline = MagicMock()
+    pipeline.run.return_value = str(
+        tmp_path / "sawr" / "humaneval_sawr_final_20260611_010101.jsonl"
+    )
+
+    with (
+        patch("scripts.run_sawr_smoke.SawrGenerator") as generator_cls,
+        patch("scripts.run_sawr_smoke.SawrPipeline", return_value=pipeline) as pipeline_cls,
+        patch(
+            "scripts.run_sawr_smoke.load_semantic_lsh_rule",
+            return_value=semantic_rule,
+        ) as load_rule,
+    ):
+        rc = sawr_cli.main(
+            [
+                "--dataset",
+                "humaneval",
+                "--dataset-path",
+                "data/datasets",
+                "--model-path",
+                str(model_path),
+                "--rule-name",
+                "semantic_lsh",
+                "--encoder-model-path",
+                str(encoder_model_path),
+                "--encoder-checkpoint-path",
+                str(encoder_checkpoint_path),
+                "--encoder-embed-dim",
+                "128",
+                "--encoder-device",
+                "cpu",
+                "--encoder-use-lora",
+                "--secret-key",
+                "1010",
+                "--lsh-d",
+                "4",
+                "--lsh-gamma",
+                "0.75",
+                "--semantic-margin",
+                "0.03",
+                "--use-ordinal-keying",
+            ]
+        )
+
+    assert rc == 0
+    load_rule.assert_called_once_with(
+        encoder_model_path=str(encoder_model_path),
+        encoder_checkpoint_path=str(encoder_checkpoint_path),
+        embed_dim=128,
+        device="cpu",
+        use_lora=True,
+        use_bf16=False,
+        secret_key="1010",
+        lsh_d=4,
+        lsh_gamma=0.75,
+        margin=0.03,
+        whitening_path=None,
+        use_ordinal_keying=True,
+    )
+    assert generator_cls.call_args.kwargs["rule"] is semantic_rule
+    config = pipeline_cls.call_args.kwargs["config"]
+    assert config.rule.rule_name == "semantic_lsh"
+    assert config.rule.parameters == {
+        "encoder_model_path": str(encoder_model_path),
+        "encoder_checkpoint_path": str(encoder_checkpoint_path),
+        "encoder_embed_dim": 128,
+        "encoder_device": "cpu",
+        "encoder_use_lora": True,
+        "encoder_use_bf16": False,
+        "secret_key": "1010",
+        "lsh_d": 4,
+        "lsh_gamma": 0.75,
+        "semantic_margin": 0.03,
+        "lsh_whitening_path": None,
+        "use_ordinal_keying": True,
+    }

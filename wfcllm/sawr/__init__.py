@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from wfcllm.sawr.boundary import Candidate
+from wfcllm.sawr.boundary import BoundaryEvent, BoundaryEventKind, Candidate
 from wfcllm.sawr.config import (
     DEFAULT_HUMANEVAL_STOP_SEQUENCES,
     SawrGenerationConfig,
@@ -31,18 +31,23 @@ from wfcllm.sawr.rules import (
     HashEmbeddingRule,
     RuleDecision,
     RuleRequest,
+    SemanticLshEmbeddingRule,
 )
 from wfcllm.sawr.state_machine import (
     AuditEvent,
     CheckpointT,
     DecisionAction,
+    LayerFrame,
     SawrStateMachine,
     StateMachineDecision,
+    StateMachineSnapshot,
 )
 
 __all__ = [
     "AuditEvent",
     "ALLOWED_AUDIT_EVENTS",
+    "BoundaryEvent",
+    "BoundaryEventKind",
     "Candidate",
     "CheckpointT",
     "DEFAULT_HUMANEVAL_STOP_SEQUENCES",
@@ -50,8 +55,10 @@ __all__ = [
     "EmbeddingRule",
     "FORBIDDEN_FINAL_FIELDS",
     "HashEmbeddingRule",
+    "LayerFrame",
     "RuleDecision",
     "RuleRequest",
+    "SemanticLshEmbeddingRule",
     "SawrCheckpoint",
     "SawrGenerateResult",
     "SawrGenerationConfig",
@@ -62,6 +69,7 @@ __all__ = [
     "SawrRuleConfig",
     "SawrStateMachine",
     "StateMachineDecision",
+    "StateMachineSnapshot",
     "build_chat_prompt",
     "build_generation_prompt",
     "load_sawr_model",

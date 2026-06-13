@@ -104,6 +104,31 @@ class FakeModel:
         return SimpleNamespace(logits=logits, past_key_values=past)
 
 
+class EqualChoiceModel:
+    def parameters(self):
+        return iter([torch.zeros(1)])
+
+    def eval(self):
+        return self
+
+    def __call__(self, input_ids, past_key_values=None, use_cache=True):
+        logits = torch.full((1, 1, 3), -100.0)
+        logits[0, 0, 1] = 1.0
+        logits[0, 0, 2] = 1.0
+        seq_len = (
+            input_ids.shape[1]
+            if past_key_values is None
+            else past_key_values[0][0].shape[2] + 1
+        )
+        past = (
+            (
+                torch.zeros(1, 1, seq_len, 1),
+                torch.zeros(1, 1, seq_len, 1),
+            ),
+        )
+        return SimpleNamespace(logits=logits, past_key_values=past)
+
+
 def _generation_config(tmp_path: Path, **overrides) -> SawrGenerationConfig:
     model_path = tmp_path / "model"
     model_path.mkdir()
@@ -210,6 +235,8 @@ def test_generator_accepts_simple_statement_group(tmp_path: Path) -> None:
         dataset="humaneval",
         max_group_statements=2,
         retry_budget=1,
+        global_rollback_budget=2,
+        max_total_sampled_tokens=20,
     )
 
     assert isinstance(result, SawrGenerateResult)
@@ -219,8 +246,9 @@ def test_generator_accepts_simple_statement_group(tmp_path: Path) -> None:
     assert result.fallback_count == 0
     assert result.candidate_count == 1
     assert [event.event for event in result.audit_events] == [
-        "candidate_observed",
-        "accepted_generation_time_group",
+        "simple_candidate_observed",
+        "accepted_generation_time_window",
+        "layer_closed_with_direct_hit",
     ]
 
 
@@ -240,6 +268,8 @@ def test_generator_uses_completion_prompt_by_default(tmp_path: Path) -> None:
         dataset="humaneval",
         max_group_statements=2,
         retry_budget=1,
+        global_rollback_budget=2,
+        max_total_sampled_tokens=20,
     )
 
     assert tokenizer.apply_chat_template_calls == 0
@@ -263,12 +293,15 @@ def test_generator_falls_back_when_rule_misses_and_no_retry_budget(
         dataset="humaneval",
         max_group_statements=1,
         retry_budget=0,
+        global_rollback_budget=2,
+        max_total_sampled_tokens=20,
     )
 
     assert result.final_code == "def foo():\n    return 1\n"
-    assert result.fallback_count == 1
+    assert result.closed_without_hit_count == 1
+    assert result.fallback_count == 0
     assert [event.event for event in result.audit_events][-1] == (
-        "fallback_committed_without_hit"
+        "closed_without_hit"
     )
 
 
@@ -288,12 +321,15 @@ def test_generator_closes_final_flush_miss_without_rollback(tmp_path: Path) -> N
         dataset="humaneval",
         max_group_statements=1,
         retry_budget=1,
+        global_rollback_budget=2,
+        max_total_sampled_tokens=20,
     )
 
     assert result.final_code == "def foo():\n    return 1"
     assert result.closed_without_hit_count == 1
     assert [event.event for event in result.audit_events] == [
-        "candidate_observed",
+        "simple_candidate_observed",
+        "layer_window_rule_miss",
         "closed_without_hit",
     ]
     assert result.audit_events[-1].final_flush is True
@@ -320,13 +356,16 @@ def test_generator_accepts_final_flush_hit_without_truncating_code(
         dataset="humaneval",
         max_group_statements=1,
         retry_budget=1,
+        global_rollback_budget=2,
+        max_total_sampled_tokens=20,
     )
 
     assert result.final_code == "def foo():\n    return 1"
     assert result.accepted_hit_count == 1
     assert [event.event for event in result.audit_events] == [
-        "candidate_observed",
-        "accepted_generation_time_group",
+        "simple_candidate_observed",
+        "accepted_generation_time_window",
+        "layer_closed_with_direct_hit",
     ]
     assert result.audit_events[-1].final_flush is True
 
@@ -355,21 +394,23 @@ def test_generator_truncates_final_code_at_humaneval_stop_sequence(
         dataset="humaneval",
         max_group_statements=1,
         retry_budget=0,
+        global_rollback_budget=2,
+        max_total_sampled_tokens=20,
     )
 
     assert result.final_code == "def foo():\n    return False\n"
 
 
-def test_generator_rolls_back_to_group_start_and_skips_empty_decoded_chunks(
+def test_generator_skips_empty_decoded_chunks(
     tmp_path: Path,
 ) -> None:
     tokenizer = FakeTokenizer(
-        ["", "    ", "return", " ", "1", "\n", "", "    ", "return", " ", "2", "\n"]
+        ["", "    ", "return", " ", "1", "\n", ""]
     )
-    model = FakeModel([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+    model = FakeModel([0, 1, 2, 3, 4, 5, 6])
     generator = SawrGenerator(
-        config=_generation_config(tmp_path, max_new_tokens=12, eos_token_id=11),
-        rule=SequenceRule([False, True]),
+        config=_generation_config(tmp_path, max_new_tokens=7, eos_token_id=6),
+        rule=AlwaysHitRule(),
         model=model,
         tokenizer=tokenizer,
     )
@@ -380,17 +421,219 @@ def test_generator_rolls_back_to_group_start_and_skips_empty_decoded_chunks(
         dataset="humaneval",
         max_group_statements=1,
         retry_budget=1,
+        global_rollback_budget=2,
+        max_total_sampled_tokens=20,
     )
 
-    assert result.final_code == "def foo():\n    return 2\n"
+    assert result.final_code == "def foo():\n    return 1\n"
     assert result.accepted_hit_count == 1
-    assert result.candidate_count == 2
+    assert result.candidate_count == 1
     assert [event.event for event in result.audit_events] == [
-        "candidate_observed",
-        "group_rule_miss",
-        "rollback_requested",
-        "candidate_observed",
-        "accepted_generation_time_group",
+        "simple_candidate_observed",
+        "accepted_generation_time_window",
+        "layer_closed_with_direct_hit",
+    ]
+
+
+def test_generator_retries_nested_if_with_new_early_closed_structure(
+    tmp_path: Path,
+) -> None:
+    tokenizer = FakeTokenizer(
+        [
+            "",
+            "    if x:\n",
+            "        y = 1\n",
+            "    else:\n",
+            "        y = 2\n",
+            "    if x:\n",
+            "        return 3\n",
+            "",
+        ]
+    )
+    model = FakeModel([1, 2, 3, 4, 5, 6, 7])
+    generator = SawrGenerator(
+        config=_generation_config(tmp_path, max_new_tokens=7, eos_token_id=7),
+        rule=SequenceRule([False, False, True]),
+        model=model,
+        tokenizer=tokenizer,
+    )
+
+    result = generator.generate(
+        sample_id="HumanEval/0",
+        prompt="def foo(x):\n",
+        dataset="humaneval",
+        max_group_statements=1,
+        retry_budget=1,
+        global_rollback_budget=2,
+        max_total_sampled_tokens=20,
+    )
+
+    assert result.final_code == "def foo(x):\n    if x:\n        return 3\n"
+    assert result.accepted_hit_count == 1
+    assert "layer_retry_requested" in [event.event for event in result.audit_events]
+
+
+def test_generator_rolls_back_entire_same_token_compound_attempt(
+    tmp_path: Path,
+) -> None:
+    tokenizer = FakeTokenizer(
+        [
+            "",
+            "    if x:\n        return 1\n    y = 0\n",
+            "    if x:\n        return 2\n    y = 0\n",
+        ]
+    )
+    model = EqualChoiceModel()
+    generator = SawrGenerator(
+        config=_generation_config(
+            tmp_path,
+            max_new_tokens=2,
+            eos_token_id=2,
+            temperature=1.0,
+        ),
+        rule=SequenceRule([False, True, True]),
+        model=model,
+        tokenizer=tokenizer,
+    )
+
+    result = generator.generate(
+        sample_id="HumanEval/0",
+        prompt="def foo(x):\n",
+        dataset="humaneval",
+        max_group_statements=1,
+        retry_budget=1,
+        global_rollback_budget=2,
+        max_total_sampled_tokens=20,
+    )
+
+    assert "return 1" not in result.final_code
+    assert result.final_code == "def foo(x):\n    if x:\n        return 2\n    y = 0\n"
+    assert "layer_retry_requested" in [event.event for event in result.audit_events]
+
+
+def test_generator_feeds_valid_prefix_before_stop_sequence_in_same_token(
+    tmp_path: Path,
+) -> None:
+    tokenizer = FakeTokenizer(["", "    return 1\n\nprint(1)"])
+    model = FakeModel([1])
+    generator = SawrGenerator(
+        config=_generation_config(
+            tmp_path,
+            max_new_tokens=1,
+            stop_sequences=("\nprint",),
+        ),
+        rule=AlwaysHitRule(),
+        model=model,
+        tokenizer=tokenizer,
+    )
+
+    result = generator.generate(
+        sample_id="HumanEval/0",
+        prompt="def foo():\n",
+        dataset="humaneval",
+        max_group_statements=1,
+        retry_budget=1,
+        global_rollback_budget=2,
+        max_total_sampled_tokens=20,
+    )
+
+    assert result.final_code == "def foo():\n    return 1\n"
+    assert "accepted_generation_time_window" in [
+        event.event for event in result.audit_events
+    ]
+
+
+def test_generator_absolute_sampled_token_count_does_not_decrease_after_rollback(
+    tmp_path: Path,
+) -> None:
+    tokenizer = FakeTokenizer(["", "    if x:\n", "        y = 1\n", "    if x:\n"])
+    model = FakeModel([1, 2, 3])
+    generator = SawrGenerator(
+        config=_generation_config(tmp_path, max_new_tokens=10),
+        rule=AlwaysMissRule(),
+        model=model,
+        tokenizer=tokenizer,
+    )
+
+    result = generator.generate(
+        sample_id="HumanEval/0",
+        prompt="def foo(x):\n",
+        dataset="humaneval",
+        max_group_statements=1,
+        retry_budget=1,
+        global_rollback_budget=2,
+        max_total_sampled_tokens=2,
+    )
+
+    assert result.audit_events[-1].event == "absolute_sampled_token_budget_exhausted"
+
+
+def test_generator_zero_global_rollback_budget_stops_without_rollback(
+    tmp_path: Path,
+) -> None:
+    tokenizer = FakeTokenizer(["", "    if x:\n", "        return 1\n", "    y = 0\n"])
+    model = FakeModel([1, 2, 3])
+    generator = SawrGenerator(
+        config=_generation_config(tmp_path, max_new_tokens=3),
+        rule=AlwaysMissRule(),
+        model=model,
+        tokenizer=tokenizer,
+    )
+
+    result = generator.generate(
+        sample_id="HumanEval/0",
+        prompt="def foo(x):\n",
+        dataset="humaneval",
+        max_group_statements=1,
+        retry_budget=1,
+        global_rollback_budget=0,
+        max_total_sampled_tokens=20,
+    )
+
+    assert "global_rollback_budget_exhausted" in [
+        event.event for event in result.audit_events
+    ]
+    assert "layer_retry_requested" not in [
+        event.event for event in result.audit_events
+    ]
+    assert result.final_code != "def foo(x):\n"
+    assert "return 1" in result.final_code
+
+
+def test_generator_repeated_failed_attempt_consumes_budget_without_unbounded_loop(
+    tmp_path: Path,
+) -> None:
+    tokenizer = FakeTokenizer(
+        [
+            "",
+            "    if x:\n",
+            "        return 1\n",
+            "    y = 0\n",
+            "        return 1\n",
+            "    y = 0\n",
+            "",
+        ]
+    )
+    model = FakeModel([1, 2, 3, 4, 5, 6])
+    generator = SawrGenerator(
+        config=_generation_config(tmp_path, max_new_tokens=6, eos_token_id=6),
+        rule=AlwaysMissRule(),
+        model=model,
+        tokenizer=tokenizer,
+    )
+
+    result = generator.generate(
+        sample_id="HumanEval/0",
+        prompt="def foo(x):\n",
+        dataset="humaneval",
+        max_group_statements=1,
+        retry_budget=2,
+        global_rollback_budget=3,
+        max_total_sampled_tokens=20,
+    )
+
+    assert "layer_fallback_committed_without_hit" in [
+        event.event for event in result.audit_events
     ]
 
 
@@ -412,6 +655,8 @@ def test_generator_records_no_controlled_body_when_no_function_body(
         dataset="mbpp",
         max_group_statements=2,
         retry_budget=1,
+        global_rollback_budget=2,
+        max_total_sampled_tokens=20,
     )
 
     assert result.final_code == "Write text.plain"

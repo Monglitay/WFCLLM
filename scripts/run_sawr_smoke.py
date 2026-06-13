@@ -19,6 +19,7 @@ from wfcllm.sawr.config import (  # noqa: E402
 from wfcllm.sawr.generator import SawrGenerator  # noqa: E402
 from wfcllm.sawr.pipeline import SawrPipeline  # noqa: E402
 from wfcllm.sawr.rules import HashEmbeddingRule  # noqa: E402
+from wfcllm.sawr.semantic_lsh import load_semantic_lsh_rule  # noqa: E402
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -52,7 +53,26 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--max-group-statements", type=int, default=2)
     parser.add_argument("--retry-budget", type=int, default=1)
+    parser.add_argument("--global-rollback-budget", type=int, default=None)
+    parser.add_argument("--max-total-sampled-tokens", type=int, default=None)
+    parser.add_argument(
+        "--rule-name",
+        default="hash",
+        choices=["hash", "semantic_lsh"],
+    )
     parser.add_argument("--target-accept-rate", type=float, default=0.5)
+    parser.add_argument("--encoder-model-path", default="data/models/codet5-base")
+    parser.add_argument("--encoder-checkpoint-path", default=None)
+    parser.add_argument("--encoder-embed-dim", type=int, default=128)
+    parser.add_argument("--encoder-device", default=None)
+    parser.add_argument("--encoder-use-lora", action="store_true")
+    parser.add_argument("--encoder-use-bf16", action="store_true")
+    parser.add_argument("--secret-key", default="1010")
+    parser.add_argument("--lsh-d", type=int, default=4)
+    parser.add_argument("--lsh-gamma", type=float, default=0.75)
+    parser.add_argument("--semantic-margin", type=float, default=0.0)
+    parser.add_argument("--lsh-whitening-path", default=None)
+    parser.add_argument("--use-ordinal-keying", action="store_true")
     parser.add_argument("--resume", choices=["latest"], default=None)
     return parser
 
@@ -73,9 +93,27 @@ def main(argv: list[str] | None = None) -> int:
             eos_token_id=args.eos_token_id,
             prompt_mode=args.prompt_mode,
         )
+        rule_parameters: dict[str, object] = {}
+        if args.rule_name == "semantic_lsh":
+            encoder_device = args.encoder_device or args.device
+            rule_parameters = {
+                "encoder_model_path": args.encoder_model_path,
+                "encoder_checkpoint_path": args.encoder_checkpoint_path,
+                "encoder_embed_dim": args.encoder_embed_dim,
+                "encoder_device": encoder_device,
+                "encoder_use_lora": args.encoder_use_lora,
+                "encoder_use_bf16": args.encoder_use_bf16,
+                "secret_key": args.secret_key,
+                "lsh_d": args.lsh_d,
+                "lsh_gamma": args.lsh_gamma,
+                "semantic_margin": args.semantic_margin,
+                "lsh_whitening_path": args.lsh_whitening_path,
+                "use_ordinal_keying": args.use_ordinal_keying,
+            }
         rule_config = SawrRuleConfig(
-            rule_name="hash",
+            rule_name=args.rule_name,
             target_accept_rate=args.target_accept_rate,
+            parameters=rule_parameters,
         )
         pipeline_config = SawrPipelineConfig(
             dataset=args.dataset,
@@ -87,9 +125,28 @@ def main(argv: list[str] | None = None) -> int:
             sample_offset=args.sample_offset,
             max_group_statements=args.max_group_statements,
             retry_budget=args.retry_budget,
+            global_rollback_budget=args.global_rollback_budget,
+            max_total_sampled_tokens=args.max_total_sampled_tokens,
             resume=args.resume,
         )
-        rule = HashEmbeddingRule(target_accept_rate=rule_config.target_accept_rate)
+        if rule_config.rule_name == "semantic_lsh":
+            encoder_device = str(rule_config.parameters["encoder_device"])
+            rule = load_semantic_lsh_rule(
+                encoder_model_path=str(rule_config.parameters["encoder_model_path"]),
+                encoder_checkpoint_path=rule_config.parameters["encoder_checkpoint_path"],  # type: ignore[arg-type]
+                embed_dim=int(rule_config.parameters["encoder_embed_dim"]),
+                device=encoder_device,
+                use_lora=bool(rule_config.parameters["encoder_use_lora"]),
+                use_bf16=bool(rule_config.parameters["encoder_use_bf16"]),
+                secret_key=str(rule_config.parameters["secret_key"]),
+                lsh_d=int(rule_config.parameters["lsh_d"]),
+                lsh_gamma=float(rule_config.parameters["lsh_gamma"]),
+                margin=float(rule_config.parameters["semantic_margin"]),
+                whitening_path=rule_config.parameters["lsh_whitening_path"],  # type: ignore[arg-type]
+                use_ordinal_keying=bool(rule_config.parameters["use_ordinal_keying"]),
+            )
+        else:
+            rule = HashEmbeddingRule(target_accept_rate=rule_config.target_accept_rate)
         generator = SawrGenerator(config=generation_config, rule=rule)
         pipeline = SawrPipeline(generator=generator, config=pipeline_config)
         output_path = pipeline.run()

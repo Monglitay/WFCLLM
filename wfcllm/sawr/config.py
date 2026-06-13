@@ -9,6 +9,7 @@ from wfcllm.datasets.constants import SUPPORTED_DATASETS
 
 _ALLOWED_TORCH_DTYPES = ("auto", "fp32", "fp16", "bf16")
 _ALLOWED_PROMPT_MODES = ("completion", "chat")
+_ALLOWED_RULE_NAMES = ("hash", "semantic_lsh")
 DEFAULT_HUMANEVAL_STOP_SEQUENCES = ("\nclass", "\ndef", "\n#", "\nif", "\nprint")
 
 
@@ -70,8 +71,10 @@ class SawrRuleConfig:
     parameters: dict[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.rule_name != "hash":
-            raise ValueError("rule_name must be 'hash'")
+        if self.rule_name not in _ALLOWED_RULE_NAMES:
+            raise ValueError(
+                f"rule_name must be one of {_ALLOWED_RULE_NAMES}, got {self.rule_name!r}"
+            )
         if not 0 <= self.target_accept_rate <= 1:
             raise ValueError("target_accept_rate must be in [0, 1]")
         if not isinstance(self.parameters, dict):
@@ -99,6 +102,8 @@ class SawrPipelineConfig:
     sample_offset: int | None = None
     max_group_statements: int = 2
     retry_budget: int = 1
+    global_rollback_budget: int | None = None
+    max_total_sampled_tokens: int | None = None
     resume: str | None = None
 
     def __post_init__(self) -> None:
@@ -118,6 +123,15 @@ class SawrPipelineConfig:
             raise ValueError("max_group_statements must be positive")
         if self.retry_budget < 0:
             raise ValueError("retry_budget must be non-negative")
+        if self.global_rollback_budget is None:
+            object.__setattr__(self, "global_rollback_budget", self.retry_budget)
+        elif self.global_rollback_budget < 0:
+            raise ValueError("global_rollback_budget must be non-negative")
+        if self.max_total_sampled_tokens is None:
+            derived_budget = self.generation.max_new_tokens * max(2, self.retry_budget + 2)
+            object.__setattr__(self, "max_total_sampled_tokens", derived_budget)
+        elif self.max_total_sampled_tokens <= 0:
+            raise ValueError("max_total_sampled_tokens must be positive")
         if self.resume is not None and self.resume != "latest":
             raise ValueError("resume must be None or 'latest'")
 

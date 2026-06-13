@@ -36,6 +36,18 @@ ALLOWED_AUDIT_EVENTS = {
     "fallback_committed_without_hit",
     "closed_without_hit",
     "sample_failed",
+    "compound_layer_started",
+    "simple_candidate_observed",
+    "layer_window_rule_miss",
+    "accepted_generation_time_window",
+    "layer_retry_requested",
+    "retry_layer_early_closed_after_hit",
+    "layer_disappeared_without_hit",
+    "layer_closed_with_child_hit",
+    "layer_closed_with_direct_hit",
+    "layer_fallback_committed_without_hit",
+    "absolute_sampled_token_budget_exhausted",
+    "global_rollback_budget_exhausted",
 }
 
 
@@ -90,6 +102,12 @@ class SawrPipeline:
                             dataset=self._config.dataset,
                             max_group_statements=self._config.max_group_statements,
                             retry_budget=self._config.retry_budget,
+                            global_rollback_budget=int(
+                                self._config.global_rollback_budget
+                            ),
+                            max_total_sampled_tokens=int(
+                                self._config.max_total_sampled_tokens
+                            ),
                         )
                     except Exception as exc:
                         audit_file.write(

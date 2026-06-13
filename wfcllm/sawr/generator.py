@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import torch
 import torch.nn.functional as F
 
-from wfcllm.sawr.boundary import BoundaryDetectorState, PromptAwareBoundaryDetector
+from wfcllm.sawr.boundary import (
+    BoundaryDetectorState,
+    BoundaryEvent,
+    PromptAwareBoundaryDetector,
+)
 from wfcllm.sawr.config import SawrGenerationConfig
 from wfcllm.sawr.rules import EmbeddingRule
-from wfcllm.sawr.state_machine import AuditEvent, SawrStateMachine
+from wfcllm.sawr.state_machine import AuditEvent, SawrStateMachine, StateMachineSnapshot
 
 
 class _LazyAutoTokenizer:
@@ -56,6 +60,7 @@ class SawrCheckpoint:
     kv_snapshot: Any
     boundary_state: BoundaryDetectorState | None
     next_logits: torch.Tensor | None
+    state_machine_state: StateMachineSnapshot[SawrCheckpoint] | None
 
 
 @dataclass(frozen=True)
@@ -108,7 +113,10 @@ class SawrModelContext:
         self._step_history = []
         self._boundary_checkpoints = []
 
-    def checkpoint(self) -> SawrCheckpoint:
+    def checkpoint(
+        self,
+        state_machine_state: StateMachineSnapshot[SawrCheckpoint] | None = None,
+    ) -> SawrCheckpoint:
         if self.past_kv is None:
             raise ValueError("cannot checkpoint before prefill")
         boundary_state = (
@@ -124,9 +132,13 @@ class SawrModelContext:
                 if self._next_logits is not None
                 else None
             ),
+            state_machine_state=state_machine_state,
         )
 
-    def rollback(self, checkpoint: SawrCheckpoint) -> None:
+    def rollback(
+        self,
+        checkpoint: SawrCheckpoint,
+    ) -> StateMachineSnapshot[SawrCheckpoint] | None:
         if self.past_kv is None:
             raise ValueError("cannot rollback before prefill")
         self.past_kv = self._cache_mgr.rollback(self.past_kv, checkpoint.kv_snapshot)
@@ -146,6 +158,14 @@ class SawrModelContext:
             else 0
         )
         self._boundary_checkpoints = self._boundary_checkpoints[:boundary_count]
+        return checkpoint.state_machine_state
+
+    def record_boundary_checkpoint(
+        self,
+        state_machine: SawrStateMachine[SawrCheckpoint],
+    ) -> None:
+        checkpoint = self.checkpoint(state_machine.checkpoint())
+        self._boundary_checkpoints.append(checkpoint)
 
     def forward_and_sample(self) -> _GeneratedStep:
         step_checkpoint = self.checkpoint()
@@ -245,6 +265,8 @@ class SawrGenerator:
         dataset: str,
         max_group_statements: int,
         retry_budget: int,
+        global_rollback_budget: int,
+        max_total_sampled_tokens: int,
     ) -> SawrGenerateResult:
         torch.manual_seed(self.config.seed)
         lm_prompt = build_generation_prompt(
@@ -263,27 +285,66 @@ class SawrGenerator:
             rule=self._rule,
         )
         saw_controlled_body = context.boundary.saw_controlled_body
+        absolute_sampled_tokens = 0
+        global_rollback_count = 0
+        budget_exhausted_name: str | None = None
 
         while not context.is_finished():
-            step = context.forward_and_sample()
-            if not step.token_text:
-                continue
-            saw_controlled_body = (
-                saw_controlled_body or context.boundary.saw_controlled_body
-            )
-            candidates = context.boundary.feed_text(step.token_text)
-            saw_controlled_body = (
-                saw_controlled_body or context.boundary.saw_controlled_body
-            )
-            if self._handle_candidates(candidates, context, state_machine):
-                continue
-            if _contains_stop_sequence(context.generated_text, self.config.stop_sequences):
+            if absolute_sampled_tokens >= max_total_sampled_tokens:
+                budget_exhausted_name = "absolute_sampled_token_budget_exhausted"
                 break
 
-        final_candidates = context.boundary.flush()
-        for candidate in final_candidates:
-            state_machine.observe_final_candidate(candidate)
-        state_machine.flush()
+            step = context.forward_and_sample()
+            absolute_sampled_tokens += 1
+            if not step.token_text:
+                continue
+
+            previous_text = context.generated_text[: -len(step.token_text)]
+            event_text, stop_reached = _event_text_before_stop(
+                previous_text,
+                step.token_text,
+                self.config.stop_sequences,
+            )
+            if not event_text:
+                if stop_reached:
+                    break
+                continue
+
+            saw_controlled_body = (
+                saw_controlled_body or context.boundary.saw_controlled_body
+            )
+            batch_state_snapshot = state_machine.checkpoint()
+            events = context.boundary.feed_text(event_text)
+            saw_controlled_body = (
+                saw_controlled_body or context.boundary.saw_controlled_body
+            )
+            event_result = self._handle_events(
+                events,
+                context,
+                state_machine,
+                batch_state_snapshot=batch_state_snapshot,
+                remaining_rollback_budget=(
+                    global_rollback_budget - global_rollback_count
+                ),
+            )
+            if event_result == "budget_exhausted":
+                budget_exhausted_name = "global_rollback_budget_exhausted"
+                break
+            if event_result == "rolled_back":
+                global_rollback_count += 1
+                continue
+            if stop_reached:
+                break
+
+        final_events = context.boundary.flush()
+        self._handle_events(
+            final_events,
+            context,
+            state_machine,
+            allow_rollback=False,
+        )
+        if budget_exhausted_name is not None:
+            state_machine.record_budget_exhausted(budget_exhausted_name)
         if not saw_controlled_body and not context.boundary.saw_controlled_body:
             state_machine.record_no_controlled_body()
 
@@ -298,21 +359,66 @@ class SawrGenerator:
             audit_events=state_machine.drain_audit_events(),
         )
 
-    def _handle_candidates(
+    def _handle_events(
         self,
-        candidates: list[Any],
+        events: list[BoundaryEvent],
         context: SawrModelContext,
         state_machine: SawrStateMachine[SawrCheckpoint],
-    ) -> bool:
-        rolled_back = False
-        for candidate in candidates:
-            checkpoint = context.checkpoint_for_token_start(candidate.token_start_idx)
-            decision = state_machine.observe_candidate(candidate, checkpoint)
+        *,
+        allow_rollback: bool = True,
+        batch_state_snapshot: StateMachineSnapshot[SawrCheckpoint] | None = None,
+        remaining_rollback_budget: int | None = None,
+    ) -> str | None:
+        for event in events:
+            checkpoint = None
+            if event.kind == "compound_started":
+                base_checkpoint = context.checkpoint_for_token_start(
+                    event.token_start_idx
+                )
+                checkpoint = (
+                    base_checkpoint
+                    if base_checkpoint.state_machine_state is not None
+                    else replace(
+                        base_checkpoint,
+                        state_machine_state=batch_state_snapshot,
+                    )
+                )
+            elif event.kind == "simple_candidate" and event.candidate is not None:
+                base_checkpoint = context.checkpoint_for_token_start(
+                    event.token_start_idx
+                )
+                checkpoint = (
+                    base_checkpoint
+                    if base_checkpoint.state_machine_state is not None
+                    else replace(
+                        base_checkpoint,
+                        state_machine_state=batch_state_snapshot,
+                    )
+                )
+
+            rollback_allowed = allow_rollback and (
+                remaining_rollback_budget is None or remaining_rollback_budget > 0
+            )
+            decision = state_machine.observe_event(
+                event,
+                checkpoint,
+                allow_rollback=rollback_allowed,
+            )
+            if decision.rollback_blocked:
+                return "budget_exhausted"
             if decision.action == "rollback" and decision.rollback_checkpoint is not None:
-                context.rollback(decision.rollback_checkpoint)
-                rolled_back = True
-                break
-        return rolled_back
+                if not allow_rollback:
+                    continue
+                if (
+                    remaining_rollback_budget is not None
+                    and remaining_rollback_budget <= 0
+                ):
+                    return "budget_exhausted"
+                snapshot = context.rollback(decision.rollback_checkpoint)
+                if snapshot is not None:
+                    state_machine.rollback(snapshot)
+                return "rolled_back"
+        return None
 
 
 def build_chat_prompt(prompt: str, tokenizer: Any) -> str:
@@ -369,8 +475,28 @@ def truncate_at_stop_sequences(generated: str, stop_sequences: tuple[str, ...]) 
     return generated[: min(stop_positions)]
 
 
-def _contains_stop_sequence(generated: str, stop_sequences: tuple[str, ...]) -> bool:
-    return any(stop_sequence in generated for stop_sequence in stop_sequences)
+def _event_text_before_stop(
+    previous_text: str,
+    token_text: str,
+    stop_sequences: tuple[str, ...],
+) -> tuple[str, bool]:
+    if not stop_sequences:
+        return token_text, False
+
+    combined_text = previous_text + token_text
+    stop_positions = [
+        position
+        for stop_sequence in stop_sequences
+        if (position := combined_text.find(stop_sequence)) != -1
+    ]
+    if not stop_positions:
+        return token_text, False
+
+    stop_position = min(stop_positions)
+    token_start = len(previous_text)
+    if stop_position <= token_start:
+        return "", True
+    return token_text[: stop_position - token_start], True
 
 
 def resolve_torch_dtype(value: str) -> torch.dtype | None:

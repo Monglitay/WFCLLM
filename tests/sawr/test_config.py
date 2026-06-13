@@ -97,12 +97,29 @@ def test_generation_config_rejects_invalid_sampling_values(
     ("kwargs", "message"),
     [
         ({"target_accept_rate": 1.1}, r"target_accept_rate must be in \[0, 1\]"),
-        ({"rule_name": "semantic_lsh"}, "rule_name must be 'hash'"),
+        ({"rule_name": "unknown"}, "rule_name must be one of"),
     ],
 )
 def test_rule_config_rejects_invalid_values(kwargs, message):
     with pytest.raises(ValueError, match=message):
         SawrRuleConfig(**kwargs)
+
+
+def test_rule_config_accepts_semantic_lsh_parameters():
+    config = SawrRuleConfig(
+        rule_name="semantic_lsh",
+        parameters={
+            "secret_key": "1010",
+            "encoder_model_path": "data/models/codet5-base",
+            "encoder_embed_dim": 128,
+            "lsh_d": 4,
+            "lsh_gamma": 0.75,
+            "margin": 0.0,
+        },
+    )
+
+    assert config.rule_name == "semantic_lsh"
+    assert config.parameters["lsh_d"] == 4
 
 
 def test_rule_config_rejects_non_json_serializable_parameters():
@@ -133,6 +150,8 @@ def test_rule_config_copies_parameters_before_caller_mutation():
         ({"sample_offset": -1}, "sample_offset must be non-negative"),
         ({"max_group_statements": 0}, "max_group_statements must be positive"),
         ({"retry_budget": -1}, "retry_budget must be non-negative"),
+        ({"global_rollback_budget": -1}, "global_rollback_budget must be non-negative"),
+        ({"max_total_sampled_tokens": 0}, "max_total_sampled_tokens must be positive"),
         ({"resume": "checkpoint"}, "resume must be None or 'latest'"),
     ],
 )
@@ -190,6 +209,42 @@ def test_pipeline_config_accepts_supported_dataset(tmp_path, dataset):
 
     assert config.dataset == dataset
     assert config.resume == "latest"
+
+
+def test_pipeline_config_derives_absolute_sampled_token_budget(tmp_path):
+    model_path = tmp_path / "local-model"
+    model_path.mkdir()
+    generation = SawrGenerationConfig(model_path=str(model_path), max_new_tokens=40)
+
+    config = SawrPipelineConfig(
+        dataset="humaneval",
+        dataset_path=str(tmp_path / "datasets"),
+        output_dir=str(tmp_path / "outputs"),
+        generation=generation,
+        retry_budget=3,
+    )
+
+    assert config.global_rollback_budget == 3
+    assert config.max_total_sampled_tokens == 200
+
+
+def test_pipeline_config_accepts_explicit_bounded_generation_controls(tmp_path):
+    model_path = tmp_path / "local-model"
+    model_path.mkdir()
+    generation = SawrGenerationConfig(model_path=str(model_path), max_new_tokens=40)
+
+    config = SawrPipelineConfig(
+        dataset="humaneval",
+        dataset_path=str(tmp_path / "datasets"),
+        output_dir=str(tmp_path / "outputs"),
+        generation=generation,
+        retry_budget=3,
+        global_rollback_budget=7,
+        max_total_sampled_tokens=123,
+    )
+
+    assert config.global_rollback_budget == 7
+    assert config.max_total_sampled_tokens == 123
 
 
 def test_pipeline_config_to_dict_contains_smoke_config_only(tmp_path):

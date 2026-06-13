@@ -14,7 +14,7 @@ from wfcllm.sawr.state_machine import AuditEvent
 
 class FakeGenerator:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str, str, int, int]] = []
+        self.calls: list[tuple[str, str, str, int, int, int, int]] = []
 
     def generate(
         self,
@@ -23,9 +23,19 @@ class FakeGenerator:
         dataset: str,
         max_group_statements: int,
         retry_budget: int,
+        global_rollback_budget: int,
+        max_total_sampled_tokens: int,
     ) -> SawrGenerateResult:
         self.calls.append(
-            (sample_id, prompt, dataset, max_group_statements, retry_budget)
+            (
+                sample_id,
+                prompt,
+                dataset,
+                max_group_statements,
+                retry_budget,
+                global_rollback_budget,
+                max_total_sampled_tokens,
+            )
         )
         return SawrGenerateResult(
             final_code=prompt + "    return 1\n",
@@ -37,7 +47,7 @@ class FakeGenerator:
                 AuditEvent(
                     sample_id=sample_id,
                     position_id="module.foo.body",
-                    event="accepted_generation_time_group",
+                    event="accepted_generation_time_window",
                     candidate_type="simple_statement",
                     group_statement_count=1,
                     final_flush=False,
@@ -58,6 +68,8 @@ class FailingGenerator:
         dataset: str,
         max_group_statements: int,
         retry_budget: int,
+        global_rollback_budget: int,
+        max_total_sampled_tokens: int,
     ) -> SawrGenerateResult:
         raise RuntimeError("boom")
 
@@ -70,6 +82,8 @@ class UnsupportedAuditGenerator:
         dataset: str,
         max_group_statements: int,
         retry_budget: int,
+        global_rollback_budget: int,
+        max_total_sampled_tokens: int,
     ) -> SawrGenerateResult:
         return SawrGenerateResult(
             final_code=prompt + "    return 1\n",
@@ -107,6 +121,8 @@ def _config(tmp_path: Path, **overrides: object) -> SawrPipelineConfig:
         "sample_offset": None,
         "max_group_statements": 2,
         "retry_budget": 1,
+        "global_rollback_budget": 2,
+        "max_total_sampled_tokens": 100,
         "resume": None,
     }
     values.update(overrides)
@@ -151,6 +167,31 @@ def test_pipeline_writes_final_rows_without_forbidden_fields(tmp_path: Path) -> 
     assert not (FORBIDDEN_FINAL_FIELDS & set(row))
 
 
+def test_pipeline_final_rows_remain_detector_clean_with_structure_audit(
+    tmp_path: Path,
+) -> None:
+    prompts = [{"id": "HumanEval/0", "prompt": "def foo():\n"}]
+    generator = FakeGenerator()
+    pipeline = SawrPipeline(generator=generator, config=_config(tmp_path))
+
+    with patch("wfcllm.sawr.pipeline.load_prompts", return_value=prompts):
+        final_path = Path(pipeline.run())
+
+    row = _read_jsonl(final_path)[0]
+    assert set(row) == {
+        "artifact_type",
+        "schema_version",
+        "id",
+        "dataset",
+        "prompt",
+        "final_code",
+        "scientific_claims_enabled",
+    }
+    assert row["artifact_type"] == "sawr_final_code"
+    assert row["scientific_claims_enabled"] is False
+    assert not (FORBIDDEN_FINAL_FIELDS & set(row))
+
+
 def test_pipeline_writes_audit_rows_as_audit_only(tmp_path: Path) -> None:
     prompts = [{"id": "HumanEval/0", "prompt": "def foo():\n"}]
     generator = FakeGenerator()
@@ -170,7 +211,7 @@ def test_pipeline_writes_audit_rows_as_audit_only(tmp_path: Path) -> None:
             "detector_input_allowed": False,
             "scientific_claims_enabled": False,
             "position_id": "module.foo.body",
-            "event": "accepted_generation_time_group",
+            "event": "accepted_generation_time_window",
             "candidate_type": "simple_statement",
             "group_statement_count": 1,
             "final_flush": False,
@@ -180,6 +221,57 @@ def test_pipeline_writes_audit_rows_as_audit_only(tmp_path: Path) -> None:
             "candidate_hash": "abc",
         }
     ]
+
+
+def test_pipeline_allows_structure_aware_audit_events(tmp_path: Path) -> None:
+    prompts = [{"id": "HumanEval/0", "prompt": "def foo():\n"}]
+    event_names = [
+        "compound_layer_started",
+        "simple_candidate_observed",
+        "layer_window_rule_miss",
+        "accepted_generation_time_window",
+        "layer_retry_requested",
+        "retry_layer_early_closed_after_hit",
+        "layer_disappeared_without_hit",
+        "layer_closed_with_child_hit",
+        "layer_closed_with_direct_hit",
+        "layer_fallback_committed_without_hit",
+        "global_rollback_budget_exhausted",
+        "absolute_sampled_token_budget_exhausted",
+    ]
+    generator = FakeGenerator()
+    generator.generate = lambda **kwargs: SawrGenerateResult(
+        final_code="def foo():\n    return 1\n",
+        accepted_hit_count=1,
+        closed_without_hit_count=0,
+        fallback_count=0,
+        candidate_count=1,
+        audit_events=[
+            AuditEvent(
+                sample_id="HumanEval/0",
+                position_id="module.foo.body",
+                event=name,
+                candidate_type="simple_statement",
+                group_statement_count=1,
+                final_flush=False,
+                rule_name="hash",
+                decision="hit",
+                reason="test",
+                candidate_hash="abc",
+            )
+            for name in event_names
+        ],
+    )
+    pipeline = SawrPipeline(generator=generator, config=_config(tmp_path))
+
+    with patch("wfcllm.sawr.pipeline.load_prompts", return_value=prompts):
+        final_path = Path(pipeline.run())
+
+    audit_path = Path(str(final_path).replace("_final_", "_audit_"))
+    rows = _read_jsonl(audit_path)
+    assert [row["event"] for row in rows] == event_names
+    assert all(row["audit_only"] is True for row in rows)
+    assert all(row["detector_input_allowed"] is False for row in rows)
 
 
 def test_pipeline_passes_sample_slice_to_loader(tmp_path: Path) -> None:
@@ -230,7 +322,9 @@ def test_pipeline_resume_latest_skips_completed_ids(tmp_path: Path) -> None:
         resumed_path = Path(pipeline.run())
 
     assert resumed_path == final_path
-    assert generator.calls == [("HumanEval/1", "def next_one():\n", "humaneval", 2, 1)]
+    assert generator.calls == [
+        ("HumanEval/1", "def next_one():\n", "humaneval", 2, 1, 2, 100)
+    ]
     rows = _read_jsonl(final_path)
     assert [row["id"] for row in rows] == ["HumanEval/0", "HumanEval/1"]
 
