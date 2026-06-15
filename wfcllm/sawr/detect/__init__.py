@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+from wfcllm.sawr.detect.calibration import (
+    CalibrationArtifact,
+    ContextCalibrationInput,
+    build_calibration_artifact,
+    load_calibration_artifact,
+    write_calibration_artifact,
+)
 from wfcllm.sawr.detect.config import (
     DETECTOR_MODE,
     BucketEdges,
@@ -23,6 +30,8 @@ from wfcllm.sawr.detect.scoring import (
 )
 
 __all__ = [
+    "CalibrationArtifact",
+    "ContextCalibrationInput",
     "DETECTOR_MODE",
     "BucketEdges",
     "DirectStatement",
@@ -32,8 +41,11 @@ __all__ = [
     "StructureContext",
     "WindowEvidence",
     "bucket_label",
+    "build_calibration_artifact",
     "extract_proxy_windows",
     "extract_structure_contexts",
+    "load_calibration_artifact",
     "load_sawr_window_scorer",
     "select_target_function_name",
+    "write_calibration_artifact",
 ]
