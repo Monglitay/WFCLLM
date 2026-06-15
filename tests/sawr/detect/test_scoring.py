@@ -120,6 +120,27 @@ def test_window_scorer_uses_keyed_lsh_with_ordinal() -> None:
     assert verifier.calls == [("return x", keying.valid_set, 0.03)]
 
 
+def test_window_scorer_omits_ordinal_keying_by_default() -> None:
+    verifier = FakeVerifier(
+        FakeVerifyResult(
+            passed=True,
+            signature=(1, 0, 1, 0),
+            min_margin=0.42,
+            in_valid_set=True,
+        )
+    )
+    keying = FakeKeying()
+    scorer = SawrWindowScorer(
+        verifier=verifier,
+        keying=keying,
+        config=SawrDetectionConfig(secret_key="1010"),
+    )
+
+    scorer.score_window(_window())
+
+    assert keying.calls == [("function_definition", 12, None)]
+
+
 def test_hit_only_evidence_uses_binary_hit() -> None:
     scorer = SawrWindowScorer(
         verifier=FakeVerifier(
