@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +15,14 @@ from wfcllm.sawr.detect.config import (
 
 ARTIFACT_TYPE = "sawr_detection_calibration"
 SCHEMA_VERSION = "sawr-detect-calibration/v1"
+FORBIDDEN_ARTIFACT_KEYS = {
+    "secret_key",
+    "logits",
+    "retry_trace",
+    "rollback_trace",
+    "watermark_params",
+}
+FORBIDDEN_ARTIFACT_KEY_PREFIXES = ("generation_", "audit_")
 
 
 @dataclass(frozen=True)
@@ -46,6 +54,11 @@ class CalibrationArtifact:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+ALLOWED_TOP_LEVEL_FIELDS = frozenset(
+    field.name for field in fields(CalibrationArtifact)
+)
 
 
 def build_bucket_key(
@@ -89,7 +102,7 @@ def build_calibration_artifact(
 
     for sample in samples:
         for context in sample:
-            context_raw = float(context.context_raw)
+            context_raw = _json_float(context.context_raw, "context_raw")
             bucket_key = build_bucket_key(context, config=config)
             context_nulls.setdefault(bucket_key, []).append(context_raw)
             structure_nulls.setdefault(context.structure_type, []).append(context_raw)
@@ -158,9 +171,10 @@ def context_score_from_null(observed: float, null_values: list[float]) -> float:
 
 
 def percentile_threshold(values: list[float], fpr: float) -> float:
-    if not values:
+    _validate_fpr(fpr)
+    sorted_values = sorted(_float_list(values, "values"))
+    if not sorted_values:
         return 0.0
-    sorted_values = sorted(float(value) for value in values)
     percentile_index = (len(sorted_values) - 1) * (1 - fpr)
     lower_index = math.floor(percentile_index)
     upper_index = math.ceil(percentile_index)
@@ -177,10 +191,13 @@ def write_calibration_artifact(
     artifact: CalibrationArtifact,
 ) -> str:
     artifact_path = Path(path)
+    payload = artifact.to_dict()
+    _validated_artifact_values(payload)
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     artifact_path.write_text(
         json.dumps(
-            artifact.to_dict(),
+            payload,
+            allow_nan=False,
             ensure_ascii=False,
             indent=2,
             sort_keys=True,
@@ -199,36 +216,21 @@ def load_calibration_artifact(path: str | Path) -> CalibrationArtifact:
 
     if not isinstance(payload, dict):
         raise ValueError("calibration artifact must be a JSON object")
-    if payload.get("artifact_type") != ARTIFACT_TYPE:
-        raise ValueError(f"artifact_type must be {ARTIFACT_TYPE!r}")
-    if payload.get("schema_version") != SCHEMA_VERSION:
-        raise ValueError(f"schema_version must be {SCHEMA_VERSION!r}")
-    if payload.get("detector_mode") != DETECTOR_MODE:
-        raise ValueError(f"detector_mode must be {DETECTOR_MODE!r}")
-
-    config = _require_dict(payload.get("config"), "config")
-    if "secret_key" in config:
-        raise ValueError("calibration artifact config must not contain secret_key")
+    values = _validated_artifact_values(payload)
 
     return CalibrationArtifact(
-        artifact_type=ARTIFACT_TYPE,
-        schema_version=SCHEMA_VERSION,
-        detector_mode=DETECTOR_MODE,
-        config=dict(config),
-        bucket_edges=_int_list_map(payload.get("bucket_edges"), "bucket_edges"),
-        context_nulls=_float_list_map(payload.get("context_nulls"), "context_nulls"),
-        structure_nulls=_float_list_map(
-            payload.get("structure_nulls"),
-            "structure_nulls",
-        ),
-        global_context_null=_float_list(
-            payload.get("global_context_null"),
-            "global_context_null",
-        ),
-        sample_scores=_float_list(payload.get("sample_scores"), "sample_scores"),
-        threshold_5fpr=float(_required(payload, "threshold_5fpr")),
-        context_negative_count=int(_required(payload, "context_negative_count")),
-        sample_negative_count=int(_required(payload, "sample_negative_count")),
+        artifact_type=values["artifact_type"],
+        schema_version=values["schema_version"],
+        detector_mode=values["detector_mode"],
+        config=values["config"],
+        bucket_edges=values["bucket_edges"],
+        context_nulls=values["context_nulls"],
+        structure_nulls=values["structure_nulls"],
+        global_context_null=values["global_context_null"],
+        sample_scores=values["sample_scores"],
+        threshold_5fpr=values["threshold_5fpr"],
+        context_negative_count=values["context_negative_count"],
+        sample_negative_count=values["sample_negative_count"],
     )
 
 
@@ -268,9 +270,10 @@ def _null_for_context(
     if exact_null:
         return list(exact_null), "exact"
 
-    structure_null = structure_nulls.get(context.structure_type)
-    if structure_null:
-        return list(structure_null), "structure_type"
+    if config.structure_aware:
+        structure_null = structure_nulls.get(context.structure_type)
+        if structure_null:
+            return list(structure_null), "structure_type"
 
     return list(global_context_null), "global"
 
@@ -285,19 +288,119 @@ def _require_dict(value: Any, name: str) -> dict[str, Any]:
     return value
 
 
+def _validated_artifact_values(payload: dict[str, Any]) -> dict[str, Any]:
+    _reject_forbidden_keys(payload)
+    _validate_top_level_fields(payload)
+    if payload.get("artifact_type") != ARTIFACT_TYPE:
+        raise ValueError(f"artifact_type must be {ARTIFACT_TYPE!r}")
+    if payload.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError(f"schema_version must be {SCHEMA_VERSION!r}")
+    if payload.get("detector_mode") != DETECTOR_MODE:
+        raise ValueError(f"detector_mode must be {DETECTOR_MODE!r}")
+
+    return {
+        "artifact_type": ARTIFACT_TYPE,
+        "schema_version": SCHEMA_VERSION,
+        "detector_mode": DETECTOR_MODE,
+        "config": dict(_require_dict(payload.get("config"), "config")),
+        "bucket_edges": _int_list_map(payload.get("bucket_edges"), "bucket_edges"),
+        "context_nulls": _float_list_map(payload.get("context_nulls"), "context_nulls"),
+        "structure_nulls": _float_list_map(
+            payload.get("structure_nulls"),
+            "structure_nulls",
+        ),
+        "global_context_null": _float_list(
+            payload.get("global_context_null"),
+            "global_context_null",
+        ),
+        "sample_scores": _float_list(payload.get("sample_scores"), "sample_scores"),
+        "threshold_5fpr": _non_negative_float(
+            _required(payload, "threshold_5fpr"),
+            "threshold_5fpr",
+        ),
+        "context_negative_count": _non_negative_int(
+            _required(payload, "context_negative_count"),
+            "context_negative_count",
+        ),
+        "sample_negative_count": _non_negative_int(
+            _required(payload, "sample_negative_count"),
+            "sample_negative_count",
+        ),
+    }
+
+
+def _validate_top_level_fields(payload: dict[str, Any]) -> None:
+    unknown_fields = set(payload) - ALLOWED_TOP_LEVEL_FIELDS
+    if unknown_fields:
+        raise ValueError(
+            "unknown top-level calibration artifact fields: "
+            f"{sorted(unknown_fields)}"
+        )
+
+
+def _reject_forbidden_keys(value: Any, path: str = "$") -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            key_text = str(key)
+            if _is_forbidden_artifact_key(key_text):
+                raise ValueError(
+                    f"forbidden calibration artifact key {key_text!r} at {path}"
+                )
+            _reject_forbidden_keys(child, f"{path}.{key_text}")
+        return
+    if isinstance(value, list):
+        for index, child in enumerate(value):
+            _reject_forbidden_keys(child, f"{path}[{index}]")
+
+
+def _is_forbidden_artifact_key(key: str) -> bool:
+    return key in FORBIDDEN_ARTIFACT_KEYS or key.startswith(
+        FORBIDDEN_ARTIFACT_KEY_PREFIXES
+    )
+
+
 def _required(payload: dict[str, Any], key: str) -> Any:
     if key not in payload:
         raise ValueError(f"{key} is required")
     return payload[key]
 
 
+def _validate_fpr(fpr: Any) -> None:
+    if not _is_json_number(fpr) or not 0 < fpr < 1:
+        raise ValueError("fpr must be a finite JSON number in (0, 1)")
+
+
+def _is_json_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
+
+
+def _json_float(value: Any, name: str) -> float:
+    if not _is_json_number(value):
+        raise ValueError(f"{name} must contain finite JSON-native numeric values")
+    return float(value)
+
+
+def _non_negative_float(value: Any, name: str) -> float:
+    numeric_value = _json_float(value, name)
+    if numeric_value < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return numeric_value
+
+
+def _non_negative_int(value: Any, name: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError(f"{name} must be a non-negative int")
+    return value
+
+
 def _float_list(value: Any, name: str) -> list[float]:
     if not isinstance(value, list):
         raise ValueError(f"{name} must be a list")
-    try:
-        return [float(item) for item in value]
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must contain numeric values") from exc
+    return [_json_float(item, name) for item in value]
 
 
 def _float_list_map(value: Any, name: str) -> dict[str, list[float]]:
@@ -310,10 +413,10 @@ def _float_list_map(value: Any, name: str) -> dict[str, list[float]]:
 
 def _int_list_map(value: Any, name: str) -> dict[str, list[int]]:
     payload = _require_dict(value, name)
-    try:
-        return {
-            str(key): [int(item) for item in items]
-            for key, items in payload.items()
-        }
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must contain integer lists") from exc
+    result: dict[str, list[int]] = {}
+    for key, items in payload.items():
+        item_name = f"{name}[{key!r}]"
+        if not isinstance(items, list):
+            raise ValueError(f"{item_name} must be a list")
+        result[str(key)] = [_non_negative_int(item, item_name) for item in items]
+    return result
