@@ -20,6 +20,10 @@ from wfcllm.sawr.detect.config import (
     SawrDetectionConfig,
     bucket_label,
 )
+from wfcllm.sawr.detect.metrics import (
+    build_detection_report,
+    split_records_by_task,
+)
 from wfcllm.sawr.detect.pipeline import (
     FORBIDDEN_DETECTOR_OUTPUT_FIELDS,
     ContextDetectionSummary,
@@ -60,6 +64,7 @@ __all__ = [
     "bucket_label",
     "build_bucket_key",
     "build_calibration_artifact",
+    "build_detection_report",
     "code_from_record",
     "context_score_from_null",
     "empirical_upper_tail_p",
@@ -71,5 +76,6 @@ __all__ = [
     "null_for_context_from_artifact",
     "percentile_threshold",
     "select_target_function_name",
+    "split_records_by_task",
     "write_calibration_artifact",
 ]
