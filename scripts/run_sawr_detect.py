@@ -141,8 +141,8 @@ def _build_pipeline(args: argparse.Namespace) -> SawrDetectionPipeline:
 
 
 def _cmd_calibrate(args: argparse.Namespace) -> int:
-    pipeline = _build_pipeline(args)
     records = load_jsonl_records(args.input)
+    pipeline = _build_pipeline(args)
     artifact = pipeline.calibrate(records)
     output_path = Path(args.output)
     write_calibration_artifact(output_path, artifact)
@@ -151,9 +151,9 @@ def _cmd_calibrate(args: argparse.Namespace) -> int:
 
 
 def _cmd_detect(args: argparse.Namespace) -> int:
-    pipeline = _build_pipeline(args)
     artifact = load_calibration_artifact(args.calibration)
     records = load_jsonl_records(args.input)
+    pipeline = _build_pipeline(args)
     output_path = Path(args.output)
     pipeline.detect_to_jsonl(records, artifact=artifact, output_path=output_path)
     print(f"[完成] SAWR detection details saved to {output_path}", file=sys.stderr)
