@@ -270,7 +270,8 @@ python run.py --reset
 ### SAWR Final-Code Black-Box Detection
 
 SAWR black-box detection uses only the final code in each JSONL row
-(`final_code` or `generated_code`, plus optional `prompt`). It is final-code
+(`final_code` or `generated_code`). Each row must contain a non-empty `id` and
+either `final_code` or `generated_code`; `prompt` is optional. It is final-code
 only: detection does not read SAWR audit rows, generation-time candidates,
 rollback state, retry traces, logits, or sampling traces. Calibration should use
 same-model non-watermarked final code, split by task before threshold fitting so
@@ -278,17 +279,21 @@ calibration and held-out evaluation tasks do not overlap.
 
 Build frozen task-based splits once for the watermarked positives and
 same-model non-watermarked negatives. Keep these split files fixed for the main
-run and every baseline/ablation below.
+run and every baseline/ablation below. The splitter derives the task ID from the
+part of `id` before `#`, so positive and negative rows should share the same
+task ID namespace. Use candidate or sample suffixes after `#` when needed, for
+example `HumanEval/0#wm0` and `HumanEval/0#neg0`, so watermarked held-out tasks
+cannot conceptually overlap with negative calibration tasks.
 
 ```bash
-python scripts/run_sawr_detect.py split \
+conda run -n WFCLLM python scripts/run_sawr_detect.py split \
     --input data/sawr/final_code/watermarked.jsonl \
     --output-dir data/sawr/detect/splits/watermarked \
     --dev-ratio 0.10 \
     --calibration-ratio 0.20 \
     --seed 20260615
 
-python scripts/run_sawr_detect.py split \
+conda run -n WFCLLM python scripts/run_sawr_detect.py split \
     --input data/sawr/final_code/non_watermarked_same_model.jsonl \
     --output-dir data/sawr/detect/splits/negative \
     --dev-ratio 0.10 \
@@ -342,7 +347,7 @@ conda run -n WFCLLM python scripts/run_sawr_detect.py detect \
 Evaluate positive and negative detail rows.
 
 ```bash
-python scripts/run_sawr_detect.py evaluate \
+conda run -n WFCLLM python scripts/run_sawr_detect.py evaluate \
     --positive-details data/sawr/detect/details/watermarked_default.jsonl \
     --negative-details data/sawr/detect/details/negative_default.jsonl \
     --output data/sawr/detect/reports/default.json
