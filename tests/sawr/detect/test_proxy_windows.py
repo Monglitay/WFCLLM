@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import pytest
 
+import wfcllm.sawr.detect as detect
 from wfcllm.sawr.detect.proxy_windows import (
+    ProxyWindow,
+    StructureContext,
     extract_proxy_windows,
     extract_structure_contexts,
     select_target_function_name,
@@ -19,6 +22,31 @@ def test_select_target_function_prefers_prompt_name() -> None:
     )
 
     assert select_target_function_name(code, prompt=prompt) == "target"
+
+
+def test_extracts_decorated_prompt_target_function() -> None:
+    code = (
+        "def helper():\n"
+        "    return 0\n\n"
+        "@cache\n"
+        "def target(x):\n"
+        "    y = x\n"
+        "    return y\n"
+    )
+
+    contexts = extract_structure_contexts(
+        code,
+        prompt="def target(x):\n",
+        max_group_statements=2,
+    )
+
+    assert select_target_function_name(code, prompt="def target(x):\n") == "target"
+    assert [context.context_id for context in contexts] == ["module.target.body"]
+    assert [window.normalized_text for window in contexts[0].proxy_windows] == [
+        "y = x",
+        "return y",
+        "y = x\nreturn y",
+    ]
 
 
 def test_extracts_direct_windows_without_child_layer_statements() -> None:
@@ -64,6 +92,28 @@ def test_extracts_direct_windows_without_child_layer_statements() -> None:
     ]
 
 
+def test_skips_empty_function_body_context_when_child_context_is_scoreable() -> None:
+    code = (
+        "def target(x):\n"
+        "    if x:\n"
+        "        y = 1\n"
+        "        return y\n"
+    )
+
+    contexts = extract_structure_contexts(
+        code,
+        prompt="def target(x):\n",
+        max_group_statements=2,
+    )
+
+    assert [context.structure_type for context in contexts] == ["if_statement"]
+    assert [window.normalized_text for window in contexts[0].proxy_windows] == [
+        "y = 1",
+        "return y",
+        "y = 1\nreturn y",
+    ]
+
+
 def test_extract_proxy_windows_flattens_context_windows() -> None:
     code = "def target():\n    x = 1\n    y = 2\n"
 
@@ -80,6 +130,53 @@ def test_extract_proxy_windows_flattens_context_windows() -> None:
     ]
     assert all(window.parent_node_type == "function_definition" for window in windows)
     assert {window.window_length for window in windows} == {1, 2}
+
+
+def test_detector_package_exports_proxy_window_api() -> None:
+    assert detect.extract_proxy_windows is extract_proxy_windows
+    assert detect.StructureContext is StructureContext
+    assert detect.ProxyWindow is ProxyWindow
+
+
+def test_two_statement_proxy_window_preserves_candidate_metadata() -> None:
+    code = "def target():\n    x = 1\n    y = 2\n"
+
+    window = next(
+        window
+        for window in extract_proxy_windows(
+            code,
+            prompt="def target():\n",
+            max_group_statements=2,
+        )
+        if window.window_length == 2
+    )
+
+    first_candidate, second_candidate = window.candidates
+    first_start = code.index("x = 1")
+    second_start = code.index("y = 2")
+
+    assert [candidate.text for candidate in window.candidates] == ["x = 1", "y = 2"]
+    assert [candidate.candidate_type for candidate in window.candidates] == [
+        "proxy_window_statement",
+        "proxy_window_statement",
+    ]
+    assert [candidate.position_id for candidate in window.candidates] == [
+        window.context_id,
+        window.context_id,
+    ]
+    assert [candidate.layer_path for candidate in window.candidates] == [
+        (window.context_id,),
+        (window.context_id,),
+    ]
+    assert [candidate.ordinal for candidate in window.candidates] == [0, 1]
+    assert (first_candidate.start_byte, first_candidate.end_byte) == (
+        first_start,
+        first_start + len("x = 1"),
+    )
+    assert (second_candidate.start_byte, second_candidate.end_byte) == (
+        second_start,
+        second_start + len("y = 2"),
+    )
 
 
 def test_no_top_level_function_returns_no_contexts() -> None:

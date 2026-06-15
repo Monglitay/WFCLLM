@@ -89,6 +89,8 @@ def extract_structure_contexts(
         return []
 
     source_bytes = final_code.encode("utf-8")
+    # Detector ordinals are deterministic proxy-local statement ordinals, not
+    # generation-time event ordinals.
     ordinal_counter = [0]
     contexts: list[StructureContext] = []
 
@@ -188,6 +190,9 @@ def _build_context(
         structure_type=structure_type,
         max_group_statements=max_group_statements,
     )
+    if not direct_statements or not proxy_windows:
+        return None
+
     return StructureContext(
         context_id=context_id,
         structure_type=structure_type,
@@ -259,22 +264,33 @@ def _build_windows(
 def _top_level_functions(source: str) -> list[Any]:
     tree = PythonParser().parse(source)
     return [
-        child
+        function_node
         for child in tree.root_node.children
-        if child.type == "function_definition"
-        and not _node_has_recovery_content(child)
+        if (function_node := _top_level_function_node(child)) is not None
     ]
 
 
 def _last_top_level_function_name(source: str) -> str | None:
-    tree = PythonParser().parse(source)
     names = [
         name
-        for child in tree.root_node.children
-        if child.type == "function_definition"
-        if (name := _function_name(child))
+        for function in _top_level_functions(source)
+        if (name := _function_name(function))
     ]
     return names[-1] if names else None
+
+
+def _top_level_function_node(node: Any) -> Any | None:
+    if _node_has_recovery_content(node):
+        return None
+    if node.type == "function_definition":
+        return node
+    if node.type != "decorated_definition":
+        return None
+
+    for child in node.children:
+        if child.type == "function_definition" and not _node_has_recovery_content(child):
+            return child
+    return None
 
 
 def _function_name(function_node: Any) -> str | None:
