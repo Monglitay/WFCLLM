@@ -6,8 +6,10 @@ from pathlib import Path
 from typing import Any
 
 from wfcllm.sawr.detect.calibration import (
+    ARTIFACT_TYPE,
     CalibrationArtifact,
     ContextCalibrationInput,
+    SCHEMA_VERSION,
     build_calibration_artifact,
     context_score_from_null,
     empirical_upper_tail_p,
@@ -33,6 +35,24 @@ FORBIDDEN_DETECTOR_OUTPUT_FIELDS = {
     "watermark_params",
     "blocks",
 }
+COMPATIBLE_ARTIFACT_CONFIG_FIELDS = (
+    "secret_key_sha256",
+    "lsh_d",
+    "gamma",
+    "k",
+    "gamma_effective",
+    "semantic_margin",
+    "max_group_statements",
+    "min_scoreable_contexts",
+    "min_proxy_windows",
+    "target_fpr",
+    "use_ordinal_keying",
+    "evidence_mode",
+    "statistic",
+    "structure_aware",
+    "detector_mode",
+    "bucket_edges",
+)
 
 
 @dataclass(frozen=True)
@@ -74,6 +94,10 @@ class SawrDetectionResult:
                 "forbidden detector output fields: "
                 f"{sorted(forbidden_fields)}"
             )
+        try:
+            json.dumps(payload, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("detector output must be JSON-safe") from exc
         return payload
 
 
@@ -130,6 +154,15 @@ class SawrDetectionPipeline:
         *,
         artifact: CalibrationArtifact,
     ) -> SawrDetectionResult:
+        self._validate_artifact_compatible(artifact)
+        return self._detect_one(record, artifact=artifact)
+
+    def _detect_one(
+        self,
+        record: dict[str, Any],
+        *,
+        artifact: CalibrationArtifact,
+    ) -> SawrDetectionResult:
         code = code_from_record(record)
         scored_contexts = self._score_record_contexts(record)
         score, context_summaries = self._score_sample(
@@ -173,15 +206,43 @@ class SawrDetectionPipeline:
         artifact: CalibrationArtifact,
         output_path: str | Path,
     ) -> str:
+        self._validate_artifact_compatible(artifact)
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", encoding="utf-8") as handle:
             for record in records:
-                payload = self.detect_one(record, artifact=artifact).to_dict()
+                payload = self._detect_one(record, artifact=artifact).to_dict()
                 handle.write(
                     json.dumps(payload, allow_nan=False, ensure_ascii=False) + "\n"
                 )
         return str(path)
+
+    def _validate_artifact_compatible(
+        self,
+        artifact: CalibrationArtifact,
+    ) -> None:
+        expected_config = self._config.to_public_dict()
+        mismatches: list[str] = []
+
+        if artifact.artifact_type != ARTIFACT_TYPE:
+            mismatches.append("artifact_type")
+        if artifact.schema_version != SCHEMA_VERSION:
+            mismatches.append("schema_version")
+        if artifact.detector_mode != DETECTOR_MODE:
+            mismatches.append("detector_mode")
+        if artifact.bucket_edges != expected_config["bucket_edges"]:
+            mismatches.append("bucket_edges")
+
+        for field_name in COMPATIBLE_ARTIFACT_CONFIG_FIELDS:
+            if artifact.config.get(field_name) != expected_config[field_name]:
+                mismatches.append(field_name)
+
+        if mismatches:
+            unique_mismatches = sorted(set(mismatches))
+            raise ValueError(
+                "calibration artifact is incompatible with detector config: "
+                f"{unique_mismatches}"
+            )
 
     def _score_record_contexts(self, record: dict[str, Any]) -> list[_ScoredContext]:
         final_code = code_from_record(record)
@@ -292,22 +353,39 @@ def _window_length_mix(context: StructureContext) -> str:
 
 
 def code_from_record(record: dict[str, Any]) -> str:
-    final_code = record.get("final_code")
-    if isinstance(final_code, str):
+    if "final_code" in record:
+        final_code = record["final_code"]
+        if not isinstance(final_code, str):
+            raise ValueError("final_code must be a string")
         return final_code
-    generated_code = record.get("generated_code")
-    if isinstance(generated_code, str):
+
+    if "generated_code" in record:
+        generated_code = record["generated_code"]
+        if not isinstance(generated_code, str):
+            raise ValueError("generated_code must be a string")
         return generated_code
+
     raise ValueError("record must contain final_code or generated_code")
 
 
 def load_jsonl_records(path: str | Path) -> list[dict[str, Any]]:
+    records_path = Path(path)
     records: list[dict[str, Any]] = []
-    for line in Path(path).read_text(encoding="utf-8").splitlines():
+    for line_number, line in enumerate(
+        records_path.read_text(encoding="utf-8").splitlines(),
+        start=1,
+    ):
         if not line.strip():
             continue
-        record = json.loads(line)
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"invalid JSONL record {records_path}:{line_number}"
+            ) from exc
         if not isinstance(record, dict):
-            raise ValueError("JSONL records must be objects")
+            raise ValueError(
+                f"JSONL record must be an object {records_path}:{line_number}"
+            )
         records.append(record)
     return records

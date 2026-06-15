@@ -5,10 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from wfcllm.sawr.detect.config import DETECTOR_MODE, SawrDetectionConfig
+from wfcllm.sawr.detect.config import DETECTOR_MODE, BucketEdges, SawrDetectionConfig
 from wfcllm.sawr.detect.pipeline import (
     FORBIDDEN_DETECTOR_OUTPUT_FIELDS,
+    ContextDetectionSummary,
     SawrDetectionPipeline,
+    SawrDetectionResult,
     code_from_record,
     load_jsonl_records,
 )
@@ -63,11 +65,41 @@ def test_code_from_record_accepts_final_code_and_generated_code() -> None:
         code_from_record({"id": "missing"})
 
 
+def test_code_from_record_rejects_non_string_code_fields() -> None:
+    with pytest.raises(ValueError, match="final_code must be a string"):
+        code_from_record({"final_code": ["x = 1"]})
+
+    with pytest.raises(ValueError, match="generated_code must be a string"):
+        code_from_record({"generated_code": ["x = 2"]})
+
+
 def test_load_jsonl_records_reads_non_empty_lines(tmp_path: Path) -> None:
     path = tmp_path / "rows.jsonl"
     path.write_text('{"id": "a"}\n\n{"id": "b"}\n', encoding="utf-8")
 
     assert load_jsonl_records(path) == [{"id": "a"}, {"id": "b"}]
+
+
+def test_load_jsonl_records_wraps_malformed_json_with_path_and_line(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "rows.jsonl"
+    path.write_text('{"id": "a"}\n{"id": \n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"invalid JSONL record .*rows\.jsonl:2"):
+        load_jsonl_records(path)
+
+
+@pytest.mark.parametrize("payload", ['["a"]\n', '"a"\n'])
+def test_load_jsonl_records_rejects_non_object_rows_with_path_and_line(
+    tmp_path: Path,
+    payload: str,
+) -> None:
+    path = tmp_path / "rows.jsonl"
+    path.write_text(payload, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"JSONL record must be an object .*rows\.jsonl:1"):
+        load_jsonl_records(path)
 
 
 def test_pipeline_calibrates_and_detects_without_trace_fields(tmp_path: Path) -> None:
@@ -94,6 +126,67 @@ def test_pipeline_calibrates_and_detects_without_trace_fields(tmp_path: Path) ->
     assert payload["threshold_5fpr"] == artifact.threshold_5fpr
     assert 0 < payload["p_value"] <= 1
     assert not (FORBIDDEN_DETECTOR_OUTPUT_FIELDS & set(payload))
+
+
+def test_pipeline_rejects_artifact_with_mismatched_statistic() -> None:
+    raw_config = SawrDetectionConfig(secret_key="1010", statistic="raw_context_max")
+    raw_pipeline = SawrDetectionPipeline(config=raw_config, scorer=FakeScorer())
+    artifact = raw_pipeline.calibrate([
+        _row("neg", "def target():\n    x = 0\n    return 0\n")
+    ])
+    default_pipeline = SawrDetectionPipeline(
+        config=SawrDetectionConfig(secret_key="1010"),
+        scorer=FakeScorer(),
+    )
+
+    with pytest.raises(ValueError, match="statistic"):
+        default_pipeline.detect_one(
+            _row("pos", "def target():\n    x = 1\n    return x\n"),
+            artifact=artifact,
+        )
+
+
+def test_pipeline_rejects_artifact_with_mismatched_secret_key() -> None:
+    pipeline = SawrDetectionPipeline(
+        config=SawrDetectionConfig(secret_key="1010"),
+        scorer=FakeScorer(),
+    )
+    artifact = pipeline.calibrate([
+        _row("neg", "def target():\n    x = 0\n    return 0\n")
+    ])
+    mismatched_pipeline = SawrDetectionPipeline(
+        config=SawrDetectionConfig(secret_key="different"),
+        scorer=FakeScorer(),
+    )
+
+    with pytest.raises(ValueError, match="secret_key_sha256"):
+        mismatched_pipeline.detect_one(
+            _row("pos", "def target():\n    x = 1\n    return x\n"),
+            artifact=artifact,
+        )
+
+
+def test_pipeline_rejects_artifact_with_mismatched_bucket_edges() -> None:
+    pipeline = SawrDetectionPipeline(
+        config=SawrDetectionConfig(secret_key="1010"),
+        scorer=FakeScorer(),
+    )
+    artifact = pipeline.calibrate([
+        _row("neg", "def target():\n    x = 0\n    return 0\n")
+    ])
+    mismatched_pipeline = SawrDetectionPipeline(
+        config=SawrDetectionConfig(
+            secret_key="1010",
+            bucket_edges=BucketEdges(window_count=(1, 3, 6, 12, 24)),
+        ),
+        scorer=FakeScorer(),
+    )
+
+    with pytest.raises(ValueError, match="bucket_edges"):
+        mismatched_pipeline.detect_one(
+            _row("pos", "def target():\n    x = 1\n    return x\n"),
+            artifact=artifact,
+        )
 
 
 def test_pipeline_calibrates_raw_context_max_on_raw_score_scale() -> None:
@@ -177,3 +270,35 @@ def test_pipeline_writes_detection_details_jsonl(tmp_path: Path) -> None:
     assert len(rows) == 1
     assert rows[0]["id"] == "pos"
     assert rows[0]["detector_mode"] == DETECTOR_MODE
+
+
+def test_detection_result_to_dict_rejects_non_json_safe_floats() -> None:
+    result = SawrDetectionResult(
+        id="nan",
+        is_watermarked=False,
+        score=float("nan"),
+        threshold_5fpr=0.0,
+        p_value=1.0,
+        fpr_target=0.05,
+        scoreable_contexts=1,
+        proxy_windows=3,
+        insufficient_evidence=False,
+        detector_mode=DETECTOR_MODE,
+        context_summaries=(
+            ContextDetectionSummary(
+                context_id="ctx",
+                structure_type="function_body",
+                parent_node_type="function_definition",
+                context_raw=float("inf"),
+                context_score=0.0,
+                calibration_bucket_level="global",
+                proxy_windows=3,
+                direct_statements=2,
+            ),
+        ),
+        code_chars=10,
+        direct_statements=2,
+    )
+
+    with pytest.raises(ValueError, match="detector output must be JSON-safe"):
+        result.to_dict()
