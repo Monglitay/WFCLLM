@@ -9,6 +9,7 @@ from wfcllm.sawr.config import (
     SawrPipelineConfig,
     SawrRuleConfig,
 )
+from wfcllm.sawr.detect import DETECTOR_MODE, BucketEdges, SawrDetectionConfig
 from wfcllm.sawr.generator import (
     SawrCheckpoint,
     SawrGenerateResult,
@@ -51,6 +52,7 @@ __all__ = [
     "Candidate",
     "CheckpointT",
     "DEFAULT_HUMANEVAL_STOP_SEQUENCES",
+    "DETECTOR_MODE",
     "DecisionAction",
     "EmbeddingRule",
     "FORBIDDEN_FINAL_FIELDS",
@@ -59,7 +61,9 @@ __all__ = [
     "RuleDecision",
     "RuleRequest",
     "SemanticLshEmbeddingRule",
+    "BucketEdges",
     "SawrCheckpoint",
+    "SawrDetectionConfig",
     "SawrGenerateResult",
     "SawrGenerationConfig",
     "SawrGenerator",
