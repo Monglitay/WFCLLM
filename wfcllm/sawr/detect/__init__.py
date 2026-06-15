@@ -23,6 +23,7 @@ from wfcllm.sawr.detect.config import (
 from wfcllm.sawr.detect.metrics import (
     build_detection_report,
     split_records_by_task,
+    write_detection_report,
 )
 from wfcllm.sawr.detect.pipeline import (
     FORBIDDEN_DETECTOR_OUTPUT_FIELDS,
@@ -78,4 +79,5 @@ __all__ = [
     "select_target_function_name",
     "split_records_by_task",
     "write_calibration_artifact",
+    "write_detection_report",
 ]

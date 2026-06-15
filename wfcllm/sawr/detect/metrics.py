@@ -14,6 +14,7 @@ BUCKET_FIELDS = (
     "scoreable_contexts",
     "proxy_windows",
 )
+OPTIONAL_NUMERIC_FIELDS = ("p_value", *BUCKET_FIELDS)
 WILSON_95_Z = 1.959963984540054
 
 
@@ -60,31 +61,39 @@ def build_detection_report(
     positive_rows: list[dict[str, Any]],
     negative_rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    sufficient_positives = _sufficient_rows(positive_rows)
-    sufficient_negatives = _sufficient_rows(negative_rows)
-    sufficient_rows = sufficient_positives + sufficient_negatives
+    positives = _validated_metric_rows(positive_rows, label="positive_rows")
+    negatives = _validated_metric_rows(negative_rows, label="negative_rows")
+    all_rows = positives + negatives
 
-    true_positives = sum(
-        1 for row in sufficient_positives if bool(row.get("is_watermarked"))
+    true_positives = sum(1 for row in positives if row["is_watermarked"])
+    false_positives = sum(1 for row in negatives if row["is_watermarked"])
+    positive_count = len(positives)
+    negative_count = len(negatives)
+    positive_insufficient_count = sum(
+        1 for row in positives if row["insufficient_evidence"]
     )
-    false_positives = sum(
-        1 for row in sufficient_negatives if bool(row.get("is_watermarked"))
+    negative_insufficient_count = sum(
+        1 for row in negatives if row["insufficient_evidence"]
     )
-    positive_count = len(sufficient_positives)
-    negative_count = len(sufficient_negatives)
 
-    positive_scores = _field_values(sufficient_positives, "score")
-    negative_scores = _field_values(sufficient_negatives, "score")
+    positive_scores = _field_values(positives, "score")
+    negative_scores = _field_values(negatives, "score")
 
     return {
         "primary": {
             "tpr_at_5fpr": _rate(true_positives, positive_count),
             "observed_fpr": _rate(false_positives, negative_count),
             "auroc": auroc(positive_scores, negative_scores),
-            "positive_samples": len(positive_rows),
-            "negative_samples": len(negative_rows),
-            "positive_sufficient_samples": positive_count,
-            "negative_sufficient_samples": negative_count,
+            "positive_samples": positive_count,
+            "negative_samples": negative_count,
+            "positive_sufficient_samples": (
+                positive_count - positive_insufficient_count
+            ),
+            "negative_sufficient_samples": (
+                negative_count - negative_insufficient_count
+            ),
+            "positive_insufficient_samples": positive_insufficient_count,
+            "negative_insufficient_samples": negative_insufficient_count,
         },
         "confidence_intervals": {
             "tpr_wilson_95": wilson_ci(true_positives, positive_count),
@@ -94,32 +103,39 @@ def build_detection_report(
             "positive_score_quantiles": quantile_summary(positive_scores),
             "negative_score_quantiles": quantile_summary(negative_scores),
             "positive_p_value_quantiles": quantile_summary(
-                _field_values(sufficient_positives, "p_value")
+                _optional_field_values(positives, "p_value")
             ),
             "negative_p_value_quantiles": quantile_summary(
-                _field_values(sufficient_negatives, "p_value")
+                _optional_field_values(negatives, "p_value")
             ),
         },
         "bucketed_fpr": {
-            field: bucketed_fpr(sufficient_negatives, field) for field in BUCKET_FIELDS
+            field: bucketed_fpr(negatives, field) for field in BUCKET_FIELDS
         },
         "pass_rates": {
-            "positive": pass_rate(positive_rows),
-            "negative": pass_rate(negative_rows),
+            "positive": pass_rate(positives),
+            "negative": pass_rate(negatives),
         },
         "correlations": {
-            f"score_vs_{field}": pearson_corr(
-                _field_values(sufficient_rows, "score"),
-                _field_values(sufficient_rows, field),
-            )
+            f"score_vs_{field}": _pearson_for_field(all_rows, field)
             for field in BUCKET_FIELDS
         },
+        "data_coverage": _data_coverage(
+            positives=positives,
+            negatives=negatives,
+            positive_insufficient_count=positive_insufficient_count,
+            negative_insufficient_count=negative_insufficient_count,
+        ),
     }
 
 
 def auroc(positive_scores: list[float], negative_scores: list[float]) -> float:
-    positives = [float(value) for value in positive_scores]
-    negatives = [float(value) for value in negative_scores]
+    positives = [
+        _number_from_value(value, "positive_scores") for value in positive_scores
+    ]
+    negatives = [
+        _number_from_value(value, "negative_scores") for value in negative_scores
+    ]
     if not positives or not negatives:
         return 0.0
 
@@ -136,7 +152,7 @@ def auroc(positive_scores: list[float], negative_scores: list[float]) -> float:
 def quantile_summary(values: list[float]) -> dict[str, float]:
     if not values:
         return {field: 0.0 for field in SUMMARY_FIELDS}
-    sorted_values = sorted(float(value) for value in values)
+    sorted_values = sorted(_number_from_value(value, "values") for value in values)
     return {
         "min": sorted_values[0],
         "p25": _quantile(sorted_values, 0.25),
@@ -169,8 +185,8 @@ def pearson_corr(xs: list[float], ys: list[float]) -> float:
     if len(xs) != len(ys) or len(xs) < 2:
         return 0.0
 
-    x_values = [float(value) for value in xs]
-    y_values = [float(value) for value in ys]
+    x_values = [_number_from_value(value, "xs") for value in xs]
+    y_values = [_number_from_value(value, "ys") for value in ys]
     x_mean = sum(x_values) / len(x_values)
     y_mean = sum(y_values) / len(y_values)
     x_deltas = [value - x_mean for value in x_values]
@@ -193,10 +209,13 @@ def bucketed_fpr(
     counts: dict[str, int] = {}
     false_positives: dict[str, int] = {}
 
-    for row in rows:
-        bucket = _size_bucket(_numeric_field(row, field))
+    for index, row in enumerate(rows):
+        value = _optional_numeric_field(row, field, "rows", index)
+        if value is None:
+            continue
+        bucket = _size_bucket(value)
         counts[bucket] = counts.get(bucket, 0) + 1
-        if bool(row.get("is_watermarked")):
+        if _required_bool_field(row, "is_watermarked", "rows", index):
             false_positives[bucket] = false_positives.get(bucket, 0) + 1
 
     for bucket in sorted(counts):
@@ -209,26 +228,27 @@ def bucketed_fpr(
 
 
 def pass_rate(rows: list[dict[str, Any]]) -> float:
-    known_rows = [row for row in rows if row.get("passed") is not None]
-    if not known_rows:
+    known_passed: list[bool] = []
+    for index, row in enumerate(rows):
+        passed = _optional_nullable_bool_field(row, "passed", "rows", index)
+        if passed is not None:
+            known_passed.append(passed)
+    if not known_passed:
         return 0.0
-    passed_count = sum(1 for row in known_rows if bool(row.get("passed")))
-    return passed_count / len(known_rows)
+    return sum(1 for value in known_passed if value) / len(known_passed)
 
 
 def write_detection_report(path: str | Path, report: dict[str, Any]) -> str:
     report_path = Path(path)
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(
-        json.dumps(
-            report,
-            allow_nan=False,
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        ),
-        encoding="utf-8",
+    payload = json.dumps(
+        report,
+        allow_nan=False,
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
     )
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(payload, encoding="utf-8")
     return str(report_path)
 
 
@@ -288,27 +308,187 @@ def _task_id_from_record(row: dict[str, Any]) -> str:
         sample_id = row["id"]
     except KeyError as exc:
         raise ValueError("record missing required id") from exc
-    return task_id_from_sample_id(str(sample_id))
+    if not isinstance(sample_id, str) or not sample_id:
+        raise ValueError("record id must be a non-empty string")
+    return task_id_from_sample_id(sample_id)
 
 
-def _sufficient_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [row for row in rows if not bool(row.get("insufficient_evidence"))]
+def _validated_metric_rows(
+    rows: list[dict[str, Any]],
+    *,
+    label: str,
+) -> list[dict[str, Any]]:
+    validated_rows: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise ValueError(f"{label}[{index}] must be a mapping")
+        validated: dict[str, Any] = {
+            "score": _required_numeric_field(row, "score", label, index),
+            "is_watermarked": _required_bool_field(
+                row,
+                "is_watermarked",
+                label,
+                index,
+            ),
+            "insufficient_evidence": _optional_bool_field(
+                row,
+                "insufficient_evidence",
+                label,
+                index,
+                default=False,
+            ),
+            "passed": _optional_nullable_bool_field(row, "passed", label, index),
+        }
+        for field in OPTIONAL_NUMERIC_FIELDS:
+            value = _optional_numeric_field(row, field, label, index)
+            if value is not None:
+                validated[field] = value
+        validated_rows.append(validated)
+    return validated_rows
 
 
 def _field_values(rows: list[dict[str, Any]], field: str) -> list[float]:
-    return [_numeric_field(row, field) for row in rows]
+    return [row[field] for row in rows]
 
 
-def _numeric_field(row: dict[str, Any], field: str) -> float:
+def _optional_field_values(
+    rows: list[dict[str, Any]],
+    field: str,
+) -> list[float]:
+    return [row[field] for row in rows if field in row]
+
+
+def _paired_field_values(
+    rows: list[dict[str, Any]],
+    left_field: str,
+    right_field: str,
+) -> list[tuple[float, float]]:
+    return [
+        (row[left_field], row[right_field])
+        for row in rows
+        if left_field in row and right_field in row
+    ]
+
+
+def _pearson_for_field(rows: list[dict[str, Any]], field: str) -> float:
+    pairs = _paired_field_values(rows, "score", field)
+    if not pairs:
+        return 0.0
+    xs, ys = zip(*pairs, strict=True)
+    return pearson_corr(list(xs), list(ys))
+
+
+def _required_numeric_field(
+    row: dict[str, Any],
+    field: str,
+    label: str,
+    index: int,
+) -> float:
     try:
-        value = float(row[field])
+        value = row[field]
     except KeyError as exc:
-        raise ValueError(f"record missing required numeric field: {field}") from exc
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"record field must be numeric: {field}") from exc
-    if not math.isfinite(value):
-        raise ValueError(f"record field must be finite: {field}")
+        raise ValueError(
+            f"{label}[{index}] missing required numeric field: {field}"
+        ) from exc
+    return _number_from_value(value, f"{label}[{index}].{field}")
+
+
+def _optional_numeric_field(
+    row: dict[str, Any],
+    field: str,
+    label: str,
+    index: int,
+) -> float | None:
+    if field not in row:
+        return None
+    return _number_from_value(row[field], f"{label}[{index}].{field}")
+
+
+def _number_from_value(value: Any, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field} must be a numeric value")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{field} must be finite")
+    return number
+
+
+def _required_bool_field(
+    row: dict[str, Any],
+    field: str,
+    label: str,
+    index: int,
+) -> bool:
+    try:
+        value = row[field]
+    except KeyError as exc:
+        raise ValueError(
+            f"{label}[{index}] missing required boolean field: {field}"
+        ) from exc
+    if not isinstance(value, bool):
+        raise ValueError(f"{label}[{index}].{field} must be bool")
     return value
+
+
+def _optional_bool_field(
+    row: dict[str, Any],
+    field: str,
+    label: str,
+    index: int,
+    *,
+    default: bool,
+) -> bool:
+    if field not in row:
+        return default
+    value = row[field]
+    if not isinstance(value, bool):
+        raise ValueError(f"{label}[{index}].{field} must be bool")
+    return value
+
+
+def _optional_nullable_bool_field(
+    row: dict[str, Any],
+    field: str,
+    label: str,
+    index: int,
+) -> bool | None:
+    if field not in row:
+        return None
+    value = row[field]
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise ValueError(f"{label}[{index}].{field} must be bool or None")
+    return value
+
+
+def _data_coverage(
+    *,
+    positives: list[dict[str, Any]],
+    negatives: list[dict[str, Any]],
+    positive_insufficient_count: int,
+    negative_insufficient_count: int,
+) -> dict[str, int]:
+    all_rows = positives + negatives
+    total_count = len(all_rows)
+    coverage = {
+        "positive_samples": len(positives),
+        "negative_samples": len(negatives),
+        "positive_sufficient_samples": len(positives) - positive_insufficient_count,
+        "negative_sufficient_samples": len(negatives) - negative_insufficient_count,
+        "positive_insufficient_samples": positive_insufficient_count,
+        "negative_insufficient_samples": negative_insufficient_count,
+        "score_present": total_count,
+        "score_missing": 0,
+    }
+    for field in OPTIONAL_NUMERIC_FIELDS:
+        present = sum(1 for row in all_rows if field in row)
+        coverage[f"{field}_present"] = present
+        coverage[f"{field}_missing"] = total_count - present
+    passed_present = sum(1 for row in all_rows if row.get("passed") is not None)
+    coverage["passed_present"] = passed_present
+    coverage["passed_missing"] = total_count - passed_present
+    return coverage
 
 
 def _rate(k: int, n: int) -> float:
