@@ -32,6 +32,7 @@ from wfcllm.sawr.detect.pipeline import (
     SawrDetectionResult,
     code_from_record,
     load_jsonl_records,
+    validate_final_code_detector_input_record,
 )
 from wfcllm.sawr.detect.proxy_windows import (
     DirectStatement,
@@ -78,6 +79,7 @@ __all__ = [
     "percentile_threshold",
     "select_target_function_name",
     "split_records_by_task",
+    "validate_final_code_detector_input_record",
     "write_calibration_artifact",
     "write_detection_report",
 ]

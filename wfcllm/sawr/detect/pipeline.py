@@ -20,6 +20,7 @@ from wfcllm.sawr.detect.config import DETECTOR_MODE, SawrDetectionConfig
 from wfcllm.sawr.detect.proxy_windows import (
     StructureContext,
     extract_structure_contexts,
+    select_target_function_name,
 )
 from wfcllm.sawr.detect.scoring import SawrWindowScorer, WindowEvidence
 
@@ -35,6 +36,16 @@ FORBIDDEN_DETECTOR_OUTPUT_FIELDS = {
     "watermark_params",
     "blocks",
 }
+FORBIDDEN_DETECTOR_INPUT_FIELDS = FORBIDDEN_DETECTOR_OUTPUT_FIELDS | {
+    "audit_event_id",
+    "generation_candidate_id",
+    "generation_layer_id",
+    "generation_window_id",
+    "logits",
+    "sampling_trace",
+}
+FORBIDDEN_DETECTOR_INPUT_PREFIXES = ("generation_", "audit_")
+DETECTOR_INPUT_PREFIX_EXCEPTIONS = {"audit_only"}
 COMPATIBLE_ARTIFACT_CONFIG_FIELDS = (
     "secret_key_sha256",
     "lsh_d",
@@ -73,6 +84,7 @@ class SawrDetectionResult:
     is_watermarked: bool
     score: float
     threshold_5fpr: float
+    threshold_at_target_fpr: float
     p_value: float
     fpr_target: float
     scoreable_contexts: int
@@ -163,6 +175,7 @@ class SawrDetectionPipeline:
         *,
         artifact: CalibrationArtifact,
     ) -> SawrDetectionResult:
+        validate_final_code_detector_input_record(record)
         code = code_from_record(record)
         scored_contexts = self._score_record_contexts(record)
         score, context_summaries = self._score_sample(
@@ -179,16 +192,16 @@ class SawrDetectionPipeline:
             len(scored_contexts) < self._config.min_scoreable_contexts
             or proxy_windows < self._config.min_proxy_windows
         )
-        is_watermarked = (
-            not insufficient_evidence and score >= artifact.threshold_5fpr
-        )
+        p_value = empirical_upper_tail_p(score, artifact.sample_scores)
+        is_watermarked = not insufficient_evidence and p_value <= self._config.target_fpr
 
         return SawrDetectionResult(
             id=str(record.get("id", "")),
             is_watermarked=is_watermarked,
             score=score,
             threshold_5fpr=artifact.threshold_5fpr,
-            p_value=empirical_upper_tail_p(score, artifact.sample_scores),
+            threshold_at_target_fpr=artifact.threshold_5fpr,
+            p_value=p_value,
             fpr_target=self._config.target_fpr,
             scoreable_contexts=len(scored_contexts),
             proxy_windows=proxy_windows,
@@ -245,6 +258,7 @@ class SawrDetectionPipeline:
             )
 
     def _score_record_contexts(self, record: dict[str, Any]) -> list[_ScoredContext]:
+        validate_final_code_detector_input_record(record)
         final_code = code_from_record(record)
         prompt = record.get("prompt")
         contexts = extract_structure_contexts(
@@ -363,9 +377,89 @@ def code_from_record(record: dict[str, Any]) -> str:
         generated_code = record["generated_code"]
         if not isinstance(generated_code, str):
             raise ValueError("generated_code must be a string")
+        prompt = record.get("prompt")
+        if (
+            isinstance(prompt, str)
+            and prompt
+            and select_target_function_name(generated_code) is None
+        ):
+            return _join_prompt_and_generated_code(prompt, generated_code)
         return generated_code
 
     raise ValueError("record must contain final_code or generated_code")
+
+
+def validate_final_code_detector_input_record(record: dict[str, Any]) -> None:
+    if not isinstance(record, dict):
+        raise ValueError("detector input record must be a mapping")
+
+    sample_id = record.get("id")
+    if not isinstance(sample_id, str) or not sample_id:
+        raise ValueError("record id must be a non-empty string")
+
+    artifact_type = record.get("artifact_type")
+    if artifact_type == "sawr_audit_event":
+        raise ValueError(
+            "detector input cannot be SAWR audit event rows "
+            "(artifact_type='sawr_audit_event')"
+        )
+    if record.get("audit_only") is True:
+        raise ValueError("detector input cannot have audit_only=True")
+    if record.get("detector_input_allowed") is False:
+        raise ValueError("detector input cannot have detector_input_allowed=False")
+
+    forbidden_path = _find_forbidden_detector_input_key(record)
+    if forbidden_path is not None:
+        raise ValueError(
+            "detector input contains forbidden trace/audit field: "
+            f"{forbidden_path}"
+        )
+
+    code_from_record(record)
+
+
+def _join_prompt_and_generated_code(prompt: str, generated_code: str) -> str:
+    if prompt.endswith("\n") or generated_code.startswith("\n"):
+        return prompt + generated_code
+    return prompt + "\n" + generated_code
+
+
+def _find_forbidden_detector_input_key(value: Any) -> str | None:
+    return _find_forbidden_detector_input_key_at_path(value, path="")
+
+
+def _find_forbidden_detector_input_key_at_path(
+    value: Any,
+    *,
+    path: str,
+) -> str | None:
+    if isinstance(value, dict):
+        for key, nested_value in value.items():
+            key_name = str(key)
+            child_path = f"{path}.{key_name}" if path else key_name
+            if key_name in FORBIDDEN_DETECTOR_INPUT_FIELDS:
+                return child_path
+            if (
+                key_name not in DETECTOR_INPUT_PREFIX_EXCEPTIONS
+                and key_name.startswith(FORBIDDEN_DETECTOR_INPUT_PREFIXES)
+            ):
+                return child_path
+            nested_forbidden = _find_forbidden_detector_input_key_at_path(
+                nested_value,
+                path=child_path,
+            )
+            if nested_forbidden is not None:
+                return nested_forbidden
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            child_path = f"{path}[{index}]" if path else f"[{index}]"
+            nested_forbidden = _find_forbidden_detector_input_key_at_path(
+                item,
+                path=child_path,
+            )
+            if nested_forbidden is not None:
+                return nested_forbidden
+    return None
 
 
 def load_jsonl_records(path: str | Path) -> list[dict[str, Any]]:

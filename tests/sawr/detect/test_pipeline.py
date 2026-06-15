@@ -13,6 +13,7 @@ from wfcllm.sawr.detect.pipeline import (
     SawrDetectionResult,
     code_from_record,
     load_jsonl_records,
+    validate_final_code_detector_input_record,
 )
 from wfcllm.sawr.detect.proxy_windows import ProxyWindow
 from wfcllm.sawr.detect.scoring import WindowEvidence
@@ -65,12 +66,115 @@ def test_code_from_record_accepts_final_code_and_generated_code() -> None:
         code_from_record({"id": "missing"})
 
 
+def test_code_from_record_combines_prompt_with_generated_body_when_needed() -> None:
+    assert code_from_record(
+        {
+            "prompt": "def target():\n",
+            "generated_code": "    x = 1\n    return x\n",
+        }
+    ) == "def target():\n    x = 1\n    return x\n"
+
+
+def test_code_from_record_does_not_duplicate_full_generated_source() -> None:
+    full_source = "def target():\n    x = 1\n    return x\n"
+
+    assert code_from_record(
+        {
+            "prompt": "def target():\n",
+            "generated_code": full_source,
+        }
+    ) == full_source
+
+
 def test_code_from_record_rejects_non_string_code_fields() -> None:
     with pytest.raises(ValueError, match="final_code must be a string"):
         code_from_record({"final_code": ["x = 1"]})
 
     with pytest.raises(ValueError, match="generated_code must be a string"):
         code_from_record({"generated_code": ["x = 2"]})
+
+
+def test_validate_final_code_detector_input_record_rejects_invalid_ids() -> None:
+    with pytest.raises(ValueError, match="record id must be a non-empty string"):
+        validate_final_code_detector_input_record({"id": "", "final_code": "pass"})
+
+
+@pytest.mark.parametrize(
+    "record,field",
+    [
+        (
+            {
+                "id": "audit",
+                "artifact_type": "sawr_audit_event",
+                "final_code": "def target():\n    return 0\n",
+            },
+            "artifact_type",
+        ),
+        (
+            {
+                "id": "audit-only",
+                "audit_only": True,
+                "final_code": "def target():\n    return 0\n",
+            },
+            "audit_only",
+        ),
+        (
+            {
+                "id": "blocked",
+                "detector_input_allowed": False,
+                "final_code": "def target():\n    return 0\n",
+            },
+            "detector_input_allowed",
+        ),
+        (
+            {
+                "id": "trace",
+                "final_code": "def target():\n    return 0\n",
+                "retry_trace": [],
+            },
+            "retry_trace",
+        ),
+        (
+            {
+                "id": "nested-trace",
+                "final_code": "def target():\n    return 0\n",
+                "metadata": {"audit_event_id": "event-1"},
+            },
+            "audit_event_id",
+        ),
+        (
+            {
+                "id": "generation-prefix",
+                "final_code": "def target():\n    return 0\n",
+                "metadata": {"generation_score": 0.2},
+            },
+            "generation_score",
+        ),
+    ],
+)
+def test_validate_final_code_detector_input_record_rejects_audit_and_trace_fields(
+    record: dict[str, object],
+    field: str,
+) -> None:
+    with pytest.raises(ValueError, match=field):
+        validate_final_code_detector_input_record(record)
+
+
+def test_validate_final_code_detector_input_record_allows_generated_code_name() -> None:
+    validate_final_code_detector_input_record(
+        {
+            "id": "ok",
+            "generated_code": "def target():\n    return 0\n",
+        }
+    )
+
+
+def test_package_exports_final_code_input_validator() -> None:
+    from wfcllm.sawr.detect import (
+        validate_final_code_detector_input_record as exported_validator,
+    )
+
+    assert exported_validator is validate_final_code_detector_input_record
 
 
 def test_load_jsonl_records_reads_non_empty_lines(tmp_path: Path) -> None:
@@ -124,8 +228,114 @@ def test_pipeline_calibrates_and_detects_without_trace_fields(tmp_path: Path) ->
     assert payload["insufficient_evidence"] is False
     assert payload["score"] >= 0
     assert payload["threshold_5fpr"] == artifact.threshold_5fpr
+    assert payload["threshold_at_target_fpr"] == artifact.threshold_5fpr
     assert 0 < payload["p_value"] <= 1
     assert not (FORBIDDEN_DETECTOR_OUTPUT_FIELDS & set(payload))
+
+
+def test_pipeline_rejects_trace_rows_during_calibration() -> None:
+    pipeline = SawrDetectionPipeline(
+        config=SawrDetectionConfig(secret_key="1010"),
+        scorer=FakeScorer(),
+    )
+
+    with pytest.raises(ValueError, match="watermark_params"):
+        pipeline.calibrate(
+            [
+                {
+                    **_row("neg", "def target():\n    x = 0\n    return 0\n"),
+                    "watermark_params": {"gamma": 0.75},
+                }
+            ]
+        )
+
+
+def test_pipeline_rejects_audit_rows_during_detection() -> None:
+    pipeline = SawrDetectionPipeline(
+        config=SawrDetectionConfig(secret_key="1010"),
+        scorer=FakeScorer(),
+    )
+    artifact = pipeline.calibrate([
+        _row("neg", "def target():\n    x = 0\n    return 0\n")
+    ])
+
+    with pytest.raises(ValueError, match="sawr_audit_event"):
+        pipeline.detect_one(
+            {
+                "artifact_type": "sawr_audit_event",
+                "id": "audit",
+                "audit_only": True,
+                "detector_input_allowed": False,
+                "final_code": "def target():\n    x = 1\n    return x\n",
+            },
+            artifact=artifact,
+        )
+
+
+def test_pipeline_rejects_trace_rows_when_writing_detection_jsonl(
+    tmp_path: Path,
+) -> None:
+    pipeline = SawrDetectionPipeline(
+        config=SawrDetectionConfig(secret_key="1010"),
+        scorer=FakeScorer(),
+    )
+    artifact = pipeline.calibrate([
+        _row("neg", "def target():\n    x = 0\n    return 0\n")
+    ])
+
+    with pytest.raises(ValueError, match="sampling_trace"):
+        pipeline.detect_to_jsonl(
+            [
+                {
+                    **_row("pos", "def target():\n    x = 1\n    return x\n"),
+                    "sampling_trace": [],
+                }
+            ],
+            artifact=artifact,
+            output_path=tmp_path / "details.jsonl",
+        )
+
+
+def test_pipeline_classifies_by_p_value_not_zero_threshold_tie() -> None:
+    config = SawrDetectionConfig(secret_key="1010", statistic="raw_context_max")
+    pipeline = SawrDetectionPipeline(config=config, scorer=FakeScorer())
+    artifact = pipeline.calibrate([
+        _row("neg", "def target():\n    y = 99\n    return y\n")
+    ])
+
+    result = pipeline.detect_one(
+        _row("held-out", "def target():\n    y = 99\n    return y\n"),
+        artifact=artifact,
+    )
+
+    assert artifact.threshold_5fpr == 0.0
+    assert result.score == 0.0
+    assert result.p_value == pytest.approx(1.0)
+    assert result.is_watermarked is False
+
+
+def test_pipeline_scores_generated_code_body_with_prompt() -> None:
+    pipeline = SawrDetectionPipeline(
+        config=SawrDetectionConfig(secret_key="1010"),
+        scorer=FakeScorer(),
+    )
+    artifact = pipeline.calibrate([
+        _row("neg", "def target():\n    x = 0\n    return 0\n")
+    ])
+
+    result = pipeline.detect_one(
+        {
+            "artifact_type": "sawr_final_code",
+            "id": "body",
+            "prompt": "def target():\n",
+            "generated_code": "    x = 1\n    return x\n",
+        },
+        artifact=artifact,
+    )
+
+    assert result.scoreable_contexts == 1
+    assert result.proxy_windows == 3
+    assert result.insufficient_evidence is False
 
 
 def test_pipeline_rejects_artifact_with_mismatched_statistic() -> None:
@@ -190,7 +400,11 @@ def test_pipeline_rejects_artifact_with_mismatched_bucket_edges() -> None:
 
 
 def test_pipeline_calibrates_raw_context_max_on_raw_score_scale() -> None:
-    config = SawrDetectionConfig(secret_key="1010", statistic="raw_context_max")
+    config = SawrDetectionConfig(
+        secret_key="1010",
+        statistic="raw_context_max",
+        target_fpr=0.5,
+    )
     pipeline = SawrDetectionPipeline(config=config, scorer=FakeScorer())
 
     artifact = pipeline.calibrate([
@@ -213,6 +427,7 @@ def test_pipeline_calibrates_context_mean_window_evidence_on_mean_score_scale() 
     config = SawrDetectionConfig(
         secret_key="1010",
         statistic="context_mean_window_evidence",
+        target_fpr=0.5,
     )
     pipeline = SawrDetectionPipeline(config=config, scorer=FakeScorer())
 
@@ -278,6 +493,7 @@ def test_detection_result_to_dict_rejects_non_json_safe_floats() -> None:
         is_watermarked=False,
         score=float("nan"),
         threshold_5fpr=0.0,
+        threshold_at_target_fpr=0.0,
         p_value=1.0,
         fpr_target=0.05,
         scoreable_contexts=1,

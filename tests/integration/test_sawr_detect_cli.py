@@ -248,6 +248,8 @@ def test_evaluate_cli_writes_report_content_without_scorer_load(
     assert report["primary"]["positive_samples"] == 1
     assert report["primary"]["negative_samples"] == 1
     assert report["primary"]["tpr_at_5fpr"] == 1.0
+    assert report["primary"]["tpr_at_target_fpr"] == 1.0
+    assert report["primary"]["fpr_target"] == 0.0
     assert report["primary"]["observed_fpr"] == 0.0
 
 
@@ -289,10 +291,10 @@ def test_split_cli_writes_deterministic_task_based_splits(tmp_path: Path) -> Non
     output_dir = tmp_path / "splits"
     repeat_output_dir = tmp_path / "splits-repeat"
     input_rows = [
-        {"id": "HumanEval/0#0"},
-        {"id": "HumanEval/0#1"},
-        {"id": "HumanEval/1#0"},
-        {"id": "HumanEval/2#0"},
+        {"id": "HumanEval/0#0", "final_code": "def target():\n    return 0\n"},
+        {"id": "HumanEval/0#1", "final_code": "def target():\n    return 1\n"},
+        {"id": "HumanEval/1#0", "final_code": "def target():\n    return 2\n"},
+        {"id": "HumanEval/2#0", "final_code": "def target():\n    return 3\n"},
     ]
     _write_jsonl(input_path, input_rows)
 
@@ -353,7 +355,10 @@ def test_split_cli_writes_deterministic_task_based_splits(tmp_path: Path) -> Non
 def test_split_invalid_ratio_returns_error(tmp_path: Path, capsys) -> None:
     input_path = tmp_path / "rows.jsonl"
     output_dir = tmp_path / "splits"
-    _write_jsonl(input_path, [{"id": "HumanEval/0#0"}])
+    _write_jsonl(
+        input_path,
+        [{"id": "HumanEval/0#0", "final_code": "def target():\n    return 0\n"}],
+    )
 
     with patch(
         "scripts.run_sawr_detect.load_sawr_window_scorer",
@@ -377,6 +382,48 @@ def test_split_invalid_ratio_returns_error(tmp_path: Path, capsys) -> None:
 
     assert rc == 1
     assert "[错误]" in capsys.readouterr().err
+
+
+def test_split_trace_row_returns_error_without_scorer_load(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    input_path = tmp_path / "rows.jsonl"
+    output_dir = tmp_path / "splits"
+    _write_jsonl(
+        input_path,
+        [
+            {
+                "artifact_type": "sawr_final_code",
+                "id": "HumanEval/0#0",
+                "final_code": "def target():\n    return 0\n",
+                "sampling_trace": [],
+            }
+        ],
+    )
+
+    with patch(
+        "scripts.run_sawr_detect.load_sawr_window_scorer",
+        side_effect=AssertionError("split must not load scorer"),
+    ):
+        rc = sawr_detect_cli.main(
+            [
+                "split",
+                "--input",
+                str(input_path),
+                "--output-dir",
+                str(output_dir),
+                "--dev-ratio",
+                "0.0",
+                "--calibration-ratio",
+                "0.0",
+                "--seed",
+                "0",
+            ]
+        )
+
+    assert rc == 1
+    assert "sampling_trace" in capsys.readouterr().err
 
 
 def _make_detector_paths(tmp_path: Path) -> dict[str, Path]:

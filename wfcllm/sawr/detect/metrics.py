@@ -6,6 +6,8 @@ import random
 from pathlib import Path
 from typing import Any
 
+from wfcllm.sawr.detect.pipeline import validate_final_code_detector_input_record
+
 
 SUMMARY_FIELDS = ("min", "p25", "p50", "p75", "max")
 BUCKET_FIELDS = (
@@ -14,7 +16,7 @@ BUCKET_FIELDS = (
     "scoreable_contexts",
     "proxy_windows",
 )
-OPTIONAL_NUMERIC_FIELDS = ("p_value", *BUCKET_FIELDS)
+OPTIONAL_NUMERIC_FIELDS = ("p_value", "fpr_target", *BUCKET_FIELDS)
 WILSON_95_Z = 1.959963984540054
 
 
@@ -33,6 +35,7 @@ def split_records_by_task(
 
     task_records: dict[str, list[dict[str, Any]]] = {}
     for row in records:
+        validate_final_code_detector_input_record(row)
         task_records.setdefault(_task_id_from_record(row), []).append(row)
 
     task_ids = sorted(task_records)
@@ -78,10 +81,14 @@ def build_detection_report(
 
     positive_scores = _field_values(positives, "score")
     negative_scores = _field_values(negatives, "score")
+    tpr = _rate(true_positives, positive_count)
+    fpr_target = _unique_fpr_target(positives + negatives)
 
     return {
         "primary": {
-            "tpr_at_5fpr": _rate(true_positives, positive_count),
+            "tpr_at_5fpr": tpr,
+            "tpr_at_target_fpr": tpr,
+            "fpr_target": fpr_target,
             "observed_fpr": _rate(false_positives, negative_count),
             "auroc": auroc(positive_scores, negative_scores),
             "positive_samples": positive_count,
@@ -376,6 +383,16 @@ def _pearson_for_field(rows: list[dict[str, Any]], field: str) -> float:
         return 0.0
     xs, ys = zip(*pairs, strict=True)
     return pearson_corr(list(xs), list(ys))
+
+
+def _unique_fpr_target(rows: list[dict[str, Any]]) -> float:
+    targets = _optional_field_values(rows, "fpr_target")
+    if not targets:
+        return 0.0
+    unique_targets = sorted(set(targets))
+    if len(unique_targets) > 1:
+        raise ValueError(f"conflicting fpr_target values: {unique_targets}")
+    return unique_targets[0]
 
 
 def _required_numeric_field(

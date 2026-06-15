@@ -21,14 +21,16 @@ def _detail(
     watermarked: bool,
     decision: bool,
     threshold: float = 0.5,
+    fpr_target: float | None = 0.05,
     insufficient: bool = False,
     passed: bool | None = None,
 ) -> dict[str, object]:
-    return {
+    row: dict[str, object] = {
         "id": sample_id,
         "score": score,
         "is_watermarked": decision,
         "threshold_5fpr": threshold,
+        "threshold_at_target_fpr": threshold,
         "p_value": 0.5,
         "scoreable_contexts": 1,
         "proxy_windows": 3,
@@ -38,6 +40,9 @@ def _detail(
         "label_watermarked": watermarked,
         "passed": passed,
     }
+    if fpr_target is not None:
+        row["fpr_target"] = fpr_target
+    return row
 
 
 def test_task_id_from_sample_id_groups_generations_by_task() -> None:
@@ -47,10 +52,10 @@ def test_task_id_from_sample_id_groups_generations_by_task() -> None:
 
 def test_split_records_by_task_keeps_task_rows_together() -> None:
     records = [
-        {"id": "HumanEval/0#0"},
-        {"id": "HumanEval/0#1"},
-        {"id": "HumanEval/1#0"},
-        {"id": "HumanEval/2#0"},
+        {"id": "HumanEval/0#0", "final_code": "def target():\n    return 0\n"},
+        {"id": "HumanEval/0#1", "final_code": "def target():\n    return 1\n"},
+        {"id": "HumanEval/1#0", "final_code": "def target():\n    return 2\n"},
+        {"id": "HumanEval/2#0", "final_code": "def target():\n    return 3\n"},
     ]
 
     splits = split_records_by_task(
@@ -72,6 +77,23 @@ def test_split_records_by_task_keeps_task_rows_together() -> None:
         "HumanEval/1#0",
         "HumanEval/2#0",
     ]
+
+
+def test_split_records_by_task_rejects_audit_trace_rows() -> None:
+    with pytest.raises(ValueError, match="retry_trace"):
+        split_records_by_task(
+            [
+                {
+                    "artifact_type": "sawr_final_code",
+                    "id": "HumanEval/0#0",
+                    "final_code": "def target():\n    return 0\n",
+                    "retry_trace": [],
+                }
+            ],
+            dev_ratio=0.0,
+            calibration_ratio=0.0,
+            seed=1,
+        )
 
 
 def test_auroc_pairwise_rank_statistic() -> None:
@@ -114,6 +136,8 @@ def test_build_detection_report_contains_required_metrics() -> None:
     report = build_detection_report(positives, negatives)
 
     assert report["primary"]["tpr_at_5fpr"] == pytest.approx(0.5)
+    assert report["primary"]["tpr_at_target_fpr"] == pytest.approx(0.5)
+    assert report["primary"]["fpr_target"] == pytest.approx(0.05)
     assert report["primary"]["observed_fpr"] == pytest.approx(0.5)
     assert report["primary"]["auroc"] == pytest.approx(0.75)
     assert "positive_score_quantiles" in report["score_distributions"]
@@ -177,6 +201,8 @@ def test_build_detection_report_accepts_minimal_detail_rows() -> None:
     report = build_detection_report(positives, negatives)
 
     assert report["primary"]["tpr_at_5fpr"] == pytest.approx(1.0)
+    assert report["primary"]["tpr_at_target_fpr"] == pytest.approx(1.0)
+    assert report["primary"]["fpr_target"] == 0.0
     assert report["primary"]["observed_fpr"] == pytest.approx(0.0)
     assert report["score_distributions"]["positive_p_value_quantiles"] == {
         "min": 0.0,
@@ -200,6 +226,7 @@ def test_build_detection_report_accepts_minimal_detail_rows() -> None:
         ("score", True),
         ("score", "0.5"),
         ("code_chars", "20"),
+        ("fpr_target", "0.05"),
     ],
 )
 def test_build_detection_report_rejects_malformed_detail_values(
@@ -219,6 +246,30 @@ def test_build_detection_report_rejects_malformed_detail_values(
         build_detection_report(
             [row],
             [_detail("neg-1", score=0.1, watermarked=False, decision=False)],
+        )
+
+
+def test_build_detection_report_rejects_conflicting_fpr_targets() -> None:
+    with pytest.raises(ValueError, match="conflicting fpr_target"):
+        build_detection_report(
+            [
+                _detail(
+                    "pos-1",
+                    score=0.9,
+                    watermarked=True,
+                    decision=True,
+                    fpr_target=0.05,
+                )
+            ],
+            [
+                _detail(
+                    "neg-1",
+                    score=0.1,
+                    watermarked=False,
+                    decision=False,
+                    fpr_target=0.10,
+                )
+            ],
         )
 
 
