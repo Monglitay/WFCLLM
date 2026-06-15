@@ -37,12 +37,16 @@ FORBIDDEN_DETECTOR_OUTPUT_FIELDS = {
     "blocks",
 }
 FORBIDDEN_DETECTOR_INPUT_FIELDS = FORBIDDEN_DETECTOR_OUTPUT_FIELDS | {
+    "audit",
     "audit_event_id",
+    "detector_score",
     "generation_candidate_id",
     "generation_layer_id",
     "generation_window_id",
     "logits",
+    "p_value",
     "sampling_trace",
+    "z_score",
 }
 FORBIDDEN_DETECTOR_INPUT_PREFIXES = ("generation_", "audit_")
 DETECTOR_INPUT_PREFIX_EXCEPTIONS = {"audit_only"}
@@ -193,7 +197,9 @@ class SawrDetectionPipeline:
             or proxy_windows < self._config.min_proxy_windows
         )
         p_value = empirical_upper_tail_p(score, artifact.sample_scores)
-        is_watermarked = not insufficient_evidence and p_value <= self._config.target_fpr
+        is_watermarked = (
+            not insufficient_evidence and score >= artifact.threshold_5fpr
+        )
 
         return SawrDetectionResult(
             id=str(record.get("id", "")),

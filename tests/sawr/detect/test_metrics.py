@@ -79,15 +79,19 @@ def test_split_records_by_task_keeps_task_rows_together() -> None:
     ]
 
 
-def test_split_records_by_task_rejects_audit_trace_rows() -> None:
-    with pytest.raises(ValueError, match="retry_trace"):
+@pytest.mark.parametrize("field,value", [("retry_trace", []), ("detector_score", 0.0)])
+def test_split_records_by_task_rejects_audit_trace_rows(
+    field: str,
+    value: object,
+) -> None:
+    with pytest.raises(ValueError, match=field):
         split_records_by_task(
             [
                 {
                     "artifact_type": "sawr_final_code",
                     "id": "HumanEval/0#0",
                     "final_code": "def target():\n    return 0\n",
-                    "retry_trace": [],
+                    field: value,
                 }
             ],
             dev_ratio=0.0,

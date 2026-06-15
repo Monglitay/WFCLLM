@@ -150,6 +150,38 @@ def test_validate_final_code_detector_input_record_rejects_invalid_ids() -> None
             },
             "generation_score",
         ),
+        (
+            {
+                "id": "audit-field",
+                "final_code": "def target():\n    return 0\n",
+                "audit": {"event": "candidate_miss"},
+            },
+            "audit",
+        ),
+        (
+            {
+                "id": "detail-p-value",
+                "final_code": "def target():\n    return 0\n",
+                "p_value": 0.5,
+            },
+            "p_value",
+        ),
+        (
+            {
+                "id": "detail-z-score",
+                "final_code": "def target():\n    return 0\n",
+                "z_score": 0.0,
+            },
+            "z_score",
+        ),
+        (
+            {
+                "id": "detector-score",
+                "final_code": "def target():\n    return 0\n",
+                "detector_score": 0.0,
+            },
+            "detector_score",
+        ),
     ],
 )
 def test_validate_final_code_detector_input_record_rejects_audit_and_trace_fields(
@@ -233,18 +265,28 @@ def test_pipeline_calibrates_and_detects_without_trace_fields(tmp_path: Path) ->
     assert not (FORBIDDEN_DETECTOR_OUTPUT_FIELDS & set(payload))
 
 
-def test_pipeline_rejects_trace_rows_during_calibration() -> None:
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("watermark_params", {"gamma": 0.75}),
+        ("p_value", 0.5),
+    ],
+)
+def test_pipeline_rejects_trace_rows_during_calibration(
+    field: str,
+    value: object,
+) -> None:
     pipeline = SawrDetectionPipeline(
         config=SawrDetectionConfig(secret_key="1010"),
         scorer=FakeScorer(),
     )
 
-    with pytest.raises(ValueError, match="watermark_params"):
+    with pytest.raises(ValueError, match=field):
         pipeline.calibrate(
             [
                 {
                     **_row("neg", "def target():\n    x = 0\n    return 0\n"),
-                    "watermark_params": {"gamma": 0.75},
+                    field: value,
                 }
             ]
         )
@@ -296,22 +338,27 @@ def test_pipeline_rejects_trace_rows_when_writing_detection_jsonl(
         )
 
 
-def test_pipeline_classifies_by_p_value_not_zero_threshold_tie() -> None:
-    config = SawrDetectionConfig(secret_key="1010", statistic="raw_context_max")
+def test_pipeline_classifies_by_threshold_when_p_value_exceeds_target_fpr() -> None:
+    config = SawrDetectionConfig(
+        secret_key="1010",
+        statistic="raw_context_max",
+        target_fpr=0.05,
+    )
     pipeline = SawrDetectionPipeline(config=config, scorer=FakeScorer())
     artifact = pipeline.calibrate([
-        _row("neg", "def target():\n    y = 99\n    return y\n")
+        _row("neg", "def target():\n    x = 0\n    return 0\n")
     ])
 
     result = pipeline.detect_one(
-        _row("held-out", "def target():\n    y = 99\n    return y\n"),
+        _row("held-out", "def target():\n    x = 1\n    return x\n"),
         artifact=artifact,
     )
 
-    assert artifact.threshold_5fpr == 0.0
-    assert result.score == 0.0
-    assert result.p_value == pytest.approx(1.0)
-    assert result.is_watermarked is False
+    assert artifact.threshold_5fpr == pytest.approx(0.3)
+    assert result.score == pytest.approx(0.9)
+    assert result.p_value == pytest.approx(0.5)
+    assert result.p_value > config.target_fpr
+    assert result.is_watermarked is True
 
 
 def test_pipeline_scores_generated_code_body_with_prompt() -> None:

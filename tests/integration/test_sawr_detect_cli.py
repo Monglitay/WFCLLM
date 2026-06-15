@@ -221,6 +221,7 @@ def test_evaluate_cli_writes_report_content_without_scorer_load(
     detail = {
         "id": "x",
         "score": 0.5,
+        "p_value": 0.5,
         "is_watermarked": True,
         "insufficient_evidence": False,
     }
@@ -251,6 +252,7 @@ def test_evaluate_cli_writes_report_content_without_scorer_load(
     assert report["primary"]["tpr_at_target_fpr"] == 1.0
     assert report["primary"]["fpr_target"] == 0.0
     assert report["primary"]["observed_fpr"] == 0.0
+    assert report["data_coverage"]["p_value_present"] == 2
 
 
 def test_evaluate_invalid_detail_row_returns_error(tmp_path: Path, capsys) -> None:
