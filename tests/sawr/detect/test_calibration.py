@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+import wfcllm.sawr.detect as detect
+import wfcllm.sawr.detect.calibration as calibration
 from wfcllm.sawr.detect.calibration import (
     CalibrationArtifact,
     ContextCalibrationInput,
@@ -96,3 +98,14 @@ def test_calibration_artifact_roundtrip(tmp_path: Path) -> None:
 
     assert isinstance(loaded, CalibrationArtifact)
     assert loaded.to_dict() == artifact.to_dict()
+
+
+def test_detector_package_exports_calibration_helpers() -> None:
+    assert detect.build_bucket_key is calibration.build_bucket_key
+    assert (
+        detect.null_for_context_from_artifact
+        is calibration.null_for_context_from_artifact
+    )
+    assert detect.empirical_upper_tail_p is calibration.empirical_upper_tail_p
+    assert detect.context_score_from_null is calibration.context_score_from_null
+    assert detect.percentile_threshold is calibration.percentile_threshold
