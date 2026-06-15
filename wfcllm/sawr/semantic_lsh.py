@@ -20,6 +20,12 @@ class SemanticLshResult:
     in_valid_set: bool
 
 
+@dataclass(frozen=True)
+class SemanticLshComponents:
+    verifier: CodeT5LshVerifier
+    keying: WatermarkKeying
+
+
 class CodeT5LshVerifier:
     """Verify candidate statement text in the CodeT5 semantic LSH space."""
 
@@ -71,7 +77,7 @@ class CodeT5LshVerifier:
         )
 
 
-def load_semantic_lsh_rule(
+def load_semantic_lsh_components(
     *,
     encoder_model_path: str,
     encoder_checkpoint_path: str | None,
@@ -81,12 +87,9 @@ def load_semantic_lsh_rule(
     use_bf16: bool,
     secret_key: str,
     lsh_d: int,
-    lsh_gamma: float,
-    margin: float,
     whitening_path: str | None,
-    use_ordinal_keying: bool = False,
-) -> SemanticLshEmbeddingRule:
-    """Load CodeT5 encoder, LSH space, and keying for a semantic SAWR rule."""
+) -> SemanticLshComponents:
+    """Load CodeT5 encoder, tokenizer, LSH space, and keying."""
 
     from transformers import AutoTokenizer
 
@@ -132,9 +135,40 @@ def load_semantic_lsh_rule(
         max_length=encoder_config.max_seq_length,
     )
     keying = WatermarkKeying(secret_key, lsh_d)
+    return SemanticLshComponents(verifier=verifier, keying=keying)
+
+
+def load_semantic_lsh_rule(
+    *,
+    encoder_model_path: str,
+    encoder_checkpoint_path: str | None,
+    embed_dim: int,
+    device: str,
+    use_lora: bool,
+    use_bf16: bool,
+    secret_key: str,
+    lsh_d: int,
+    lsh_gamma: float,
+    margin: float,
+    whitening_path: str | None,
+    use_ordinal_keying: bool = False,
+) -> SemanticLshEmbeddingRule:
+    """Load CodeT5 encoder, LSH space, and keying for a semantic SAWR rule."""
+
+    components = load_semantic_lsh_components(
+        encoder_model_path=encoder_model_path,
+        encoder_checkpoint_path=encoder_checkpoint_path,
+        embed_dim=embed_dim,
+        device=device,
+        use_lora=use_lora,
+        use_bf16=use_bf16,
+        secret_key=secret_key,
+        lsh_d=lsh_d,
+        whitening_path=whitening_path,
+    )
     return SemanticLshEmbeddingRule(
-        verifier=verifier,
-        keying=keying,
+        verifier=components.verifier,
+        keying=components.keying,
         lsh_d=lsh_d,
         lsh_gamma=lsh_gamma,
         margin=margin,
