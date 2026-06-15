@@ -4,6 +4,8 @@ import json
 
 import pytest
 
+import wfcllm.sawr as sawr
+import wfcllm.sawr.detect as detect
 from wfcllm.sawr.detect.config import (
     DETECTOR_MODE,
     BucketEdges,
@@ -38,6 +40,17 @@ def test_bucket_label_uses_frozen_edges() -> None:
     assert bucket_label(9, (1, 2, 4, 8)) == "8+"
 
 
+def test_bucket_label_uses_zero_based_exclusive_upper_edges() -> None:
+    edges = (2, 6, 16, 32, 64)
+
+    assert bucket_label(0, edges) == "0-1"
+    assert bucket_label(1, edges) == "0-1"
+    assert bucket_label(2, edges) == "2-5"
+    assert bucket_label(5, edges) == "2-5"
+    assert bucket_label(6, edges) == "6-15"
+    assert bucket_label(64, edges) == "64+"
+
+
 def test_bucket_edges_are_json_serializable() -> None:
     edges = BucketEdges(
         window_count=(1, 2, 4, 8, 16),
@@ -55,18 +68,60 @@ def test_bucket_edges_are_json_serializable() -> None:
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
+        ({"window_count": (0, 1, 2)}, "window_count edges must be positive"),
+        ({"window_count": (-1, 1, 2)}, "window_count edges must be positive"),
+        ({"statement_count": (1, 0, 2)}, "statement_count edges must be positive"),
+        (
+            {"sample_window_count": (0, 2, 4)},
+            "sample_window_count edges must be positive",
+        ),
+    ],
+)
+def test_bucket_edges_reject_non_positive_edges(
+    kwargs: dict[str, tuple[int, ...]],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        BucketEdges(**kwargs)
+
+
+def test_detector_config_package_exports() -> None:
+    assert detect.DETECTOR_MODE == DETECTOR_MODE
+    assert detect.BucketEdges is BucketEdges
+    assert detect.SawrDetectionConfig is SawrDetectionConfig
+    assert detect.bucket_label is bucket_label
+
+
+def test_sawr_root_reexports_detector_config_names() -> None:
+    assert sawr.DETECTOR_MODE == DETECTOR_MODE
+    assert sawr.BucketEdges is BucketEdges
+    assert sawr.SawrDetectionConfig is SawrDetectionConfig
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
         ({"secret_key": ""}, "secret_key must be non-empty"),
         ({"lsh_d": 0}, "lsh_d must be >= 1"),
+        ({"gamma": "0.75"}, "gamma must be a real number"),
+        ({"gamma": True}, "gamma must be a real number"),
         ({"gamma": -0.1}, "gamma must be in \\[0, 1\\]"),
         ({"gamma": 1.1}, "gamma must be in \\[0, 1\\]"),
+        ({"semantic_margin": "0.0"}, "semantic_margin must be a real number"),
+        ({"semantic_margin": False}, "semantic_margin must be a real number"),
         ({"semantic_margin": -0.01}, "semantic_margin must be non-negative"),
         ({"max_group_statements": 0}, "max_group_statements must be positive"),
         ({"min_scoreable_contexts": 0}, "min_scoreable_contexts must be positive"),
         ({"min_proxy_windows": 0}, "min_proxy_windows must be positive"),
+        ({"target_fpr": "0.05"}, "target_fpr must be a real number"),
+        ({"target_fpr": True}, "target_fpr must be a real number"),
         ({"target_fpr": 0.0}, "target_fpr must be in \\(0, 1\\)"),
         ({"target_fpr": 1.0}, "target_fpr must be in \\(0, 1\\)"),
+        ({"use_ordinal_keying": 1}, "use_ordinal_keying must be bool"),
         ({"evidence_mode": "raw"}, "evidence_mode must be one of"),
         ({"statistic": "sum"}, "statistic must be one of"),
+        ({"structure_aware": "yes"}, "structure_aware must be bool"),
+        ({"detector_mode": "bad"}, "detector_mode must be"),
     ],
 )
 def test_detection_config_rejects_invalid_values(

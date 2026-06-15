@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import asdict, dataclass, field
+from numbers import Real
 from typing import Literal
 
 from wfcllm.sawr.rules import _quantize_gamma
@@ -76,8 +77,12 @@ class SawrDetectionConfig:
             raise ValueError("secret_key must be non-empty")
         if not _is_int(self.lsh_d) or self.lsh_d < 1:
             raise ValueError("lsh_d must be >= 1")
+        if not _is_real(self.gamma):
+            raise ValueError("gamma must be a real number")
         if not 0 <= self.gamma <= 1:
             raise ValueError("gamma must be in [0, 1]")
+        if not _is_real(self.semantic_margin):
+            raise ValueError("semantic_margin must be a real number")
         if not self.semantic_margin >= 0:
             raise ValueError("semantic_margin must be non-negative")
         if not _is_int(self.max_group_statements) or self.max_group_statements <= 0:
@@ -86,8 +91,12 @@ class SawrDetectionConfig:
             raise ValueError("min_scoreable_contexts must be positive")
         if not _is_int(self.min_proxy_windows) or self.min_proxy_windows <= 0:
             raise ValueError("min_proxy_windows must be positive")
+        if not _is_real(self.target_fpr):
+            raise ValueError("target_fpr must be a real number")
         if not 0 < self.target_fpr < 1:
             raise ValueError("target_fpr must be in (0, 1)")
+        if not isinstance(self.use_ordinal_keying, bool):
+            raise ValueError("use_ordinal_keying must be bool")
         if self.evidence_mode not in EVIDENCE_MODES:
             raise ValueError(
                 f"evidence_mode must be one of {EVIDENCE_MODES}, got {self.evidence_mode!r}"
@@ -96,8 +105,12 @@ class SawrDetectionConfig:
             raise ValueError(
                 f"statistic must be one of {STATISTIC_MODES}, got {self.statistic!r}"
             )
+        if not isinstance(self.structure_aware, bool):
+            raise ValueError("structure_aware must be bool")
         if not isinstance(self.bucket_edges, BucketEdges):
             raise ValueError("bucket_edges must be BucketEdges")
+        if self.detector_mode != DETECTOR_MODE:
+            raise ValueError(f"detector_mode must be {DETECTOR_MODE!r}")
 
     @property
     def k(self) -> int:
@@ -120,19 +133,17 @@ class SawrDetectionConfig:
 
 
 def bucket_label(value: int, edges: tuple[int, ...]) -> str:
-    if value < 0:
-        raise ValueError("value must be non-negative")
+    if not _is_int(value) or value < 0:
+        raise ValueError("value must be a non-negative int")
     edge_tuple = _validate_edges("edges", edges)
-    for index, lower_bound in enumerate(edge_tuple):
-        if value < lower_bound:
-            return str(value)
-        if index == len(edge_tuple) - 1:
-            return f"{lower_bound}+"
-        upper_bound = edge_tuple[index + 1] - 1
-        if value <= upper_bound:
+    lower_bound = 0
+    for upper_exclusive in edge_tuple:
+        if value < upper_exclusive:
+            upper_bound = upper_exclusive - 1
             if lower_bound == upper_bound:
                 return str(lower_bound)
             return f"{lower_bound}-{upper_bound}"
+        lower_bound = upper_exclusive
     return f"{edge_tuple[-1]}+"
 
 
@@ -149,6 +160,8 @@ def _validate_edges(name: str, edges: tuple[int, ...]) -> tuple[int, ...]:
         raise ValueError(f"{name} edges must be non-empty strictly increasing ints")
     if any(not _is_int(edge) for edge in edge_tuple):
         raise ValueError(f"{name} edges must be non-empty strictly increasing ints")
+    if any(edge <= 0 for edge in edge_tuple):
+        raise ValueError(f"{name} edges must be positive strictly increasing ints")
     if any(left >= right for left, right in zip(edge_tuple, edge_tuple[1:])):
         raise ValueError(f"{name} edges must be non-empty strictly increasing ints")
     return edge_tuple
@@ -156,3 +169,7 @@ def _validate_edges(name: str, edges: tuple[int, ...]) -> tuple[int, ...]:
 
 def _is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_real(value: object) -> bool:
+    return isinstance(value, Real) and not isinstance(value, bool)
