@@ -96,6 +96,49 @@ def test_pipeline_calibrates_and_detects_without_trace_fields(tmp_path: Path) ->
     assert not (FORBIDDEN_DETECTOR_OUTPUT_FIELDS & set(payload))
 
 
+def test_pipeline_calibrates_raw_context_max_on_raw_score_scale() -> None:
+    config = SawrDetectionConfig(secret_key="1010", statistic="raw_context_max")
+    pipeline = SawrDetectionPipeline(config=config, scorer=FakeScorer())
+
+    artifact = pipeline.calibrate([
+        _row("neg", "def target():\n    x = 0\n    return 0\n")
+    ])
+    result = pipeline.detect_one(
+        _row("pos", "def target():\n    x = 1\n    return x\n"),
+        artifact=artifact,
+    )
+
+    assert artifact.sample_scores == pytest.approx([0.3])
+    assert artifact.threshold_5fpr == pytest.approx(0.3)
+    assert result.score == pytest.approx(0.9)
+    assert result.threshold_5fpr == pytest.approx(0.3)
+    assert result.p_value == pytest.approx(0.5)
+    assert result.is_watermarked is True
+
+
+def test_pipeline_calibrates_context_mean_window_evidence_on_mean_score_scale() -> None:
+    config = SawrDetectionConfig(
+        secret_key="1010",
+        statistic="context_mean_window_evidence",
+    )
+    pipeline = SawrDetectionPipeline(config=config, scorer=FakeScorer())
+
+    artifact = pipeline.calibrate([
+        _row("neg", "def target():\n    x = 0\n    return 0\n")
+    ])
+    result = pipeline.detect_one(
+        _row("pos", "def target():\n    x = 1\n    return x\n"),
+        artifact=artifact,
+    )
+
+    assert artifact.sample_scores == pytest.approx([(0.0 + 0.2 + 0.3) / 3])
+    assert artifact.threshold_5fpr == pytest.approx((0.0 + 0.2 + 0.3) / 3)
+    assert result.score == pytest.approx((0.1 + 0.6 + 0.9) / 3)
+    assert result.threshold_5fpr == pytest.approx((0.0 + 0.2 + 0.3) / 3)
+    assert result.p_value == pytest.approx(0.5)
+    assert result.is_watermarked is True
+
+
 def test_pipeline_marks_insufficient_evidence() -> None:
     config = SawrDetectionConfig(secret_key="1010", min_proxy_windows=2)
     pipeline = SawrDetectionPipeline(config=config, scorer=FakeScorer())

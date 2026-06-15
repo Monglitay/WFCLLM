@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +12,7 @@ from wfcllm.sawr.detect.calibration import (
     context_score_from_null,
     empirical_upper_tail_p,
     null_for_context_from_artifact,
+    percentile_threshold,
 )
 from wfcllm.sawr.detect.config import DETECTOR_MODE, SawrDetectionConfig
 from wfcllm.sawr.detect.proxy_windows import (
@@ -96,14 +97,32 @@ class SawrDetectionPipeline:
         self._scorer = scorer
 
     def calibrate(self, records: list[dict[str, Any]]) -> CalibrationArtifact:
-        samples = [
+        scored_samples = [self._score_record_contexts(record) for record in records]
+        calibration_samples = [
             [
                 self._context_calibration_input(scored)
-                for scored in self._score_record_contexts(record)
+                for scored in scored_contexts
             ]
-            for record in records
+            for scored_contexts in scored_samples
         ]
-        return build_calibration_artifact(samples, config=self._config)
+        artifact = build_calibration_artifact(
+            calibration_samples,
+            config=self._config,
+        )
+        sample_scores = [
+            self._score_sample(scored_contexts, artifact=artifact)[0]
+            for scored_contexts in scored_samples
+        ]
+        threshold_5fpr = (
+            percentile_threshold(sample_scores, self._config.target_fpr)
+            if sample_scores
+            else 0.0
+        )
+        return replace(
+            artifact,
+            sample_scores=sample_scores,
+            threshold_5fpr=threshold_5fpr,
+        )
 
     def detect_one(
         self,
@@ -113,36 +132,10 @@ class SawrDetectionPipeline:
     ) -> SawrDetectionResult:
         code = code_from_record(record)
         scored_contexts = self._score_record_contexts(record)
-        context_summaries: list[ContextDetectionSummary] = []
-        context_scores: list[float] = []
-
-        for scored in scored_contexts:
-            calibration_input = self._context_calibration_input(scored)
-            null_values, calibration_level = null_for_context_from_artifact(
-                calibration_input,
-                config=self._config,
-                artifact=artifact,
-            )
-            context_score = self._score_context(
-                calibration_input.context_raw,
-                null_values,
-                scored.evidence,
-            )
-            context_scores.append(context_score)
-            context_summaries.append(
-                ContextDetectionSummary(
-                    context_id=scored.context.context_id,
-                    structure_type=scored.context.structure_type,
-                    parent_node_type=scored.context.parent_node_type,
-                    context_raw=calibration_input.context_raw,
-                    context_score=context_score,
-                    calibration_bucket_level=calibration_level,
-                    proxy_windows=len(scored.context.proxy_windows),
-                    direct_statements=len(scored.context.direct_statements),
-                )
-            )
-
-        score = sum(context_scores) / len(context_scores) if context_scores else 0.0
+        score, context_summaries = self._score_sample(
+            scored_contexts,
+            artifact=artifact,
+        )
         proxy_windows = sum(
             len(scored.context.proxy_windows) for scored in scored_contexts
         )
@@ -227,19 +220,65 @@ class SawrDetectionPipeline:
             sample_proxy_windows=scored.sample_proxy_windows,
         )
 
+    def _score_sample(
+        self,
+        scored_contexts: list[_ScoredContext],
+        *,
+        artifact: CalibrationArtifact,
+    ) -> tuple[float, list[ContextDetectionSummary]]:
+        context_scores: list[float] = []
+        context_summaries: list[ContextDetectionSummary] = []
+
+        for scored in scored_contexts:
+            calibration_input = self._context_calibration_input(scored)
+            context_score, calibration_level = self._score_context(
+                calibration_input,
+                scored.evidence,
+                artifact,
+            )
+            context_scores.append(context_score)
+            context_summaries.append(
+                ContextDetectionSummary(
+                    context_id=scored.context.context_id,
+                    structure_type=scored.context.structure_type,
+                    parent_node_type=scored.context.parent_node_type,
+                    context_raw=calibration_input.context_raw,
+                    context_score=context_score,
+                    calibration_bucket_level=calibration_level,
+                    proxy_windows=len(scored.context.proxy_windows),
+                    direct_statements=len(scored.context.direct_statements),
+                )
+            )
+
+        sample_score = (
+            sum(context_scores) / len(context_scores) if context_scores else 0.0
+        )
+        return sample_score, context_summaries
+
     def _score_context(
         self,
-        context_raw: float,
-        null_values: list[float],
+        calibration_input: ContextCalibrationInput,
         evidence: list[WindowEvidence],
-    ) -> float:
+        artifact: CalibrationArtifact,
+    ) -> tuple[float, str]:
+        null_values, calibration_level = null_for_context_from_artifact(
+            calibration_input,
+            config=self._config,
+            artifact=artifact,
+        )
         if self._config.statistic == "raw_context_max":
-            return context_raw
+            return calibration_input.context_raw, calibration_level
         if self._config.statistic == "context_mean_window_evidence":
             if not evidence:
-                return 0.0
-            return sum(item.window_raw for item in evidence) / len(evidence)
-        return context_score_from_null(context_raw, null_values)
+                return 0.0, calibration_level
+            return (
+                sum(item.window_raw for item in evidence) / len(evidence),
+                calibration_level,
+            )
+        return (
+            context_score_from_null(calibration_input.context_raw, null_values),
+            calibration_level,
+        )
 
 
 def _window_length_mix(context: StructureContext) -> str:
