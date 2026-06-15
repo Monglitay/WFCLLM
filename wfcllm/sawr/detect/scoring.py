@@ -5,14 +5,13 @@ from dataclasses import dataclass
 from wfcllm.sawr.detect.config import SawrDetectionConfig
 from wfcllm.sawr.detect.proxy_windows import ProxyWindow
 from wfcllm.sawr.rules import SemanticLshKeying, SemanticLshVerifier
-from wfcllm.sawr.semantic_lsh import load_semantic_lsh_components
 
 
 @dataclass(frozen=True)
 class WindowEvidence:
     window_id: str
     context_id: str
-    in_valid_set: bool
+    in_valid_set: bool | None
     passed_margin: bool
     min_margin: float
     lsh_signature: tuple[int, ...] | None
@@ -50,7 +49,7 @@ class SawrWindowScorer:
             valid_set,
             self._config.semantic_margin,
         )
-        in_valid_set = bool(result.in_valid_set)
+        in_valid_set = result.in_valid_set
         passed_margin = result.min_margin > self._config.semantic_margin
         window_raw = self._window_raw(
             in_valid_set=in_valid_set,
@@ -78,15 +77,15 @@ class SawrWindowScorer:
     def _window_raw(
         self,
         *,
-        in_valid_set: bool,
+        in_valid_set: bool | None,
         passed_margin: bool,
         min_margin: float,
     ) -> float:
         if self._config.evidence_mode == "hit_only":
-            return 1.0 if in_valid_set and passed_margin else 0.0
+            return 1.0 if in_valid_set is True and passed_margin else 0.0
         if self._config.evidence_mode == "margin_only":
             return min_margin if passed_margin else 0.0
-        return min_margin if in_valid_set and passed_margin else 0.0
+        return min_margin if in_valid_set is True and passed_margin else 0.0
 
 
 def load_sawr_window_scorer(
@@ -100,6 +99,8 @@ def load_sawr_window_scorer(
     use_bf16: bool,
     whitening_path: str | None,
 ) -> SawrWindowScorer:
+    from wfcllm.sawr.semantic_lsh import load_semantic_lsh_components
+
     components = load_semantic_lsh_components(
         encoder_model_path=encoder_model_path,
         encoder_checkpoint_path=encoder_checkpoint_path,

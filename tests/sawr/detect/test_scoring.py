@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import pytest
 
+from wfcllm.sawr.boundary import Candidate
 from wfcllm.sawr.detect.config import SawrDetectionConfig
 from wfcllm.sawr.detect.proxy_windows import ProxyWindow
 from wfcllm.sawr.detect.scoring import SawrWindowScorer, WindowEvidence
-from wfcllm.sawr.boundary import Candidate
 
 
 class FakeVerifyResult:
@@ -13,9 +16,9 @@ class FakeVerifyResult:
         self,
         *,
         passed: bool,
-        signature: tuple[int, ...],
+        signature: tuple[int, ...] | None,
         min_margin: float,
-        in_valid_set: bool,
+        in_valid_set: bool | None,
     ) -> None:
         self.passed = passed
         self.lsh_signature = signature
@@ -78,6 +81,29 @@ def _window() -> ProxyWindow:
         ordinal=7,
         start_line=2,
         end_line=2,
+    )
+
+
+def test_importing_scoring_does_not_load_semantic_lsh_stack() -> None:
+    code = """
+import importlib
+import sys
+
+importlib.import_module("wfcllm.sawr.detect.scoring")
+loaded = [
+    name
+    for name in ("wfcllm.sawr.semantic_lsh", "wfcllm.encoder.model")
+    if name in sys.modules
+]
+if loaded:
+    raise SystemExit(f"unexpected heavy modules loaded: {loaded}")
+"""
+
+    subprocess.run(
+        [sys.executable, "-c", code],
+        check=True,
+        capture_output=True,
+        text=True,
     )
 
 
@@ -160,6 +186,73 @@ def test_hit_only_evidence_uses_binary_hit() -> None:
     )
 
     assert scorer.score_window(_window()).window_raw == pytest.approx(1.0)
+
+
+def test_unknown_valid_set_is_preserved_and_not_counted_as_hit() -> None:
+    scorer = SawrWindowScorer(
+        verifier=FakeVerifier(
+            FakeVerifyResult(
+                passed=False,
+                signature=None,
+                min_margin=0.42,
+                in_valid_set=None,
+            )
+        ),
+        keying=FakeKeying(),
+        config=SawrDetectionConfig(secret_key="1010", semantic_margin=0.01),
+    )
+
+    evidence = scorer.score_window(_window())
+
+    assert evidence.in_valid_set is None
+    assert evidence.lsh_signature is None
+    assert evidence.passed_margin is True
+    assert evidence.window_raw == pytest.approx(0.0)
+
+
+def test_exact_margin_equality_fails_margin_check() -> None:
+    scorer = SawrWindowScorer(
+        verifier=FakeVerifier(
+            FakeVerifyResult(
+                passed=False,
+                signature=(1, 0, 1, 0),
+                min_margin=0.01,
+                in_valid_set=True,
+            )
+        ),
+        keying=FakeKeying(),
+        config=SawrDetectionConfig(secret_key="1010", semantic_margin=0.01),
+    )
+
+    evidence = scorer.score_window(_window())
+
+    assert evidence.passed_margin is False
+    assert evidence.window_raw == pytest.approx(0.0)
+
+
+def test_margin_only_evidence_ignores_valid_set_membership() -> None:
+    scorer = SawrWindowScorer(
+        verifier=FakeVerifier(
+            FakeVerifyResult(
+                passed=False,
+                signature=(0, 0, 0, 0),
+                min_margin=0.42,
+                in_valid_set=False,
+            )
+        ),
+        keying=FakeKeying(),
+        config=SawrDetectionConfig(
+            secret_key="1010",
+            evidence_mode="margin_only",
+            semantic_margin=0.01,
+        ),
+    )
+
+    evidence = scorer.score_window(_window())
+
+    assert evidence.in_valid_set is False
+    assert evidence.passed_margin is True
+    assert evidence.window_raw == pytest.approx(0.42)
 
 
 def test_window_scorer_zeroes_invalid_hits() -> None:
