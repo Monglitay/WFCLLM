@@ -267,6 +267,181 @@ python run.py --phase encoder --force
 python run.py --reset
 ```
 
+### SAWR Final-Code Black-Box Detection
+
+SAWR black-box detection uses only the final code in each JSONL row
+(`final_code` or `generated_code`, plus optional `prompt`). It is final-code
+only: detection does not read SAWR audit rows, generation-time candidates,
+rollback state, retry traces, logits, or sampling traces. Calibration should use
+same-model non-watermarked final code, split by task before threshold fitting so
+calibration and held-out evaluation tasks do not overlap.
+
+Build frozen task-based splits once for the watermarked positives and
+same-model non-watermarked negatives. Keep these split files fixed for the main
+run and every baseline/ablation below.
+
+```bash
+python scripts/run_sawr_detect.py split \
+    --input data/sawr/final_code/watermarked.jsonl \
+    --output-dir data/sawr/detect/splits/watermarked \
+    --dev-ratio 0.10 \
+    --calibration-ratio 0.20 \
+    --seed 20260615
+
+python scripts/run_sawr_detect.py split \
+    --input data/sawr/final_code/non_watermarked_same_model.jsonl \
+    --output-dir data/sawr/detect/splits/negative \
+    --dev-ratio 0.10 \
+    --calibration-ratio 0.20 \
+    --seed 20260615
+```
+
+Calibrate the detector on same-model non-watermarked final code. The
+calibration artifact is tied to the detector configuration, so use the same
+flags again when scoring held-out rows.
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+conda run -n WFCLLM python scripts/run_sawr_detect.py calibrate \
+    --input data/sawr/detect/splits/negative/calibration.jsonl \
+    --output data/sawr/detect/calibration/default.json \
+    --secret-key mysecret \
+    --encoder-model-path data/models/codet5-base \
+    --encoder-checkpoint-path data/checkpoints/encoder/best.pt \
+    --device cuda \
+    --target-fpr 0.05
+```
+
+Detect held-out positive and negative final-code rows with the frozen test
+splits.
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+conda run -n WFCLLM python scripts/run_sawr_detect.py detect \
+    --input data/sawr/detect/splits/watermarked/test.jsonl \
+    --calibration data/sawr/detect/calibration/default.json \
+    --output data/sawr/detect/details/watermarked_default.jsonl \
+    --secret-key mysecret \
+    --encoder-model-path data/models/codet5-base \
+    --encoder-checkpoint-path data/checkpoints/encoder/best.pt \
+    --device cuda \
+    --target-fpr 0.05
+
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+conda run -n WFCLLM python scripts/run_sawr_detect.py detect \
+    --input data/sawr/detect/splits/negative/test.jsonl \
+    --calibration data/sawr/detect/calibration/default.json \
+    --output data/sawr/detect/details/negative_default.jsonl \
+    --secret-key mysecret \
+    --encoder-model-path data/models/codet5-base \
+    --encoder-checkpoint-path data/checkpoints/encoder/best.pt \
+    --device cuda \
+    --target-fpr 0.05
+```
+
+Evaluate positive and negative detail rows.
+
+```bash
+python scripts/run_sawr_detect.py evaluate \
+    --positive-details data/sawr/detect/details/watermarked_default.jsonl \
+    --negative-details data/sawr/detect/details/negative_default.jsonl \
+    --output data/sawr/detect/reports/default.json
+```
+
+Required baselines and ablations reuse the same frozen
+`splits/negative/calibration.jsonl`, `splits/watermarked/test.jsonl`, and
+`splits/negative/test.jsonl` files. For each variant, calibrate on the same
+negative calibration split, score both held-out test splits with the identical
+variant flags, then evaluate the two detail files. Examples:
+
+```bash
+# Evidence ablations
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+conda run -n WFCLLM python scripts/run_sawr_detect.py calibrate \
+    --input data/sawr/detect/splits/negative/calibration.jsonl \
+    --output data/sawr/detect/calibration/hit_only.json \
+    --secret-key mysecret \
+    --encoder-model-path data/models/codet5-base \
+    --encoder-checkpoint-path data/checkpoints/encoder/best.pt \
+    --device cuda \
+    --target-fpr 0.05 \
+    --evidence-mode hit_only
+
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+conda run -n WFCLLM python scripts/run_sawr_detect.py calibrate \
+    --input data/sawr/detect/splits/negative/calibration.jsonl \
+    --output data/sawr/detect/calibration/margin_only.json \
+    --secret-key mysecret \
+    --encoder-model-path data/models/codet5-base \
+    --encoder-checkpoint-path data/checkpoints/encoder/best.pt \
+    --device cuda \
+    --target-fpr 0.05 \
+    --evidence-mode margin_only
+
+# Statistic ablations
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+conda run -n WFCLLM python scripts/run_sawr_detect.py calibrate \
+    --input data/sawr/detect/splits/negative/calibration.jsonl \
+    --output data/sawr/detect/calibration/raw_context_max.json \
+    --secret-key mysecret \
+    --encoder-model-path data/models/codet5-base \
+    --encoder-checkpoint-path data/checkpoints/encoder/best.pt \
+    --device cuda \
+    --target-fpr 0.05 \
+    --statistic raw_context_max
+
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+conda run -n WFCLLM python scripts/run_sawr_detect.py calibrate \
+    --input data/sawr/detect/splits/negative/calibration.jsonl \
+    --output data/sawr/detect/calibration/context_mean_window_evidence.json \
+    --secret-key mysecret \
+    --encoder-model-path data/models/codet5-base \
+    --encoder-checkpoint-path data/checkpoints/encoder/best.pt \
+    --device cuda \
+    --target-fpr 0.05 \
+    --statistic context_mean_window_evidence
+
+# Structure and grouping ablations
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+conda run -n WFCLLM python scripts/run_sawr_detect.py calibrate \
+    --input data/sawr/detect/splits/negative/calibration.jsonl \
+    --output data/sawr/detect/calibration/no_structure_aware.json \
+    --secret-key mysecret \
+    --encoder-model-path data/models/codet5-base \
+    --encoder-checkpoint-path data/checkpoints/encoder/best.pt \
+    --device cuda \
+    --target-fpr 0.05 \
+    --no-structure-aware
+
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+conda run -n WFCLLM python scripts/run_sawr_detect.py calibrate \
+    --input data/sawr/detect/splits/negative/calibration.jsonl \
+    --output data/sawr/detect/calibration/max_group_1.json \
+    --secret-key mysecret \
+    --encoder-model-path data/models/codet5-base \
+    --encoder-checkpoint-path data/checkpoints/encoder/best.pt \
+    --device cuda \
+    --target-fpr 0.05 \
+    --max-group-statements 1
+
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+conda run -n WFCLLM python scripts/run_sawr_detect.py calibrate \
+    --input data/sawr/detect/splits/negative/calibration.jsonl \
+    --output data/sawr/detect/calibration/max_group_3.json \
+    --secret-key mysecret \
+    --encoder-model-path data/models/codet5-base \
+    --encoder-checkpoint-path data/checkpoints/encoder/best.pt \
+    --device cuda \
+    --target-fpr 0.05 \
+    --max-group-statements 3
+```
+
+For each ablation artifact, run `detect` on
+`data/sawr/detect/splits/watermarked/test.jsonl` and
+`data/sawr/detect/splits/negative/test.jsonl` with the same ablation flag that
+was used during `calibrate`, then pass the resulting detail files to
+`evaluate`.
+
 ### 评估双通道阈值
 
 ```bash
