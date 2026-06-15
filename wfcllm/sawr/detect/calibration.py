@@ -8,6 +8,9 @@ from typing import Any
 
 from wfcllm.sawr.detect.config import (
     DETECTOR_MODE,
+    EVIDENCE_MODES,
+    STATISTIC_MODES,
+    BucketEdges,
     SawrDetectionConfig,
     bucket_label,
 )
@@ -16,6 +19,7 @@ from wfcllm.sawr.detect.config import (
 ARTIFACT_TYPE = "sawr_detection_calibration"
 SCHEMA_VERSION = "sawr-detect-calibration/v1"
 FORBIDDEN_ARTIFACT_KEYS = {
+    "audit",
     "secret_key",
     "logits",
     "retry_trace",
@@ -23,6 +27,29 @@ FORBIDDEN_ARTIFACT_KEYS = {
     "watermark_params",
 }
 FORBIDDEN_ARTIFACT_KEY_PREFIXES = ("generation_", "audit_")
+PUBLIC_CONFIG_FIELDS = frozenset(
+    {
+        "lsh_d",
+        "gamma",
+        "semantic_margin",
+        "max_group_statements",
+        "min_scoreable_contexts",
+        "min_proxy_windows",
+        "target_fpr",
+        "use_ordinal_keying",
+        "evidence_mode",
+        "statistic",
+        "structure_aware",
+        "bucket_edges",
+        "detector_mode",
+        "secret_key_sha256",
+        "k",
+        "gamma_effective",
+    }
+)
+BUCKET_EDGE_FIELDS = frozenset(
+    {"window_count", "statement_count", "sample_window_count"}
+)
 
 
 @dataclass(frozen=True)
@@ -302,8 +329,8 @@ def _validated_artifact_values(payload: dict[str, Any]) -> dict[str, Any]:
         "artifact_type": ARTIFACT_TYPE,
         "schema_version": SCHEMA_VERSION,
         "detector_mode": DETECTOR_MODE,
-        "config": dict(_require_dict(payload.get("config"), "config")),
-        "bucket_edges": _int_list_map(payload.get("bucket_edges"), "bucket_edges"),
+        "config": _validate_public_config(payload.get("config")),
+        "bucket_edges": _bucket_edges_dict(payload.get("bucket_edges"), "bucket_edges"),
         "context_nulls": _float_list_map(payload.get("context_nulls"), "context_nulls"),
         "structure_nulls": _float_list_map(
             payload.get("structure_nulls"),
@@ -336,6 +363,77 @@ def _validate_top_level_fields(payload: dict[str, Any]) -> None:
             "unknown top-level calibration artifact fields: "
             f"{sorted(unknown_fields)}"
         )
+
+
+def _validate_public_config(value: Any) -> dict[str, Any]:
+    config = _require_dict(value, "config")
+    missing_fields = PUBLIC_CONFIG_FIELDS - set(config)
+    if missing_fields:
+        raise ValueError(f"missing public config fields: {sorted(missing_fields)}")
+    unknown_fields = set(config) - PUBLIC_CONFIG_FIELDS
+    if unknown_fields:
+        raise ValueError(f"unknown public config fields: {sorted(unknown_fields)}")
+
+    result = dict(config)
+    secret_hash = result["secret_key_sha256"]
+    if (
+        not isinstance(secret_hash, str)
+        or len(secret_hash) != 64
+        or any(char not in "0123456789abcdef" for char in secret_hash)
+    ):
+        raise ValueError("secret_key_sha256 must be 64 lowercase hex chars")
+
+    result["lsh_d"] = _positive_int(result["lsh_d"], "lsh_d")
+    result["gamma"] = _bounded_float(result["gamma"], "gamma", lower=0.0, upper=1.0)
+    result["k"] = _positive_int(result["k"], "k")
+    result["gamma_effective"] = _bounded_float(
+        result["gamma_effective"],
+        "gamma_effective",
+        lower=0.0,
+        upper=1.0,
+    )
+    result["semantic_margin"] = _non_negative_float(
+        result["semantic_margin"],
+        "semantic_margin",
+    )
+    result["max_group_statements"] = _positive_int(
+        result["max_group_statements"],
+        "max_group_statements",
+    )
+    result["min_scoreable_contexts"] = _positive_int(
+        result["min_scoreable_contexts"],
+        "min_scoreable_contexts",
+    )
+    result["min_proxy_windows"] = _positive_int(
+        result["min_proxy_windows"],
+        "min_proxy_windows",
+    )
+    result["target_fpr"] = _target_fpr(result["target_fpr"])
+    result["use_ordinal_keying"] = _bool_value(
+        result["use_ordinal_keying"],
+        "use_ordinal_keying",
+    )
+    result["structure_aware"] = _bool_value(
+        result["structure_aware"],
+        "structure_aware",
+    )
+    result["evidence_mode"] = _enum_value(
+        result["evidence_mode"],
+        "evidence_mode",
+        EVIDENCE_MODES,
+    )
+    result["statistic"] = _enum_value(
+        result["statistic"],
+        "statistic",
+        STATISTIC_MODES,
+    )
+    if result["detector_mode"] != DETECTOR_MODE:
+        raise ValueError(f"detector_mode must be {DETECTOR_MODE!r}")
+    result["bucket_edges"] = _bucket_edges_dict(
+        result["bucket_edges"],
+        "config.bucket_edges",
+    )
+    return result
 
 
 def _reject_forbidden_keys(value: Any, path: str = "$") -> None:
@@ -384,6 +482,13 @@ def _json_float(value: Any, name: str) -> float:
     return float(value)
 
 
+def _bounded_float(value: Any, name: str, *, lower: float, upper: float) -> float:
+    numeric_value = _json_float(value, name)
+    if not lower <= numeric_value <= upper:
+        raise ValueError(f"{name} must be in [{lower}, {upper}]")
+    return numeric_value
+
+
 def _non_negative_float(value: Any, name: str) -> float:
     numeric_value = _json_float(value, name)
     if numeric_value < 0:
@@ -391,9 +496,34 @@ def _non_negative_float(value: Any, name: str) -> float:
     return numeric_value
 
 
+def _target_fpr(value: Any) -> float:
+    numeric_value = _json_float(value, "target_fpr")
+    if not 0 < numeric_value < 1:
+        raise ValueError("target_fpr must be in (0, 1)")
+    return numeric_value
+
+
 def _non_negative_int(value: Any, name: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise ValueError(f"{name} must be a non-negative int")
+    return value
+
+
+def _positive_int(value: Any, name: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ValueError(f"{name} must be a positive int")
+    return value
+
+
+def _bool_value(value: Any, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be bool")
+    return value
+
+
+def _enum_value(value: Any, name: str, allowed: tuple[str, ...]) -> str:
+    if not isinstance(value, str) or value not in allowed:
+        raise ValueError(f"{name} must be one of {allowed}")
     return value
 
 
@@ -411,12 +541,25 @@ def _float_list_map(value: Any, name: str) -> dict[str, list[float]]:
     }
 
 
-def _int_list_map(value: Any, name: str) -> dict[str, list[int]]:
+def _bucket_edges_dict(value: Any, name: str) -> dict[str, list[int]]:
     payload = _require_dict(value, name)
-    result: dict[str, list[int]] = {}
-    for key, items in payload.items():
-        item_name = f"{name}[{key!r}]"
-        if not isinstance(items, list):
-            raise ValueError(f"{item_name} must be a list")
-        result[str(key)] = [_non_negative_int(item, item_name) for item in items]
-    return result
+    missing_fields = BUCKET_EDGE_FIELDS - set(payload)
+    if missing_fields:
+        raise ValueError(f"{name} missing bucket edge fields: {sorted(missing_fields)}")
+    unknown_fields = set(payload) - BUCKET_EDGE_FIELDS
+    if unknown_fields:
+        raise ValueError(
+            f"{name} has unknown bucket edge fields: {sorted(unknown_fields)}"
+        )
+    for field_name in BUCKET_EDGE_FIELDS:
+        if not isinstance(payload[field_name], list):
+            raise ValueError(f"{name}.{field_name} must be a list")
+    try:
+        edges = BucketEdges(
+            window_count=tuple(payload["window_count"]),
+            statement_count=tuple(payload["statement_count"]),
+            sample_window_count=tuple(payload["sample_window_count"]),
+        )
+    except ValueError as exc:
+        raise ValueError(f"{name} is invalid: {exc}") from exc
+    return edges.to_dict()

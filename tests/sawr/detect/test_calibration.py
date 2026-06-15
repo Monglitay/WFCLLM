@@ -77,6 +77,12 @@ def _write_payload(tmp_path: Path, payload: dict[str, object]) -> Path:
     return path
 
 
+def _bucket_edges_with_window_count(window_count: list[int]) -> dict[str, list[int]]:
+    edges = SawrDetectionConfig(secret_key="1010").bucket_edges.to_dict()
+    edges["window_count"] = window_count
+    return edges
+
+
 def test_empirical_upper_tail_p_uses_plus_one_smoothing() -> None:
     assert empirical_upper_tail_p(0.5, [0.1, 0.5, 0.9]) == pytest.approx(3 / 4)
     assert empirical_upper_tail_p(1.0, [0.1, 0.5, 0.9]) == pytest.approx(1 / 4)
@@ -267,12 +273,57 @@ def test_load_rejects_forbidden_trace_fields(tmp_path: Path, key: str) -> None:
         load_calibration_artifact(path)
 
 
+def test_load_rejects_nested_audit_field(tmp_path: Path) -> None:
+    payload = _artifact(config={"nested": {"audit": {}}}).to_dict()
+    path = _write_payload(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="audit"):
+        load_calibration_artifact(path)
+
+
 @pytest.mark.parametrize("key", ["secret_key", "watermark_params", "retry_trace"])
 def test_write_rejects_forbidden_nested_fields(tmp_path: Path, key: str) -> None:
     artifact = _artifact(config={"nested": {key: "bad"}})
 
     with pytest.raises(ValueError, match=key):
         write_calibration_artifact(tmp_path / "calibration.json", artifact)
+
+
+@pytest.mark.parametrize(
+    ("config_update", "message"),
+    [
+        ({"target_fpr": float("nan")}, "target_fpr"),
+        ({"structure_aware": "false"}, "structure_aware"),
+        ({"bucket_edges": _bucket_edges_with_window_count([0])}, "bucket_edges"),
+        ({"unexpected": "value"}, "unknown public config"),
+        ({"secret_key_sha256": "bad"}, "secret_key_sha256"),
+    ],
+)
+def test_load_rejects_invalid_public_config(
+    tmp_path: Path,
+    config_update: dict[str, object],
+    message: str,
+) -> None:
+    payload = _artifact(config=config_update).to_dict()
+    path = _write_payload(tmp_path, payload)
+
+    with pytest.raises(ValueError, match=message):
+        load_calibration_artifact(path)
+
+
+def test_write_rejects_invalid_public_config(tmp_path: Path) -> None:
+    artifact = _artifact(config={"secret_key_sha256": "bad"})
+
+    with pytest.raises(ValueError, match="secret_key_sha256"):
+        write_calibration_artifact(tmp_path / "calibration.json", artifact)
+
+
+def test_load_rejects_invalid_top_level_bucket_edges(tmp_path: Path) -> None:
+    payload = _artifact(bucket_edges=_bucket_edges_with_window_count([0])).to_dict()
+    path = _write_payload(tmp_path, payload)
+
+    with pytest.raises(ValueError, match="bucket_edges"):
+        load_calibration_artifact(path)
 
 
 @pytest.mark.parametrize(
