@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
+from fractions import Fraction
 
 import pytest
 
@@ -30,6 +32,18 @@ def test_detection_config_exports_secret_free_metadata() -> None:
     assert payload["secret_key_sha256"] != "1010"
     assert "secret_key" not in payload
     json.dumps(payload, allow_nan=False)
+
+
+def test_detection_config_public_metadata_accepts_json_native_numbers() -> None:
+    config = SawrDetectionConfig(
+        secret_key="1010",
+        lsh_d=4,
+        gamma=1,
+        semantic_margin=0.0,
+        target_fpr=0.5,
+    )
+
+    json.dumps(config.to_public_dict(), allow_nan=False)
 
 
 def test_bucket_label_uses_frozen_edges() -> None:
@@ -105,16 +119,25 @@ def test_sawr_root_reexports_detector_config_names() -> None:
         ({"lsh_d": 0}, "lsh_d must be >= 1"),
         ({"gamma": "0.75"}, "gamma must be a real number"),
         ({"gamma": True}, "gamma must be a real number"),
+        ({"gamma": Fraction(3, 4)}, "gamma must be .*finite JSON number"),
+        ({"gamma": Decimal("0.75")}, "gamma must be .*finite JSON number"),
+        ({"gamma": float("nan")}, "gamma must be .*finite JSON number"),
         ({"gamma": -0.1}, "gamma must be in \\[0, 1\\]"),
         ({"gamma": 1.1}, "gamma must be in \\[0, 1\\]"),
         ({"semantic_margin": "0.0"}, "semantic_margin must be a real number"),
         ({"semantic_margin": False}, "semantic_margin must be a real number"),
+        (
+            {"semantic_margin": float("inf")},
+            "semantic_margin must be .*finite JSON number",
+        ),
         ({"semantic_margin": -0.01}, "semantic_margin must be non-negative"),
         ({"max_group_statements": 0}, "max_group_statements must be positive"),
         ({"min_scoreable_contexts": 0}, "min_scoreable_contexts must be positive"),
         ({"min_proxy_windows": 0}, "min_proxy_windows must be positive"),
         ({"target_fpr": "0.05"}, "target_fpr must be a real number"),
         ({"target_fpr": True}, "target_fpr must be a real number"),
+        ({"target_fpr": Decimal("0.05")}, "target_fpr must be .*finite JSON number"),
+        ({"target_fpr": float("nan")}, "target_fpr must be .*finite JSON number"),
         ({"target_fpr": 0.0}, "target_fpr must be in \\(0, 1\\)"),
         ({"target_fpr": 1.0}, "target_fpr must be in \\(0, 1\\)"),
         ({"use_ordinal_keying": 1}, "use_ordinal_keying must be bool"),

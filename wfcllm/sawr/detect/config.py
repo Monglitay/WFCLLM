@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import asdict, dataclass, field
-from numbers import Real
 from typing import Literal
 
 from wfcllm.sawr.rules import _quantize_gamma
@@ -77,12 +77,17 @@ class SawrDetectionConfig:
             raise ValueError("secret_key must be non-empty")
         if not _is_int(self.lsh_d) or self.lsh_d < 1:
             raise ValueError("lsh_d must be >= 1")
-        if not _is_real(self.gamma):
-            raise ValueError("gamma must be a real number")
+        if not _is_json_number(self.gamma):
+            raise ValueError(
+                "gamma must be a real number and finite JSON number (int or float)"
+            )
         if not 0 <= self.gamma <= 1:
             raise ValueError("gamma must be in [0, 1]")
-        if not _is_real(self.semantic_margin):
-            raise ValueError("semantic_margin must be a real number")
+        if not _is_json_number(self.semantic_margin):
+            raise ValueError(
+                "semantic_margin must be a real number and finite JSON number "
+                "(int or float)"
+            )
         if not self.semantic_margin >= 0:
             raise ValueError("semantic_margin must be non-negative")
         if not _is_int(self.max_group_statements) or self.max_group_statements <= 0:
@@ -91,8 +96,11 @@ class SawrDetectionConfig:
             raise ValueError("min_scoreable_contexts must be positive")
         if not _is_int(self.min_proxy_windows) or self.min_proxy_windows <= 0:
             raise ValueError("min_proxy_windows must be positive")
-        if not _is_real(self.target_fpr):
-            raise ValueError("target_fpr must be a real number")
+        if not _is_json_number(self.target_fpr):
+            raise ValueError(
+                "target_fpr must be a real number and finite JSON number "
+                "(int or float)"
+            )
         if not 0 < self.target_fpr < 1:
             raise ValueError("target_fpr must be in (0, 1)")
         if not isinstance(self.use_ordinal_keying, bool):
@@ -171,5 +179,10 @@ def _is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def _is_real(value: object) -> bool:
-    return isinstance(value, Real) and not isinstance(value, bool)
+def _is_json_number(value: object) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
