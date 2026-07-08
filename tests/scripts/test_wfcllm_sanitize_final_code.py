@@ -90,3 +90,36 @@ def test_sanitize_final_code_returns_one_for_invalid_row(
 
     assert rc == 1
     assert "[错误]" in capsys.readouterr().err
+
+
+def test_sanitize_final_code_returns_one_when_output_parent_is_file(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    source = tmp_path / "legacy.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "id": "HumanEval/3",
+                "dataset": "humaneval",
+                "prompt": "",
+                "generated_code": "def foo():\n    return 1\n",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    blocked_parent = tmp_path / "not_a_directory"
+    blocked_parent.write_text("already a file", encoding="utf-8")
+
+    rc = sanitize_cli.main(
+        [
+            "--input",
+            str(source),
+            "--output",
+            str(blocked_parent / "final_code.jsonl"),
+        ]
+    )
+
+    assert rc == 1
+    assert "[错误]" in capsys.readouterr().err
