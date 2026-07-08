@@ -5,10 +5,18 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Phase name source-of-truth (lifted unchanged from run.py to preserve schema).
-PHASES = ["encoder", "watermark", "extract"]
-OPTIONAL_PHASES = ["pretrain", "generate-negative", "token-channel-train", "build-entropy-profile"]
-ALL_PHASES = PHASES + OPTIONAL_PHASES
+# Phase name source-of-truth for the new WFCLLM mainline.
+PHASES = ["generate", "calibrate", "detect", "report", "audit"]
+OPTIONAL_PHASES = ["encoder", "posthoc-pass-report", "diagnostic-selector"]
+LEGACY_PHASES = [
+    "legacy-watermark",
+    "legacy-extract",
+    "legacy-token-channel-train",
+    "legacy-build-entropy-profile",
+    "legacy-pretrain",
+    "legacy-ablation",
+]
+ALL_PHASES = PHASES + OPTIONAL_PHASES + LEGACY_PHASES
 
 DEFAULT_STATE_FILE = Path("data/run_state.json")
 

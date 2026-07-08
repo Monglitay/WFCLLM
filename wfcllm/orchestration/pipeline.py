@@ -62,13 +62,13 @@ class PhaseOrchestrator:
         if getattr(args, "force", False) or getattr(args, "eval_only", False):
             return False
         # compare-only mode handled in cli/entry.py before orchestrator runs
-        if phase == "extract" and self._has_explicit_extract_input(args):
+        if phase == "detect" and self._has_explicit_detect_input(args):
             return False
         return True
 
     @staticmethod
-    def _has_explicit_extract_input(args: argparse.Namespace) -> bool:
-        cli_input = getattr(args, "input_file", None)
+    def _has_explicit_detect_input(args: argparse.Namespace) -> bool:
+        cli_input = getattr(args, "input", None)
         config_cache = getattr(args, "_config_cache", None) or {}
-        config_input = (config_cache.get("extract") or {}).get("input_file")
+        config_input = (config_cache.get("detector") or {}).get("input")
         return bool(cli_input or config_input)

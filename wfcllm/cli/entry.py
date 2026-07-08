@@ -5,6 +5,7 @@ Replaces run.py:main() and its helpers. Wires up RunStateManager + PhaseRegistry
 """
 from __future__ import annotations
 
+import argparse
 import logging
 import os
 import sys
@@ -14,10 +15,18 @@ from wfcllm.cli.config_resolver import load_config
 from wfcllm.cli.runners import (
     is_compare_only_mode,
     validate_compare_only_mode,
+    run_audit,
     run_build_entropy_profile,
+    run_calibrate,
+    run_detect,
+    run_diagnostic_selector,
     run_encoder,
     run_extract,
+    run_generate,
     run_generate_negative,
+    run_legacy_ablation,
+    run_posthoc_pass_report,
+    run_report,
     run_token_channel_train,
     run_watermark,
 )
@@ -28,6 +37,7 @@ from wfcllm.orchestration.prereq import PrereqRegistry
 from wfcllm.orchestration.state import (
     ALL_PHASES,
     DEFAULT_STATE_FILE,
+    LEGACY_PHASES,
     RunStateManager,
 )
 
@@ -48,13 +58,27 @@ def _cmd_reset(state: RunStateManager) -> None:
 
 
 def _populate_phase_registry(reg: PhaseRegistry) -> None:
+    reg.register("generate", run_generate)
+    reg.register("calibrate", run_calibrate)
+    reg.register("detect", run_detect)
+    reg.register("report", run_report)
+    reg.register("audit", run_audit)
+    reg.register("posthoc-pass-report", run_posthoc_pass_report)
+    reg.register("diagnostic-selector", run_diagnostic_selector)
     reg.register("encoder", run_encoder)
-    reg.register("watermark", run_watermark)
-    reg.register("extract", run_extract)
-    reg.register("generate-negative", run_generate_negative)
-    reg.register("token-channel-train", run_token_channel_train)
-    reg.register("build-entropy-profile", run_build_entropy_profile)
-    reg.register("pretrain", run_pretrain)
+    reg.register("legacy-watermark", run_watermark)
+    reg.register("legacy-extract", run_extract)
+    reg.register("legacy-token-channel-train", run_token_channel_train)
+    reg.register("legacy-build-entropy-profile", run_build_entropy_profile)
+    reg.register("legacy-pretrain", run_pretrain)
+    reg.register("legacy-ablation", run_legacy_ablation)
+
+
+def validate_legacy_phase_request(args: argparse.Namespace) -> str | None:
+    phase = getattr(args, "phase", None)
+    if isinstance(phase, str) and phase in LEGACY_PHASES and not getattr(args, "legacy", False):
+        return "[错误] legacy phase requires --legacy"
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -64,6 +88,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     state = RunStateManager(path=DEFAULT_STATE_FILE)
+
+    legacy_error = validate_legacy_phase_request(args)
+    if legacy_error is not None:
+        print(legacy_error, file=sys.stderr)
+        return 1
 
     if args.status:
         _cmd_status(state)

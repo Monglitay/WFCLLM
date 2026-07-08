@@ -1,0 +1,21 @@
+{
+  "name": "evidence_only_selector_diagnostic",
+  "diagnostic_only": true,
+  "not_official_method": true,
+  "method": {
+    "strict_no_quality_gate": true,
+    "strict_code_only_detector": true
+  },
+  "selector": {
+    "ranking_key": [
+      "accepted_hit_count",
+      "-closed_without_hit_count",
+      "-fallback_count",
+      "candidate_count",
+      "-attempt_index"
+    ]
+  },
+  "artifacts": {
+    "run_root": "data/runs"
+  }
+}

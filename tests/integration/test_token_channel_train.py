@@ -18,7 +18,7 @@ from wfcllm.orchestration.state import RunStateManager as RunState
 
 
 def test_main_does_not_run_token_channel_train_by_default(monkeypatch, tmp_path):
-    """Top-level main() should run only the 3 main phases when --phase is not specified."""
+    """Top-level main() should run only the new mainline phases when --phase is not specified."""
     # Redirect state file so we start clean
     state_path = tmp_path / "rs.json"
     monkeypatch.setattr("wfcllm.cli.entry.DEFAULT_STATE_FILE", state_path)
@@ -31,16 +31,17 @@ def test_main_does_not_run_token_channel_train_by_default(monkeypatch, tmp_path)
             return 0
         return fake
 
-    monkeypatch.setattr("wfcllm.cli.entry.run_encoder", make_fake("encoder"))
-    monkeypatch.setattr("wfcllm.cli.entry.run_watermark", make_fake("watermark"))
-    monkeypatch.setattr("wfcllm.cli.entry.run_extract", make_fake("extract"))
-    monkeypatch.setattr("wfcllm.cli.entry.run_generate_negative", make_fake("generate-negative"))
+    monkeypatch.setattr("wfcllm.cli.entry.run_generate", make_fake("generate"))
+    monkeypatch.setattr("wfcllm.cli.entry.run_calibrate", make_fake("calibrate"))
+    monkeypatch.setattr("wfcllm.cli.entry.run_detect", make_fake("detect"))
+    monkeypatch.setattr("wfcllm.cli.entry.run_report", make_fake("report"))
+    monkeypatch.setattr("wfcllm.cli.entry.run_audit", make_fake("audit"))
     monkeypatch.setattr("wfcllm.cli.entry.run_token_channel_train", make_fake("token-channel-train"))
 
     from wfcllm.cli.entry import main
-    rc = main([])  # no flags = default 3-phase flow
+    rc = main([])  # no flags = default WFCLLM mainline flow
     assert rc == 0
-    assert run_calls == ["encoder", "watermark", "extract"]
+    assert run_calls == ["generate", "calibrate", "detect", "report", "audit"]
 
 def test_run_phase_dispatches_token_channel_train(tmp_path, monkeypatch):
     state = RunState(tmp_path / "run_state.json")
@@ -57,25 +58,18 @@ def test_run_phase_dispatches_token_channel_train(tmp_path, monkeypatch):
     assert run_phase("token-channel-train", args, state) == 0
     assert seen == [(args, state)]
 
-def test_base_config_includes_token_channel_train_defaults():
+def test_base_config_uses_new_wfcllm_mainline_without_token_channel_train_defaults():
     config = json.loads((PROJECT_ROOT / "configs/base_config.json").read_text(encoding="utf-8"))
 
-    assert config["token_channel_train"] == {
-        "dataset": "humaneval",
-        "dataset_path": "data/datasets",
-        "lm_model_path": "data/models/deepseek-coder-7b-base",
-        "model_path": "data/models/token-channel",
-        "cache_path": "data/token_channel/train_corpus.json",
-        "context_width": 128,
-        "hidden_size": 64,
-        "batch_size": 128,
-        "epochs": 3,
-        "lr": 0.001,
-        "entropy_threshold": 1.0,
-        "diversity_threshold": 2,
-        "split_ratio": 0.9,
-        "seed": 0,
-    }
+    assert config["method"]["name"] == "evidence_retry_seed7x3"
+    assert config["runtime"]["default_phases"] == [
+        "generate",
+        "calibrate",
+        "detect",
+        "report",
+        "audit",
+    ]
+    assert "token_channel_train" not in config
 
 def test_run_token_channel_train_loads_defaults_from_config(tmp_path, capsys):
     from wfcllm.cli.runners import run_token_channel_train
@@ -1000,4 +994,3 @@ def test_readme_limits_token_channel_docs_to_training_workflow():
     assert "lexical_z_score" not in token_channel_section
     assert "joint_score" not in token_channel_section
     assert "joint_prediction" not in token_channel_section
-

@@ -6,7 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from wfcllm.orchestration.state import RunStateManager, ALL_PHASES, OPTIONAL_PHASES, PHASES
+from wfcllm.orchestration.state import (
+    ALL_PHASES,
+    LEGACY_PHASES,
+    OPTIONAL_PHASES,
+    PHASES,
+    RunStateManager,
+)
 from tests.integration.conftest import PROJECT_ROOT, RUN_PY, write_json, write_jsonl
 
 
@@ -43,10 +49,10 @@ def test_reset_clears_all_phases(tmp_path):
 
 def test_status_returns_full_dict_with_all_phases(tmp_path):
     state = RunStateManager(path=tmp_path / "run_state.json")
-    state.mark_done("watermark", output_file="out.jsonl")
+    state.mark_done("generate", output_file="out.jsonl")
     status = state.status()
     assert set(status.keys()) == set(ALL_PHASES)
-    assert status["watermark"]["done"] is True
+    assert status["generate"]["done"] is True
     assert status["encoder"]["done"] is False
 
 
@@ -139,11 +145,11 @@ from wfcllm.orchestration.pipeline import PhaseOrchestrator
 
 def _make_args(**kwargs):
     """Build minimal argparse.Namespace for orchestrator tests."""
-    defaults = dict(force=False, eval_only=False, phase=None, input_file=None)
+    defaults = dict(force=False, eval_only=False, phase=None, input=None)
     defaults.update(kwargs)
     ns = argparse.Namespace(**defaults)
-    # config cache hook used by has_explicit_extract_input
-    setattr(ns, "_config_cache", {"extract": {}})
+    # config cache hook used by has_explicit_detect_input
+    setattr(ns, "_config_cache", {"detector": {}})
     return ns
 
 
@@ -153,45 +159,43 @@ def test_orchestrator_runs_all_main_phases_when_phase_unspecified(tmp_path):
     ran = []
 
     reg = PhaseRegistry()
-    for p in ("encoder", "watermark", "extract"):
+    for p in PHASES:
         reg.register(p, lambda a, s, name=p: (ran.append(name), 0)[1])
 
     orch = PhaseOrchestrator(state=state, phase_registry=reg, prereq_registry=PrereqRegistry())
     rc = orch.run(_make_args())
     assert rc == 0
-    assert ran == ["encoder", "watermark", "extract"]
+    assert ran == PHASES
 
 
 def test_orchestrator_skips_completed_phase(tmp_path):
     PrereqRegistry().clear()
     state = RunStateManager(path=tmp_path / "rs.json")
-    state.mark_done("encoder")
+    state.mark_done("generate")
     ran = []
     reg = PhaseRegistry()
-    reg.register("encoder", lambda a, s: (ran.append("encoder"), 0)[1])
-    reg.register("watermark", lambda a, s: (ran.append("watermark"), 0)[1])
-    reg.register("extract", lambda a, s: (ran.append("extract"), 0)[1])
+    for p in PHASES:
+        reg.register(p, lambda a, s, name=p: (ran.append(name), 0)[1])
 
     orch = PhaseOrchestrator(state=state, phase_registry=reg, prereq_registry=PrereqRegistry())
     rc = orch.run(_make_args())
     assert rc == 0
-    assert ran == ["watermark", "extract"]
+    assert ran == ["calibrate", "detect", "report", "audit"]
 
 
 def test_orchestrator_force_reruns_completed_phase(tmp_path):
     PrereqRegistry().clear()
     state = RunStateManager(path=tmp_path / "rs.json")
-    state.mark_done("encoder")
+    state.mark_done("generate")
     ran = []
     reg = PhaseRegistry()
-    reg.register("encoder", lambda a, s: (ran.append("encoder"), 0)[1])
-    reg.register("watermark", lambda a, s: (ran.append("watermark"), 0)[1])
-    reg.register("extract", lambda a, s: (ran.append("extract"), 0)[1])
+    for p in PHASES:
+        reg.register(p, lambda a, s, name=p: (ran.append(name), 0)[1])
 
     orch = PhaseOrchestrator(state=state, phase_registry=reg, prereq_registry=PrereqRegistry())
     rc = orch.run(_make_args(force=True))
     assert rc == 0
-    assert ran == ["encoder", "watermark", "extract"]
+    assert ran == PHASES
 
 
 def test_orchestrator_fails_fast_on_nonzero(tmp_path):
@@ -199,14 +203,16 @@ def test_orchestrator_fails_fast_on_nonzero(tmp_path):
     state = RunStateManager(path=tmp_path / "rs.json")
     ran = []
     reg = PhaseRegistry()
-    reg.register("encoder", lambda a, s: (ran.append("encoder"), 0)[1])
-    reg.register("watermark", lambda a, s: (ran.append("watermark"), 7)[1])  # fail
-    reg.register("extract", lambda a, s: (ran.append("extract"), 0)[1])
+    reg.register("generate", lambda a, s: (ran.append("generate"), 0)[1])
+    reg.register("calibrate", lambda a, s: (ran.append("calibrate"), 7)[1])  # fail
+    reg.register("detect", lambda a, s: (ran.append("detect"), 0)[1])
+    reg.register("report", lambda a, s: (ran.append("report"), 0)[1])
+    reg.register("audit", lambda a, s: (ran.append("audit"), 0)[1])
 
     orch = PhaseOrchestrator(state=state, phase_registry=reg, prereq_registry=PrereqRegistry())
     rc = orch.run(_make_args())
     assert rc == 7
-    assert ran == ["encoder", "watermark"]  # extract never runs
+    assert ran == ["generate", "calibrate"]  # detect never runs
 
 
 def test_orchestrator_runs_single_phase_when_specified(tmp_path):
@@ -214,13 +220,13 @@ def test_orchestrator_runs_single_phase_when_specified(tmp_path):
     state = RunStateManager(path=tmp_path / "rs.json")
     ran = []
     reg = PhaseRegistry()
-    for p in ("encoder", "watermark", "extract", "generate-negative"):
+    for p in (*PHASES, "posthoc-pass-report"):
         reg.register(p, lambda a, s, name=p: (ran.append(name), 0)[1])
 
     orch = PhaseOrchestrator(state=state, phase_registry=reg, prereq_registry=PrereqRegistry())
-    rc = orch.run(_make_args(phase="generate-negative"))
+    rc = orch.run(_make_args(phase="posthoc-pass-report"))
     assert rc == 0
-    assert ran == ["generate-negative"]
+    assert ran == ["posthoc-pass-report"]
 
 
 def test_orchestrator_invokes_prereqs_before_phase(tmp_path):
@@ -303,33 +309,36 @@ def test_dispatch_phase_skips_prereq_check(tmp_path):
     PrereqRegistry().clear()
 
 
-def test_all_phases_includes_build_entropy_profile():
-    from wfcllm.orchestration.state import ALL_PHASES, OPTIONAL_PHASES
-    assert "build-entropy-profile" in OPTIONAL_PHASES
-    assert "build-entropy-profile" in ALL_PHASES
+def test_all_phases_includes_legacy_build_entropy_profile():
+    from wfcllm.orchestration.state import ALL_PHASES, LEGACY_PHASES
+    assert "legacy-build-entropy-profile" in LEGACY_PHASES
+    assert "legacy-build-entropy-profile" in ALL_PHASES
 
 
 def test_run_state_manager_tracks_build_entropy_profile(tmp_path):
     from wfcllm.orchestration.state import RunStateManager
     state = RunStateManager(path=tmp_path / "rs.json")
-    assert state.is_done("build-entropy-profile") is False
-    state.mark_done("build-entropy-profile", profile_path="data/calibration/p.json")
-    assert state.is_done("build-entropy-profile") is True
-    assert state.get("build-entropy-profile", "profile_path") == "data/calibration/p.json"
+    assert state.is_done("legacy-build-entropy-profile") is False
+    state.mark_done("legacy-build-entropy-profile", profile_path="data/calibration/p.json")
+    assert state.is_done("legacy-build-entropy-profile") is True
+    assert state.get("legacy-build-entropy-profile", "profile_path") == "data/calibration/p.json"
 
 
 # ── Tests migrated from tests/test_run.py (TestRunState) ──────────────────────
 
 
 def test_phases_order():
-    assert PHASES == ["encoder", "watermark", "extract"]
-    assert OPTIONAL_PHASES == [
-        "pretrain",
-        "generate-negative",
-        "token-channel-train",
-        "build-entropy-profile",
+    assert PHASES == ["generate", "calibrate", "detect", "report", "audit"]
+    assert OPTIONAL_PHASES == ["encoder", "posthoc-pass-report", "diagnostic-selector"]
+    assert LEGACY_PHASES == [
+        "legacy-watermark",
+        "legacy-extract",
+        "legacy-token-channel-train",
+        "legacy-build-entropy-profile",
+        "legacy-pretrain",
+        "legacy-ablation",
     ]
-    assert ALL_PHASES == PHASES + OPTIONAL_PHASES
+    assert ALL_PHASES == PHASES + OPTIONAL_PHASES + LEGACY_PHASES
 
 
 def test_reset_clears_all(tmp_path):
@@ -346,8 +355,8 @@ def test_status_dict(tmp_path):
     state.mark_done("encoder", checkpoint="x.pt")
     status = state.status()
     assert status["encoder"]["done"] is True
-    assert status["watermark"]["done"] is False
-    assert status["extract"]["done"] is False
+    assert status["generate"]["done"] is False
+    assert status["legacy-watermark"]["done"] is False
 
 
 # ── Tests migrated from tests/test_run.py (TestCLI status/reset/offline) ──────

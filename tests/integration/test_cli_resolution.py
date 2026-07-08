@@ -113,14 +113,14 @@ def test_main_compare_only_mode_forces_phase_rerun(tmp_path, monkeypatch, capsys
     state_path = tmp_path / "rs.json"
     monkeypatch.setattr("wfcllm.cli.entry.DEFAULT_STATE_FILE", state_path)
 
-    # Pre-mark extract as done in the state file
+    # Pre-mark legacy-extract as done in the state file
     from wfcllm.orchestration.state import RunStateManager
-    RunStateManager(path=state_path).mark_done("extract", details_file="prior.jsonl")
+    RunStateManager(path=state_path).mark_done("legacy-extract", details_file="prior.jsonl")
 
     # Replace the extract runner with a sentinel so we can assert it WAS called
     called = []
     def sentinel_runner(args, state):
-        called.append("extract")
+        called.append("legacy-extract")
         return 0
 
     # Patch the name in entry.py's module namespace so _populate_phase_registry
@@ -130,7 +130,8 @@ def test_main_compare_only_mode_forces_phase_rerun(tmp_path, monkeypatch, capsys
 
     # Construct compare-only CLI invocation
     argv = [
-        "--phase", "extract",
+        "--phase", "legacy-extract",
+        "--legacy",
         "--compare-summary-left", str(tmp_path / "sl.json"),
         "--compare-details-left", str(tmp_path / "dl.jsonl"),
         "--compare-summary-right", str(tmp_path / "sr.json"),
@@ -141,7 +142,7 @@ def test_main_compare_only_mode_forces_phase_rerun(tmp_path, monkeypatch, capsys
     rc = main(argv)
 
     # If the fix is in place, runner gets called despite extract being done.
-    assert called == ["extract"], (
+    assert called == ["legacy-extract"], (
         "compare-only mode failed to bypass skip — extract should have been re-run"
     )
     assert rc == 0
@@ -178,7 +179,9 @@ def test_cli_subprocess_invocations_do_not_use_bare_run_py_script_name():
 def test_build_parser_parses_resume_argument():
     from wfcllm.cli.arguments import build_parser
 
-    args = build_parser().parse_args(["--phase", "extract", "--resume", "latest"])
+    args = build_parser().parse_args(
+        ["--phase", "legacy-extract", "--legacy", "--resume", "latest"]
+    )
     assert args.resume == "latest"
 
 
@@ -188,7 +191,8 @@ def test_build_parser_accepts_token_channel_flags():
     args = build_parser().parse_args(
         [
             "--phase",
-            "watermark",
+            "legacy-watermark",
+            "--legacy",
             "--token-channel-enabled",
             "true",
             "--token-channel-mode",
@@ -215,7 +219,8 @@ def test_build_parser_accepts_token_channel_train_phase_and_flags():
     args = build_parser().parse_args(
         [
             "--phase",
-            "token-channel-train",
+            "legacy-token-channel-train",
+            "--legacy",
             "--token-channel-cache-path",
             "data/token_channel/custom_cache.json",
             "--token-channel-model-path",
@@ -241,7 +246,7 @@ def test_build_parser_accepts_token_channel_train_phase_and_flags():
         ]
     )
 
-    assert args.phase == "token-channel-train"
+    assert args.phase == "legacy-token-channel-train"
     assert args.token_channel_cache_path == "data/token_channel/custom_cache.json"
     assert args.token_channel_model_path == "data/models/token-channel-demo"
     assert args.token_channel_context_width == 256

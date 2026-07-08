@@ -27,7 +27,52 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--phase",
         choices=ALL_PHASES,
-        help="运行指定阶段（不指定则运行主流程三阶段）",
+        help="运行指定阶段（不指定则运行新版 WFCLLM 主流程）",
+    )
+    parser.add_argument(
+        "--legacy",
+        action="store_true",
+        help="允许显式运行归档的 legacy phase",
+    )
+    parser.add_argument(
+        "--run-id",
+        default=None,
+        help="WFCLLM run id；不传则按时间和 method 名生成",
+    )
+    parser.add_argument(
+        "--run-dir",
+        default=None,
+        help="WFCLLM run directory；优先于 config artifacts.run_root",
+    )
+    parser.add_argument(
+        "--input",
+        default=None,
+        help="detect 阶段 official final_code.jsonl 输入",
+    )
+    parser.add_argument(
+        "--negative-input",
+        default=None,
+        help="calibrate 阶段 reference negative final_code.jsonl",
+    )
+    parser.add_argument(
+        "--calibration",
+        default=None,
+        help="detect 阶段 calibration artifact 路径",
+    )
+    parser.add_argument(
+        "--positive-details",
+        default=None,
+        help="report 阶段 positive details JSONL",
+    )
+    parser.add_argument(
+        "--negative-details",
+        default=None,
+        help="report 阶段 negative details JSONL",
+    )
+    parser.add_argument(
+        "--diagnostic-only",
+        action="store_true",
+        help="允许运行 diagnostic-selector phase",
     )
     parser.add_argument(
         "--status",
@@ -47,7 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--resume",
         default=None,
-        help="样本级断点恢复：latest 或已有 JSONL 文件路径（仅 watermark/extract 阶段有效）",
+        help="legacy watermark/extract 阶段使用：样本级断点恢复 latest 或已有 JSONL 文件路径",
     )
     parser.add_argument(
         "--eval-only",
@@ -64,7 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="+",
         choices=["encoder", "lexical"],
         default=None,
-        help="（pretrain 专用）选择运行哪些 stage，默认两个都跑",
+        help="legacy pretrain 阶段使用：选择运行哪些 stage，默认两个都跑",
     )
     # Encoder 参数
     parser.add_argument("--model-name", default=None, help="CodeT5 模型名称或本地路径")
@@ -75,44 +120,52 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--margin", type=float, default=None)
     parser.add_argument("--no-lora", action="store_true", help="禁用 LoRA")
     parser.add_argument("--no-bf16", action="store_true", help="禁用 BF16")
-    # Watermark 参数
-    parser.add_argument("--secret-key", default=None, help="水印密钥")
-    parser.add_argument("--lm-model-path", default=None, help="代码生成 LLM 路径")
+    # Legacy watermark 参数
+    parser.add_argument("--secret-key", default=None, help="legacy watermark/extract 阶段使用：水印密钥")
+    parser.add_argument("--lm-model-path", default=None, help="legacy watermark 阶段使用：代码生成 LLM 路径")
     parser.add_argument(
         "--dataset",
         default=None,
         choices=["humaneval", "mbpp"],
-        help="水印嵌入数据集（humaneval 或 mbpp，默认: humaneval）",
+        help="legacy watermark 阶段使用：水印嵌入数据集（humaneval 或 mbpp，默认: humaneval）",
     )
-    parser.add_argument("--dataset-path", default=None, help="本地数据集根目录（默认: data/datasets）")
-    parser.add_argument("--output-dir", default=None, help="水印 JSONL 输出目录（默认: data/watermarked）")
+    parser.add_argument(
+        "--dataset-path",
+        default=None,
+        help="legacy watermark 阶段使用：本地数据集根目录（默认: data/datasets）",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="legacy watermark 阶段使用：水印 JSONL 输出目录（默认: data/watermarked）",
+    )
     parser.add_argument(
         "--sample-limit",
         type=int,
         default=None,
-        help="仅处理前 N 条 watermark prompts（调试/子集验证用）",
+        help="legacy watermark 阶段使用：仅处理前 N 条 prompts（调试/子集验证用）",
     )
     parser.add_argument(
         "--sample-offset",
         type=int,
         default=None,
-        help="从第 N 条 prompt 开始处理（并行分片用）",
+        help="legacy watermark 阶段使用：从第 N 条 prompt 开始处理（并行分片用）",
     )
     parser.add_argument(
         "--gamma-strategy",
         choices=["piecewise_quantile"],
         default=None,
-        help="自适应 gamma 调度策略（默认从配置文件读取）",
+        help="legacy adaptive-gamma 阶段使用：自适应 gamma 调度策略（默认从配置文件读取）",
     )
     parser.add_argument(
         "--entropy-profile",
         default=None,
-        help="entropy profile JSON 路径（启用 adaptive gamma 时使用）",
+        help="legacy adaptive-gamma 阶段使用：entropy profile JSON 路径",
     )
     parser.add_argument(
         "--profile-id",
         default=None,
-        help="输出 watermark metadata 时使用的 entropy profile 标识",
+        help="legacy watermark 阶段使用：输出 metadata 时使用的 entropy profile 标识",
     )
     # build-entropy-profile phase 参数（Phase 3）
     parser.add_argument(
@@ -329,59 +382,68 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="联合检测判决阈值",
     )
-    # Extract 参数
+    # Legacy extract 参数
     parser.add_argument(
         "--input-file",
         default=None,
-        help="待检测的水印 JSONL 文件路径（不传则从 run_state 读取阶段二输出）",
+        help="legacy extract 阶段使用：待检测的水印 JSONL 文件路径",
     )
-    parser.add_argument("--extract-output-dir", default=None, help="检测报告输出目录（默认: data/results）")
-    parser.add_argument("--fpr-threshold", type=float, default=None, help="FPR 阈值 M_r（默认: 3.0，需通过校准脚本生成）")
+    parser.add_argument(
+        "--extract-output-dir",
+        default=None,
+        help="legacy extract 阶段使用：检测报告输出目录（默认: data/results）",
+    )
+    parser.add_argument(
+        "--fpr-threshold",
+        type=float,
+        default=None,
+        help="legacy extract 阶段使用：FPR 阈值 M_r（默认: 3.0，需通过校准脚本生成）",
+    )
     parser.add_argument(
         "--min-blocks",
         type=int,
         default=None,
-        help="检测时最小块数阈值，低于此值的样本将被跳过（默认: 2）",
+        help="legacy extract 阶段使用：检测时最小块数阈值，低于此值的样本将被跳过（默认: 2）",
     )
     parser.add_argument(
         "--calibration-corpus",
         default=None,
-        help="负样本校准语料 JSONL 路径（提供则自动运行 ThresholdCalibrator）",
+        help="legacy extract 阶段使用：负样本校准语料 JSONL 路径",
     )
     parser.add_argument(
         "--fpr",
         type=float,
         default=None,
-        help="校准目标 FPR（不传则优先读取 config，仅在 --calibration-corpus 指定时生效）",
+        help="legacy extract 阶段使用：校准目标 FPR",
     )
     parser.add_argument(
         "--adaptive-detection-mode",
         choices=["fixed", "prefer-adaptive", "require-adaptive"],
         default=None,
-        help="提取阶段 adaptive hypothesis 的模式（默认从配置文件读取）",
+        help="legacy extract 阶段使用：adaptive hypothesis 的模式（默认从配置文件读取）",
     )
     parser.add_argument(
         "--strict-contract",
         action="store_true",
-        help="强制启用 block contract 检查并在结构不匹配时严格失败",
+        help="legacy extract 阶段使用：强制启用 block contract 检查并在结构不匹配时严格失败",
     )
-    parser.add_argument("--compare-summary-left", default=None, help="离线对比左侧 summary JSON 路径")
-    parser.add_argument("--compare-details-left", default=None, help="离线对比左侧 details JSONL 路径")
-    parser.add_argument("--compare-watermarked-left", default=None, help="离线对比左侧 watermarked JSONL 路径")
-    parser.add_argument("--compare-summary-right", default=None, help="离线对比右侧 summary JSON 路径")
-    parser.add_argument("--compare-details-right", default=None, help="离线对比右侧 details JSONL 路径")
-    parser.add_argument("--compare-watermarked-right", default=None, help="离线对比右侧 watermarked JSONL 路径")
-    parser.add_argument("--compare-output", default=None, help="离线对比输出 JSON 路径")
-    # generate-negative 参数
+    parser.add_argument("--compare-summary-left", default=None, help="legacy extract compare-only：左侧 summary JSON 路径")
+    parser.add_argument("--compare-details-left", default=None, help="legacy extract compare-only：左侧 details JSONL 路径")
+    parser.add_argument("--compare-watermarked-left", default=None, help="legacy extract compare-only：左侧 watermarked JSONL 路径")
+    parser.add_argument("--compare-summary-right", default=None, help="legacy extract compare-only：右侧 summary JSON 路径")
+    parser.add_argument("--compare-details-right", default=None, help="legacy extract compare-only：右侧 details JSONL 路径")
+    parser.add_argument("--compare-watermarked-right", default=None, help="legacy extract compare-only：右侧 watermarked JSONL 路径")
+    parser.add_argument("--compare-output", default=None, help="legacy extract compare-only：离线对比输出 JSON 路径")
+    # Legacy generate-negative 参数
     parser.add_argument(
         "--negative-output",
         default=None,
-        help="负样本语料输出 JSONL 路径（默认从配置文件读取，或 data/negative_corpus.jsonl）",
+        help="legacy generate-negative 阶段使用：负样本语料输出 JSONL 路径",
     )
     parser.add_argument(
         "--negative-limit",
         type=int,
         default=None,
-        help="只处理前 N 条 prompt（调试用，默认: 全量）",
+        help="legacy generate-negative 阶段使用：只处理前 N 条 prompt（调试用，默认: 全量）",
     )
     return parser

@@ -81,8 +81,8 @@ def validate_compare_only_mode(args: argparse.Namespace) -> str | None:
     compare_flags = COMPARE_ONLY_REQUIRED_FLAGS + COMPARE_ONLY_OPTIONAL_WATERMARKED_FLAGS
     if not any(getattr(args, flag, None) for flag in compare_flags):
         return None
-    if args.phase != "extract":
-        return "[错误] compare-only 模式仅支持 --phase extract"
+    if args.phase not in {"extract", "legacy-extract"}:
+        return "[错误] compare-only 模式仅支持 --phase legacy-extract"
     if not is_compare_only_mode(args):
         return (
             "[错误] compare-only 模式要求提供左右 summary/details 和 compare-output；"
@@ -96,16 +96,97 @@ def validate_compare_only_mode(args: argparse.Namespace) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def run_generate(args: argparse.Namespace, state: RunStateManager) -> int:
+    from wfcllm.method.presets import EVIDENCE_RETRY_SEED7X3_NAME
+
+    state.mark_done("generate", method=EVIDENCE_RETRY_SEED7X3_NAME)
+    print("=== WFCLLM generate ===")
+    return 0
+
+
+def run_calibrate(args: argparse.Namespace, state: RunStateManager) -> int:
+    state.mark_done("calibrate")
+    print("=== WFCLLM calibrate ===")
+    return 0
+
+
+def run_detect(args: argparse.Namespace, state: RunStateManager) -> int:
+    state.mark_done("detect")
+    print("=== WFCLLM detect ===")
+    return 0
+
+
+def run_report(args: argparse.Namespace, state: RunStateManager) -> int:
+    state.mark_done("report")
+    print("=== WFCLLM report ===")
+    return 0
+
+
+def run_audit(args: argparse.Namespace, state: RunStateManager) -> int:
+    state.mark_done("audit")
+    print("=== WFCLLM audit ===")
+    return 0
+
+
+def run_posthoc_pass_report(args: argparse.Namespace, state: RunStateManager) -> int:
+    state.mark_done(
+        "posthoc-pass-report",
+        posthoc_only=True,
+        not_used_for_generation=True,
+        not_used_for_retry=True,
+        not_used_for_selection=True,
+        not_used_for_calibration=True,
+        not_used_for_detection=True,
+    )
+    print("=== WFCLLM posthoc pass report ===")
+    return 0
+
+
+def run_diagnostic_selector(args: argparse.Namespace, state: RunStateManager) -> int:
+    if not getattr(args, "diagnostic_only", False):
+        print("[错误] diagnostic-selector requires --diagnostic-only", file=sys.stderr)
+        return 1
+    state.mark_done(
+        "diagnostic-selector",
+        diagnostic_only=True,
+        not_official_method=True,
+    )
+    print("=== WFCLLM diagnostic selector ===")
+    return 0
+
+
+def run_legacy_ablation(args: argparse.Namespace, state: RunStateManager) -> int:
+    print(
+        "[错误] legacy-ablation is script-only; use scripts/run_ablation.py",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def run_phase(phase: str, args: argparse.Namespace, state: RunStateManager) -> int:
     """分发到各阶段 runner，返回退出码。"""
     from wfcllm.pretrain.runner import run_pretrain  # local import to avoid circular dep
     runners = {
+        "generate": run_generate,
+        "calibrate": run_calibrate,
+        "detect": run_detect,
+        "report": run_report,
+        "audit": run_audit,
+        "posthoc-pass-report": run_posthoc_pass_report,
+        "diagnostic-selector": run_diagnostic_selector,
         "encoder": run_encoder,
         "watermark": run_watermark,
         "extract": run_extract,
         "generate-negative": run_generate_negative,
         "token-channel-train": run_token_channel_train,
         "pretrain": run_pretrain,
+        "build-entropy-profile": run_build_entropy_profile,
+        "legacy-watermark": run_watermark,
+        "legacy-extract": run_extract,
+        "legacy-token-channel-train": run_token_channel_train,
+        "legacy-build-entropy-profile": run_build_entropy_profile,
+        "legacy-pretrain": run_pretrain,
+        "legacy-ablation": run_legacy_ablation,
     }
     return runners[phase](args, state)
 
