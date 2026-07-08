@@ -47,6 +47,7 @@ def test_generation_config_accepts_local_model_path(tmp_path):
         temperature=0.0,
         top_p=1.0,
         top_k=0,
+        retry_repetition_penalty=1.25,
         torch_dtype="bf16",
         device="cpu",
         seed=123,
@@ -58,6 +59,7 @@ def test_generation_config_accepts_local_model_path(tmp_path):
     assert config.temperature == 0.0
     assert config.top_p == 1.0
     assert config.top_k == 0
+    assert config.retry_repetition_penalty == 1.25
     assert config.torch_dtype == "bf16"
     assert config.device == "cpu"
     assert config.seed == 123
@@ -73,6 +75,21 @@ def test_generation_config_accepts_local_model_path(tmp_path):
         ("temperature", -0.1, "temperature must be non-negative"),
         ("top_p", 1.5, r"top_p must be in \(0, 1\]"),
         ("top_k", -1, "top_k must be non-negative"),
+        (
+            "retry_repetition_penalty",
+            0.99,
+            "retry_repetition_penalty must be >= 1.0",
+        ),
+        (
+            "retry_repetition_penalty",
+            float("nan"),
+            "retry_repetition_penalty must be a finite number",
+        ),
+        (
+            "retry_repetition_penalty",
+            True,
+            "retry_repetition_penalty must be a finite number",
+        ),
         ("torch_dtype", "float64", "torch_dtype must be one of"),
         ("prompt_mode", "assistant", "prompt_mode must be one of"),
         ("stop_sequences", "\nprint", "stop_sequences must be a sequence"),
@@ -150,8 +167,16 @@ def test_rule_config_copies_parameters_before_caller_mutation():
         ({"sample_offset": -1}, "sample_offset must be non-negative"),
         ({"max_group_statements": 0}, "max_group_statements must be positive"),
         ({"retry_budget": -1}, "retry_budget must be non-negative"),
+        ({"statement_retry_budget": -1}, "statement_retry_budget must be non-negative"),
+        ({"window_retry_budget": -1}, "window_retry_budget must be non-negative"),
+        ({"compound_retry_budget": -1}, "compound_retry_budget must be non-negative"),
         ({"global_rollback_budget": -1}, "global_rollback_budget must be non-negative"),
         ({"max_total_sampled_tokens": 0}, "max_total_sampled_tokens must be positive"),
+        ({"evidence_retry_attempts": 0}, "evidence_retry_attempts must be positive"),
+        (
+            {"evidence_retry_seed_stride": 0},
+            "evidence_retry_seed_stride must be positive",
+        ),
         ({"resume": "checkpoint"}, "resume must be None or 'latest'"),
     ],
 )
@@ -228,6 +253,26 @@ def test_pipeline_config_derives_absolute_sampled_token_budget(tmp_path):
     assert config.max_total_sampled_tokens == 200
 
 
+def test_pipeline_config_derives_rollback_budget_from_split_retry_budgets(tmp_path):
+    model_path = tmp_path / "local-model"
+    model_path.mkdir()
+    generation = SawrGenerationConfig(model_path=str(model_path), max_new_tokens=40)
+
+    config = SawrPipelineConfig(
+        dataset="humaneval",
+        dataset_path=str(tmp_path / "datasets"),
+        output_dir=str(tmp_path / "outputs"),
+        generation=generation,
+        retry_budget=1,
+        statement_retry_budget=15,
+        window_retry_budget=10,
+        compound_retry_budget=5,
+    )
+
+    assert config.global_rollback_budget == 30
+    assert config.max_total_sampled_tokens == 1280
+
+
 def test_pipeline_config_accepts_explicit_bounded_generation_controls(tmp_path):
     model_path = tmp_path / "local-model"
     model_path.mkdir()
@@ -245,6 +290,24 @@ def test_pipeline_config_accepts_explicit_bounded_generation_controls(tmp_path):
 
     assert config.global_rollback_budget == 7
     assert config.max_total_sampled_tokens == 123
+
+
+def test_pipeline_config_accepts_evidence_only_retry_controls(tmp_path):
+    model_path = tmp_path / "local-model"
+    model_path.mkdir()
+    generation = SawrGenerationConfig(model_path=str(model_path), max_new_tokens=40)
+
+    config = SawrPipelineConfig(
+        dataset="humaneval",
+        dataset_path=str(tmp_path / "datasets"),
+        output_dir=str(tmp_path / "outputs"),
+        generation=generation,
+        evidence_retry_attempts=3,
+        evidence_retry_seed_stride=17,
+    )
+
+    assert config.evidence_retry_attempts == 3
+    assert config.evidence_retry_seed_stride == 17
 
 
 def test_pipeline_config_to_dict_contains_smoke_config_only(tmp_path):
@@ -266,6 +329,8 @@ def test_pipeline_config_to_dict_contains_smoke_config_only(tmp_path):
     assert config_dict["dataset"] == "humaneval"
     assert config_dict["generation"]["model_path"] == str(model_path)
     assert config_dict["rule"]["target_accept_rate"] == 0.25
+    assert config_dict["evidence_retry_attempts"] == 1
+    assert config_dict["evidence_retry_seed_stride"] == 1009
     assert "lsh_d" not in config_dict
     assert "lsh_gamma" not in config_dict
     assert "fpr_threshold" not in config_dict

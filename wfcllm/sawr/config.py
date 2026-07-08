@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -22,6 +23,7 @@ class SawrGenerationConfig:
     temperature: float = 0.0
     top_p: float = 1.0
     top_k: int = 0
+    retry_repetition_penalty: float = 1.0
     torch_dtype: str = "auto"
     device: str = "cuda"
     seed: int = 0
@@ -41,10 +43,23 @@ class SawrGenerationConfig:
             raise ValueError("top_p must be in (0, 1]")
         if self.top_k < 0:
             raise ValueError("top_k must be non-negative")
+        if (
+            isinstance(self.retry_repetition_penalty, bool)
+            or not isinstance(self.retry_repetition_penalty, (int, float))
+            or not math.isfinite(float(self.retry_repetition_penalty))
+        ):
+            raise ValueError("retry_repetition_penalty must be a finite number")
+        if self.retry_repetition_penalty < 1.0:
+            raise ValueError("retry_repetition_penalty must be >= 1.0")
         if self.torch_dtype not in _ALLOWED_TORCH_DTYPES:
             raise ValueError(
                 f"torch_dtype must be one of {_ALLOWED_TORCH_DTYPES}, got {self.torch_dtype!r}"
             )
+        object.__setattr__(
+            self,
+            "retry_repetition_penalty",
+            float(self.retry_repetition_penalty),
+        )
         if self.prompt_mode not in _ALLOWED_PROMPT_MODES:
             raise ValueError(
                 f"prompt_mode must be one of {_ALLOWED_PROMPT_MODES}, got {self.prompt_mode!r}"
@@ -102,9 +117,15 @@ class SawrPipelineConfig:
     sample_offset: int | None = None
     max_group_statements: int = 2
     retry_budget: int = 1
+    statement_retry_budget: int | None = None
+    window_retry_budget: int | None = None
+    compound_retry_budget: int | None = None
     global_rollback_budget: int | None = None
     max_total_sampled_tokens: int | None = None
+    evidence_retry_attempts: int = 1
+    evidence_retry_seed_stride: int = 1009
     resume: str | None = None
+    candidate_sidecar_output: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.generation, SawrGenerationConfig):
@@ -123,17 +144,48 @@ class SawrPipelineConfig:
             raise ValueError("max_group_statements must be positive")
         if self.retry_budget < 0:
             raise ValueError("retry_budget must be non-negative")
+        if self.statement_retry_budget is not None and self.statement_retry_budget < 0:
+            raise ValueError("statement_retry_budget must be non-negative")
+        if self.window_retry_budget is not None and self.window_retry_budget < 0:
+            raise ValueError("window_retry_budget must be non-negative")
+        if self.compound_retry_budget is not None and self.compound_retry_budget < 0:
+            raise ValueError("compound_retry_budget must be non-negative")
+        retry_budget_for_limits = sum(
+            (
+                0
+                if self.statement_retry_budget is None
+                else self.statement_retry_budget,
+                0 if self.window_retry_budget is None else self.window_retry_budget,
+                (
+                    self.retry_budget
+                    if self.compound_retry_budget is None
+                    else self.compound_retry_budget
+                ),
+            )
+        )
         if self.global_rollback_budget is None:
-            object.__setattr__(self, "global_rollback_budget", self.retry_budget)
+            object.__setattr__(self, "global_rollback_budget", retry_budget_for_limits)
         elif self.global_rollback_budget < 0:
             raise ValueError("global_rollback_budget must be non-negative")
         if self.max_total_sampled_tokens is None:
-            derived_budget = self.generation.max_new_tokens * max(2, self.retry_budget + 2)
+            derived_budget = self.generation.max_new_tokens * max(
+                2,
+                int(self.global_rollback_budget) + 2,
+            )
             object.__setattr__(self, "max_total_sampled_tokens", derived_budget)
         elif self.max_total_sampled_tokens <= 0:
             raise ValueError("max_total_sampled_tokens must be positive")
+        if self.evidence_retry_attempts <= 0:
+            raise ValueError("evidence_retry_attempts must be positive")
+        if self.evidence_retry_seed_stride <= 0:
+            raise ValueError("evidence_retry_seed_stride must be positive")
         if self.resume is not None and self.resume != "latest":
             raise ValueError("resume must be None or 'latest'")
+        if self.candidate_sidecar_output is not None and not isinstance(
+            self.candidate_sidecar_output,
+            str,
+        ):
+            raise ValueError("candidate_sidecar_output must be a string or None")
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)

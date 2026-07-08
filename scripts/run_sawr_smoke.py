@@ -37,6 +37,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-p", type=float, default=1.0)
     parser.add_argument("--top-k", type=int, default=0)
     parser.add_argument(
+        "--retry-repetition-penalty",
+        type=float,
+        default=1.0,
+        help=(
+            "Custom retry-aware prefix penalty. 1.0 disables it; values above "
+            "1.0 penalize the next token that would repeat a rolled-back attempt."
+        ),
+    )
+    parser.add_argument(
         "--torch-dtype",
         default="auto",
         choices=["auto", "fp32", "fp16", "bf16"],
@@ -53,8 +62,27 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--max-group-statements", type=int, default=2)
     parser.add_argument("--retry-budget", type=int, default=1)
+    parser.add_argument("--statement-retry-budget", type=int, default=None)
+    parser.add_argument("--window-retry-budget", type=int, default=None)
+    parser.add_argument("--compound-retry-budget", type=int, default=None)
     parser.add_argument("--global-rollback-budget", type=int, default=None)
     parser.add_argument("--max-total-sampled-tokens", type=int, default=None)
+    parser.add_argument(
+        "--evidence-retry-attempts",
+        type=int,
+        default=1,
+        help=(
+            "Number of generation attempts per sample for evidence-only retry. "
+            "Attempts are selected only by SAWR audit evidence, never tests or "
+            "static correctness proxies."
+        ),
+    )
+    parser.add_argument(
+        "--evidence-retry-seed-stride",
+        type=int,
+        default=1009,
+        help="Seed stride between evidence-only retry attempts.",
+    )
     parser.add_argument(
         "--rule-name",
         default="hash",
@@ -74,6 +102,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lsh-whitening-path", default=None)
     parser.add_argument("--use-ordinal-keying", action="store_true")
     parser.add_argument("--resume", choices=["latest"], default=None)
+    parser.add_argument(
+        "--candidate-sidecar-output",
+        default=None,
+        help=(
+            "Optional diagnostic-only JSONL path for generation candidate "
+            "text/hash sidecar rows. The final JSONL schema is unchanged."
+        ),
+    )
     return parser
 
 
@@ -86,6 +122,7 @@ def main(argv: list[str] | None = None) -> int:
             temperature=args.temperature,
             top_p=args.top_p,
             top_k=args.top_k,
+            retry_repetition_penalty=args.retry_repetition_penalty,
             torch_dtype=args.torch_dtype,
             device=args.device,
             seed=args.seed,
@@ -125,9 +162,15 @@ def main(argv: list[str] | None = None) -> int:
             sample_offset=args.sample_offset,
             max_group_statements=args.max_group_statements,
             retry_budget=args.retry_budget,
+            statement_retry_budget=args.statement_retry_budget,
+            window_retry_budget=args.window_retry_budget,
+            compound_retry_budget=args.compound_retry_budget,
             global_rollback_budget=args.global_rollback_budget,
             max_total_sampled_tokens=args.max_total_sampled_tokens,
+            evidence_retry_attempts=args.evidence_retry_attempts,
+            evidence_retry_seed_stride=args.evidence_retry_seed_stride,
             resume=args.resume,
+            candidate_sidecar_output=args.candidate_sidecar_output,
         )
         if rule_config.rule_name == "semantic_lsh":
             encoder_device = str(rule_config.parameters["encoder_device"])

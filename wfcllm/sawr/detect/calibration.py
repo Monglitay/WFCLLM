@@ -39,6 +39,9 @@ PUBLIC_CONFIG_FIELDS = frozenset(
         "use_ordinal_keying",
         "evidence_mode",
         "statistic",
+        "proxy_penalty_alpha",
+        "code_length_adjustment_beta",
+        "code_length_reference_chars",
         "structure_aware",
         "bucket_edges",
         "detector_mode",
@@ -341,7 +344,7 @@ def _validated_artifact_values(payload: dict[str, Any]) -> dict[str, Any]:
             "global_context_null",
         ),
         "sample_scores": _float_list(payload.get("sample_scores"), "sample_scores"),
-        "threshold_5fpr": _non_negative_float(
+        "threshold_5fpr": _json_float(
             _required(payload, "threshold_5fpr"),
             "threshold_5fpr",
         ),
@@ -367,6 +370,7 @@ def _validate_top_level_fields(payload: dict[str, Any]) -> None:
 
 def _validate_public_config(value: Any) -> dict[str, Any]:
     config = _require_dict(value, "config")
+    config = _with_legacy_defaults(config)
     missing_fields = PUBLIC_CONFIG_FIELDS - set(config)
     if missing_fields:
         raise ValueError(f"missing public config fields: {sorted(missing_fields)}")
@@ -427,12 +431,31 @@ def _validate_public_config(value: Any) -> dict[str, Any]:
         "statistic",
         STATISTIC_MODES,
     )
+    result["proxy_penalty_alpha"] = _non_negative_float(
+        result["proxy_penalty_alpha"],
+        "proxy_penalty_alpha",
+    )
+    result["code_length_adjustment_beta"] = _json_float(
+        result["code_length_adjustment_beta"],
+        "code_length_adjustment_beta",
+    )
+    result["code_length_reference_chars"] = _positive_int(
+        result["code_length_reference_chars"],
+        "code_length_reference_chars",
+    )
     if result["detector_mode"] != DETECTOR_MODE:
         raise ValueError(f"detector_mode must be {DETECTOR_MODE!r}")
     result["bucket_edges"] = _bucket_edges_dict(
         result["bucket_edges"],
         "config.bucket_edges",
     )
+    return result
+
+
+def _with_legacy_defaults(config: dict[str, Any]) -> dict[str, Any]:
+    result = dict(config)
+    result.setdefault("code_length_adjustment_beta", 0.0)
+    result.setdefault("code_length_reference_chars", 700)
     return result
 
 

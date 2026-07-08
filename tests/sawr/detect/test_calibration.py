@@ -160,6 +160,39 @@ def test_calibration_artifact_roundtrip(tmp_path: Path) -> None:
     assert loaded.to_dict() == artifact.to_dict()
 
 
+def test_calibration_artifact_roundtrip_allows_negative_threshold(tmp_path: Path) -> None:
+    artifact = _artifact(
+        config={
+            "statistic": "calibrated_context_mean_proxy_penalized",
+            "proxy_penalty_alpha": 0.4,
+        },
+        sample_scores=[-0.4, -0.2],
+        threshold_5fpr=-0.2,
+    )
+    path = tmp_path / "calibration.json"
+
+    write_calibration_artifact(path, artifact)
+    loaded = load_calibration_artifact(path)
+
+    assert loaded.threshold_5fpr == pytest.approx(-0.2)
+    assert loaded.sample_scores == pytest.approx([-0.4, -0.2])
+    assert loaded.config["proxy_penalty_alpha"] == pytest.approx(0.4)
+
+
+def test_calibration_loader_backfills_code_length_adjustment_defaults(
+    tmp_path: Path,
+) -> None:
+    payload = _artifact().to_dict()
+    payload["config"].pop("code_length_adjustment_beta", None)
+    payload["config"].pop("code_length_reference_chars", None)
+    path = _write_payload(tmp_path, payload)
+
+    loaded = load_calibration_artifact(path)
+
+    assert loaded.config["code_length_adjustment_beta"] == pytest.approx(0.0)
+    assert loaded.config["code_length_reference_chars"] == 700
+
+
 def test_empty_calibration_samples_produce_empty_nulls_and_zero_threshold() -> None:
     config = SawrDetectionConfig(secret_key="1010")
 
@@ -332,7 +365,6 @@ def test_load_rejects_invalid_top_level_bucket_edges(tmp_path: Path) -> None:
         ({"sample_scores": [float("nan")]}, "sample_scores"),
         ({"context_nulls": {"bucket": [float("inf")]}}, "context_nulls"),
         ({"threshold_5fpr": float("nan")}, "threshold_5fpr"),
-        ({"threshold_5fpr": -0.1}, "threshold_5fpr"),
         ({"context_negative_count": True}, "context_negative_count"),
         ({"sample_negative_count": -1}, "sample_negative_count"),
         ({"sample_scores": [True]}, "sample_scores"),
@@ -358,7 +390,6 @@ def test_load_rejects_invalid_numeric_payloads(
     [
         _artifact(sample_scores=[float("nan")]),
         _artifact(context_nulls={"bucket": [float("inf")]}),
-        _artifact(threshold_5fpr=-0.1),
         _artifact(context_negative_count=True),
         _artifact(global_context_null=[True]),  # type: ignore[list-item]
     ],

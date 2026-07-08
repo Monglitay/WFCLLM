@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -385,6 +386,42 @@ def test_pipeline_scores_generated_code_body_with_prompt() -> None:
     assert result.insufficient_evidence is False
 
 
+def test_pipeline_ignores_prompt_metadata_when_extracting_final_code_contexts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_prompts: list[object] = []
+
+    def fake_extract_structure_contexts(
+        code: str,
+        *,
+        prompt: str | None,
+        max_group_statements: int,
+    ) -> list[object]:
+        captured_prompts.append(prompt)
+        assert code == "def target():\n    return 1\n"
+        assert max_group_statements == 2
+        return []
+
+    monkeypatch.setattr(
+        "wfcllm.sawr.detect.pipeline.extract_structure_contexts",
+        fake_extract_structure_contexts,
+    )
+    pipeline = SawrDetectionPipeline(
+        config=SawrDetectionConfig(secret_key="1010", max_group_statements=2),
+        scorer=FakeScorer(),
+    )
+
+    pipeline._score_record_contexts(
+        {
+            "id": "final-code",
+            "prompt": "def target():\n",
+            "final_code": "def target():\n    return 1\n",
+        }
+    )
+
+    assert captured_prompts == [None]
+
+
 def test_pipeline_rejects_artifact_with_mismatched_statistic() -> None:
     raw_config = SawrDetectionConfig(secret_key="1010", statistic="raw_context_max")
     raw_pipeline = SawrDetectionPipeline(config=raw_config, scorer=FakeScorer())
@@ -492,6 +529,123 @@ def test_pipeline_calibrates_context_mean_window_evidence_on_mean_score_scale() 
     assert result.threshold_5fpr == pytest.approx((0.0 + 0.2 + 0.3) / 3)
     assert result.p_value == pytest.approx(0.5)
     assert result.is_watermarked is True
+
+
+def test_pipeline_applies_proxy_penalty_to_calibrated_context_mean() -> None:
+    config = SawrDetectionConfig(
+        secret_key="1010",
+        statistic="calibrated_context_mean_proxy_penalized",
+        proxy_penalty_alpha=0.4,
+        target_fpr=0.5,
+    )
+    pipeline = SawrDetectionPipeline(config=config, scorer=FakeScorer())
+
+    artifact = pipeline.calibrate([
+        _row("neg", "def target():\n    x = 0\n    return 0\n")
+    ])
+    result = pipeline.detect_one(
+        _row("pos", "def target():\n    x = 1\n    return x\n"),
+        artifact=artifact,
+    )
+
+    penalty = 0.4 * math.log1p(3)
+    assert artifact.config["proxy_penalty_alpha"] == pytest.approx(0.4)
+    assert artifact.sample_scores == pytest.approx([-penalty])
+    assert artifact.threshold_5fpr == pytest.approx(-penalty)
+    assert result.score == pytest.approx(0.3010299956639812 - penalty)
+    assert result.threshold_5fpr == pytest.approx(-penalty)
+    assert result.is_watermarked is True
+
+
+def test_pipeline_applies_proxy_and_code_length_adjustment() -> None:
+    config = SawrDetectionConfig(
+        secret_key="1010",
+        statistic="calibrated_context_mean_proxy_length_adjusted",
+        proxy_penalty_alpha=0.34,
+        code_length_adjustment_beta=0.3,
+        code_length_reference_chars=700,
+        target_fpr=0.5,
+    )
+    pipeline = SawrDetectionPipeline(config=config, scorer=FakeScorer())
+
+    negative = _row("neg", "def target():\n    x = 0\n    return 0\n")
+    positive = _row("pos", "def target():\n    x = 1\n    return x\n")
+    artifact = pipeline.calibrate([negative])
+    result = pipeline.detect_one(positive, artifact=artifact)
+
+    negative_code_chars = len(str(negative["final_code"]))
+    positive_code_chars = len(str(positive["final_code"]))
+    negative_expected = (
+        -0.34 * math.log1p(3)
+        + 0.3 * math.log1p(negative_code_chars / 700)
+    )
+    positive_expected = (
+        0.3010299956639812
+        - 0.34 * math.log1p(3)
+        + 0.3 * math.log1p(positive_code_chars / 700)
+    )
+    assert artifact.config["code_length_adjustment_beta"] == pytest.approx(0.3)
+    assert artifact.config["code_length_reference_chars"] == 700
+    assert artifact.sample_scores == pytest.approx([negative_expected])
+    assert result.score == pytest.approx(positive_expected)
+
+
+def test_pipeline_rejects_artifact_with_mismatched_proxy_penalty_alpha() -> None:
+    penalized = SawrDetectionPipeline(
+        config=SawrDetectionConfig(
+            secret_key="1010",
+            statistic="calibrated_context_mean_proxy_penalized",
+            proxy_penalty_alpha=0.4,
+        ),
+        scorer=FakeScorer(),
+    )
+    artifact = penalized.calibrate([
+        _row("neg", "def target():\n    x = 0\n    return 0\n")
+    ])
+    mismatched = SawrDetectionPipeline(
+        config=SawrDetectionConfig(
+            secret_key="1010",
+            statistic="calibrated_context_mean_proxy_penalized",
+            proxy_penalty_alpha=0.2,
+        ),
+        scorer=FakeScorer(),
+    )
+
+    with pytest.raises(ValueError, match="proxy_penalty_alpha"):
+        mismatched.detect_one(
+            _row("pos", "def target():\n    x = 1\n    return x\n"),
+            artifact=artifact,
+        )
+
+
+def test_pipeline_rejects_artifact_with_mismatched_code_length_adjustment() -> None:
+    adjusted = SawrDetectionPipeline(
+        config=SawrDetectionConfig(
+            secret_key="1010",
+            statistic="calibrated_context_mean_proxy_length_adjusted",
+            code_length_adjustment_beta=0.3,
+            code_length_reference_chars=700,
+        ),
+        scorer=FakeScorer(),
+    )
+    artifact = adjusted.calibrate([
+        _row("neg", "def target():\n    x = 0\n    return 0\n")
+    ])
+    mismatched = SawrDetectionPipeline(
+        config=SawrDetectionConfig(
+            secret_key="1010",
+            statistic="calibrated_context_mean_proxy_length_adjusted",
+            code_length_adjustment_beta=0.2,
+            code_length_reference_chars=700,
+        ),
+        scorer=FakeScorer(),
+    )
+
+    with pytest.raises(ValueError, match="code_length_adjustment_beta"):
+        mismatched.detect_one(
+            _row("pos", "def target():\n    x = 1\n    return x\n"),
+            artifact=artifact,
+        )
 
 
 def test_pipeline_marks_insufficient_evidence() -> None:

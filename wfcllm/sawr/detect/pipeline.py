@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -64,6 +65,9 @@ COMPATIBLE_ARTIFACT_CONFIG_FIELDS = (
     "use_ordinal_keying",
     "evidence_mode",
     "statistic",
+    "proxy_penalty_alpha",
+    "code_length_adjustment_beta",
+    "code_length_reference_chars",
     "structure_aware",
     "detector_mode",
     "bucket_edges",
@@ -137,21 +141,28 @@ class SawrDetectionPipeline:
         self._scorer = scorer
 
     def calibrate(self, records: list[dict[str, Any]]) -> CalibrationArtifact:
-        scored_samples = [self._score_record_contexts(record) for record in records]
+        scored_samples = [
+            (self._score_record_contexts(record), len(code_from_record(record)))
+            for record in records
+        ]
         calibration_samples = [
             [
                 self._context_calibration_input(scored)
                 for scored in scored_contexts
             ]
-            for scored_contexts in scored_samples
+            for scored_contexts, _code_chars in scored_samples
         ]
         artifact = build_calibration_artifact(
             calibration_samples,
             config=self._config,
         )
         sample_scores = [
-            self._score_sample(scored_contexts, artifact=artifact)[0]
-            for scored_contexts in scored_samples
+            self._score_sample(
+                scored_contexts,
+                artifact=artifact,
+                code_chars=code_chars,
+            )[0]
+            for scored_contexts, code_chars in scored_samples
         ]
         threshold_5fpr = (
             percentile_threshold(sample_scores, self._config.target_fpr)
@@ -185,6 +196,7 @@ class SawrDetectionPipeline:
         score, context_summaries = self._score_sample(
             scored_contexts,
             artifact=artifact,
+            code_chars=len(code),
         )
         proxy_windows = sum(
             len(scored.context.proxy_windows) for scored in scored_contexts
@@ -266,10 +278,9 @@ class SawrDetectionPipeline:
     def _score_record_contexts(self, record: dict[str, Any]) -> list[_ScoredContext]:
         validate_final_code_detector_input_record(record)
         final_code = code_from_record(record)
-        prompt = record.get("prompt")
         contexts = extract_structure_contexts(
             final_code,
-            prompt=prompt if isinstance(prompt, str) else None,
+            prompt=None,
             max_group_statements=self._config.max_group_statements,
         )
         sample_proxy_windows = sum(len(context.proxy_windows) for context in contexts)
@@ -306,6 +317,7 @@ class SawrDetectionPipeline:
         scored_contexts: list[_ScoredContext],
         *,
         artifact: CalibrationArtifact,
+        code_chars: int,
     ) -> tuple[float, list[ContextDetectionSummary]]:
         context_scores: list[float] = []
         context_summaries: list[ContextDetectionSummary] = []
@@ -331,10 +343,38 @@ class SawrDetectionPipeline:
                 )
             )
 
+        sample_proxy_windows = sum(
+            len(scored.context.proxy_windows) for scored in scored_contexts
+        )
+        sample_score = self._score_sample_from_context_scores(
+            context_scores,
+            sample_proxy_windows=sample_proxy_windows,
+            code_chars=code_chars,
+        )
+        return sample_score, context_summaries
+
+    def _score_sample_from_context_scores(
+        self,
+        context_scores: list[float],
+        *,
+        sample_proxy_windows: int,
+        code_chars: int,
+    ) -> float:
         sample_score = (
             sum(context_scores) / len(context_scores) if context_scores else 0.0
         )
-        return sample_score, context_summaries
+        if self._config.statistic in {
+            "calibrated_context_mean_proxy_penalized",
+            "calibrated_context_mean_proxy_length_adjusted",
+        }:
+            sample_score -= self._config.proxy_penalty_alpha * math.log1p(
+                sample_proxy_windows
+            )
+        if self._config.statistic == "calibrated_context_mean_proxy_length_adjusted":
+            sample_score += self._config.code_length_adjustment_beta * math.log1p(
+                max(0, code_chars) / self._config.code_length_reference_chars
+            )
+        return sample_score
 
     def _score_context(
         self,

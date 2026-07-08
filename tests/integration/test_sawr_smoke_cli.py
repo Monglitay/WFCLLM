@@ -43,6 +43,8 @@ def test_run_sawr_smoke_cli_builds_pipeline_config(
                 "1.0",
                 "--top-k",
                 "0",
+                "--retry-repetition-penalty",
+                "2.0",
                 "--torch-dtype",
                 "bf16",
                 "--device",
@@ -56,10 +58,22 @@ def test_run_sawr_smoke_cli_builds_pipeline_config(
                 "2",
                 "--retry-budget",
                 "1",
+                "--statement-retry-budget",
+                "15",
+                "--window-retry-budget",
+                "10",
+                "--compound-retry-budget",
+                "5",
                 "--global-rollback-budget",
                 "5",
                 "--max-total-sampled-tokens",
                 "321",
+                "--evidence-retry-attempts",
+                "3",
+                "--evidence-retry-seed-stride",
+                "17",
+                "--candidate-sidecar-output",
+                str(tmp_path / "sawr" / "candidate_sidecar.jsonl"),
                 "--target-accept-rate",
                 "0.25",
                 "--prompt-mode",
@@ -84,8 +98,16 @@ def test_run_sawr_smoke_cli_builds_pipeline_config(
     assert config.sample_offset == 2
     assert config.max_group_statements == 2
     assert config.retry_budget == 1
+    assert config.statement_retry_budget == 15
+    assert config.window_retry_budget == 10
+    assert config.compound_retry_budget == 5
     assert config.global_rollback_budget == 5
     assert config.max_total_sampled_tokens == 321
+    assert config.evidence_retry_attempts == 3
+    assert config.evidence_retry_seed_stride == 17
+    assert config.candidate_sidecar_output == str(
+        tmp_path / "sawr" / "candidate_sidecar.jsonl"
+    )
     assert config.rule.target_accept_rate == 0.25
     assert config.generation is generator_config
     assert config.generation.model_path == str(model_path)
@@ -93,6 +115,7 @@ def test_run_sawr_smoke_cli_builds_pipeline_config(
     assert config.generation.temperature == 0.0
     assert config.generation.top_p == 1.0
     assert config.generation.top_k == 0
+    assert config.generation.retry_repetition_penalty == 2.0
     assert config.generation.torch_dtype == "bf16"
     assert config.generation.device == "cpu"
     assert config.generation.seed == 9

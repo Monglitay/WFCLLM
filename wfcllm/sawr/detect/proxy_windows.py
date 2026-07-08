@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from wfcllm.lang.python.parser import PythonParser, SIMPLE_STATEMENT_TYPES
@@ -60,7 +60,7 @@ def select_target_function_name(final_code: str, prompt: str | None = None) -> s
         return None
     if prompt_name in names:
         return prompt_name
-    return names[0]
+    return names[-1]
 
 
 def extract_structure_contexts(
@@ -100,6 +100,7 @@ def extract_structure_contexts(
         context_id=f"module.{target_name}.body",
         structure_type="function_body",
         parent_node_type="function_definition",
+        compound_parent_node_type=None,
         max_group_statements=max_group_statements,
         ordinal_counter=ordinal_counter,
     )
@@ -114,6 +115,7 @@ def extract_structure_contexts(
             context_id=f"module.{target_name}.{compound_node.type}.{compound_index}",
             structure_type=compound_node.type,
             parent_node_type=compound_node.type,
+            compound_parent_node_type=_compound_parent_node_type(compound_node),
             max_group_statements=max_group_statements,
             ordinal_counter=ordinal_counter,
         )
@@ -149,6 +151,7 @@ def _build_context(
     context_id: str,
     structure_type: str,
     parent_node_type: str,
+    compound_parent_node_type: str | None,
     max_group_statements: int,
     ordinal_counter: list[int],
 ) -> StructureContext | None:
@@ -190,8 +193,30 @@ def _build_context(
         structure_type=structure_type,
         max_group_statements=max_group_statements,
     )
-    if not direct_statements or not proxy_windows:
+    compound_window = _build_compound_layer_window(
+        node=node,
+        source_bytes=source_bytes,
+        context_id=context_id,
+        structure_type=structure_type,
+        parent_node_type=compound_parent_node_type,
+    )
+    if compound_window is not None:
+        proxy_windows.append(compound_window)
+    if not proxy_windows:
         return None
+
+    context_statement_count = max(
+        len(direct_statements),
+        compound_window.window_length if compound_window is not None else 0,
+    )
+    proxy_windows = [
+        replace(
+            window,
+            context_statement_count=context_statement_count,
+            context_window_count=len(proxy_windows),
+        )
+        for window in proxy_windows
+    ]
 
     return StructureContext(
         context_id=context_id,
@@ -199,6 +224,52 @@ def _build_context(
         parent_node_type=parent_node_type,
         direct_statements=tuple(direct_statements),
         proxy_windows=tuple(proxy_windows),
+        start_line=node.start_point[0] + 1,
+        end_line=node.end_point[0] + 1,
+    )
+
+
+def _build_compound_layer_window(
+    *,
+    node: Any,
+    source_bytes: bytes,
+    context_id: str,
+    structure_type: str,
+    parent_node_type: str | None,
+) -> ProxyWindow | None:
+    if structure_type not in SCOREABLE_COMPOUND_TYPES or parent_node_type is None:
+        return None
+    normalized_text = _normalize_candidate_text(
+        source_bytes[node.start_byte:node.end_byte].decode("utf-8")
+    )
+    if not normalized_text:
+        return None
+    window_length = max(1, _descendant_simple_statement_count(node))
+    candidate = Candidate(
+        text=normalized_text,
+        candidate_type="compound_layer_proxy_window",
+        node_type=structure_type,
+        position_id=context_id,
+        token_start_idx=0,
+        token_count=0,
+        parent_node_type=parent_node_type,
+        ordinal=None,
+        layer_path=(context_id,),
+        start_byte=node.start_byte,
+        end_byte=node.end_byte,
+        depth=0,
+    )
+    return ProxyWindow(
+        context_id=context_id,
+        window_id=f"{context_id}.compound_layer",
+        normalized_text=normalized_text,
+        candidates=(candidate,),
+        parent_node_type=parent_node_type,
+        structure_type=structure_type,
+        window_length=window_length,
+        context_statement_count=window_length,
+        context_window_count=1,
+        ordinal=None,
         start_line=node.start_point[0] + 1,
         end_line=node.end_point[0] + 1,
     )
@@ -259,6 +330,31 @@ def _build_windows(
             )
         )
     return windows
+
+
+def _compound_parent_node_type(node: Any) -> str:
+    parent = getattr(node, "parent", None)
+    while parent is not None:
+        if parent.type in SCOREABLE_COMPOUND_TYPES:
+            return parent.type
+        if parent.type == "function_definition":
+            return "function_definition"
+        parent = getattr(parent, "parent", None)
+    return "module"
+
+
+def _descendant_simple_statement_count(node: Any) -> int:
+    count = 0
+    pending = list(node.children)
+    while pending:
+        child = pending.pop()
+        if _node_has_recovery_content(child):
+            continue
+        if child.type in SIMPLE_STATEMENT_TYPES:
+            count += 1
+            continue
+        pending.extend(child.children)
+    return count
 
 
 def _top_level_functions(source: str) -> list[Any]:

@@ -73,16 +73,19 @@ def _close_event(
     path: tuple[str, ...],
     final_flush: bool = False,
     closed_layer_paths: tuple[tuple[str, ...], ...] | None = None,
+    text: str = "",
+    node_type: str | None = None,
+    parent_node_type: str = "function_definition",
 ) -> BoundaryEvent:
     return BoundaryEvent(
         kind="layer_closed",
-        node_type="if_statement" if len(path) > 1 else "function_body",
-        parent_node_type="function_definition",
+        node_type=node_type or ("if_statement" if len(path) > 1 else "function_body"),
+        parent_node_type=parent_node_type,
         position_id=path[0],
         layer_path=path,
         token_start_idx=0,
         token_count=0,
-        text="",
+        text=text,
         start_byte=0,
         end_byte=0,
         depth=max(0, len(path) - 1),
@@ -115,12 +118,18 @@ def _state_machine(
     rule: SequenceRule,
     max_group_statements: int = 2,
     retry_budget: int = 1,
+    statement_retry_budget: int | None = None,
+    window_retry_budget: int | None = None,
+    compound_retry_budget: int | None = None,
 ) -> SawrStateMachine[FakeCheckpoint]:
     return SawrStateMachine(
         sample_id="HumanEval/0",
         seed=17,
         max_group_statements=max_group_statements,
         retry_budget=retry_budget,
+        statement_retry_budget=statement_retry_budget,
+        window_retry_budget=window_retry_budget,
+        compound_retry_budget=compound_retry_budget,
         rule=rule,
     )
 
@@ -237,6 +246,127 @@ def test_state_machine_uses_sliding_suffix_when_full_window_misses() -> None:
         "layer_window_rule_miss",
         "simple_candidate_observed",
         "layer_window_rule_miss",
+    ]
+
+
+def test_statement_retry_budget_requests_rollback_on_single_statement_miss() -> None:
+    rule = SequenceRule([False])
+    state_machine = _state_machine(
+        rule,
+        max_group_statements=1,
+        retry_budget=0,
+        statement_retry_budget=1,
+        window_retry_budget=0,
+        compound_retry_budget=0,
+    )
+
+    decision = state_machine.observe_candidate(_candidate("return x"), FakeCheckpoint("s0"))
+
+    assert decision.action == "rollback"
+    assert decision.rollback_checkpoint == FakeCheckpoint("s0")
+    assert state_machine.retry_count == 1
+    assert _event_names(state_machine) == [
+        "simple_candidate_observed",
+        "layer_window_rule_miss",
+        "statement_retry_requested",
+    ]
+
+
+def test_window_retry_budget_requests_rollback_on_full_window_miss() -> None:
+    rule = SequenceRule([False, False])
+    state_machine = _state_machine(
+        rule,
+        max_group_statements=2,
+        retry_budget=0,
+        statement_retry_budget=0,
+        window_retry_budget=1,
+        compound_retry_budget=0,
+    )
+
+    first = state_machine.observe_candidate(_candidate("x = 1"), FakeCheckpoint("s0"))
+    second = state_machine.observe_candidate(_candidate("return x"), FakeCheckpoint("s1"))
+
+    assert first.action == "continue"
+    assert second.action == "rollback"
+    assert second.rollback_checkpoint == FakeCheckpoint("s1")
+    assert state_machine.retry_count == 1
+    assert [request.candidates for request in rule.requests] == [
+        (_candidate("x = 1"),),
+        (_candidate("x = 1"), _candidate("return x")),
+    ]
+    assert _event_names(state_machine) == [
+        "simple_candidate_observed",
+        "layer_window_rule_miss",
+        "simple_candidate_observed",
+        "layer_window_rule_miss",
+        "window_retry_requested",
+    ]
+
+
+def test_compound_retry_budget_overrides_legacy_retry_budget() -> None:
+    path = ("module.foo.body", "if:0")
+    rule = SequenceRule([False, False])
+    state_machine = _state_machine(
+        rule,
+        max_group_statements=2,
+        retry_budget=0,
+        statement_retry_budget=0,
+        window_retry_budget=0,
+        compound_retry_budget=1,
+    )
+
+    state_machine.observe_event(_compound_event(path, "if:0"), FakeCheckpoint("if0"))
+    state_machine.observe_event(_simple_event("return x", path), FakeCheckpoint("s0"))
+    rollback = state_machine.observe_event(_close_event(path), None)
+
+    assert rollback.action == "rollback"
+    assert rollback.rollback_checkpoint == FakeCheckpoint("if0")
+    assert state_machine.retry_count == 1
+    assert _event_names(state_machine) == [
+        "compound_layer_started",
+        "simple_candidate_observed",
+        "layer_window_rule_miss",
+        "layer_retry_requested",
+    ]
+
+
+def test_compound_layer_close_scores_whole_layer_window_before_retry() -> None:
+    path = ("module.foo.body", "if:0")
+    rule = SequenceRule([False, False, True])
+    state_machine = _state_machine(
+        rule,
+        max_group_statements=2,
+        retry_budget=1,
+        statement_retry_budget=0,
+        window_retry_budget=0,
+        compound_retry_budget=1,
+    )
+
+    state_machine.observe_event(_compound_event(path, "if:0"), FakeCheckpoint("if0"))
+    state_machine.observe_event(_simple_event("return x", path), FakeCheckpoint("s0"))
+    close = state_machine.observe_event(
+        _close_event(
+            path,
+            text="if x:\n    return x",
+            node_type="if_statement",
+            parent_node_type="function_definition",
+        ),
+        None,
+    )
+
+    assert close.action == "close"
+    assert state_machine.accepted_hit_count == 1
+    assert rule.requests[-1].candidates[0].text == "if x:\n    return x"
+    assert rule.requests[-1].candidates[0].candidate_type == "compound_layer"
+    assert rule.requests[-1].candidates[0].node_type == "if_statement"
+    assert rule.requests[-1].candidates[0].parent_node_type == "function_definition"
+    assert _event_names(state_machine) == [
+        "compound_layer_started",
+        "simple_candidate_observed",
+        "layer_window_rule_miss",
+        "compound_layer_window_observed",
+        "accepted_generation_time_window",
+        "layer_closed_with_direct_hit",
     ]
 
 

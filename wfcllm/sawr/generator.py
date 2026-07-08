@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, replace
 from typing import Any
@@ -69,8 +70,16 @@ class _GeneratedStep:
     token_text: str
 
 
+@dataclass(frozen=True)
+class _RetryPenaltySequence:
+    base_ids: tuple[int, ...]
+    failed_ids: tuple[int, ...]
+
+
 class SawrModelContext:
     """Small causal-LM generation context with rollback support."""
+
+    _MAX_RETRY_PENALTY_SEQUENCES = 128
 
     def __init__(
         self,
@@ -92,6 +101,7 @@ class SawrModelContext:
         self._next_logits: torch.Tensor | None = None
         self._step_history: list[SawrCheckpoint] = []
         self._boundary_checkpoints: list[SawrCheckpoint] = []
+        self._retry_penalty_sequences: list[_RetryPenaltySequence] = []
 
     @property
     def eos_id(self) -> int | None:
@@ -112,6 +122,7 @@ class SawrModelContext:
         self.generated_text = ""
         self._step_history = []
         self._boundary_checkpoints = []
+        self._retry_penalty_sequences = []
 
     def checkpoint(
         self,
@@ -138,9 +149,13 @@ class SawrModelContext:
     def rollback(
         self,
         checkpoint: SawrCheckpoint,
+        *,
+        remember_failed_sequence: bool = False,
     ) -> StateMachineSnapshot[SawrCheckpoint] | None:
         if self.past_kv is None:
             raise ValueError("cannot rollback before prefill")
+        if remember_failed_sequence:
+            self._remember_failed_sequence(checkpoint)
         self.past_kv = self._cache_mgr.rollback(self.past_kv, checkpoint.kv_snapshot)
         self.generated_ids = list(checkpoint.generated_ids)
         self.generated_text = checkpoint.generated_text
@@ -159,6 +174,25 @@ class SawrModelContext:
         )
         self._boundary_checkpoints = self._boundary_checkpoints[:boundary_count]
         return checkpoint.state_machine_state
+
+    def _remember_failed_sequence(self, checkpoint: SawrCheckpoint) -> None:
+        if self._config.retry_repetition_penalty <= 1.0:
+            return
+        base_ids = tuple(checkpoint.generated_ids)
+        if len(base_ids) > len(self.generated_ids):
+            return
+        if tuple(self.generated_ids[: len(base_ids)]) != base_ids:
+            return
+        failed_ids = tuple(self.generated_ids[len(base_ids):])
+        if not failed_ids:
+            return
+        sequence = _RetryPenaltySequence(base_ids=base_ids, failed_ids=failed_ids)
+        if sequence in self._retry_penalty_sequences:
+            return
+        self._retry_penalty_sequences.append(sequence)
+        excess = len(self._retry_penalty_sequences) - self._MAX_RETRY_PENALTY_SEQUENCES
+        if excess > 0:
+            del self._retry_penalty_sequences[:excess]
 
     def record_boundary_checkpoint(
         self,
@@ -217,6 +251,7 @@ class SawrModelContext:
 
     def _sample(self, logits: torch.Tensor) -> int:
         logits = logits.squeeze(0).squeeze(0).float()
+        logits = self._apply_retry_repetition_penalty(logits)
         if self._config.temperature <= 0:
             return int(logits.argmax().item())
 
@@ -239,6 +274,38 @@ class SawrModelContext:
             logits[indices_to_remove] = float("-inf")
         probs = F.softmax(logits, dim=-1)
         return int(torch.multinomial(probs, num_samples=1).item())
+
+    def _apply_retry_repetition_penalty(self, logits: torch.Tensor) -> torch.Tensor:
+        if self._config.retry_repetition_penalty <= 1.0:
+            return logits
+        token_counts = self._retry_penalty_next_token_counts()
+        if not token_counts:
+            return logits
+
+        adjusted = logits.clone()
+        penalty = math.log(self._config.retry_repetition_penalty)
+        for token_id, count in token_counts.items():
+            if 0 <= token_id < adjusted.size(-1):
+                adjusted[token_id] -= penalty * count
+        return adjusted
+
+    def _retry_penalty_next_token_counts(self) -> dict[int, int]:
+        current_ids = tuple(self.generated_ids)
+        token_counts: dict[int, int] = {}
+        for sequence in self._retry_penalty_sequences:
+            base_len = len(sequence.base_ids)
+            if len(current_ids) < base_len:
+                continue
+            if current_ids[:base_len] != sequence.base_ids:
+                continue
+            current_suffix = current_ids[base_len:]
+            if len(current_suffix) >= len(sequence.failed_ids):
+                continue
+            if sequence.failed_ids[: len(current_suffix)] != current_suffix:
+                continue
+            token_id = sequence.failed_ids[len(current_suffix)]
+            token_counts[token_id] = token_counts.get(token_id, 0) + 1
+        return token_counts
 
 
 class SawrGenerator:
@@ -267,8 +334,13 @@ class SawrGenerator:
         retry_budget: int,
         global_rollback_budget: int,
         max_total_sampled_tokens: int,
+        statement_retry_budget: int | None = None,
+        window_retry_budget: int | None = None,
+        compound_retry_budget: int | None = None,
+        seed_override: int | None = None,
     ) -> SawrGenerateResult:
-        torch.manual_seed(self.config.seed)
+        active_seed = self.config.seed if seed_override is None else seed_override
+        torch.manual_seed(active_seed)
         lm_prompt = build_generation_prompt(
             prompt,
             self._tokenizer,
@@ -279,9 +351,12 @@ class SawrGenerator:
         context.prefill(lm_prompt)
         state_machine: SawrStateMachine[SawrCheckpoint] = SawrStateMachine(
             sample_id=sample_id,
-            seed=self.config.seed,
+            seed=active_seed,
             max_group_statements=max_group_statements,
             retry_budget=retry_budget,
+            statement_retry_budget=statement_retry_budget,
+            window_retry_budget=window_retry_budget,
+            compound_retry_budget=compound_retry_budget,
             rule=self._rule,
         )
         saw_controlled_body = context.boundary.saw_controlled_body
@@ -414,7 +489,10 @@ class SawrGenerator:
                     and remaining_rollback_budget <= 0
                 ):
                     return "budget_exhausted"
-                snapshot = context.rollback(decision.rollback_checkpoint)
+                snapshot = context.rollback(
+                    decision.rollback_checkpoint,
+                    remember_failed_sequence=True,
+                )
                 if snapshot is not None:
                     state_machine.rollback(snapshot)
                 return "rolled_back"

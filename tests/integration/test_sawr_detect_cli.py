@@ -474,7 +474,13 @@ def _detector_cli_args(paths: dict[str, Path]) -> list[str]:
         "--evidence-mode",
         "hit_only",
         "--statistic",
-        "raw_context_max",
+        "calibrated_context_mean_proxy_penalized",
+        "--proxy-penalty-alpha",
+        "0.34",
+        "--code-length-adjustment-beta",
+        "0.3",
+        "--code-length-reference-chars",
+        "700",
         "--no-structure-aware",
     ]
 
@@ -509,7 +515,10 @@ def _assert_detector_mapping(
     assert config.target_fpr == 0.1
     assert config.use_ordinal_keying is True
     assert config.evidence_mode == "hit_only"
-    assert config.statistic == "raw_context_max"
+    assert config.statistic == "calibrated_context_mean_proxy_penalized"
+    assert config.proxy_penalty_alpha == 0.34
+    assert config.code_length_adjustment_beta == 0.3
+    assert config.code_length_reference_chars == 700
     assert config.structure_aware is False
 
 

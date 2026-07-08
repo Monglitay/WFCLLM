@@ -12,6 +12,8 @@ DETECTOR_MODE = "sawr-structure-aware-proxy-window/v1"
 EVIDENCE_MODES = ("hit_plus_margin", "hit_only", "margin_only")
 STATISTIC_MODES = (
     "calibrated_context_max",
+    "calibrated_context_mean_proxy_penalized",
+    "calibrated_context_mean_proxy_length_adjusted",
     "raw_context_max",
     "context_mean_window_evidence",
 )
@@ -19,6 +21,8 @@ STATISTIC_MODES = (
 EvidenceMode = Literal["hit_plus_margin", "hit_only", "margin_only"]
 StatisticMode = Literal[
     "calibrated_context_max",
+    "calibrated_context_mean_proxy_penalized",
+    "calibrated_context_mean_proxy_length_adjusted",
     "raw_context_max",
     "context_mean_window_evidence",
 ]
@@ -68,6 +72,9 @@ class SawrDetectionConfig:
     use_ordinal_keying: bool = False
     evidence_mode: EvidenceMode = "hit_plus_margin"
     statistic: StatisticMode = "calibrated_context_max"
+    proxy_penalty_alpha: float = 0.0
+    code_length_adjustment_beta: float = 0.0
+    code_length_reference_chars: int = 700
     structure_aware: bool = True
     bucket_edges: BucketEdges = field(default_factory=BucketEdges)
     detector_mode: str = DETECTOR_MODE
@@ -113,6 +120,28 @@ class SawrDetectionConfig:
             raise ValueError(
                 f"statistic must be one of {STATISTIC_MODES}, got {self.statistic!r}"
             )
+        if not _is_json_number(self.proxy_penalty_alpha):
+            raise ValueError(
+                "proxy_penalty_alpha must be a real number and finite JSON number "
+                "(int or float)"
+            )
+        if not self.proxy_penalty_alpha >= 0:
+            raise ValueError("proxy_penalty_alpha must be non-negative")
+        if not _is_json_number(self.code_length_adjustment_beta):
+            raise ValueError(
+                "code_length_adjustment_beta must be a real number and finite JSON "
+                "number (int or float)"
+            )
+        object.__setattr__(
+            self,
+            "code_length_adjustment_beta",
+            float(self.code_length_adjustment_beta),
+        )
+        if (
+            not _is_int(self.code_length_reference_chars)
+            or self.code_length_reference_chars <= 0
+        ):
+            raise ValueError("code_length_reference_chars must be positive")
         if not isinstance(self.structure_aware, bool):
             raise ValueError("structure_aware must be bool")
         if not isinstance(self.bucket_edges, BucketEdges):

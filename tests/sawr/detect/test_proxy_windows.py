@@ -24,6 +24,17 @@ def test_select_target_function_prefers_prompt_name() -> None:
     assert select_target_function_name(code, prompt=prompt) == "target"
 
 
+def test_select_target_function_without_prompt_prefers_last_top_level_function() -> None:
+    code = (
+        "def helper():\n"
+        "    return 0\n\n"
+        "def target(x):\n"
+        "    return x\n"
+    )
+
+    assert select_target_function_name(code, prompt=None) == "target"
+
+
 def test_extracts_decorated_prompt_target_function() -> None:
     code = (
         "def helper():\n"
@@ -89,6 +100,7 @@ def test_extracts_direct_windows_without_child_layer_statements() -> None:
         "b = 1",
         "c = 2",
         "b = 1\nc = 2",
+        "if x:\n        b = 1\n        c = 2",
     ]
 
 
@@ -111,6 +123,7 @@ def test_skips_empty_function_body_context_when_child_context_is_scoreable() -> 
         "y = 1",
         "return y",
         "y = 1\nreturn y",
+        "if x:\n        y = 1\n        return y",
     ]
 
 
@@ -130,6 +143,49 @@ def test_extract_proxy_windows_flattens_context_windows() -> None:
     ]
     assert all(window.parent_node_type == "function_definition" for window in windows)
     assert {window.window_length for window in windows} == {1, 2}
+
+
+def test_extracts_compound_layer_proxy_windows_for_nested_structures() -> None:
+    code = (
+        "def target(numbers, threshold):\n"
+        "    for i in range(len(numbers) - 1):\n"
+        "        if abs(numbers[i] - numbers[i + 1]) < threshold:\n"
+        "            return True\n"
+        "    return False\n"
+    )
+
+    windows = extract_proxy_windows(
+        code,
+        prompt="def target(numbers, threshold):\n",
+        max_group_statements=2,
+    )
+
+    compound_windows = [
+        window
+        for window in windows
+        if window.candidates[0].candidate_type == "compound_layer_proxy_window"
+    ]
+
+    assert [window.normalized_text for window in compound_windows] == [
+        (
+            "for i in range(len(numbers) - 1):\n"
+            "        if abs(numbers[i] - numbers[i + 1]) < threshold:\n"
+            "            return True"
+        ),
+        "if abs(numbers[i] - numbers[i + 1]) < threshold:\n            return True",
+    ]
+    assert [window.parent_node_type for window in compound_windows] == [
+        "function_definition",
+        "for_statement",
+    ]
+    assert [window.structure_type for window in compound_windows] == [
+        "for_statement",
+        "if_statement",
+    ]
+    assert [window.candidates[0].node_type for window in compound_windows] == [
+        "for_statement",
+        "if_statement",
+    ]
 
 
 def test_detector_package_exports_proxy_window_api() -> None:

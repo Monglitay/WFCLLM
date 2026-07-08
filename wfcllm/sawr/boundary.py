@@ -429,25 +429,30 @@ class PromptAwareBoundaryDetector:
         ]
         if not close_paths:
             close_paths = [layer_path]
-        return [
-            BoundaryEvent(
-                kind="layer_closed",
-                node_type=path[-1].split(":", 1)[0] if path else node.type,
-                parent_node_type=parent_node_type,
-                position_id=path[0] if path else "",
-                layer_path=path,
-                token_start_idx=self._token_end_idx(end_byte),
-                token_count=0,
-                text="",
-                start_byte=end_byte,
-                end_byte=end_byte,
-                depth=max(0, len(path) - 1),
-                checkpoint_key=path[-1] if path else None,
-                closed_layer_paths=(path,),
-                final_flush=final_flush,
+        events: list[BoundaryEvent] = []
+        for path in close_paths:
+            is_current_layer = path == layer_path and offsets is not None
+            event_start = offsets.generated_start if is_current_layer else end_byte
+            event_end = offsets.generated_end if is_current_layer else end_byte
+            events.append(
+                BoundaryEvent(
+                    kind="layer_closed",
+                    node_type=path[-1].split(":", 1)[0] if path else node.type,
+                    parent_node_type=parent_node_type,
+                    position_id=path[0] if path else "",
+                    layer_path=path,
+                    token_start_idx=self._token_end_idx(end_byte),
+                    token_count=0,
+                    text=offsets.text if is_current_layer else "",
+                    start_byte=event_start,
+                    end_byte=event_end,
+                    depth=max(0, len(path) - 1),
+                    checkpoint_key=path[-1] if path else None,
+                    closed_layer_paths=(path,),
+                    final_flush=final_flush,
+                )
             )
-            for path in close_paths
-        ]
+        return events
 
     def _compound_can_close(
         self,

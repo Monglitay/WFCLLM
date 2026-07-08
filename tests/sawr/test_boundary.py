@@ -233,6 +233,12 @@ def test_detector_emits_compound_and_nested_simple_events_for_if_else():
     assert events[2].candidate.text == "y = 2"
     assert events[2].candidate.layer_path == events[1].candidate.layer_path
     assert events[3].closed_layer_paths == (events[1].layer_path,)
+    assert events[3].text == (
+        "if x:\n"
+        "        y = 1\n"
+        "    else:\n"
+        "        y = 2"
+    )
     assert events[4].candidate is not None
     assert events[4].candidate.text == "return y"
     assert events[4].candidate.layer_path == ("module.f.body",)

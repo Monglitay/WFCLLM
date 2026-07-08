@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from ast import literal_eval
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -38,8 +39,11 @@ ALLOWED_AUDIT_EVENTS = {
     "sample_failed",
     "compound_layer_started",
     "simple_candidate_observed",
+    "compound_layer_window_observed",
     "layer_window_rule_miss",
     "accepted_generation_time_window",
+    "statement_retry_requested",
+    "window_retry_requested",
     "layer_retry_requested",
     "retry_layer_early_closed_after_hit",
     "layer_disappeared_without_hit",
@@ -79,6 +83,7 @@ class SawrPipeline:
         out_dir.mkdir(parents=True, exist_ok=True)
         final_path, audit_path, mode = self._resolve_output_paths(out_dir)
         processed_ids = self._load_processed_ids(final_path) if mode == "a" else set()
+        candidate_sidecar_file = self._open_candidate_sidecar(mode)
 
         prompts = load_prompts(
             self._config.dataset,
@@ -87,67 +92,138 @@ class SawrPipeline:
             sample_offset=self._config.sample_offset,
         )
 
-        with final_path.open(mode, encoding="utf-8") as final_file:
-            with audit_path.open(mode, encoding="utf-8") as audit_file:
-                for item in prompts:
-                    sample_id = str(item["id"])
-                    if sample_id in processed_ids:
-                        continue
+        try:
+            with final_path.open(mode, encoding="utf-8") as final_file:
+                with audit_path.open(mode, encoding="utf-8") as audit_file:
+                    for item in prompts:
+                        sample_id = str(item["id"])
+                        if sample_id in processed_ids:
+                            continue
 
-                    prompt = str(item["prompt"])
-                    try:
-                        result = self._generator.generate(
-                            sample_id=sample_id,
-                            prompt=prompt,
-                            dataset=self._config.dataset,
-                            max_group_statements=self._config.max_group_statements,
-                            retry_budget=self._config.retry_budget,
-                            global_rollback_budget=int(
-                                self._config.global_rollback_budget
-                            ),
-                            max_total_sampled_tokens=int(
-                                self._config.max_total_sampled_tokens
-                            ),
-                        )
-                    except Exception as exc:
-                        audit_file.write(
-                            json.dumps(
-                                self._build_sample_failed_audit_row(
-                                    sample_id=sample_id,
-                                    reason=str(exc),
+                        prompt = str(item["prompt"])
+                        try:
+                            generate_kwargs: dict[str, object] = {
+                                "sample_id": sample_id,
+                                "prompt": prompt,
+                                "dataset": self._config.dataset,
+                                "max_group_statements": (
+                                    self._config.max_group_statements
                                 ),
-                                ensure_ascii=False,
+                                "retry_budget": self._config.retry_budget,
+                                "global_rollback_budget": int(
+                                    self._config.global_rollback_budget
+                                ),
+                                "max_total_sampled_tokens": int(
+                                    self._config.max_total_sampled_tokens
+                                ),
+                            }
+                            if self._config.statement_retry_budget is not None:
+                                generate_kwargs["statement_retry_budget"] = (
+                                    self._config.statement_retry_budget
+                                )
+                            if self._config.window_retry_budget is not None:
+                                generate_kwargs["window_retry_budget"] = (
+                                    self._config.window_retry_budget
+                                )
+                            if self._config.compound_retry_budget is not None:
+                                generate_kwargs["compound_retry_budget"] = (
+                                    self._config.compound_retry_budget
+                                )
+                            result = self._generate_with_evidence_retry(
+                                generate_kwargs,
                             )
-                            + "\n"
+                        except Exception as exc:
+                            audit_file.write(
+                                json.dumps(
+                                    self._build_sample_failed_audit_row(
+                                        sample_id=sample_id,
+                                        reason=str(exc),
+                                    ),
+                                    ensure_ascii=False,
+                                )
+                                + "\n"
+                            )
+                            audit_file.flush()
+                            print(
+                                f"[warning] {sample_id} SAWR smoke failed: {exc}",
+                                file=sys.stderr,
+                            )
+                            continue
+
+                        final_row = self._build_final_row(sample_id, prompt, result)
+                        audit_rows = [
+                            self._build_audit_row(sample_id, event)
+                            for event in result.audit_events
+                        ]
+                        forbidden = FORBIDDEN_FINAL_FIELDS & set(final_row)
+                        if forbidden:
+                            raise ValueError(
+                                "SAWR final row contains forbidden fields: "
+                                f"{sorted(forbidden)}"
+                            )
+
+                        final_file.write(
+                            json.dumps(final_row, ensure_ascii=False) + "\n"
                         )
+                        for audit_row in audit_rows:
+                            audit_file.write(
+                                json.dumps(audit_row, ensure_ascii=False) + "\n"
+                            )
+                        if candidate_sidecar_file is not None:
+                            for sidecar_row in self._build_candidate_sidecar_rows(
+                                sample_id,
+                                result.audit_events,
+                            ):
+                                candidate_sidecar_file.write(
+                                    json.dumps(sidecar_row, ensure_ascii=False) + "\n"
+                                )
+                        final_file.flush()
                         audit_file.flush()
-                        print(
-                            f"[warning] {sample_id} SAWR smoke failed: {exc}",
-                            file=sys.stderr,
-                        )
-                        continue
-
-                    final_row = self._build_final_row(sample_id, prompt, result)
-                    audit_rows = [
-                        self._build_audit_row(sample_id, event)
-                        for event in result.audit_events
-                    ]
-                    forbidden = FORBIDDEN_FINAL_FIELDS & set(final_row)
-                    if forbidden:
-                        raise ValueError(
-                            "SAWR final row contains forbidden fields: "
-                            f"{sorted(forbidden)}"
-                        )
-
-                    final_file.write(json.dumps(final_row, ensure_ascii=False) + "\n")
-                    for audit_row in audit_rows:
-                        audit_file.write(
-                            json.dumps(audit_row, ensure_ascii=False) + "\n"
-                        )
-                    final_file.flush()
-                    audit_file.flush()
+                        if candidate_sidecar_file is not None:
+                            candidate_sidecar_file.flush()
+        finally:
+            if candidate_sidecar_file is not None:
+                candidate_sidecar_file.close()
 
         return str(final_path)
+
+    def _generate_with_evidence_retry(
+        self,
+        generate_kwargs: dict[str, object],
+    ) -> SawrGenerateResult:
+        attempts = int(self._config.evidence_retry_attempts)
+        if attempts == 1:
+            return self._generator.generate(**generate_kwargs)
+
+        base_seed = int(self._config.generation.seed)
+        seed_stride = int(self._config.evidence_retry_seed_stride)
+        best_result: SawrGenerateResult | None = None
+        best_key: tuple[int, int, int, int, int] | None = None
+        for attempt_index in range(attempts):
+            result = self._generator.generate(
+                **generate_kwargs,
+                seed_override=base_seed + attempt_index * seed_stride,
+            )
+            key = self._evidence_retry_key(result, attempt_index)
+            if best_key is None or key > best_key:
+                best_result = result
+                best_key = key
+        if best_result is None:
+            raise ValueError("evidence retry produced no generation attempts")
+        return best_result
+
+    @staticmethod
+    def _evidence_retry_key(
+        result: SawrGenerateResult,
+        attempt_index: int,
+    ) -> tuple[int, int, int, int, int]:
+        return (
+            int(result.accepted_hit_count),
+            -int(result.closed_without_hit_count),
+            -int(result.fallback_count),
+            int(result.candidate_count),
+            -attempt_index,
+        )
 
     def _resolve_output_paths(self, out_dir: Path) -> tuple[Path, Path, str]:
         if self._config.resume == "latest":
@@ -211,6 +287,13 @@ class SawrPipeline:
             "scientific_claims_enabled": False,
         }
 
+    def _open_candidate_sidecar(self, mode: str):
+        if self._config.candidate_sidecar_output is None:
+            return None
+        path = Path(self._config.candidate_sidecar_output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path.open(mode, encoding="utf-8")
+
     @staticmethod
     def _build_audit_row(sample_id: str, event: AuditEvent) -> dict[str, object]:
         if event.event not in ALLOWED_AUDIT_EVENTS:
@@ -218,6 +301,14 @@ class SawrPipeline:
 
         payload: dict[str, Any] = asdict(event)
         payload.pop("sample_id", None)
+        for diagnostic_field in (
+            "node_type",
+            "parent_node_type",
+            "ordinal",
+            "normalized_text",
+            "normalized_text_hash",
+        ):
+            payload.pop(diagnostic_field, None)
         return {
             "artifact_type": "sawr_audit_event",
             "schema_version": "sawr-smoke/v1",
@@ -227,6 +318,54 @@ class SawrPipeline:
             "scientific_claims_enabled": False,
             **payload,
         }
+
+    @staticmethod
+    def _build_candidate_sidecar_rows(
+        sample_id: str,
+        events: list[AuditEvent],
+    ) -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        for event in events:
+            if event.normalized_text is None:
+                continue
+            reason_fields = _parse_semantic_lsh_reason(event.reason)
+            rows.append(
+                {
+                    "artifact_type": "sawr_generation_candidate_text_sidecar",
+                    "schema_version": "sawr-e1-e2-diagnostic/v1",
+                    "id": sample_id,
+                    "audit_only": True,
+                    "detector_input_allowed": False,
+                    "scientific_claims_enabled": False,
+                    "event": event.event,
+                    "decision": event.decision,
+                    "candidate_hash": event.candidate_hash,
+                    "candidate_type": event.candidate_type,
+                    "position_id": event.position_id,
+                    "node_type": event.node_type,
+                    "parent_node_type": event.parent_node_type,
+                    "ordinal": event.ordinal,
+                    "group_statement_count": event.group_statement_count,
+                    "normalized_text": event.normalized_text,
+                    "normalized_text_hash": event.normalized_text_hash,
+                    "rule_name": event.rule_name,
+                    "reason": event.reason,
+                    "lsh_signature_from_audit_reason": reason_fields[
+                        "lsh_signature"
+                    ],
+                    "in_valid_set_from_audit_reason": reason_fields["in_valid_set"],
+                    "min_margin_from_audit_reason": reason_fields["min_margin"],
+                    "k_from_audit_reason": reason_fields["k"],
+                    "gamma_target_from_audit_reason": reason_fields[
+                        "gamma_target"
+                    ],
+                    "gamma_effective_from_audit_reason": reason_fields[
+                        "gamma_effective"
+                    ],
+                    "final_flush": event.final_flush,
+                }
+            )
+        return rows
 
     @staticmethod
     def _build_sample_failed_audit_row(
@@ -250,3 +389,50 @@ class SawrPipeline:
             "reason": reason,
             "candidate_hash": None,
         }
+
+
+def _parse_semantic_lsh_reason(reason: str | None) -> dict[str, object]:
+    parsed: dict[str, object] = {
+        "lsh_signature": None,
+        "in_valid_set": None,
+        "min_margin": None,
+        "k": None,
+        "gamma_target": None,
+        "gamma_effective": None,
+    }
+    if not reason:
+        return parsed
+
+    fields: dict[str, str] = {}
+    for item in reason.split(";"):
+        if "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        fields[key.strip()] = value.strip()
+
+    if "lsh_signature" in fields:
+        try:
+            value = literal_eval(fields["lsh_signature"])
+        except (SyntaxError, ValueError):
+            value = fields["lsh_signature"]
+        if isinstance(value, tuple):
+            parsed["lsh_signature"] = list(value)
+        else:
+            parsed["lsh_signature"] = value
+    if "in_valid_set" in fields:
+        if fields["in_valid_set"] == "True":
+            parsed["in_valid_set"] = True
+        elif fields["in_valid_set"] == "False":
+            parsed["in_valid_set"] = False
+    for key in ("min_margin", "gamma_target", "gamma_effective"):
+        if key in fields:
+            try:
+                parsed[key] = float(fields[key])
+            except ValueError:
+                parsed[key] = fields[key]
+    if "k" in fields:
+        try:
+            parsed["k"] = int(fields["k"])
+        except ValueError:
+            parsed["k"] = fields["k"]
+    return parsed

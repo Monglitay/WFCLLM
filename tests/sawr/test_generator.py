@@ -49,14 +49,20 @@ class SequenceRule:
 class FakeTokenizer:
     eos_token_id = 99
 
-    def __init__(self, token_texts: list[str]) -> None:
+    def __init__(
+        self,
+        token_texts: list[str],
+        token_ids_by_text: dict[str, list[int]] | None = None,
+    ) -> None:
         self._token_texts = token_texts
+        self._token_ids_by_text = token_ids_by_text or {}
         self.apply_chat_template_calls = 0
 
-    def encode(self, text, return_tensors=None):
+    def encode(self, text, return_tensors=None, add_special_tokens=True):
+        token_ids = self._token_ids_by_text.get(text, [1, 2])
         if return_tensors == "pt":
-            return torch.tensor([[1, 2]], dtype=torch.long)
-        return [1, 2]
+            return torch.tensor([token_ids], dtype=torch.long)
+        return list(token_ids)
 
     def decode(self, token_ids, skip_special_tokens=True):
         token_id = token_ids[0]
@@ -115,6 +121,31 @@ class EqualChoiceModel:
         logits = torch.full((1, 1, 3), -100.0)
         logits[0, 0, 1] = 1.0
         logits[0, 0, 2] = 1.0
+        seq_len = (
+            input_ids.shape[1]
+            if past_key_values is None
+            else past_key_values[0][0].shape[2] + 1
+        )
+        past = (
+            (
+                torch.zeros(1, 1, seq_len, 1),
+                torch.zeros(1, 1, seq_len, 1),
+            ),
+        )
+        return SimpleNamespace(logits=logits, past_key_values=past)
+
+
+class BiasedChoiceModel:
+    def parameters(self):
+        return iter([torch.zeros(1)])
+
+    def eval(self):
+        return self
+
+    def __call__(self, input_ids, past_key_values=None, use_cache=True):
+        logits = torch.full((1, 1, 3), -100.0)
+        logits[0, 0, 1] = 10.0
+        logits[0, 0, 2] = 9.5
         seq_len = (
             input_ids.shape[1]
             if past_key_values is None
@@ -217,6 +248,29 @@ def test_model_context_checkpoint_and_rollback_restore_text(tmp_path: Path) -> N
 
     assert context.generated_ids == []
     assert context.generated_text == ""
+
+
+def test_model_context_penalizes_rolled_back_token_prefix(tmp_path: Path) -> None:
+    tokenizer = FakeTokenizer(["", "A", "B"], token_ids_by_text={"prompt": [0]})
+    model = BiasedChoiceModel()
+    context = SawrModelContext(
+        model=model,
+        tokenizer=tokenizer,
+        config=_generation_config(
+            tmp_path,
+            temperature=0.0,
+            retry_repetition_penalty=2.0,
+        ),
+    )
+    context.prefill("prompt")
+    checkpoint = context.checkpoint()
+
+    first = context.forward_and_sample()
+    context.rollback(checkpoint, remember_failed_sequence=True)
+    second = context.forward_and_sample()
+
+    assert first.token_id == 1
+    assert second.token_id == 2
 
 
 def test_generator_accepts_simple_statement_group(tmp_path: Path) -> None:
@@ -453,7 +507,7 @@ def test_generator_retries_nested_if_with_new_early_closed_structure(
     model = FakeModel([1, 2, 3, 4, 5, 6, 7])
     generator = SawrGenerator(
         config=_generation_config(tmp_path, max_new_tokens=7, eos_token_id=7),
-        rule=SequenceRule([False, False, True]),
+        rule=SequenceRule([False, False, False, True]),
         model=model,
         tokenizer=tokenizer,
     )
@@ -491,7 +545,7 @@ def test_generator_rolls_back_entire_same_token_compound_attempt(
             eos_token_id=2,
             temperature=1.0,
         ),
-        rule=SequenceRule([False, True, True]),
+        rule=SequenceRule([False, False, True, True]),
         model=model,
         tokenizer=tokenizer,
     )
@@ -509,6 +563,48 @@ def test_generator_rolls_back_entire_same_token_compound_attempt(
     assert "return 1" not in result.final_code
     assert result.final_code == "def foo(x):\n    if x:\n        return 2\n    y = 0\n"
     assert "layer_retry_requested" in [event.event for event in result.audit_events]
+
+
+def test_generator_retry_penalty_diverges_after_statement_rollback(
+    tmp_path: Path,
+) -> None:
+    tokenizer = FakeTokenizer(
+        [
+            "",
+            "    return 1\n",
+            "    return 2\n",
+        ],
+        token_ids_by_text={"def foo():\n": [0]},
+    )
+    model = BiasedChoiceModel()
+    generator = SawrGenerator(
+        config=_generation_config(
+            tmp_path,
+            max_new_tokens=2,
+            eos_token_id=2,
+            temperature=0.0,
+            retry_repetition_penalty=2.0,
+        ),
+        rule=SequenceRule([False, True, True]),
+        model=model,
+        tokenizer=tokenizer,
+    )
+
+    result = generator.generate(
+        sample_id="HumanEval/0",
+        prompt="def foo():\n",
+        dataset="humaneval",
+        max_group_statements=1,
+        retry_budget=0,
+        statement_retry_budget=1,
+        global_rollback_budget=1,
+        max_total_sampled_tokens=4,
+    )
+
+    assert result.final_code == "def foo():\n    return 2\n"
+    assert "statement_retry_requested" in [
+        event.event for event in result.audit_events
+    ]
 
 
 def test_generator_feeds_valid_prefix_before_stop_sequence_in_same_token(

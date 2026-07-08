@@ -108,6 +108,52 @@ class UnsupportedAuditGenerator:
         )
 
 
+class EvidenceRetryGenerator:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def generate(
+        self,
+        sample_id: str,
+        prompt: str,
+        dataset: str,
+        max_group_statements: int,
+        retry_budget: int,
+        global_rollback_budget: int,
+        max_total_sampled_tokens: int,
+        seed_override: int | None = None,
+    ) -> SawrGenerateResult:
+        self.calls.append(
+            {
+                "sample_id": sample_id,
+                "seed_override": seed_override,
+            }
+        )
+        attempt_index = len(self.calls) - 1
+        accepted_hits = [0, 2, 1][attempt_index]
+        return SawrGenerateResult(
+            final_code=prompt + f"    return {attempt_index}\n",
+            accepted_hit_count=accepted_hits,
+            closed_without_hit_count=2 - accepted_hits,
+            fallback_count=attempt_index,
+            candidate_count=attempt_index + 1,
+            audit_events=[
+                AuditEvent(
+                    sample_id=sample_id,
+                    position_id="module.foo.body",
+                    event="accepted_generation_time_window",
+                    candidate_type="simple_statement",
+                    group_statement_count=1,
+                    final_flush=False,
+                    rule_name="hash",
+                    decision="hit",
+                    reason=f"attempt={attempt_index}",
+                    candidate_hash="abc",
+                )
+            ],
+        )
+
+
 def _config(tmp_path: Path, **overrides: object) -> SawrPipelineConfig:
     model_path = tmp_path / "model"
     model_path.mkdir(exist_ok=True)
@@ -123,6 +169,8 @@ def _config(tmp_path: Path, **overrides: object) -> SawrPipelineConfig:
         "retry_budget": 1,
         "global_rollback_budget": 2,
         "max_total_sampled_tokens": 100,
+        "evidence_retry_attempts": 1,
+        "evidence_retry_seed_stride": 1009,
         "resume": None,
     }
     values.update(overrides)
@@ -165,6 +213,43 @@ def test_pipeline_writes_final_rows_without_forbidden_fields(tmp_path: Path) -> 
     assert row["final_code"] == "def foo():\n    return 1\n"
     assert row["scientific_claims_enabled"] is False
     assert not (FORBIDDEN_FINAL_FIELDS & set(row))
+
+
+def test_pipeline_evidence_retry_selects_by_generation_evidence_only(
+    tmp_path: Path,
+) -> None:
+    prompts = [{"id": "HumanEval/0", "prompt": "def foo():\n"}]
+    generator = EvidenceRetryGenerator()
+    pipeline = SawrPipeline(
+        generator=generator,
+        config=_config(
+            tmp_path,
+            evidence_retry_attempts=3,
+            evidence_retry_seed_stride=11,
+        ),
+    )
+
+    with patch("wfcllm.sawr.pipeline.load_prompts", return_value=prompts):
+        final_path = Path(pipeline.run())
+
+    rows = _read_jsonl(final_path)
+    assert rows == [
+        {
+            "artifact_type": "sawr_final_code",
+            "schema_version": "sawr-smoke/v1",
+            "id": "HumanEval/0",
+            "dataset": "humaneval",
+            "prompt": "def foo():\n",
+            "final_code": "def foo():\n    return 1\n",
+            "scientific_claims_enabled": False,
+        }
+    ]
+    assert generator.calls == [
+        {"sample_id": "HumanEval/0", "seed_override": 0},
+        {"sample_id": "HumanEval/0", "seed_override": 11},
+        {"sample_id": "HumanEval/0", "seed_override": 22},
+    ]
+    assert not (FORBIDDEN_FINAL_FIELDS & set(rows[0]))
 
 
 def test_pipeline_final_rows_remain_detector_clean_with_structure_audit(
@@ -221,6 +306,99 @@ def test_pipeline_writes_audit_rows_as_audit_only(tmp_path: Path) -> None:
             "candidate_hash": "abc",
         }
     ]
+    assert "normalized_text" not in rows[0]
+    assert "normalized_text_hash" not in rows[0]
+    assert "parent_node_type" not in rows[0]
+    assert "ordinal" not in rows[0]
+
+
+def test_pipeline_writes_candidate_text_sidecar_when_requested(
+    tmp_path: Path,
+) -> None:
+    prompts = [{"id": "HumanEval/0", "prompt": "def foo():\n"}]
+    event = AuditEvent(
+        sample_id="HumanEval/0",
+        position_id="module.foo.body",
+        event="accepted_generation_time_window",
+        candidate_type="simple_statement",
+        group_statement_count=1,
+        final_flush=False,
+        rule_name="semantic_lsh",
+        decision="hit",
+        reason=(
+            "lsh_signature=(1, 0, 1, 0);"
+            "in_valid_set=True;"
+            "min_margin=0.420000000000;"
+            "margin=0.000000000000;"
+            "parent_node_type=function_definition;"
+            "ordinal=None;"
+            "k=4;"
+            "gamma_target=0.250000000000;"
+            "gamma_effective=0.250000000000"
+        ),
+        candidate_hash="f3d1b0b8c1ec9f4c6a4b85a161e70c45fa7c6ce8d68378d06ca222597e6e1731",
+        node_type="return_statement",
+        parent_node_type="function_definition",
+        ordinal=0,
+        normalized_text="return 1",
+        normalized_text_hash=(
+            "f3d1b0b8c1ec9f4c6a4b85a161e70c45fa7c6ce8d68378d06ca222597e6e1731"
+        ),
+    )
+    generator = FakeGenerator()
+    generator.generate = lambda **kwargs: SawrGenerateResult(
+        final_code="def foo():\n    return 1\n",
+        accepted_hit_count=1,
+        closed_without_hit_count=0,
+        fallback_count=0,
+        candidate_count=1,
+        audit_events=[event],
+    )
+    sidecar_path = tmp_path / "candidate_sidecar.jsonl"
+    pipeline = SawrPipeline(
+        generator=generator,
+        config=_config(tmp_path, candidate_sidecar_output=str(sidecar_path)),
+    )
+
+    with patch("wfcllm.sawr.pipeline.load_prompts", return_value=prompts):
+        final_path = Path(pipeline.run())
+
+    final_row = _read_jsonl(final_path)[0]
+    assert "normalized_text" not in final_row
+    audit_row = _read_jsonl(Path(str(final_path).replace("_final_", "_audit_")))[0]
+    assert "normalized_text" not in audit_row
+
+    rows = _read_jsonl(sidecar_path)
+    assert rows == [
+        {
+            "artifact_type": "sawr_generation_candidate_text_sidecar",
+            "schema_version": "sawr-e1-e2-diagnostic/v1",
+            "id": "HumanEval/0",
+            "audit_only": True,
+            "detector_input_allowed": False,
+            "scientific_claims_enabled": False,
+            "event": "accepted_generation_time_window",
+            "decision": "hit",
+            "candidate_hash": event.candidate_hash,
+            "candidate_type": "simple_statement",
+            "position_id": "module.foo.body",
+            "node_type": "return_statement",
+            "parent_node_type": "function_definition",
+            "ordinal": 0,
+            "group_statement_count": 1,
+            "normalized_text": "return 1",
+            "normalized_text_hash": event.normalized_text_hash,
+            "rule_name": "semantic_lsh",
+            "reason": event.reason,
+            "lsh_signature_from_audit_reason": [1, 0, 1, 0],
+            "in_valid_set_from_audit_reason": True,
+            "min_margin_from_audit_reason": 0.42,
+            "k_from_audit_reason": 4,
+            "gamma_target_from_audit_reason": 0.25,
+            "gamma_effective_from_audit_reason": 0.25,
+            "final_flush": False,
+        }
+    ]
 
 
 def test_pipeline_allows_structure_aware_audit_events(tmp_path: Path) -> None:
@@ -228,8 +406,11 @@ def test_pipeline_allows_structure_aware_audit_events(tmp_path: Path) -> None:
     event_names = [
         "compound_layer_started",
         "simple_candidate_observed",
+        "compound_layer_window_observed",
         "layer_window_rule_miss",
         "accepted_generation_time_window",
+        "statement_retry_requested",
+        "window_retry_requested",
         "layer_retry_requested",
         "retry_layer_early_closed_after_hit",
         "layer_disappeared_without_hit",

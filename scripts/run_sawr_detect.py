@@ -104,11 +104,16 @@ def _add_detector_args(parser: argparse.ArgumentParser) -> None:
         "--statistic",
         choices=[
             "calibrated_context_max",
+            "calibrated_context_mean_proxy_penalized",
+            "calibrated_context_mean_proxy_length_adjusted",
             "raw_context_max",
             "context_mean_window_evidence",
         ],
         default="calibrated_context_max",
     )
+    parser.add_argument("--proxy-penalty-alpha", type=float, default=0.0)
+    parser.add_argument("--code-length-adjustment-beta", type=float, default=0.0)
+    parser.add_argument("--code-length-reference-chars", type=int, default=700)
     parser.add_argument("--no-structure-aware", action="store_true")
 
 
@@ -125,6 +130,9 @@ def _build_pipeline(args: argparse.Namespace) -> SawrDetectionPipeline:
         use_ordinal_keying=args.use_ordinal_keying,
         evidence_mode=args.evidence_mode,
         statistic=args.statistic,
+        proxy_penalty_alpha=args.proxy_penalty_alpha,
+        code_length_adjustment_beta=args.code_length_adjustment_beta,
+        code_length_reference_chars=args.code_length_reference_chars,
         structure_aware=not args.no_structure_aware,
     )
     scorer = load_sawr_window_scorer(

@@ -46,6 +46,38 @@ def test_detection_config_public_metadata_accepts_json_native_numbers() -> None:
     json.dumps(config.to_public_dict(), allow_nan=False)
 
 
+def test_detection_config_exports_proxy_penalty_alpha() -> None:
+    config = SawrDetectionConfig(
+        secret_key="1010",
+        statistic="calibrated_context_mean_proxy_penalized",
+        proxy_penalty_alpha=0.4,
+    )
+
+    payload = config.to_public_dict()
+
+    assert payload["statistic"] == "calibrated_context_mean_proxy_penalized"
+    assert payload["proxy_penalty_alpha"] == pytest.approx(0.4)
+    json.dumps(payload, allow_nan=False)
+
+
+def test_detection_config_exports_code_length_adjustment() -> None:
+    config = SawrDetectionConfig(
+        secret_key="1010",
+        statistic="calibrated_context_mean_proxy_length_adjusted",
+        proxy_penalty_alpha=0.34,
+        code_length_adjustment_beta=0.3,
+        code_length_reference_chars=700,
+    )
+
+    payload = config.to_public_dict()
+
+    assert payload["statistic"] == "calibrated_context_mean_proxy_length_adjusted"
+    assert payload["proxy_penalty_alpha"] == pytest.approx(0.34)
+    assert payload["code_length_adjustment_beta"] == pytest.approx(0.3)
+    assert payload["code_length_reference_chars"] == 700
+    json.dumps(payload, allow_nan=False)
+
+
 def test_bucket_label_uses_frozen_edges() -> None:
     assert bucket_label(0, (1, 2, 4, 8)) == "0"
     assert bucket_label(1, (1, 2, 4, 8)) == "1"
@@ -143,6 +175,37 @@ def test_sawr_root_reexports_detector_config_names() -> None:
         ({"use_ordinal_keying": 1}, "use_ordinal_keying must be bool"),
         ({"evidence_mode": "raw"}, "evidence_mode must be one of"),
         ({"statistic": "sum"}, "statistic must be one of"),
+        ({"proxy_penalty_alpha": True}, "proxy_penalty_alpha must be a real number"),
+        ({"proxy_penalty_alpha": "0.4"}, "proxy_penalty_alpha must be a real number"),
+        (
+            {"proxy_penalty_alpha": Decimal("0.4")},
+            "proxy_penalty_alpha must be .*finite JSON number",
+        ),
+        (
+            {"proxy_penalty_alpha": float("nan")},
+            "proxy_penalty_alpha must be .*finite JSON number",
+        ),
+        ({"proxy_penalty_alpha": -0.1}, "proxy_penalty_alpha must be non-negative"),
+        (
+            {"code_length_adjustment_beta": True},
+            "code_length_adjustment_beta must be a real number",
+        ),
+        (
+            {"code_length_adjustment_beta": "0.3"},
+            "code_length_adjustment_beta must be a real number",
+        ),
+        (
+            {"code_length_adjustment_beta": float("nan")},
+            "code_length_adjustment_beta must be .*finite JSON number",
+        ),
+        (
+            {"code_length_reference_chars": 0},
+            "code_length_reference_chars must be positive",
+        ),
+        (
+            {"code_length_reference_chars": 1.5},
+            "code_length_reference_chars must be positive",
+        ),
         ({"structure_aware": "yes"}, "structure_aware must be bool"),
         ({"detector_mode": "bad"}, "detector_mode must be"),
     ],
