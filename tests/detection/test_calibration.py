@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-import wfcllm.sawr.detect as detect
-import wfcllm.sawr.detect.calibration as calibration
-from wfcllm.sawr.detect.calibration import (
+import wfcllm.detection as detect
+import wfcllm.detection.calibration as calibration
+from wfcllm.detection.calibration import (
     CalibrationArtifact,
     ContextCalibrationInput,
     build_bucket_key,
@@ -20,7 +20,7 @@ from wfcllm.sawr.detect.calibration import (
     percentile_threshold,
     write_calibration_artifact,
 )
-from wfcllm.sawr.detect.config import SawrDetectionConfig
+from wfcllm.detection.config import WFCLLMDetectionConfig
 
 
 def _context(raw: float, *, windows: int = 3, statements: int = 2) -> ContextCalibrationInput:
@@ -48,12 +48,12 @@ def _artifact(
     context_negative_count: int = 0,
     sample_negative_count: int = 0,
 ) -> CalibrationArtifact:
-    public_config = SawrDetectionConfig(secret_key="1010").to_public_dict()
+    public_config = WFCLLMDetectionConfig(secret_key="1010").to_public_dict()
     public_config.update(config or {})
     return CalibrationArtifact(
         artifact_type="sawr_detection_calibration",
         schema_version="sawr-detect-calibration/v1",
-        detector_mode="sawr-structure-aware-proxy-window/v1",
+        detector_mode="wfcllm-structure-aware-proxy-window/v1",
         config=public_config,
         bucket_edges=bucket_edges
         or {
@@ -78,7 +78,7 @@ def _write_payload(tmp_path: Path, payload: dict[str, object]) -> Path:
 
 
 def _bucket_edges_with_window_count(window_count: list[int]) -> dict[str, list[int]]:
-    edges = SawrDetectionConfig(secret_key="1010").bucket_edges.to_dict()
+    edges = WFCLLMDetectionConfig(secret_key="1010").bucket_edges.to_dict()
     edges["window_count"] = window_count
     return edges
 
@@ -111,7 +111,7 @@ def test_percentile_threshold_rejects_invalid_values(value: object) -> None:
 
 
 def test_build_bucket_key_includes_frozen_conditioning_variables() -> None:
-    config = SawrDetectionConfig(secret_key="1010", use_ordinal_keying=True)
+    config = WFCLLMDetectionConfig(secret_key="1010", use_ordinal_keying=True)
 
     key = build_bucket_key(_context(0.4), config=config)
 
@@ -127,7 +127,7 @@ def test_build_bucket_key_includes_frozen_conditioning_variables() -> None:
 
 
 def test_build_calibration_artifact_is_secret_free_and_scores_samples() -> None:
-    config = SawrDetectionConfig(secret_key="1010", target_fpr=0.05)
+    config = WFCLLMDetectionConfig(secret_key="1010", target_fpr=0.05)
     samples = [
         [_context(0.1), _context(0.2)],
         [_context(0.4), _context(0.5)],
@@ -149,7 +149,7 @@ def test_build_calibration_artifact_is_secret_free_and_scores_samples() -> None:
 
 
 def test_calibration_artifact_roundtrip(tmp_path: Path) -> None:
-    config = SawrDetectionConfig(secret_key="1010")
+    config = WFCLLMDetectionConfig(secret_key="1010")
     artifact = build_calibration_artifact([[_context(0.1)]], config=config)
     path = tmp_path / "calibration.json"
 
@@ -194,7 +194,7 @@ def test_calibration_loader_backfills_code_length_adjustment_defaults(
 
 
 def test_empty_calibration_samples_produce_empty_nulls_and_zero_threshold() -> None:
-    config = SawrDetectionConfig(secret_key="1010")
+    config = WFCLLMDetectionConfig(secret_key="1010")
 
     artifact = build_calibration_artifact([], config=config)
 
@@ -208,7 +208,7 @@ def test_empty_calibration_samples_produce_empty_nulls_and_zero_threshold() -> N
 
 
 def test_null_for_context_falls_back_exact_then_structure_then_global() -> None:
-    config = SawrDetectionConfig(secret_key="1010")
+    config = WFCLLMDetectionConfig(secret_key="1010")
     exact_context = _context(0.0)
     exact_key = build_bucket_key(exact_context, config=config)
     artifact = _artifact(
@@ -252,7 +252,7 @@ def test_null_for_context_falls_back_exact_then_structure_then_global() -> None:
 
 
 def test_structure_unaware_unmatched_context_skips_real_structure_fallback() -> None:
-    config = SawrDetectionConfig(secret_key="1010", structure_aware=False)
+    config = WFCLLMDetectionConfig(secret_key="1010", structure_aware=False)
     matched_context = _context(0.0)
     matched_key = build_bucket_key(matched_context, config=config)
     artifact = _artifact(

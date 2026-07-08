@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from wfcllm.sawr.detect.metrics import (
+from wfcllm.detection.metrics import (
     auroc,
     build_detection_report,
     pearson_corr,
@@ -45,6 +45,15 @@ def _detail(
     return row
 
 
+def _final_code_row(sample_id: str, code: str) -> dict[str, object]:
+    return {
+        "id": sample_id,
+        "dataset": "humaneval",
+        "prompt": "def target():\n",
+        "final_code": code,
+    }
+
+
 def test_task_id_from_sample_id_groups_generations_by_task() -> None:
     assert task_id_from_sample_id("HumanEval/12#sample-3") == "HumanEval/12"
     assert task_id_from_sample_id("HumanEval/12") == "HumanEval/12"
@@ -52,10 +61,10 @@ def test_task_id_from_sample_id_groups_generations_by_task() -> None:
 
 def test_split_records_by_task_keeps_task_rows_together() -> None:
     records = [
-        {"id": "HumanEval/0#0", "final_code": "def target():\n    return 0\n"},
-        {"id": "HumanEval/0#1", "final_code": "def target():\n    return 1\n"},
-        {"id": "HumanEval/1#0", "final_code": "def target():\n    return 2\n"},
-        {"id": "HumanEval/2#0", "final_code": "def target():\n    return 3\n"},
+        _final_code_row("HumanEval/0#0", "def target():\n    return 0\n"),
+        _final_code_row("HumanEval/0#1", "def target():\n    return 1\n"),
+        _final_code_row("HumanEval/1#0", "def target():\n    return 2\n"),
+        _final_code_row("HumanEval/2#0", "def target():\n    return 3\n"),
     ]
 
     splits = split_records_by_task(
@@ -88,9 +97,10 @@ def test_split_records_by_task_rejects_audit_trace_rows(
         split_records_by_task(
             [
                 {
-                    "artifact_type": "sawr_final_code",
-                    "id": "HumanEval/0#0",
-                    "final_code": "def target():\n    return 0\n",
+                    **_final_code_row(
+                        "HumanEval/0#0",
+                        "def target():\n    return 0\n",
+                    ),
                     field: value,
                 }
             ],
@@ -298,7 +308,7 @@ def test_split_records_by_task_rejects_invalid_ids(
 
 
 def test_package_exports_write_detection_report() -> None:
-    from wfcllm.sawr.detect import write_detection_report as exported_write_report
+    from wfcllm.detection import write_detection_report as exported_write_report
 
     assert exported_write_report is write_detection_report
 

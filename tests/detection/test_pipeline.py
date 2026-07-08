@@ -6,18 +6,18 @@ from pathlib import Path
 
 import pytest
 
-from wfcllm.sawr.detect.config import DETECTOR_MODE, BucketEdges, SawrDetectionConfig
-from wfcllm.sawr.detect.pipeline import (
+from wfcllm.detection.config import DETECTOR_MODE, BucketEdges, WFCLLMDetectionConfig
+from wfcllm.detection.pipeline import (
     FORBIDDEN_DETECTOR_OUTPUT_FIELDS,
     ContextDetectionSummary,
-    SawrDetectionPipeline,
-    SawrDetectionResult,
+    WFCLLMDetectionPipeline,
+    WFCLLMDetectionResult,
     code_from_record,
     load_jsonl_records,
     validate_final_code_detector_input_record,
 )
-from wfcllm.sawr.detect.proxy_windows import ProxyWindow
-from wfcllm.sawr.detect.scoring import WindowEvidence
+from wfcllm.detection.proxy_windows import ProxyWindow
+from wfcllm.detection.scoring import WindowEvidence
 
 
 class FakeScorer:
@@ -49,55 +49,28 @@ class FakeScorer:
 
 def _row(sample_id: str, code: str) -> dict[str, object]:
     return {
-        "artifact_type": "sawr_final_code",
-        "schema_version": "sawr-smoke/v1",
         "id": sample_id,
         "dataset": "humaneval",
         "prompt": "def target():\n",
         "final_code": code,
-        "scientific_claims_enabled": False,
     }
 
 
-def test_code_from_record_accepts_final_code_and_generated_code() -> None:
-    assert code_from_record({"final_code": "x = 1"}) == "x = 1"
-    assert code_from_record({"generated_code": "x = 2"}) == "x = 2"
+def test_code_from_record_accepts_strict_final_code_record() -> None:
+    assert code_from_record(_row("ok", "x = 1")) == "x = 1"
 
-    with pytest.raises(ValueError, match="record must contain final_code or generated_code"):
+    with pytest.raises(ValueError, match="exactly four fields"):
         code_from_record({"id": "missing"})
-
-
-def test_code_from_record_combines_prompt_with_generated_body_when_needed() -> None:
-    assert code_from_record(
-        {
-            "prompt": "def target():\n",
-            "generated_code": "    x = 1\n    return x\n",
-        }
-    ) == "def target():\n    x = 1\n    return x\n"
-
-
-def test_code_from_record_does_not_duplicate_full_generated_source() -> None:
-    full_source = "def target():\n    x = 1\n    return x\n"
-
-    assert code_from_record(
-        {
-            "prompt": "def target():\n",
-            "generated_code": full_source,
-        }
-    ) == full_source
 
 
 def test_code_from_record_rejects_non_string_code_fields() -> None:
     with pytest.raises(ValueError, match="final_code must be a string"):
-        code_from_record({"final_code": ["x = 1"]})
-
-    with pytest.raises(ValueError, match="generated_code must be a string"):
-        code_from_record({"generated_code": ["x = 2"]})
+        code_from_record({**_row("bad", ""), "final_code": ["x = 1"]})
 
 
 def test_validate_final_code_detector_input_record_rejects_invalid_ids() -> None:
-    with pytest.raises(ValueError, match="record id must be a non-empty string"):
-        validate_final_code_detector_input_record({"id": "", "final_code": "pass"})
+    with pytest.raises(ValueError, match="id must be a non-empty string"):
+        validate_final_code_detector_input_record(_row("", "pass"))
 
 
 @pytest.mark.parametrize(
@@ -105,80 +78,70 @@ def test_validate_final_code_detector_input_record_rejects_invalid_ids() -> None
     [
         (
             {
-                "id": "audit",
+                **_row("audit", "def target():\n    return 0\n"),
                 "artifact_type": "sawr_audit_event",
-                "final_code": "def target():\n    return 0\n",
             },
             "artifact_type",
         ),
         (
             {
-                "id": "audit-only",
+                **_row("audit-only", "def target():\n    return 0\n"),
                 "audit_only": True,
-                "final_code": "def target():\n    return 0\n",
             },
             "audit_only",
         ),
         (
             {
-                "id": "blocked",
+                **_row("blocked", "def target():\n    return 0\n"),
                 "detector_input_allowed": False,
-                "final_code": "def target():\n    return 0\n",
             },
             "detector_input_allowed",
         ),
         (
             {
-                "id": "trace",
-                "final_code": "def target():\n    return 0\n",
+                **_row("trace", "def target():\n    return 0\n"),
                 "retry_trace": [],
             },
             "retry_trace",
         ),
         (
             {
-                "id": "nested-trace",
-                "final_code": "def target():\n    return 0\n",
+                **_row("nested-trace", "def target():\n    return 0\n"),
                 "metadata": {"audit_event_id": "event-1"},
             },
-            "audit_event_id",
+            "metadata",
         ),
         (
             {
-                "id": "generation-prefix",
-                "final_code": "def target():\n    return 0\n",
+                **_row("generation-prefix", "def target():\n    return 0\n"),
                 "metadata": {"generation_score": 0.2},
             },
-            "generation_score",
+            "metadata",
         ),
         (
             {
-                "id": "audit-field",
-                "final_code": "def target():\n    return 0\n",
+                **_row("audit-field", "def target():\n    return 0\n"),
                 "audit": {"event": "candidate_miss"},
             },
             "audit",
         ),
         (
             {
-                "id": "detail-p-value",
-                "final_code": "def target():\n    return 0\n",
+                **_row("detail-p-value", "def target():\n    return 0\n"),
                 "p_value": 0.5,
             },
             "p_value",
         ),
         (
             {
-                "id": "detail-z-score",
-                "final_code": "def target():\n    return 0\n",
+                **_row("detail-z-score", "def target():\n    return 0\n"),
                 "z_score": 0.0,
             },
             "z_score",
         ),
         (
             {
-                "id": "detector-score",
-                "final_code": "def target():\n    return 0\n",
+                **_row("detector-score", "def target():\n    return 0\n"),
                 "detector_score": 0.0,
             },
             "detector_score",
@@ -193,17 +156,14 @@ def test_validate_final_code_detector_input_record_rejects_audit_and_trace_field
         validate_final_code_detector_input_record(record)
 
 
-def test_validate_final_code_detector_input_record_allows_generated_code_name() -> None:
+def test_validate_final_code_detector_input_record_accepts_official_row() -> None:
     validate_final_code_detector_input_record(
-        {
-            "id": "ok",
-            "generated_code": "def target():\n    return 0\n",
-        }
+        _row("ok", "def target():\n    return 0\n")
     )
 
 
 def test_package_exports_final_code_input_validator() -> None:
-    from wfcllm.sawr.detect import (
+    from wfcllm.detection import (
         validate_final_code_detector_input_record as exported_validator,
     )
 
@@ -240,8 +200,8 @@ def test_load_jsonl_records_rejects_non_object_rows_with_path_and_line(
 
 
 def test_pipeline_calibrates_and_detects_without_trace_fields(tmp_path: Path) -> None:
-    config = SawrDetectionConfig(secret_key="1010", target_fpr=0.05)
-    pipeline = SawrDetectionPipeline(config=config, scorer=FakeScorer())
+    config = WFCLLMDetectionConfig(secret_key="1010", target_fpr=0.05)
+    pipeline = WFCLLMDetectionPipeline(config=config, scorer=FakeScorer())
     negatives = [
         _row("neg-1", "def target():\n    x = 0\n    return 0\n"),
         _row("neg-2", "def target():\n    x = 0\n    return 0\n"),
@@ -277,8 +237,8 @@ def test_pipeline_rejects_trace_rows_during_calibration(
     field: str,
     value: object,
 ) -> None:
-    pipeline = SawrDetectionPipeline(
-        config=SawrDetectionConfig(secret_key="1010"),
+    pipeline = WFCLLMDetectionPipeline(
+        config=WFCLLMDetectionConfig(secret_key="1010"),
         scorer=FakeScorer(),
     )
 
@@ -294,22 +254,21 @@ def test_pipeline_rejects_trace_rows_during_calibration(
 
 
 def test_pipeline_rejects_audit_rows_during_detection() -> None:
-    pipeline = SawrDetectionPipeline(
-        config=SawrDetectionConfig(secret_key="1010"),
+    pipeline = WFCLLMDetectionPipeline(
+        config=WFCLLMDetectionConfig(secret_key="1010"),
         scorer=FakeScorer(),
     )
     artifact = pipeline.calibrate([
         _row("neg", "def target():\n    x = 0\n    return 0\n")
     ])
 
-    with pytest.raises(ValueError, match="sawr_audit_event"):
+    with pytest.raises(ValueError, match="artifact_type"):
         pipeline.detect_one(
             {
+                **_row("audit", "def target():\n    x = 1\n    return x\n"),
                 "artifact_type": "sawr_audit_event",
-                "id": "audit",
                 "audit_only": True,
                 "detector_input_allowed": False,
-                "final_code": "def target():\n    x = 1\n    return x\n",
             },
             artifact=artifact,
         )
@@ -318,8 +277,8 @@ def test_pipeline_rejects_audit_rows_during_detection() -> None:
 def test_pipeline_rejects_trace_rows_when_writing_detection_jsonl(
     tmp_path: Path,
 ) -> None:
-    pipeline = SawrDetectionPipeline(
-        config=SawrDetectionConfig(secret_key="1010"),
+    pipeline = WFCLLMDetectionPipeline(
+        config=WFCLLMDetectionConfig(secret_key="1010"),
         scorer=FakeScorer(),
     )
     artifact = pipeline.calibrate([
@@ -340,12 +299,12 @@ def test_pipeline_rejects_trace_rows_when_writing_detection_jsonl(
 
 
 def test_pipeline_classifies_by_threshold_when_p_value_exceeds_target_fpr() -> None:
-    config = SawrDetectionConfig(
+    config = WFCLLMDetectionConfig(
         secret_key="1010",
         statistic="raw_context_max",
         target_fpr=0.05,
     )
-    pipeline = SawrDetectionPipeline(config=config, scorer=FakeScorer())
+    pipeline = WFCLLMDetectionPipeline(config=config, scorer=FakeScorer())
     artifact = pipeline.calibrate([
         _row("neg", "def target():\n    x = 0\n    return 0\n")
     ])
@@ -362,28 +321,25 @@ def test_pipeline_classifies_by_threshold_when_p_value_exceeds_target_fpr() -> N
     assert result.is_watermarked is True
 
 
-def test_pipeline_scores_generated_code_body_with_prompt() -> None:
-    pipeline = SawrDetectionPipeline(
-        config=SawrDetectionConfig(secret_key="1010"),
+def test_pipeline_rejects_generated_code_body_with_prompt() -> None:
+    pipeline = WFCLLMDetectionPipeline(
+        config=WFCLLMDetectionConfig(secret_key="1010"),
         scorer=FakeScorer(),
     )
     artifact = pipeline.calibrate([
         _row("neg", "def target():\n    x = 0\n    return 0\n")
     ])
 
-    result = pipeline.detect_one(
-        {
-            "artifact_type": "sawr_final_code",
-            "id": "body",
-            "prompt": "def target():\n",
-            "generated_code": "    x = 1\n    return x\n",
-        },
-        artifact=artifact,
-    )
-
-    assert result.scoreable_contexts == 1
-    assert result.proxy_windows == 3
-    assert result.insufficient_evidence is False
+    with pytest.raises(ValueError, match="generated_code"):
+        pipeline.detect_one(
+            {
+                "id": "body",
+                "dataset": "humaneval",
+                "prompt": "def target():\n",
+                "generated_code": "    x = 1\n    return x\n",
+            },
+            artifact=artifact,
+        )
 
 
 def test_pipeline_ignores_prompt_metadata_when_extracting_final_code_contexts(
@@ -403,17 +359,18 @@ def test_pipeline_ignores_prompt_metadata_when_extracting_final_code_contexts(
         return []
 
     monkeypatch.setattr(
-        "wfcllm.sawr.detect.pipeline.extract_structure_contexts",
+        "wfcllm.detection.pipeline.extract_structure_contexts",
         fake_extract_structure_contexts,
     )
-    pipeline = SawrDetectionPipeline(
-        config=SawrDetectionConfig(secret_key="1010", max_group_statements=2),
+    pipeline = WFCLLMDetectionPipeline(
+        config=WFCLLMDetectionConfig(secret_key="1010", max_group_statements=2),
         scorer=FakeScorer(),
     )
 
     pipeline._score_record_contexts(
         {
             "id": "final-code",
+            "dataset": "humaneval",
             "prompt": "def target():\n",
             "final_code": "def target():\n    return 1\n",
         }
@@ -423,13 +380,13 @@ def test_pipeline_ignores_prompt_metadata_when_extracting_final_code_contexts(
 
 
 def test_pipeline_rejects_artifact_with_mismatched_statistic() -> None:
-    raw_config = SawrDetectionConfig(secret_key="1010", statistic="raw_context_max")
-    raw_pipeline = SawrDetectionPipeline(config=raw_config, scorer=FakeScorer())
+    raw_config = WFCLLMDetectionConfig(secret_key="1010", statistic="raw_context_max")
+    raw_pipeline = WFCLLMDetectionPipeline(config=raw_config, scorer=FakeScorer())
     artifact = raw_pipeline.calibrate([
         _row("neg", "def target():\n    x = 0\n    return 0\n")
     ])
-    default_pipeline = SawrDetectionPipeline(
-        config=SawrDetectionConfig(secret_key="1010"),
+    default_pipeline = WFCLLMDetectionPipeline(
+        config=WFCLLMDetectionConfig(secret_key="1010"),
         scorer=FakeScorer(),
     )
 
@@ -441,15 +398,15 @@ def test_pipeline_rejects_artifact_with_mismatched_statistic() -> None:
 
 
 def test_pipeline_rejects_artifact_with_mismatched_secret_key() -> None:
-    pipeline = SawrDetectionPipeline(
-        config=SawrDetectionConfig(secret_key="1010"),
+    pipeline = WFCLLMDetectionPipeline(
+        config=WFCLLMDetectionConfig(secret_key="1010"),
         scorer=FakeScorer(),
     )
     artifact = pipeline.calibrate([
         _row("neg", "def target():\n    x = 0\n    return 0\n")
     ])
-    mismatched_pipeline = SawrDetectionPipeline(
-        config=SawrDetectionConfig(secret_key="different"),
+    mismatched_pipeline = WFCLLMDetectionPipeline(
+        config=WFCLLMDetectionConfig(secret_key="different"),
         scorer=FakeScorer(),
     )
 
@@ -461,15 +418,15 @@ def test_pipeline_rejects_artifact_with_mismatched_secret_key() -> None:
 
 
 def test_pipeline_rejects_artifact_with_mismatched_bucket_edges() -> None:
-    pipeline = SawrDetectionPipeline(
-        config=SawrDetectionConfig(secret_key="1010"),
+    pipeline = WFCLLMDetectionPipeline(
+        config=WFCLLMDetectionConfig(secret_key="1010"),
         scorer=FakeScorer(),
     )
     artifact = pipeline.calibrate([
         _row("neg", "def target():\n    x = 0\n    return 0\n")
     ])
-    mismatched_pipeline = SawrDetectionPipeline(
-        config=SawrDetectionConfig(
+    mismatched_pipeline = WFCLLMDetectionPipeline(
+        config=WFCLLMDetectionConfig(
             secret_key="1010",
             bucket_edges=BucketEdges(window_count=(1, 3, 6, 12, 24)),
         ),
@@ -484,12 +441,12 @@ def test_pipeline_rejects_artifact_with_mismatched_bucket_edges() -> None:
 
 
 def test_pipeline_calibrates_raw_context_max_on_raw_score_scale() -> None:
-    config = SawrDetectionConfig(
+    config = WFCLLMDetectionConfig(
         secret_key="1010",
         statistic="raw_context_max",
         target_fpr=0.5,
     )
-    pipeline = SawrDetectionPipeline(config=config, scorer=FakeScorer())
+    pipeline = WFCLLMDetectionPipeline(config=config, scorer=FakeScorer())
 
     artifact = pipeline.calibrate([
         _row("neg", "def target():\n    x = 0\n    return 0\n")
@@ -508,12 +465,12 @@ def test_pipeline_calibrates_raw_context_max_on_raw_score_scale() -> None:
 
 
 def test_pipeline_calibrates_context_mean_window_evidence_on_mean_score_scale() -> None:
-    config = SawrDetectionConfig(
+    config = WFCLLMDetectionConfig(
         secret_key="1010",
         statistic="context_mean_window_evidence",
         target_fpr=0.5,
     )
-    pipeline = SawrDetectionPipeline(config=config, scorer=FakeScorer())
+    pipeline = WFCLLMDetectionPipeline(config=config, scorer=FakeScorer())
 
     artifact = pipeline.calibrate([
         _row("neg", "def target():\n    x = 0\n    return 0\n")
@@ -532,13 +489,13 @@ def test_pipeline_calibrates_context_mean_window_evidence_on_mean_score_scale() 
 
 
 def test_pipeline_applies_proxy_penalty_to_calibrated_context_mean() -> None:
-    config = SawrDetectionConfig(
+    config = WFCLLMDetectionConfig(
         secret_key="1010",
         statistic="calibrated_context_mean_proxy_penalized",
         proxy_penalty_alpha=0.4,
         target_fpr=0.5,
     )
-    pipeline = SawrDetectionPipeline(config=config, scorer=FakeScorer())
+    pipeline = WFCLLMDetectionPipeline(config=config, scorer=FakeScorer())
 
     artifact = pipeline.calibrate([
         _row("neg", "def target():\n    x = 0\n    return 0\n")
@@ -558,7 +515,7 @@ def test_pipeline_applies_proxy_penalty_to_calibrated_context_mean() -> None:
 
 
 def test_pipeline_applies_proxy_and_code_length_adjustment() -> None:
-    config = SawrDetectionConfig(
+    config = WFCLLMDetectionConfig(
         secret_key="1010",
         statistic="calibrated_context_mean_proxy_length_adjusted",
         proxy_penalty_alpha=0.34,
@@ -566,7 +523,7 @@ def test_pipeline_applies_proxy_and_code_length_adjustment() -> None:
         code_length_reference_chars=700,
         target_fpr=0.5,
     )
-    pipeline = SawrDetectionPipeline(config=config, scorer=FakeScorer())
+    pipeline = WFCLLMDetectionPipeline(config=config, scorer=FakeScorer())
 
     negative = _row("neg", "def target():\n    x = 0\n    return 0\n")
     positive = _row("pos", "def target():\n    x = 1\n    return x\n")
@@ -591,8 +548,8 @@ def test_pipeline_applies_proxy_and_code_length_adjustment() -> None:
 
 
 def test_pipeline_rejects_artifact_with_mismatched_proxy_penalty_alpha() -> None:
-    penalized = SawrDetectionPipeline(
-        config=SawrDetectionConfig(
+    penalized = WFCLLMDetectionPipeline(
+        config=WFCLLMDetectionConfig(
             secret_key="1010",
             statistic="calibrated_context_mean_proxy_penalized",
             proxy_penalty_alpha=0.4,
@@ -602,8 +559,8 @@ def test_pipeline_rejects_artifact_with_mismatched_proxy_penalty_alpha() -> None
     artifact = penalized.calibrate([
         _row("neg", "def target():\n    x = 0\n    return 0\n")
     ])
-    mismatched = SawrDetectionPipeline(
-        config=SawrDetectionConfig(
+    mismatched = WFCLLMDetectionPipeline(
+        config=WFCLLMDetectionConfig(
             secret_key="1010",
             statistic="calibrated_context_mean_proxy_penalized",
             proxy_penalty_alpha=0.2,
@@ -619,8 +576,8 @@ def test_pipeline_rejects_artifact_with_mismatched_proxy_penalty_alpha() -> None
 
 
 def test_pipeline_rejects_artifact_with_mismatched_code_length_adjustment() -> None:
-    adjusted = SawrDetectionPipeline(
-        config=SawrDetectionConfig(
+    adjusted = WFCLLMDetectionPipeline(
+        config=WFCLLMDetectionConfig(
             secret_key="1010",
             statistic="calibrated_context_mean_proxy_length_adjusted",
             code_length_adjustment_beta=0.3,
@@ -631,8 +588,8 @@ def test_pipeline_rejects_artifact_with_mismatched_code_length_adjustment() -> N
     artifact = adjusted.calibrate([
         _row("neg", "def target():\n    x = 0\n    return 0\n")
     ])
-    mismatched = SawrDetectionPipeline(
-        config=SawrDetectionConfig(
+    mismatched = WFCLLMDetectionPipeline(
+        config=WFCLLMDetectionConfig(
             secret_key="1010",
             statistic="calibrated_context_mean_proxy_length_adjusted",
             code_length_adjustment_beta=0.2,
@@ -649,8 +606,8 @@ def test_pipeline_rejects_artifact_with_mismatched_code_length_adjustment() -> N
 
 
 def test_pipeline_marks_insufficient_evidence() -> None:
-    config = SawrDetectionConfig(secret_key="1010", min_proxy_windows=2)
-    pipeline = SawrDetectionPipeline(config=config, scorer=FakeScorer())
+    config = WFCLLMDetectionConfig(secret_key="1010", min_proxy_windows=2)
+    pipeline = WFCLLMDetectionPipeline(config=config, scorer=FakeScorer())
     artifact = pipeline.calibrate([
         _row("neg", "def target():\n    x = 0\n    return 0\n")
     ])
@@ -665,8 +622,8 @@ def test_pipeline_marks_insufficient_evidence() -> None:
 
 
 def test_pipeline_writes_detection_details_jsonl(tmp_path: Path) -> None:
-    config = SawrDetectionConfig(secret_key="1010")
-    pipeline = SawrDetectionPipeline(config=config, scorer=FakeScorer())
+    config = WFCLLMDetectionConfig(secret_key="1010")
+    pipeline = WFCLLMDetectionPipeline(config=config, scorer=FakeScorer())
     artifact = pipeline.calibrate([
         _row("neg", "def target():\n    x = 0\n    return 0\n")
     ])
@@ -689,7 +646,7 @@ def test_pipeline_writes_detection_details_jsonl(tmp_path: Path) -> None:
 
 
 def test_detection_result_to_dict_rejects_non_json_safe_floats() -> None:
-    result = SawrDetectionResult(
+    result = WFCLLMDetectionResult(
         id="nan",
         is_watermarked=False,
         score=float("nan"),

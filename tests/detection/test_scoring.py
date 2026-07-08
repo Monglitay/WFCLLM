@@ -5,10 +5,10 @@ import sys
 
 import pytest
 
-from wfcllm.sawr.boundary import Candidate
-from wfcllm.sawr.detect.config import SawrDetectionConfig
-from wfcllm.sawr.detect.proxy_windows import ProxyWindow
-from wfcllm.sawr.detect.scoring import SawrWindowScorer, WindowEvidence
+from wfcllm.generation.boundary import Candidate
+from wfcllm.detection.config import WFCLLMDetectionConfig
+from wfcllm.detection.proxy_windows import ProxyWindow
+from wfcllm.detection.scoring import WFCLLMWindowScorer, WindowEvidence
 
 
 class FakeVerifyResult:
@@ -89,10 +89,10 @@ def test_importing_scoring_does_not_load_semantic_lsh_stack() -> None:
 import importlib
 import sys
 
-importlib.import_module("wfcllm.sawr.detect.scoring")
+importlib.import_module("wfcllm.detection.scoring")
 loaded = [
     name
-    for name in ("wfcllm.sawr.semantic_lsh", "wfcllm.encoder.model")
+    for name in ("wfcllm.semantic.lsh", "wfcllm.encoder.model")
     if name in sys.modules
 ]
 if loaded:
@@ -117,14 +117,14 @@ def test_window_scorer_uses_keyed_lsh_with_ordinal() -> None:
         )
     )
     keying = FakeKeying()
-    config = SawrDetectionConfig(
+    config = WFCLLMDetectionConfig(
         secret_key="1010",
         lsh_d=4,
         gamma=0.75,
         semantic_margin=0.03,
         use_ordinal_keying=True,
     )
-    scorer = SawrWindowScorer(verifier=verifier, keying=keying, config=config)
+    scorer = WFCLLMWindowScorer(verifier=verifier, keying=keying, config=config)
 
     evidence = scorer.score_window(_window())
 
@@ -156,10 +156,10 @@ def test_window_scorer_omits_ordinal_keying_by_default() -> None:
         )
     )
     keying = FakeKeying()
-    scorer = SawrWindowScorer(
+    scorer = WFCLLMWindowScorer(
         verifier=verifier,
         keying=keying,
-        config=SawrDetectionConfig(secret_key="1010"),
+        config=WFCLLMDetectionConfig(secret_key="1010"),
     )
 
     scorer.score_window(_window())
@@ -168,7 +168,7 @@ def test_window_scorer_omits_ordinal_keying_by_default() -> None:
 
 
 def test_hit_only_evidence_uses_binary_hit() -> None:
-    scorer = SawrWindowScorer(
+    scorer = WFCLLMWindowScorer(
         verifier=FakeVerifier(
             FakeVerifyResult(
                 passed=True,
@@ -178,7 +178,7 @@ def test_hit_only_evidence_uses_binary_hit() -> None:
             )
         ),
         keying=FakeKeying(),
-        config=SawrDetectionConfig(
+        config=WFCLLMDetectionConfig(
             secret_key="1010",
             evidence_mode="hit_only",
             semantic_margin=0.01,
@@ -189,7 +189,7 @@ def test_hit_only_evidence_uses_binary_hit() -> None:
 
 
 def test_unknown_valid_set_is_preserved_and_not_counted_as_hit() -> None:
-    scorer = SawrWindowScorer(
+    scorer = WFCLLMWindowScorer(
         verifier=FakeVerifier(
             FakeVerifyResult(
                 passed=False,
@@ -199,7 +199,7 @@ def test_unknown_valid_set_is_preserved_and_not_counted_as_hit() -> None:
             )
         ),
         keying=FakeKeying(),
-        config=SawrDetectionConfig(secret_key="1010", semantic_margin=0.01),
+        config=WFCLLMDetectionConfig(secret_key="1010", semantic_margin=0.01),
     )
 
     evidence = scorer.score_window(_window())
@@ -211,7 +211,7 @@ def test_unknown_valid_set_is_preserved_and_not_counted_as_hit() -> None:
 
 
 def test_exact_margin_equality_fails_margin_check() -> None:
-    scorer = SawrWindowScorer(
+    scorer = WFCLLMWindowScorer(
         verifier=FakeVerifier(
             FakeVerifyResult(
                 passed=False,
@@ -221,7 +221,7 @@ def test_exact_margin_equality_fails_margin_check() -> None:
             )
         ),
         keying=FakeKeying(),
-        config=SawrDetectionConfig(secret_key="1010", semantic_margin=0.01),
+        config=WFCLLMDetectionConfig(secret_key="1010", semantic_margin=0.01),
     )
 
     evidence = scorer.score_window(_window())
@@ -231,7 +231,7 @@ def test_exact_margin_equality_fails_margin_check() -> None:
 
 
 def test_margin_only_evidence_ignores_valid_set_membership() -> None:
-    scorer = SawrWindowScorer(
+    scorer = WFCLLMWindowScorer(
         verifier=FakeVerifier(
             FakeVerifyResult(
                 passed=False,
@@ -241,7 +241,7 @@ def test_margin_only_evidence_ignores_valid_set_membership() -> None:
             )
         ),
         keying=FakeKeying(),
-        config=SawrDetectionConfig(
+        config=WFCLLMDetectionConfig(
             secret_key="1010",
             evidence_mode="margin_only",
             semantic_margin=0.01,
@@ -256,7 +256,7 @@ def test_margin_only_evidence_ignores_valid_set_membership() -> None:
 
 
 def test_window_scorer_zeroes_invalid_hits() -> None:
-    scorer = SawrWindowScorer(
+    scorer = WFCLLMWindowScorer(
         verifier=FakeVerifier(
             FakeVerifyResult(
                 passed=False,
@@ -266,7 +266,7 @@ def test_window_scorer_zeroes_invalid_hits() -> None:
             )
         ),
         keying=FakeKeying(),
-        config=SawrDetectionConfig(secret_key="1010", semantic_margin=0.01),
+        config=WFCLLMDetectionConfig(secret_key="1010", semantic_margin=0.01),
     )
 
     evidence = scorer.score_window(_window())

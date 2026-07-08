@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-import wfcllm.sawr.detect as detect
-from wfcllm.sawr.detect.proxy_windows import (
+import wfcllm.detection as detect
+from wfcllm.detection.proxy_windows import (
     ProxyWindow,
     StructureContext,
     extract_proxy_windows,

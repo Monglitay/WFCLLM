@@ -7,17 +7,17 @@ from fractions import Fraction
 import pytest
 
 import wfcllm.sawr as sawr
-import wfcllm.sawr.detect as detect
-from wfcllm.sawr.detect.config import (
+import wfcllm.detection as detect
+from wfcllm.detection.config import (
     DETECTOR_MODE,
     BucketEdges,
-    SawrDetectionConfig,
+    WFCLLMDetectionConfig,
     bucket_label,
 )
 
 
 def test_detection_config_quantizes_gamma_to_k() -> None:
-    config = SawrDetectionConfig(secret_key="1010", lsh_d=4, gamma=0.75)
+    config = WFCLLMDetectionConfig(secret_key="1010", lsh_d=4, gamma=0.75)
 
     assert config.k == 12
     assert config.gamma_effective == pytest.approx(0.75)
@@ -25,7 +25,7 @@ def test_detection_config_quantizes_gamma_to_k() -> None:
 
 
 def test_detection_config_exports_secret_free_metadata() -> None:
-    config = SawrDetectionConfig(secret_key="1010", lsh_d=4, gamma=0.75)
+    config = WFCLLMDetectionConfig(secret_key="1010", lsh_d=4, gamma=0.75)
     payload = config.to_public_dict()
 
     assert payload["secret_key_sha256"]
@@ -35,7 +35,7 @@ def test_detection_config_exports_secret_free_metadata() -> None:
 
 
 def test_detection_config_public_metadata_accepts_json_native_numbers() -> None:
-    config = SawrDetectionConfig(
+    config = WFCLLMDetectionConfig(
         secret_key="1010",
         lsh_d=4,
         gamma=1,
@@ -47,7 +47,7 @@ def test_detection_config_public_metadata_accepts_json_native_numbers() -> None:
 
 
 def test_detection_config_exports_proxy_penalty_alpha() -> None:
-    config = SawrDetectionConfig(
+    config = WFCLLMDetectionConfig(
         secret_key="1010",
         statistic="calibrated_context_mean_proxy_penalized",
         proxy_penalty_alpha=0.4,
@@ -61,7 +61,7 @@ def test_detection_config_exports_proxy_penalty_alpha() -> None:
 
 
 def test_detection_config_exports_code_length_adjustment() -> None:
-    config = SawrDetectionConfig(
+    config = WFCLLMDetectionConfig(
         secret_key="1010",
         statistic="calibrated_context_mean_proxy_length_adjusted",
         proxy_penalty_alpha=0.34,
@@ -134,14 +134,14 @@ def test_bucket_edges_reject_non_positive_edges(
 def test_detector_config_package_exports() -> None:
     assert detect.DETECTOR_MODE == DETECTOR_MODE
     assert detect.BucketEdges is BucketEdges
-    assert detect.SawrDetectionConfig is SawrDetectionConfig
+    assert detect.WFCLLMDetectionConfig is WFCLLMDetectionConfig
     assert detect.bucket_label is bucket_label
 
 
 def test_sawr_root_reexports_detector_config_names() -> None:
     assert sawr.DETECTOR_MODE == DETECTOR_MODE
     assert sawr.BucketEdges is BucketEdges
-    assert sawr.SawrDetectionConfig is SawrDetectionConfig
+    assert sawr.SawrDetectionConfig is WFCLLMDetectionConfig
 
 
 @pytest.mark.parametrize(
@@ -218,4 +218,4 @@ def test_detection_config_rejects_invalid_values(
     values.update(kwargs)
 
     with pytest.raises(ValueError, match=message):
-        SawrDetectionConfig(**values)
+        WFCLLMDetectionConfig(**values)
