@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -27,6 +29,27 @@ def _clear_prereqs():
 def _entropy_prereq(phase: str = "legacy-watermark"):
     reg = PrereqRegistry()
     return next(p for p in reg._by_phase[phase] if p.name == "entropy-profile")
+
+
+def test_cli_entry_import_registers_adaptive_gamma_prereqs_in_fresh_process():
+    script = "\n".join(
+        [
+            "from wfcllm.cli.entry import main",
+            "from wfcllm.orchestration.prereq import PrereqRegistry",
+            "print('\\n'.join(sorted(PrereqRegistry()._by_phase)))",
+        ]
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    phases = set(result.stdout.splitlines())
+    assert "legacy-watermark" in phases
+    assert "watermark" in phases
 
 
 def test_adaptive_gamma_import_registers_legacy_watermark_prereq():

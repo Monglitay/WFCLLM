@@ -47,6 +47,14 @@ from wfcllm.orchestration.state import (
 )
 
 
+def _register_prereq_side_effects() -> None:
+    # Import registers legacy adaptive-gamma prereqs with PrereqRegistry.
+    import wfcllm.watermark.adaptive_gamma  # noqa: F401
+
+
+_register_prereq_side_effects()
+
+
 def _cmd_status(state: RunStateManager) -> None:
     print("=== WFCLLM 阶段状态 ===")
     for phase in ALL_PHASES:
