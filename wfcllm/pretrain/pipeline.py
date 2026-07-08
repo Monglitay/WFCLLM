@@ -34,7 +34,13 @@ class PretrainPipeline:
                         file=sys.stderr,
                     )
                     return 1
-                rc = run_token_channel_train(args, state)
+                lexical_state_phase = getattr(args, "_pretrain_lexical_state_phase", None)
+                if lexical_state_phase == "legacy-token-channel-train":
+                    from wfcllm.cli.runners import run_legacy_token_channel_train
+
+                    rc = run_legacy_token_channel_train(args, state)
+                else:
+                    rc = run_token_channel_train(args, state)
                 if rc != 0:
                     return rc
             else:  # defensive — PretrainConfig validates

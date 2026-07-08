@@ -135,12 +135,65 @@ def test_cli_phase_pretrain_default_runs_both_in_order(monkeypatch, tmp_path):
         calls.append("encoder")
         return 0
 
+    def fake_token_channel_train(args, state):
+        calls.append("lexical")
+        return 0
+
     monkeypatch.setattr("wfcllm.pretrain.pipeline.run_encoder", fake_encoder)
     monkeypatch.setattr(
         "wfcllm.pretrain.pipeline.run_token_channel_train",
-        lambda args, state: (calls.append("lexical") or 0),
+        fake_token_channel_train,
+    )
+    monkeypatch.setattr(
+        "wfcllm.cli.runners.run_token_channel_train",
+        fake_token_channel_train,
     )
 
     rc = main(["--phase", "legacy-pretrain", "--legacy"])
     assert rc == 0
     assert calls == ["encoder", "lexical"]
+
+
+def test_cli_phase_legacy_pretrain_lexical_marks_legacy_token_channel_train(
+    monkeypatch,
+    tmp_path,
+):
+    """legacy-pretrain lexical work writes the legacy token-channel state key."""
+    from wfcllm.cli.entry import main
+    from wfcllm.orchestration.state import RunStateManager
+
+    state_path = tmp_path / "run_state.json"
+    monkeypatch.setattr("wfcllm.cli.entry.DEFAULT_STATE_FILE", state_path)
+
+    calls: list[str] = []
+
+    def fake_encoder(args, state):
+        state.mark_done("encoder", checkpoint="/tmp/fake")
+        calls.append("encoder")
+        return 0
+
+    def fake_token_channel_train(args, state):
+        from wfcllm.cli.runners import _phase_state_key
+
+        state.mark_done(_phase_state_key(args, "token-channel-train"))
+        calls.append("lexical")
+        return 0
+
+    monkeypatch.setattr("wfcllm.pretrain.pipeline.run_encoder", fake_encoder)
+    monkeypatch.setattr(
+        "wfcllm.pretrain.pipeline.run_token_channel_train",
+        fake_token_channel_train,
+    )
+    monkeypatch.setattr(
+        "wfcllm.cli.runners.run_token_channel_train",
+        fake_token_channel_train,
+    )
+
+    rc = main(["--phase", "legacy-pretrain", "--legacy"])
+    state = RunStateManager(state_path)
+
+    assert rc == 0
+    assert calls == ["encoder", "lexical"]
+    assert state.is_done("legacy-token-channel-train") is True
+    assert state.is_done("token-channel-train") is False
+    assert state.is_done("legacy-pretrain") is True

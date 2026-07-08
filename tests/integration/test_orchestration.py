@@ -198,6 +198,38 @@ def test_orchestrator_force_reruns_completed_phase(tmp_path):
     assert ran == PHASES
 
 
+def test_orchestrator_reruns_completed_detect_with_explicit_cli_input(tmp_path):
+    PrereqRegistry().clear()
+    state = RunStateManager(path=tmp_path / "rs.json")
+    state.mark_done("detect")
+    ran = []
+    reg = PhaseRegistry()
+    reg.register("detect", lambda a, s: (ran.append("detect"), 0)[1])
+
+    orch = PhaseOrchestrator(state=state, phase_registry=reg, prereq_registry=PrereqRegistry())
+    rc = orch.run(_make_args(phase="detect", input="data/runs/final_code.jsonl"))
+
+    assert rc == 0
+    assert ran == ["detect"]
+
+
+def test_orchestrator_reruns_completed_detect_with_configured_input(tmp_path):
+    PrereqRegistry().clear()
+    state = RunStateManager(path=tmp_path / "rs.json")
+    state.mark_done("detect")
+    ran = []
+    reg = PhaseRegistry()
+    reg.register("detect", lambda a, s: (ran.append("detect"), 0)[1])
+    args = _make_args(phase="detect")
+    setattr(args, "_config_cache", {"detector": {"input": "data/runs/final_code.jsonl"}})
+
+    orch = PhaseOrchestrator(state=state, phase_registry=reg, prereq_registry=PrereqRegistry())
+    rc = orch.run(args)
+
+    assert rc == 0
+    assert ran == ["detect"]
+
+
 def test_orchestrator_fails_fast_on_nonzero(tmp_path):
     PrereqRegistry().clear()
     state = RunStateManager(path=tmp_path / "rs.json")

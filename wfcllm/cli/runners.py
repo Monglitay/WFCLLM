@@ -231,7 +231,16 @@ def run_legacy_build_entropy_profile(
 def run_legacy_pretrain(args: argparse.Namespace, state: RunStateManager) -> int:
     from wfcllm.pretrain.runner import run_pretrain
 
-    rc = run_pretrain(args, state)
+    sentinel = object()
+    previous = getattr(args, "_pretrain_lexical_state_phase", sentinel)
+    setattr(args, "_pretrain_lexical_state_phase", "legacy-token-channel-train")
+    try:
+        rc = run_pretrain(args, state)
+    finally:
+        if previous is sentinel:
+            delattr(args, "_pretrain_lexical_state_phase")
+        else:
+            setattr(args, "_pretrain_lexical_state_phase", previous)
     if rc == 0:
         state.mark_done("legacy-pretrain")
     return rc
