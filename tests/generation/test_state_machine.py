@@ -3,13 +3,14 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 
-from wfcllm.sawr import BoundaryEvent, Candidate, RuleDecision, RuleRequest
+from wfcllm.generation.boundary import BoundaryEvent, Candidate
 from wfcllm.generation.state_machine import (
     AuditEvent,
     LayerFrame,
     SawrStateMachine,
     StateMachineSnapshot,
 )
+from wfcllm.semantic.rules import RuleDecision, RuleRequest
 
 
 @dataclass(frozen=True)
@@ -143,19 +144,32 @@ def _candidate_hash(text: str) -> str:
 
 
 def test_state_machine_types_are_exported_from_package_root() -> None:
-    from wfcllm.sawr import (
+    from wfcllm.generation import (
+        AuditEvent,
+        BoundaryEvent,
         BoundaryEventKind,
+        Candidate,
+        SawrStateMachine,
+        WFCLLMStateMachine,
+        evidence_retry_key,
+    )
+    from wfcllm.generation.state_machine import (
         CheckpointT,
         DecisionAction,
         LayerFrame,
         StateMachineSnapshot,
     )
 
+    assert AuditEvent is not None
+    assert BoundaryEvent is not None
     assert BoundaryEventKind is not None
+    assert Candidate is not None
     assert CheckpointT.__name__ == "CheckpointT"
     assert DecisionAction is not None
     assert LayerFrame is not None
+    assert SawrStateMachine is WFCLLMStateMachine
     assert StateMachineSnapshot is not None
+    assert callable(evidence_retry_key)
 
 
 def test_state_machine_clears_group_after_hit() -> None:

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from wfcllm.sawr import (
-    Candidate,
+from wfcllm.generation.boundary import Candidate
+from wfcllm.semantic.rules import (
     EmbeddingRule,
     HashEmbeddingRule,
     RuleDecision,
