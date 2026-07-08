@@ -91,6 +91,42 @@ def validate_compare_only_mode(args: argparse.Namespace) -> str | None:
     return None
 
 
+def _phase_state_key(args: argparse.Namespace, default: str) -> str:
+    override = getattr(args, "_state_phase_override", None)
+    return override if isinstance(override, str) else default
+
+
+def _run_with_state_phase(
+    args: argparse.Namespace,
+    state: RunStateManager,
+    phase: str,
+    runner,
+) -> int:
+    sentinel = object()
+    previous = getattr(args, "_state_phase_override", sentinel)
+    setattr(args, "_state_phase_override", phase)
+    try:
+        return runner(args, state)
+    finally:
+        if previous is sentinel:
+            delattr(args, "_state_phase_override")
+        else:
+            setattr(args, "_state_phase_override", previous)
+
+
+def _watermark_output_from_state(args: argparse.Namespace, state: RunStateManager) -> str | None:
+    phase = _phase_state_key(args, "extract")
+    if phase == "legacy-extract":
+        return state.get("legacy-watermark", "output_file") or state.get(
+            "watermark",
+            "output_file",
+        )
+    return state.get("watermark", "output_file") or state.get(
+        "legacy-watermark",
+        "output_file",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Per-phase runner functions
 # ---------------------------------------------------------------------------
@@ -163,6 +199,44 @@ def run_legacy_ablation(args: argparse.Namespace, state: RunStateManager) -> int
     return 1
 
 
+def run_legacy_watermark(args: argparse.Namespace, state: RunStateManager) -> int:
+    return _run_with_state_phase(args, state, "legacy-watermark", run_watermark)
+
+
+def run_legacy_extract(args: argparse.Namespace, state: RunStateManager) -> int:
+    return _run_with_state_phase(args, state, "legacy-extract", run_extract)
+
+
+def run_legacy_token_channel_train(args: argparse.Namespace, state: RunStateManager) -> int:
+    return _run_with_state_phase(
+        args,
+        state,
+        "legacy-token-channel-train",
+        run_token_channel_train,
+    )
+
+
+def run_legacy_build_entropy_profile(
+    args: argparse.Namespace,
+    state: RunStateManager,
+) -> int:
+    return _run_with_state_phase(
+        args,
+        state,
+        "legacy-build-entropy-profile",
+        run_build_entropy_profile,
+    )
+
+
+def run_legacy_pretrain(args: argparse.Namespace, state: RunStateManager) -> int:
+    from wfcllm.pretrain.runner import run_pretrain
+
+    rc = run_pretrain(args, state)
+    if rc == 0:
+        state.mark_done("legacy-pretrain")
+    return rc
+
+
 def run_phase(phase: str, args: argparse.Namespace, state: RunStateManager) -> int:
     """分发到各阶段 runner，返回退出码。"""
     from wfcllm.pretrain.runner import run_pretrain  # local import to avoid circular dep
@@ -181,11 +255,11 @@ def run_phase(phase: str, args: argparse.Namespace, state: RunStateManager) -> i
         "token-channel-train": run_token_channel_train,
         "pretrain": run_pretrain,
         "build-entropy-profile": run_build_entropy_profile,
-        "legacy-watermark": run_watermark,
-        "legacy-extract": run_extract,
-        "legacy-token-channel-train": run_token_channel_train,
-        "legacy-build-entropy-profile": run_build_entropy_profile,
-        "legacy-pretrain": run_pretrain,
+        "legacy-watermark": run_legacy_watermark,
+        "legacy-extract": run_legacy_extract,
+        "legacy-token-channel-train": run_legacy_token_channel_train,
+        "legacy-build-entropy-profile": run_legacy_build_entropy_profile,
+        "legacy-pretrain": run_legacy_pretrain,
         "legacy-ablation": run_legacy_ablation,
     }
     return runners[phase](args, state)
@@ -416,7 +490,11 @@ def run_watermark(args: argparse.Namespace, state: RunStateManager) -> int:
         print(f"[错误] 水印生成失败：{e}", file=sys.stderr)
         return 1
 
-    state.mark_done("watermark", output_file=output_path, dataset=dataset)
+    state.mark_done(
+        _phase_state_key(args, "watermark"),
+        output_file=output_path,
+        dataset=dataset,
+    )
     print(f"[完成] 水印数据集已保存至 {output_path}")
     return 0
 
@@ -480,7 +558,11 @@ def run_extract(args: argparse.Namespace, state: RunStateManager) -> int:
     if not secret_key:
         print("[错误] --secret-key 为必填参数", file=sys.stderr)
         return 1
-    input_file = args.input_file or ext_cfg.get("input_file") or state.get("watermark", "output_file")
+    input_file = (
+        args.input_file
+        or ext_cfg.get("input_file")
+        or _watermark_output_from_state(args, state)
+    )
     if not input_file:
         print("[错误] --input-file 为必填参数（或先完成阶段二）", file=sys.stderr)
         return 1
@@ -746,7 +828,7 @@ def run_extract(args: argparse.Namespace, state: RunStateManager) -> int:
     print(f"  报告已保存至: {summary_path}")
 
     state.mark_done(
-        "extract",
+        _phase_state_key(args, "extract"),
         details_file=details_path,
         summary_file=str(summary_path),
         watermark_rate=summary["watermark_rate"],
@@ -941,7 +1023,7 @@ def run_token_channel_train(args: argparse.Namespace, state: RunStateManager) ->
         print(line)
 
     state.mark_done(
-        "token-channel-train",
+        _phase_state_key(args, "token-channel-train"),
         dataset=summary.dataset,
         cache_path=str(summary.cache_path),
         artifact_dir=str(summary.artifact_dir),
@@ -1003,7 +1085,7 @@ def run_build_entropy_profile(
         return 1
 
     state.mark_done(
-        "build-entropy-profile",
+        _phase_state_key(args, "build-entropy-profile"),
         profile_path=str(output_path),
         language=language,
         model_family=model_family,

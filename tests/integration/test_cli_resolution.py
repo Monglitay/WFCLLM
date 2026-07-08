@@ -117,16 +117,13 @@ def test_main_compare_only_mode_forces_phase_rerun(tmp_path, monkeypatch, capsys
     from wfcllm.orchestration.state import RunStateManager
     RunStateManager(path=state_path).mark_done("legacy-extract", details_file="prior.jsonl")
 
-    # Replace the extract runner with a sentinel so we can assert it WAS called
+    # Replace the legacy extract runner with a sentinel so we can assert it WAS called
     called = []
     def sentinel_runner(args, state):
         called.append("legacy-extract")
         return 0
 
-    # Patch the name in entry.py's module namespace so _populate_phase_registry
-    # registers the sentinel (entry.py imports run_extract by name at module level;
-    # _populate_phase_registry references that module-level name when registering).
-    monkeypatch.setattr("wfcllm.cli.entry.run_extract", sentinel_runner)
+    monkeypatch.setattr("wfcllm.cli.entry.run_legacy_extract", sentinel_runner)
 
     # Construct compare-only CLI invocation
     argv = [

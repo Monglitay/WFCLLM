@@ -108,6 +108,15 @@ def test_run_generate_negative_calls_generator(tmp_path, neg_cfg_file):
     assert state.is_done("generate-negative")
 
 
-def test_base_config_defaults_generate_negative_to_reference_mode():
+def test_base_config_uses_new_mainline_without_generate_negative_defaults():
     cfg = json.loads((CONFIGS_DIR / "base_config.json").read_text(encoding="utf-8"))
-    assert cfg["generate_negative"]["source_mode"] == "reference"
+    assert cfg["method"]["name"] == "evidence_retry_seed7x3"
+    assert cfg["runtime"]["default_phases"] == [
+        "generate",
+        "calibrate",
+        "detect",
+        "report",
+        "audit",
+    ]
+    assert "generate_negative" not in cfg
+    assert "token_channel_train" not in cfg

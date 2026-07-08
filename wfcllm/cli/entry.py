@@ -25,6 +25,11 @@ from wfcllm.cli.runners import (
     run_generate,
     run_generate_negative,
     run_legacy_ablation,
+    run_legacy_build_entropy_profile,
+    run_legacy_extract,
+    run_legacy_pretrain,
+    run_legacy_token_channel_train,
+    run_legacy_watermark,
     run_posthoc_pass_report,
     run_report,
     run_token_channel_train,
@@ -66,11 +71,11 @@ def _populate_phase_registry(reg: PhaseRegistry) -> None:
     reg.register("posthoc-pass-report", run_posthoc_pass_report)
     reg.register("diagnostic-selector", run_diagnostic_selector)
     reg.register("encoder", run_encoder)
-    reg.register("legacy-watermark", run_watermark)
-    reg.register("legacy-extract", run_extract)
-    reg.register("legacy-token-channel-train", run_token_channel_train)
-    reg.register("legacy-build-entropy-profile", run_build_entropy_profile)
-    reg.register("legacy-pretrain", run_pretrain)
+    reg.register("legacy-watermark", run_legacy_watermark)
+    reg.register("legacy-extract", run_legacy_extract)
+    reg.register("legacy-token-channel-train", run_legacy_token_channel_train)
+    reg.register("legacy-build-entropy-profile", run_legacy_build_entropy_profile)
+    reg.register("legacy-pretrain", run_legacy_pretrain)
     reg.register("legacy-ablation", run_legacy_ablation)
 
 

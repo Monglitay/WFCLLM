@@ -99,7 +99,7 @@ class _DummyState:
 
 
 def test_cli_phase_pretrain_dispatches_pipeline(monkeypatch, tmp_path):
-    """`run.py --phase pretrain --stages encoder` calls run_encoder via PretrainPipeline."""
+    """`run.py --phase legacy-pretrain --legacy --stages encoder` calls run_encoder."""
     from wfcllm.cli.entry import main
 
     state_path = tmp_path / "run_state.json"
@@ -115,13 +115,13 @@ def test_cli_phase_pretrain_dispatches_pipeline(monkeypatch, tmp_path):
         lambda args, state: (calls.append("lexical") or 0),
     )
 
-    rc = main(["--phase", "pretrain", "--stages", "encoder"])
+    rc = main(["--phase", "legacy-pretrain", "--legacy", "--stages", "encoder"])
     assert rc == 0
     assert calls == ["encoder"]
 
 
 def test_cli_phase_pretrain_default_runs_both_in_order(monkeypatch, tmp_path):
-    """`run.py --phase pretrain` (no --stages) runs encoder then lexical."""
+    """`run.py --phase legacy-pretrain --legacy` runs encoder then lexical."""
     from wfcllm.cli.entry import main
 
     state_path = tmp_path / "run_state.json"
@@ -141,6 +141,6 @@ def test_cli_phase_pretrain_default_runs_both_in_order(monkeypatch, tmp_path):
         lambda args, state: (calls.append("lexical") or 0),
     )
 
-    rc = main(["--phase", "pretrain"])
+    rc = main(["--phase", "legacy-pretrain", "--legacy"])
     assert rc == 0
     assert calls == ["encoder", "lexical"]

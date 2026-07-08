@@ -27,7 +27,7 @@ def test_main_rejects_compare_only_mode_outside_extract_phase(monkeypatch, capsy
         [
             "run.py",
             "--phase",
-            "watermark",
+            "generate",
             "--compare-summary-left",
             "left-summary.json",
             "--compare-details-left",
@@ -97,7 +97,8 @@ def test_main_compare_only_extract_bypasses_extract_prerequisites(tmp_path, monk
         [
             "run.py",
             "--phase",
-            "extract",
+            "legacy-extract",
+            "--legacy",
             "--compare-summary-left",
             str(left_summary),
             "--compare-details-left",
@@ -134,22 +135,23 @@ def test_main_runs_explicit_extract_input_even_when_extract_phase_is_done(
 
         @staticmethod
         def is_done(phase: str) -> bool:
-            return phase == "extract"
+            return phase == "legacy-extract"
 
     def fake_run_extract(args, state) -> int:
-        called.append("extract")
+        called.append("legacy-extract")
         assert args.input_file == str(input_file)
         return 0
 
     monkeypatch.setattr("wfcllm.cli.entry.RunStateManager", FakeState)
-    monkeypatch.setattr("wfcllm.cli.entry.run_extract", fake_run_extract)
+    monkeypatch.setattr("wfcllm.cli.entry.run_legacy_extract", fake_run_extract)
     monkeypatch.setattr(
         sys,
         "argv",
         [
             "run.py",
             "--phase",
-            "extract",
+            "legacy-extract",
+            "--legacy",
             "--input-file",
             str(input_file),
         ],
@@ -159,8 +161,8 @@ def test_main_runs_explicit_extract_input_even_when_extract_phase_is_done(
     captured = capsys.readouterr()
 
     assert rc == 0
-    assert called == ["extract"]
-    assert "[跳过] extract" not in captured.out
+    assert called == ["legacy-extract"]
+    assert "[跳过] legacy-extract" not in captured.out
 
 
 def test_main_runs_configured_extract_input_even_when_extract_phase_is_done(
@@ -185,22 +187,23 @@ def test_main_runs_configured_extract_input_even_when_extract_phase_is_done(
 
         @staticmethod
         def is_done(phase: str) -> bool:
-            return phase == "extract"
+            return phase == "legacy-extract"
 
     def fake_run_extract(args, state) -> int:
-        called.append("extract")
+        called.append("legacy-extract")
         assert args.config == config_file
         return 0
 
     monkeypatch.setattr("wfcllm.cli.entry.RunStateManager", FakeState)
-    monkeypatch.setattr("wfcllm.cli.entry.run_extract", fake_run_extract)
+    monkeypatch.setattr("wfcllm.cli.entry.run_legacy_extract", fake_run_extract)
     monkeypatch.setattr(
         sys,
         "argv",
         [
             "run.py",
             "--phase",
-            "extract",
+            "legacy-extract",
+            "--legacy",
             "--config",
             str(config_file),
         ],
@@ -210,8 +213,8 @@ def test_main_runs_configured_extract_input_even_when_extract_phase_is_done(
     captured = capsys.readouterr()
 
     assert rc == 0
-    assert called == ["extract"]
-    assert "[跳过] extract" not in captured.out
+    assert called == ["legacy-extract"]
+    assert "[跳过] legacy-extract" not in captured.out
 
 
 # ---------------------------------------------------------------------------
@@ -236,7 +239,18 @@ def test_run_extract_marks_summary_file_in_state():
     tree = ast.parse(RUNNERS_PY.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "mark_done":
-            if node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == "extract":
+            first_arg = node.args[0] if node.args else None
+            marks_extract = (
+                isinstance(first_arg, ast.Constant)
+                and first_arg.value == "extract"
+            ) or (
+                isinstance(first_arg, ast.Call)
+                and getattr(first_arg.func, "id", None) == "_phase_state_key"
+                and len(first_arg.args) >= 2
+                and isinstance(first_arg.args[1], ast.Constant)
+                and first_arg.args[1].value == "extract"
+            )
+            if marks_extract:
                 keywords = {keyword.arg for keyword in node.keywords}
                 assert "details_file" in keywords
                 assert "summary_file" in keywords
@@ -1075,3 +1089,128 @@ def test_run_extract_allows_extract_only_validation_without_encoder_done(
 
     assert rc == 0
     assert captured["mark_done"][0][0] == "extract"
+
+
+def test_run_legacy_extract_reads_legacy_watermark_output_and_marks_legacy_state(
+    monkeypatch,
+    tmp_path,
+):
+    import wfcllm.cli.runners as run_module
+
+    captured: dict = {}
+
+    input_file = tmp_path / "legacy_watermarked.jsonl"
+    input_file.write_text(
+        json.dumps(
+            {
+                "id": "HumanEval/0",
+                "generated_code": "x = 1\n",
+                "watermark_params": {"lsh_d": 4, "lsh_gamma": 0.75},
+            }
+        ) + "\n",
+        encoding="utf-8",
+    )
+    config_file = tmp_path / "cfg.json"
+    config_file.write_text(
+        json.dumps(
+            {
+                "extract": {
+                    "secret_key": "k",
+                    "lsh_d": 4,
+                    "lsh_gamma": 0.75,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeState:
+        @staticmethod
+        def is_done(phase: str) -> bool:
+            return phase == "encoder"
+
+        @staticmethod
+        def get(phase: str, key: str):
+            if phase == "legacy-watermark" and key == "output_file":
+                return str(input_file)
+            return None
+
+        @staticmethod
+        def mark_done(*args, **kwargs):
+            captured["mark_done"] = (args, kwargs)
+            return None
+
+    class FakeEncoder:
+        def __init__(self, config):
+            self.config = config
+
+        def load_state_dict(self, state):
+            return None
+
+        def to(self, device):
+            return self
+
+    class FakeDetector:
+        def __init__(self, config, encoder, tokenizer, device, **kwargs):
+            captured["detector_config"] = config
+
+    class FakePipeline:
+        def __init__(self, detector, config):
+            captured["pipeline_input"] = config.input_file
+            self._details = tmp_path / "sample_details.jsonl"
+            self._summary = tmp_path / "sample_summary.json"
+
+        @staticmethod
+        def summary_path_for_details(details_path: Path) -> Path:
+            return Path(details_path).parent / "sample_summary.json"
+
+        def run(self) -> str:
+            self._details.write_text("{}", encoding="utf-8")
+            self._summary.write_text(
+                json.dumps(
+                    {
+                        "meta": {"total_samples": 1},
+                        "summary": {
+                            "watermark_rate": 1.0,
+                            "watermark_rate_ci_95": [1.0, 1.0],
+                            "mean_z_score": 1.0,
+                            "std_z_score": 0.0,
+                            "mean_p_value": 0.1,
+                            "mean_blocks": 1.0,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return str(self._details)
+
+    monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+    monkeypatch.setattr("transformers.AutoTokenizer.from_pretrained", lambda _: object())
+    monkeypatch.setattr("wfcllm.encoder.model.SemanticEncoder", FakeEncoder)
+    monkeypatch.setattr("wfcllm.extract.detector.WatermarkDetector", FakeDetector)
+    monkeypatch.setattr("wfcllm.extract.pipeline.ExtractPipeline", FakePipeline)
+    monkeypatch.setattr("wfcllm.extract.pipeline.ExtractPipelineConfig", lambda **kwargs: SimpleNamespace(**kwargs))
+
+    args = SimpleNamespace(
+        secret_key=None,
+        input_file=None,
+        extract_output_dir=None,
+        embed_dim=None,
+        fpr_threshold=None,
+        resume=None,
+        calibration_corpus=None,
+        fpr=None,
+        min_blocks=None,
+        config=config_file,
+        adaptive_detection_mode=None,
+        strict_contract=False,
+        gamma_strategy=None,
+        entropy_profile=None,
+        profile_id=None,
+    )
+
+    rc = run_module.run_legacy_extract(args, FakeState())
+
+    assert rc == 0
+    assert captured["pipeline_input"] == str(input_file)
+    assert captured["mark_done"][0][0] == "legacy-extract"

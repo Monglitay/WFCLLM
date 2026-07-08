@@ -64,6 +64,8 @@ class PhaseOrchestrator:
         # compare-only mode handled in cli/entry.py before orchestrator runs
         if phase == "detect" and self._has_explicit_detect_input(args):
             return False
+        if phase == "legacy-extract" and self._has_explicit_legacy_extract_input(args):
+            return False
         return True
 
     @staticmethod
@@ -71,4 +73,11 @@ class PhaseOrchestrator:
         cli_input = getattr(args, "input", None)
         config_cache = getattr(args, "_config_cache", None) or {}
         config_input = (config_cache.get("detector") or {}).get("input")
+        return bool(cli_input or config_input)
+
+    @staticmethod
+    def _has_explicit_legacy_extract_input(args: argparse.Namespace) -> bool:
+        cli_input = getattr(args, "input_file", None)
+        config_cache = getattr(args, "_config_cache", None) or {}
+        config_input = (config_cache.get("extract") or {}).get("input_file")
         return bool(cli_input or config_input)

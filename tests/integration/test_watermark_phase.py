@@ -69,19 +69,17 @@ def test_no_enable_fallback_in_watermark_config():
 
 
 def test_enable_cascade_true_in_watermark_config():
-    """base_config.json watermark 节的 enable_cascade 应为 true。"""
+    """base_config.json now excludes the legacy watermark section."""
     cfg = json.loads((CONFIGS_DIR / "base_config.json").read_text())
-    assert cfg.get("watermark", {}).get("enable_cascade") is True
+    assert "watermark" not in cfg
 
 
-def test_base_config_exposes_semantic_only_token_channel_defaults():
+def test_base_config_excludes_legacy_token_channel_defaults():
     cfg = json.loads((CONFIGS_DIR / "base_config.json").read_text(encoding="utf-8"))
-    token_channel = cfg.get("watermark", {}).get("token_channel")
-
-    assert token_channel == {
-        "enabled": False,
-        "channel_mode": "semantic-only",
-    }
+    assert cfg["method"]["name"] == "evidence_retry_seed7x3"
+    assert "watermark" not in cfg
+    assert "token_channel" not in json.dumps(cfg)
+    assert "token_channel_train" not in cfg
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +106,7 @@ def test_base_config_b_restores_humaneval_best_known_region():
 
 def test_run_watermark_parses_token_channel_from_config(monkeypatch, tmp_path):
     import wfcllm.cli.runners as run_module
+    from wfcllm.orchestration.state import RunStateManager
 
     captured: dict = {}
 
@@ -131,19 +130,6 @@ def test_run_watermark_parses_token_channel_from_config(monkeypatch, tmp_path):
         ),
         encoding="utf-8",
     )
-
-    class FakeState:
-        @staticmethod
-        def is_done(phase: str) -> bool:
-            return phase == "encoder"
-
-        @staticmethod
-        def get(phase: str, key: str):
-            return None
-
-        @staticmethod
-        def mark_done(*args, **kwargs):
-            return None
 
     class FakeEncoder:
         def __init__(self, config):
@@ -190,8 +176,13 @@ def test_run_watermark_parses_token_channel_from_config(monkeypatch, tmp_path):
         profile_id=None,
     )
 
-    rc = run_module.run_watermark(args, FakeState())
+    state = RunStateManager(tmp_path / "state.json")
+    state.mark_done("encoder", checkpoint="/tmp/fake")
+
+    rc = run_module.run_legacy_watermark(args, state)
     assert rc == 0
+    assert state.is_done("legacy-watermark") is True
+    assert state.is_done("watermark") is False
     assert captured["token_channel"].enabled is True
     assert captured["token_channel"].mode == "lexical-only"
     assert captured["token_channel"].model_path == "data/models/token-channel-demo"
@@ -247,33 +238,19 @@ def test_run_watermark_rejects_non_object_token_channel_config(tmp_path, capsys)
     assert "token_channel" in capsys.readouterr().err
 
 
-def test_base_config_includes_adaptive_sections():
+def test_base_config_excludes_legacy_adaptive_sections():
     cfg = json.loads((CONFIGS_DIR / "base_config.json").read_text(encoding="utf-8"))
 
-    assert cfg["watermark"]["adaptive_gamma"] == {
-        "enabled": True,
-        "strategy": "piecewise_quantile",
-        "profile_path": "data/calibration/humaneval_entropy_profile.json",
-        "profile_id": "humaneval_entropy_profile",
-        "gamma_min": 0.25,
-        "gamma_max": 0.95,
-        "anchors": {
-            "p10": 0.95,
-            "p50": 0.75,
-            "p75": 0.55,
-            "p90": 0.35,
-            "p95": 0.25,
-        },
-    }
-    assert cfg["extract"]["adaptive_detection"] == {
-        "mode": "prefer-adaptive",
-        "require_block_contract_check": True,
-        "fail_on_structure_mismatch": True,
-        "warn_on_numeric_mismatch": True,
-        "exclude_invalid_samples": True,
-    }
-    assert cfg["extract"]["input_file"] is None
-    assert cfg["extract"]["fpr"] == 0.05
+    assert cfg["runtime"]["default_phases"] == [
+        "generate",
+        "calibrate",
+        "detect",
+        "report",
+        "audit",
+    ]
+    assert "watermark" not in cfg
+    assert "extract" not in cfg
+    assert "adaptive_gamma" not in json.dumps(cfg)
 
 
 def test_humaneval_subset_config_exposes_adaptive_experiment_defaults():
