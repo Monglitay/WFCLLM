@@ -39,6 +39,7 @@ FORBIDDEN_FINAL_FIELDS = {
     "fpr",
     "pass_cost",
 }
+FINAL_CODE_FIELDS = frozenset({"id", "dataset", "prompt", "final_code"})
 
 ALLOWED_AUDIT_EVENTS = {
     "candidate_observed",
@@ -266,15 +267,51 @@ class WFCLLMGenerationPipeline:
 
         processed: set[str] = set()
         with final_path.open(encoding="utf-8") as handle:
-            for raw_line in handle:
+            for line_number, raw_line in enumerate(handle, start=1):
                 line = raw_line.strip()
                 if not line:
                     continue
                 payload = json.loads(line)
-                sample_id = payload.get("id")
-                if isinstance(sample_id, str):
-                    processed.add(sample_id)
+                record = WFCLLMGenerationPipeline._validate_existing_final_row(
+                    payload,
+                    line_number,
+                )
+                processed.add(record.id)
         return processed
+
+    @staticmethod
+    def _validate_existing_final_row(
+        payload: object,
+        line_number: int,
+    ) -> FinalCodeRecord:
+        if not isinstance(payload, dict):
+            raise ValueError(
+                f"resumed final file must contain strict final-code rows; "
+                f"line {line_number} is not an object"
+            )
+
+        fields = set(payload)
+        if fields != FINAL_CODE_FIELDS:
+            extra_fields = sorted(fields - FINAL_CODE_FIELDS)
+            missing_fields = sorted(FINAL_CODE_FIELDS - fields)
+            raise ValueError(
+                f"resumed final file must contain strict final-code rows; "
+                f"line {line_number} has extra fields {extra_fields} "
+                f"and missing fields {missing_fields}"
+            )
+
+        try:
+            return FinalCodeRecord(
+                id=payload["id"],
+                dataset=payload["dataset"],
+                prompt=payload["prompt"],
+                final_code=payload["final_code"],
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"resumed final file must contain strict final-code rows; "
+                f"line {line_number} has invalid field values"
+            ) from exc
 
     def _build_final_row(
         self,

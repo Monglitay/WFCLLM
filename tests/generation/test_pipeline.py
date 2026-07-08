@@ -493,6 +493,43 @@ def test_pipeline_resume_latest_skips_completed_ids(tmp_path: Path) -> None:
     assert [row["id"] for row in rows] == ["HumanEval/0", "HumanEval/1"]
 
 
+def test_pipeline_resume_latest_rejects_non_strict_existing_final_rows(
+    tmp_path: Path,
+) -> None:
+    out_dir = tmp_path / "sawr"
+    out_dir.mkdir()
+    final_path = out_dir / "humaneval_sawr_final_20260611_010101.jsonl"
+    audit_path = out_dir / "humaneval_sawr_audit_20260611_010101.jsonl"
+    final_path.write_text(
+        json.dumps(
+            {
+                "artifact_type": "sawr_final_code",
+                "schema_version": "sawr-smoke/v1",
+                "id": "HumanEval/0",
+                "dataset": "humaneval",
+                "prompt": "def done():\n",
+                "final_code": "def done():\n    pass\n",
+                "scientific_claims_enabled": False,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    audit_path.write_text("", encoding="utf-8")
+    pipeline = WFCLLMGenerationPipeline(
+        generator=FakeGenerator(),
+        config=_config(tmp_path, resume="latest"),
+    )
+
+    prompts = [
+        {"id": "HumanEval/0", "prompt": "def done():\n"},
+        {"id": "HumanEval/1", "prompt": "def next_one():\n"},
+    ]
+    with patch("wfcllm.generation.pipeline.load_prompts", return_value=prompts):
+        with pytest.raises(ValueError, match="strict final-code.*line 1"):
+            pipeline.run()
+
+
 def test_pipeline_resume_latest_requires_paired_audit_file(tmp_path: Path) -> None:
     out_dir = tmp_path / "sawr"
     out_dir.mkdir()
