@@ -620,3 +620,10 @@ def _model_device(model: Any, configured_device: str) -> torch.device:
         return next(model.parameters()).device
     except StopIteration:
         return torch.device(configured_device)
+
+
+WFCLLMCheckpoint = SawrCheckpoint
+WFCLLMGenerateResult = SawrGenerateResult
+WFCLLMGenerator = SawrGenerator
+WFCLLMModelContext = SawrModelContext
+load_wfcllm_model = load_sawr_model

@@ -6,10 +6,14 @@ from unittest.mock import patch
 
 import pytest
 
-from wfcllm.sawr.config import SawrGenerationConfig, SawrPipelineConfig, SawrRuleConfig
-from wfcllm.sawr.generator import SawrGenerateResult
-from wfcllm.sawr.pipeline import FORBIDDEN_FINAL_FIELDS, SawrPipeline
-from wfcllm.sawr.state_machine import AuditEvent
+from wfcllm.generation.generator import WFCLLMGenerateResult
+from wfcllm.generation.pipeline import FORBIDDEN_FINAL_FIELDS, WFCLLMGenerationPipeline
+from wfcllm.generation.state_machine import AuditEvent
+from wfcllm.method.config import (
+    WFCLLMGenerationConfig,
+    WFCLLMPipelineConfig,
+    WFCLLMRuleConfig,
+)
 
 
 class FakeGenerator:
@@ -25,7 +29,7 @@ class FakeGenerator:
         retry_budget: int,
         global_rollback_budget: int,
         max_total_sampled_tokens: int,
-    ) -> SawrGenerateResult:
+    ) -> WFCLLMGenerateResult:
         self.calls.append(
             (
                 sample_id,
@@ -37,7 +41,7 @@ class FakeGenerator:
                 max_total_sampled_tokens,
             )
         )
-        return SawrGenerateResult(
+        return WFCLLMGenerateResult(
             final_code=prompt + "    return 1\n",
             accepted_hit_count=1,
             closed_without_hit_count=0,
@@ -70,7 +74,7 @@ class FailingGenerator:
         retry_budget: int,
         global_rollback_budget: int,
         max_total_sampled_tokens: int,
-    ) -> SawrGenerateResult:
+    ) -> WFCLLMGenerateResult:
         raise RuntimeError("boom")
 
 
@@ -84,8 +88,8 @@ class UnsupportedAuditGenerator:
         retry_budget: int,
         global_rollback_budget: int,
         max_total_sampled_tokens: int,
-    ) -> SawrGenerateResult:
-        return SawrGenerateResult(
+    ) -> WFCLLMGenerateResult:
+        return WFCLLMGenerateResult(
             final_code=prompt + "    return 1\n",
             accepted_hit_count=0,
             closed_without_hit_count=0,
@@ -122,7 +126,7 @@ class EvidenceRetryGenerator:
         global_rollback_budget: int,
         max_total_sampled_tokens: int,
         seed_override: int | None = None,
-    ) -> SawrGenerateResult:
+    ) -> WFCLLMGenerateResult:
         self.calls.append(
             {
                 "sample_id": sample_id,
@@ -131,7 +135,7 @@ class EvidenceRetryGenerator:
         )
         attempt_index = len(self.calls) - 1
         accepted_hits = [0, 2, 1][attempt_index]
-        return SawrGenerateResult(
+        return WFCLLMGenerateResult(
             final_code=prompt + f"    return {attempt_index}\n",
             accepted_hit_count=accepted_hits,
             closed_without_hit_count=2 - accepted_hits,
@@ -154,15 +158,15 @@ class EvidenceRetryGenerator:
         )
 
 
-def _config(tmp_path: Path, **overrides: object) -> SawrPipelineConfig:
+def _config(tmp_path: Path, **overrides: object) -> WFCLLMPipelineConfig:
     model_path = tmp_path / "model"
     model_path.mkdir(exist_ok=True)
     values = {
         "dataset": "humaneval",
         "dataset_path": "data/datasets",
         "output_dir": str(tmp_path / "sawr"),
-        "generation": SawrGenerationConfig(model_path=str(model_path), device="cpu"),
-        "rule": SawrRuleConfig(target_accept_rate=1.0),
+        "generation": WFCLLMGenerationConfig(model_path=str(model_path), device="cpu"),
+        "rule": WFCLLMRuleConfig(target_accept_rate=1.0),
         "sample_limit": None,
         "sample_offset": None,
         "max_group_statements": 2,
@@ -174,7 +178,7 @@ def _config(tmp_path: Path, **overrides: object) -> SawrPipelineConfig:
         "resume": None,
     }
     values.update(overrides)
-    return SawrPipelineConfig(**values)
+    return WFCLLMPipelineConfig(**values)
 
 
 def _read_jsonl(path: Path) -> list[dict[str, object]]:
@@ -188,30 +192,22 @@ def _read_jsonl(path: Path) -> list[dict[str, object]]:
 def test_pipeline_writes_final_rows_without_forbidden_fields(tmp_path: Path) -> None:
     prompts = [{"id": "HumanEval/0", "prompt": "def foo():\n"}]
     generator = FakeGenerator()
-    pipeline = SawrPipeline(generator=generator, config=_config(tmp_path))
+    pipeline = WFCLLMGenerationPipeline(generator=generator, config=_config(tmp_path))
 
-    with patch("wfcllm.sawr.pipeline.load_prompts", return_value=prompts):
+    with patch("wfcllm.generation.pipeline.load_prompts", return_value=prompts):
         final_path = Path(pipeline.run())
 
     rows = _read_jsonl(final_path)
     assert len(rows) == 1
     row = rows[0]
-    assert set(row) == {
-        "artifact_type",
-        "schema_version",
-        "id",
-        "dataset",
-        "prompt",
-        "final_code",
-        "scientific_claims_enabled",
-    }
-    assert row["artifact_type"] == "sawr_final_code"
-    assert row["schema_version"] == "sawr-smoke/v1"
+    assert set(row) == {"id", "dataset", "prompt", "final_code"}
     assert row["id"] == "HumanEval/0"
     assert row["dataset"] == "humaneval"
     assert row["prompt"] == "def foo():\n"
     assert row["final_code"] == "def foo():\n    return 1\n"
-    assert row["scientific_claims_enabled"] is False
+    assert "artifact_type" not in row
+    assert "schema_version" not in row
+    assert "scientific_claims_enabled" not in row
     assert not (FORBIDDEN_FINAL_FIELDS & set(row))
 
 
@@ -220,7 +216,7 @@ def test_pipeline_evidence_retry_selects_by_generation_evidence_only(
 ) -> None:
     prompts = [{"id": "HumanEval/0", "prompt": "def foo():\n"}]
     generator = EvidenceRetryGenerator()
-    pipeline = SawrPipeline(
+    pipeline = WFCLLMGenerationPipeline(
         generator=generator,
         config=_config(
             tmp_path,
@@ -229,19 +225,16 @@ def test_pipeline_evidence_retry_selects_by_generation_evidence_only(
         ),
     )
 
-    with patch("wfcllm.sawr.pipeline.load_prompts", return_value=prompts):
+    with patch("wfcllm.generation.pipeline.load_prompts", return_value=prompts):
         final_path = Path(pipeline.run())
 
     rows = _read_jsonl(final_path)
     assert rows == [
         {
-            "artifact_type": "sawr_final_code",
-            "schema_version": "sawr-smoke/v1",
             "id": "HumanEval/0",
             "dataset": "humaneval",
             "prompt": "def foo():\n",
             "final_code": "def foo():\n    return 1\n",
-            "scientific_claims_enabled": False,
         }
     ]
     assert generator.calls == [
@@ -257,32 +250,22 @@ def test_pipeline_final_rows_remain_detector_clean_with_structure_audit(
 ) -> None:
     prompts = [{"id": "HumanEval/0", "prompt": "def foo():\n"}]
     generator = FakeGenerator()
-    pipeline = SawrPipeline(generator=generator, config=_config(tmp_path))
+    pipeline = WFCLLMGenerationPipeline(generator=generator, config=_config(tmp_path))
 
-    with patch("wfcllm.sawr.pipeline.load_prompts", return_value=prompts):
+    with patch("wfcllm.generation.pipeline.load_prompts", return_value=prompts):
         final_path = Path(pipeline.run())
 
     row = _read_jsonl(final_path)[0]
-    assert set(row) == {
-        "artifact_type",
-        "schema_version",
-        "id",
-        "dataset",
-        "prompt",
-        "final_code",
-        "scientific_claims_enabled",
-    }
-    assert row["artifact_type"] == "sawr_final_code"
-    assert row["scientific_claims_enabled"] is False
+    assert set(row) == {"id", "dataset", "prompt", "final_code"}
     assert not (FORBIDDEN_FINAL_FIELDS & set(row))
 
 
 def test_pipeline_writes_audit_rows_as_audit_only(tmp_path: Path) -> None:
     prompts = [{"id": "HumanEval/0", "prompt": "def foo():\n"}]
     generator = FakeGenerator()
-    pipeline = SawrPipeline(generator=generator, config=_config(tmp_path))
+    pipeline = WFCLLMGenerationPipeline(generator=generator, config=_config(tmp_path))
 
-    with patch("wfcllm.sawr.pipeline.load_prompts", return_value=prompts):
+    with patch("wfcllm.generation.pipeline.load_prompts", return_value=prompts):
         final_path = Path(pipeline.run())
 
     audit_path = Path(str(final_path).replace("_final_", "_audit_"))
@@ -346,7 +329,7 @@ def test_pipeline_writes_candidate_text_sidecar_when_requested(
         ),
     )
     generator = FakeGenerator()
-    generator.generate = lambda **kwargs: SawrGenerateResult(
+    generator.generate = lambda **kwargs: WFCLLMGenerateResult(
         final_code="def foo():\n    return 1\n",
         accepted_hit_count=1,
         closed_without_hit_count=0,
@@ -355,12 +338,12 @@ def test_pipeline_writes_candidate_text_sidecar_when_requested(
         audit_events=[event],
     )
     sidecar_path = tmp_path / "candidate_sidecar.jsonl"
-    pipeline = SawrPipeline(
+    pipeline = WFCLLMGenerationPipeline(
         generator=generator,
         config=_config(tmp_path, candidate_sidecar_output=str(sidecar_path)),
     )
 
-    with patch("wfcllm.sawr.pipeline.load_prompts", return_value=prompts):
+    with patch("wfcllm.generation.pipeline.load_prompts", return_value=prompts):
         final_path = Path(pipeline.run())
 
     final_row = _read_jsonl(final_path)[0]
@@ -421,7 +404,7 @@ def test_pipeline_allows_structure_aware_audit_events(tmp_path: Path) -> None:
         "absolute_sampled_token_budget_exhausted",
     ]
     generator = FakeGenerator()
-    generator.generate = lambda **kwargs: SawrGenerateResult(
+    generator.generate = lambda **kwargs: WFCLLMGenerateResult(
         final_code="def foo():\n    return 1\n",
         accepted_hit_count=1,
         closed_without_hit_count=0,
@@ -443,9 +426,9 @@ def test_pipeline_allows_structure_aware_audit_events(tmp_path: Path) -> None:
             for name in event_names
         ],
     )
-    pipeline = SawrPipeline(generator=generator, config=_config(tmp_path))
+    pipeline = WFCLLMGenerationPipeline(generator=generator, config=_config(tmp_path))
 
-    with patch("wfcllm.sawr.pipeline.load_prompts", return_value=prompts):
+    with patch("wfcllm.generation.pipeline.load_prompts", return_value=prompts):
         final_path = Path(pipeline.run())
 
     audit_path = Path(str(final_path).replace("_final_", "_audit_"))
@@ -458,9 +441,9 @@ def test_pipeline_allows_structure_aware_audit_events(tmp_path: Path) -> None:
 def test_pipeline_passes_sample_slice_to_loader(tmp_path: Path) -> None:
     prompts = [{"id": "HumanEval/0", "prompt": "def foo():\n"}]
     config = _config(tmp_path, sample_limit=7, sample_offset=3)
-    pipeline = SawrPipeline(generator=FakeGenerator(), config=config)
+    pipeline = WFCLLMGenerationPipeline(generator=FakeGenerator(), config=config)
 
-    with patch("wfcllm.sawr.pipeline.load_prompts", return_value=prompts) as loader:
+    with patch("wfcllm.generation.pipeline.load_prompts", return_value=prompts) as loader:
         pipeline.run()
 
     loader.assert_called_once_with(
@@ -479,13 +462,10 @@ def test_pipeline_resume_latest_skips_completed_ids(tmp_path: Path) -> None:
     final_path.write_text(
         json.dumps(
             {
-                "artifact_type": "sawr_final_code",
-                "schema_version": "sawr-smoke/v1",
                 "id": "HumanEval/0",
                 "dataset": "humaneval",
                 "prompt": "def done():\n",
                 "final_code": "def done():\n    pass\n",
-                "scientific_claims_enabled": False,
             }
         )
         + "\n",
@@ -497,9 +477,12 @@ def test_pipeline_resume_latest_skips_completed_ids(tmp_path: Path) -> None:
         {"id": "HumanEval/1", "prompt": "def next_one():\n"},
     ]
     generator = FakeGenerator()
-    pipeline = SawrPipeline(generator=generator, config=_config(tmp_path, resume="latest"))
+    pipeline = WFCLLMGenerationPipeline(
+        generator=generator,
+        config=_config(tmp_path, resume="latest"),
+    )
 
-    with patch("wfcllm.sawr.pipeline.load_prompts", return_value=prompts):
+    with patch("wfcllm.generation.pipeline.load_prompts", return_value=prompts):
         resumed_path = Path(pipeline.run())
 
     assert resumed_path == final_path
@@ -517,19 +500,19 @@ def test_pipeline_resume_latest_requires_paired_audit_file(tmp_path: Path) -> No
     final_path.write_text(
         json.dumps(
             {
-                "artifact_type": "sawr_final_code",
-                "schema_version": "sawr-smoke/v1",
                 "id": "HumanEval/0",
                 "dataset": "humaneval",
                 "prompt": "def done():\n",
                 "final_code": "def done():\n    pass\n",
-                "scientific_claims_enabled": False,
             }
         )
         + "\n",
         encoding="utf-8",
     )
-    pipeline = SawrPipeline(generator=FakeGenerator(), config=_config(tmp_path, resume="latest"))
+    pipeline = WFCLLMGenerationPipeline(
+        generator=FakeGenerator(),
+        config=_config(tmp_path, resume="latest"),
+    )
 
     with pytest.raises(ValueError, match="paired audit file missing"):
         pipeline.run()
@@ -541,9 +524,9 @@ def test_pipeline_records_sample_failed_and_continues(tmp_path: Path) -> None:
         {"id": "HumanEval/1", "prompt": "def still_runs():\n"},
     ]
     generator = FailingGenerator()
-    pipeline = SawrPipeline(generator=generator, config=_config(tmp_path))
+    pipeline = WFCLLMGenerationPipeline(generator=generator, config=_config(tmp_path))
 
-    with patch("wfcllm.sawr.pipeline.load_prompts", return_value=prompts):
+    with patch("wfcllm.generation.pipeline.load_prompts", return_value=prompts):
         final_path = Path(pipeline.run())
 
     assert _read_jsonl(final_path) == []
@@ -557,8 +540,11 @@ def test_pipeline_records_sample_failed_and_continues(tmp_path: Path) -> None:
 
 def test_pipeline_rejects_unsupported_audit_events(tmp_path: Path) -> None:
     prompts = [{"id": "HumanEval/0", "prompt": "def foo():\n"}]
-    pipeline = SawrPipeline(generator=UnsupportedAuditGenerator(), config=_config(tmp_path))
+    pipeline = WFCLLMGenerationPipeline(
+        generator=UnsupportedAuditGenerator(),
+        config=_config(tmp_path),
+    )
 
-    with patch("wfcllm.sawr.pipeline.load_prompts", return_value=prompts):
+    with patch("wfcllm.generation.pipeline.load_prompts", return_value=prompts):
         with pytest.raises(ValueError, match="unsupported SAWR audit event"):
             pipeline.run()

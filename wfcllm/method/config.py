@@ -150,6 +150,7 @@ class SawrPipelineConfig:
     evidence_retry_seed_stride: int = 1009
     resume: str | None = None
     candidate_sidecar_output: str | None = None
+    run_id: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.generation, SawrGenerationConfig):
@@ -210,6 +211,10 @@ class SawrPipelineConfig:
             str,
         ):
             raise ValueError("candidate_sidecar_output must be a string or None")
+        if self.run_id is not None and (
+            not isinstance(self.run_id, str) or not self.run_id
+        ):
+            raise ValueError("run_id must be a non-empty string or None")
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -218,3 +223,6 @@ class SawrPipelineConfig:
 WFCLLMGenerationConfig = SawrGenerationConfig
 WFCLLMRuleConfig = SawrRuleConfig
 WFCLLMPipelineConfig = SawrPipelineConfig
+SawrGenerationConfig = WFCLLMGenerationConfig
+SawrRuleConfig = WFCLLMRuleConfig
+SawrPipelineConfig = WFCLLMPipelineConfig
