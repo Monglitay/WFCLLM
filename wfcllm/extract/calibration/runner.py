@@ -13,9 +13,9 @@ from transformers import AutoModel, AutoTokenizer
 
 from wfcllm.extract.calibration.threshold import ThresholdCalibrator
 from wfcllm.extract.scorer import BlockScorer
-from wfcllm.watermark.keying import WatermarkKeying
-from wfcllm.watermark.lsh_space import LSHSpace
-from wfcllm.watermark.verifier import ProjectionVerifier
+from wfcllm.semantic.keying import WatermarkKeying
+from wfcllm.semantic.lsh_space import LSHSpace
+from wfcllm.semantic.verifier import ProjectionVerifier
 
 
 def _load_jsonl(path: str | Path) -> list[dict]:

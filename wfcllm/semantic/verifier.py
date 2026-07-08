@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import torch
 
-from wfcllm.watermark.lsh_space import LSHSpace
+from wfcllm.semantic.lsh_space import LSHSpace
 
 
 @dataclass

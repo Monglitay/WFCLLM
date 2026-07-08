@@ -13,11 +13,11 @@ from wfcllm.extract.hypothesis import fuse_joint_detection
 from wfcllm.extract.hypothesis import semantic_detection_from_result
 from wfcllm.extract.scorer import BlockScorer
 from wfcllm.extract.token_channel import ReplayTokenChannelDetector
-from wfcllm.watermark.keying import WatermarkKeying
-from wfcllm.watermark.lsh_space import LSHSpace
+from wfcllm.semantic.keying import WatermarkKeying
+from wfcllm.semantic.lsh_space import LSHSpace
 from wfcllm.watermark.token_channel.core.model import load_token_channel_artifact
 from wfcllm.watermark.token_channel.runtime.injector import TokenChannelRuntime
-from wfcllm.watermark.verifier import ProjectionVerifier
+from wfcllm.semantic.verifier import ProjectionVerifier
 
 
 class WatermarkDetector:

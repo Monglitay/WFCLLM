@@ -4,7 +4,7 @@ import hashlib
 from dataclasses import dataclass
 
 from wfcllm.sawr import BoundaryEvent, Candidate, RuleDecision, RuleRequest
-from wfcllm.sawr.state_machine import (
+from wfcllm.generation.state_machine import (
     AuditEvent,
     LayerFrame,
     SawrStateMachine,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from wfcllm.sawr.boundary import Candidate, PromptAwareBoundaryDetector
+from wfcllm.generation.boundary import Candidate, PromptAwareBoundaryDetector
 
 
 HUMANEVAL_PROMPT = '''def add_one(x):

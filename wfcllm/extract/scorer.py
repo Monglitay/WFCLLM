@@ -6,8 +6,8 @@ from hashlib import sha256
 
 from wfcllm.lang.python.parser import StatementBlock
 from wfcllm.extract.config import BlockScore
-from wfcllm.watermark.keying import WatermarkKeying
-from wfcllm.watermark.verifier import ProjectionVerifier
+from wfcllm.semantic.keying import WatermarkKeying
+from wfcllm.semantic.verifier import ProjectionVerifier
 
 
 class BlockScorer:

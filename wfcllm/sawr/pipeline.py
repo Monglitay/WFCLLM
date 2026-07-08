@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from wfcllm.generation.retry import evidence_retry_key
 from wfcllm.sawr.config import SawrPipelineConfig
 from wfcllm.sawr.generator import SawrGenerateResult, SawrGenerator
 from wfcllm.sawr.state_machine import AuditEvent
@@ -217,13 +218,7 @@ class SawrPipeline:
         result: SawrGenerateResult,
         attempt_index: int,
     ) -> tuple[int, int, int, int, int]:
-        return (
-            int(result.accepted_hit_count),
-            -int(result.closed_without_hit_count),
-            -int(result.fallback_count),
-            int(result.candidate_count),
-            -attempt_index,
-        )
+        return evidence_retry_key(result, attempt_index)
 
     def _resolve_output_paths(self, out_dir: Path) -> tuple[Path, Path, str]:
         if self._config.resume == "latest":

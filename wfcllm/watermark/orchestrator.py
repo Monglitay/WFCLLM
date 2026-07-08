@@ -22,15 +22,15 @@ from wfcllm.watermark.diagnostics import (
 from wfcllm.watermark.adaptive_gamma.entropy import NodeEntropyEstimator
 from wfcllm.watermark.adaptive_gamma.profile import EntropyProfile
 from wfcllm.watermark.adaptive_gamma.schedule import PiecewiseQuantileSchedule
-from wfcllm.watermark.keying import WatermarkKeying
-from wfcllm.watermark.lsh_space import LSHSpace
+from wfcllm.semantic.keying import WatermarkKeying
+from wfcllm.semantic.lsh_space import LSHSpace
 from wfcllm.watermark.retry_loop import RetryLoop, RetryDiagnostics, RetryResult
 from wfcllm.watermark.semantic_channel import SemanticChannel
 from wfcllm.watermark.token_channel.core.features import TokenChannelFeatures
 from wfcllm.watermark.token_channel.core.features import build_token_channel_features
 from wfcllm.watermark.token_channel.core.model import load_token_channel_artifact
 from wfcllm.watermark.token_channel.runtime.injector import TokenChannelRuntime
-from wfcllm.watermark.verifier import ProjectionVerifier
+from wfcllm.semantic.verifier import ProjectionVerifier
 
 logger = logging.getLogger(__name__)
 

@@ -36,8 +36,8 @@ from wfcllm.watermark.anchor_lsh import (
     residual_signature,
     sign_with_planes,
 )
-from wfcllm.watermark.keying import WatermarkKeying
-from wfcllm.watermark.lsh_space import LSHSpace
+from wfcllm.semantic.keying import WatermarkKeying
+from wfcllm.semantic.lsh_space import LSHSpace
 
 try:
     from tqdm import tqdm

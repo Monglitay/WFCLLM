@@ -12,8 +12,8 @@ from wfcllm.watermark.diagnostics import FailureReason, hash_block_text
 from wfcllm.watermark.adaptive_gamma.entropy import NodeEntropyEstimator
 from wfcllm.watermark.adaptive_gamma.schedule import GammaResolution, quantize_gamma
 from wfcllm.watermark.interceptor import InterceptEvent
-from wfcllm.watermark.keying import WatermarkKeying
-from wfcllm.watermark.verifier import ProjectionVerifier
+from wfcllm.semantic.keying import WatermarkKeying
+from wfcllm.semantic.verifier import ProjectionVerifier
 
 logger = logging.getLogger(__name__)
 

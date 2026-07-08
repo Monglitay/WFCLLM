@@ -10,7 +10,7 @@ import torch.nn.functional as F
 
 from wfcllm.watermark.config import WatermarkConfig
 from wfcllm.watermark.interceptor import StatementInterceptor, InterceptorState, InterceptEvent
-from wfcllm.watermark.kv_cache import KVCacheManager, CacheSnapshot
+from wfcllm.generation.kv_cache import KVCacheManager, CacheSnapshot
 
 logger = logging.getLogger(__name__)
 

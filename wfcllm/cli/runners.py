@@ -507,9 +507,9 @@ def run_extract(args: argparse.Namespace, state: RunStateManager) -> int:
             return 1
         from wfcllm.extract.calibration.threshold import ThresholdCalibrator
         from wfcllm.extract.scorer import BlockScorer
-        from wfcllm.watermark.keying import WatermarkKeying
-        from wfcllm.watermark.lsh_space import LSHSpace
-        from wfcllm.watermark.verifier import ProjectionVerifier
+        from wfcllm.semantic.keying import WatermarkKeying
+        from wfcllm.semantic.lsh_space import LSHSpace
+        from wfcllm.semantic.verifier import ProjectionVerifier
 
         fpr_target = getattr(args, "fpr", None) or ext_cfg.get("fpr", 0.01)
         block_contract_builder = build_extract_calibration_contract_builder(
