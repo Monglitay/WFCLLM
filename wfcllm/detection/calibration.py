@@ -16,8 +16,8 @@ from wfcllm.detection.config import (
 )
 
 
-ARTIFACT_TYPE = "sawr_detection_calibration"
-SCHEMA_VERSION = "sawr-detect-calibration/v1"
+ARTIFACT_TYPE = "wfcllm_detection_calibration"
+SCHEMA_VERSION = "wfcllm-detect-calibration/v1"
 FORBIDDEN_ARTIFACT_KEYS = {
     "audit",
     "secret_key",

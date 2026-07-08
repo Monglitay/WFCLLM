@@ -22,6 +22,9 @@ from wfcllm.detection.calibration import (
 )
 from wfcllm.detection.config import WFCLLMDetectionConfig
 
+EXPECTED_ARTIFACT_TYPE = "wfcllm_detection_calibration"
+EXPECTED_SCHEMA_VERSION = "wfcllm-detect-calibration/v1"
+
 
 def _context(raw: float, *, windows: int = 3, statements: int = 2) -> ContextCalibrationInput:
     return ContextCalibrationInput(
@@ -51,8 +54,8 @@ def _artifact(
     public_config = WFCLLMDetectionConfig(secret_key="1010").to_public_dict()
     public_config.update(config or {})
     return CalibrationArtifact(
-        artifact_type="sawr_detection_calibration",
-        schema_version="sawr-detect-calibration/v1",
+        artifact_type=EXPECTED_ARTIFACT_TYPE,
+        schema_version=EXPECTED_SCHEMA_VERSION,
         detector_mode="wfcllm-structure-aware-proxy-window/v1",
         config=public_config,
         bucket_edges=bucket_edges
@@ -136,8 +139,8 @@ def test_build_calibration_artifact_is_secret_free_and_scores_samples() -> None:
 
     artifact = build_calibration_artifact(samples, config=config)
 
-    assert artifact.artifact_type == "sawr_detection_calibration"
-    assert artifact.schema_version == "sawr-detect-calibration/v1"
+    assert artifact.artifact_type == EXPECTED_ARTIFACT_TYPE
+    assert artifact.schema_version == EXPECTED_SCHEMA_VERSION
     assert artifact.config["secret_key_sha256"]
     assert "secret_key" not in artifact.config
     assert artifact.context_negative_count == 5

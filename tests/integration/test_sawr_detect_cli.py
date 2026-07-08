@@ -10,7 +10,7 @@ import scripts.run_sawr_detect as sawr_detect_cli
 
 def test_calibrate_cli_maps_detector_args_and_writes_artifact(tmp_path: Path) -> None:
     input_path = tmp_path / "negative.jsonl"
-    input_record = {"id": "neg", "final_code": "def target():\n    return 0\n"}
+    input_record = _final_code_row("neg", "def target():\n    return 0\n")
     _write_jsonl(input_path, [input_record])
     output_path = tmp_path / "calibration.json"
     detector_paths = _make_detector_paths(tmp_path)
@@ -54,7 +54,7 @@ def test_calibrate_cli_maps_detector_args_and_writes_artifact(tmp_path: Path) ->
 
 def test_detect_cli_maps_detector_args_and_writes_details(tmp_path: Path) -> None:
     input_path = tmp_path / "rows.jsonl"
-    input_record = {"id": "pos", "final_code": "def target():\n    return 1\n"}
+    input_record = _final_code_row("pos", "def target():\n    return 1\n")
     _write_jsonl(input_path, [input_record])
     calibration_path = tmp_path / "calibration.json"
     output_path = tmp_path / "details.jsonl"
@@ -133,7 +133,10 @@ def test_detect_missing_calibration_fails_before_scorer_load(
     capsys,
 ) -> None:
     input_path = tmp_path / "rows.jsonl"
-    _write_jsonl(input_path, [{"id": "pos", "final_code": "def target():\n    return 1\n"}])
+    _write_jsonl(
+        input_path,
+        [_final_code_row("pos", "def target():\n    return 1\n")],
+    )
     output_path = tmp_path / "details.jsonl"
     detector_paths = _make_detector_paths(tmp_path)
 
@@ -293,10 +296,10 @@ def test_split_cli_writes_deterministic_task_based_splits(tmp_path: Path) -> Non
     output_dir = tmp_path / "splits"
     repeat_output_dir = tmp_path / "splits-repeat"
     input_rows = [
-        {"id": "HumanEval/0#0", "final_code": "def target():\n    return 0\n"},
-        {"id": "HumanEval/0#1", "final_code": "def target():\n    return 1\n"},
-        {"id": "HumanEval/1#0", "final_code": "def target():\n    return 2\n"},
-        {"id": "HumanEval/2#0", "final_code": "def target():\n    return 3\n"},
+        _final_code_row("HumanEval/0#0", "def target():\n    return 0\n"),
+        _final_code_row("HumanEval/0#1", "def target():\n    return 1\n"),
+        _final_code_row("HumanEval/1#0", "def target():\n    return 2\n"),
+        _final_code_row("HumanEval/2#0", "def target():\n    return 3\n"),
     ]
     _write_jsonl(input_path, input_rows)
 
@@ -359,7 +362,7 @@ def test_split_invalid_ratio_returns_error(tmp_path: Path, capsys) -> None:
     output_dir = tmp_path / "splits"
     _write_jsonl(
         input_path,
-        [{"id": "HumanEval/0#0", "final_code": "def target():\n    return 0\n"}],
+        [_final_code_row("HumanEval/0#0", "def target():\n    return 0\n")],
     )
 
     with patch(
@@ -396,9 +399,10 @@ def test_split_trace_row_returns_error_without_scorer_load(
         input_path,
         [
             {
-                "artifact_type": "sawr_final_code",
-                "id": "HumanEval/0#0",
-                "final_code": "def target():\n    return 0\n",
+                **_final_code_row(
+                    "HumanEval/0#0",
+                    "def target():\n    return 0\n",
+                ),
                 "sampling_trace": [],
             }
         ],
@@ -527,6 +531,15 @@ def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
         "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records),
         encoding="utf-8",
     )
+
+
+def _final_code_row(sample_id: str, final_code: str) -> dict[str, object]:
+    return {
+        "id": sample_id,
+        "dataset": "humaneval",
+        "prompt": "def target():\n",
+        "final_code": final_code,
+    }
 
 
 def _read_jsonl(path: Path) -> list[dict[str, object]]:
