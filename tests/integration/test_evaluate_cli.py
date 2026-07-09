@@ -112,22 +112,9 @@ def test_evaluate_cli_detection_writes_report(tmp_path, capsys):
 
 # --- dual subcommand routing ---
 
-def test_evaluate_cli_dual_dispatches_to_dual_channel(tmp_path, monkeypatch):
-    """Verify the dual subcommand calls wfcllm.evaluation.dual_channel.run_evaluation."""
+def test_evaluate_cli_dual_reports_legacy_archive_guidance(tmp_path, capsys):
     config_path = tmp_path / "cfg.json"
     config_path.write_text(json.dumps({"watermark": {}, "extract": {}}))
-
-    captured: dict = {}
-
-    def fake_run_evaluation(*, dataset, config_path, output_dir, candidate_count, **kw):
-        captured["dataset"] = dataset
-        captured["config_path"] = config_path
-        captured["output_dir"] = output_dir
-        captured["candidate_count"] = candidate_count
-        return {"dataset": dataset, "modes": {}}
-
-    import wfcllm.evaluation.dual_channel as dc
-    monkeypatch.setattr(dc, "run_evaluation", fake_run_evaluation)
 
     evaluate = _load_evaluate_module()
     rc = evaluate.main([
@@ -137,9 +124,10 @@ def test_evaluate_cli_dual_dispatches_to_dual_channel(tmp_path, monkeypatch):
         "--output-dir", str(tmp_path / "out"),
         "--num-candidates", "1",
     ])
-    assert rc == 0
-    assert captured["dataset"] == "humaneval"
-    assert captured["candidate_count"] == 1
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "dual-channel evaluation has been archived" in err
+    assert "archive/legacy_wfcllm_2026_07/code/dual_channel" in err
 
 
 def test_evaluate_cli_unknown_subcommand_exits_nonzero(capsys):

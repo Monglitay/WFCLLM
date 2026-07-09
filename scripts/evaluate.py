@@ -1,10 +1,11 @@
 #!/usr/bin/env python
 """Unified offline evaluation entry point.
 
-Three subcommands:
+Subcommands:
   exec        compute pass@k (and friends) over JSONL candidate rows
   detection   build the offline regression report from saved summary + details
-  dual        run the dual-channel end-to-end harness (semantic / lexical / dual)
+  dual        report archive guidance for the legacy dual-channel harness
+  bench       compute Pass@1, Pass@10, AUROC benchmark reports
 """
 from __future__ import annotations
 
@@ -29,7 +30,6 @@ from wfcllm.evaluation.detection_report import (  # noqa: E402
     load_watermarked_artifact,
     write_offline_regression_report,
 )
-from wfcllm.evaluation import dual_channel as dual_channel_module  # noqa: E402
 
 
 def _cmd_exec(args: argparse.Namespace) -> int:
@@ -81,14 +81,13 @@ def _cmd_detection(args: argparse.Namespace) -> int:
 
 
 def _cmd_dual(args: argparse.Namespace) -> int:
-    result = dual_channel_module.run_evaluation(
-        dataset=args.dataset,
-        config_path=args.config,
-        output_dir=args.output_dir,
-        candidate_count=args.num_candidates,
+    print(
+        "dual-channel evaluation has been archived; see "
+        "archive/legacy_wfcllm_2026_07/code/dual_channel and "
+        "scripts/legacy/evaluate_dual_channel.py.",
+        file=sys.stderr,
     )
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0
+    return 1
 
 
 def _cmd_bench(args: argparse.Namespace) -> int:
@@ -150,11 +149,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     dual_parser = subparsers.add_parser(
         "dual",
-        help="end-to-end dual-channel evaluation harness",
+        help="legacy dual-channel evaluation guidance",
     )
     dual_parser.add_argument("--dataset", default="humaneval", choices=["humaneval", "mbpp"])
     dual_parser.add_argument("--config", default="configs/base_config.json")
-    dual_parser.add_argument("--output-dir", default="data/eval/dual_channel")
+    dual_parser.add_argument("--output-dir", default="data/eval/legacy-dual-channel")
     dual_parser.add_argument("--num-candidates", type=int, default=10)
     dual_parser.set_defaults(func=_cmd_dual)
 
