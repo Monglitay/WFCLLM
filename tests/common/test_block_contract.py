@@ -2,8 +2,8 @@
 
 from hashlib import sha256
 
-from wfcllm.watermark.adaptive_gamma.entropy import NodeEntropyEstimator
 from wfcllm.common.block_contract import build_block_contracts
+from wfcllm.semantic.entropy import NodeEntropyEstimator
 
 
 def test_build_block_contracts_is_deterministic():

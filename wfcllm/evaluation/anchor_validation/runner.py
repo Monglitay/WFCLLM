@@ -29,8 +29,7 @@ from wfcllm.evaluation.anchor_validation.summary import (
     build_anchor_validation_summary,
     validate_primary_method_rows,
 )
-from wfcllm.watermark.adaptive_gamma.schedule import quantize_gamma
-from wfcllm.watermark.anchor_lsh import (
+from wfcllm.semantic.anchor_lsh import (
     anchored_signature,
     random_anchor,
     residual_signature,
@@ -38,6 +37,7 @@ from wfcllm.watermark.anchor_lsh import (
 )
 from wfcllm.semantic.keying import WatermarkKeying
 from wfcllm.semantic.lsh_space import LSHSpace
+from wfcllm.semantic.rules import _quantize_gamma as quantize_gamma
 
 try:
     from tqdm import tqdm

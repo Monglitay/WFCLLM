@@ -16,14 +16,11 @@ from wfcllm.cli.runners import (
     is_compare_only_mode,
     validate_compare_only_mode,
     run_audit,
-    run_build_entropy_profile,
     run_calibrate,
     run_detect,
     run_diagnostic_selector,
     run_encoder,
-    run_extract,
     run_generate,
-    run_generate_negative,
     run_legacy_ablation,
     run_legacy_build_entropy_profile,
     run_legacy_extract,
@@ -32,10 +29,7 @@ from wfcllm.cli.runners import (
     run_legacy_watermark,
     run_posthoc_pass_report,
     run_report,
-    run_token_channel_train,
-    run_watermark,
 )
-from wfcllm.pretrain.runner import run_pretrain
 from wfcllm.orchestration.phase_registry import PhaseRegistry
 from wfcllm.orchestration.pipeline import PhaseOrchestrator
 from wfcllm.orchestration.prereq import PrereqRegistry
@@ -45,14 +39,6 @@ from wfcllm.orchestration.state import (
     LEGACY_PHASES,
     RunStateManager,
 )
-
-
-def _register_prereq_side_effects() -> None:
-    # Import registers legacy adaptive-gamma prereqs with PrereqRegistry.
-    import wfcllm.watermark.adaptive_gamma  # noqa: F401
-
-
-_register_prereq_side_effects()
 
 
 def _cmd_status(state: RunStateManager) -> None:

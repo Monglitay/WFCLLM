@@ -46,73 +46,27 @@ def resolve_extract_lsh_params(first_record: dict, ext_cfg: dict) -> tuple[int, 
 
 
 def resolve_adaptive_gamma_config(args: argparse.Namespace, wm_cfg: dict):
-    from wfcllm.watermark.config import AdaptiveGammaConfig
-
-    configured = wm_cfg.get("adaptive_gamma") or {}
-    defaults = AdaptiveGammaConfig()
-    anchors = defaults.anchors.copy()
-    raw_anchors = configured.get("anchors")
-    if isinstance(raw_anchors, dict):
-        anchors.update(raw_anchors)
-
-    enabled = bool(configured.get("enabled", defaults.enabled))
-    if (
-        getattr(args, "gamma_strategy", None) is not None
-        or getattr(args, "entropy_profile", None) is not None
-        or getattr(args, "profile_id", None) is not None
-    ):
-        enabled = True
-
-    return AdaptiveGammaConfig(
-        enabled=enabled,
-        strategy=(
-            getattr(args, "gamma_strategy", None)
-            or configured.get("strategy", defaults.strategy)
-        ),
-        profile_path=(
-            getattr(args, "entropy_profile", None)
-            if getattr(args, "entropy_profile", None) is not None
-            else configured.get("profile_path", defaults.profile_path)
-        ),
-        profile_id=(
-            getattr(args, "profile_id", None)
-            if getattr(args, "profile_id", None) is not None
-            else configured.get("profile_id", defaults.profile_id)
-        ),
-        gamma_min=float(configured.get("gamma_min", defaults.gamma_min)),
-        gamma_max=float(configured.get("gamma_max", defaults.gamma_max)),
-        anchors=anchors,
+    raise RuntimeError(
+        "adaptive-gamma config resolution belongs to the archived legacy "
+        "WFCLLM pipeline; see archive/legacy_wfcllm_2026_07/."
     )
 
 
 def resolve_extract_adaptive_gamma_config(args: argparse.Namespace, cfg: dict):
-    extract_cfg = cfg.get("extract", {})
-    configured = extract_cfg.get("adaptive_gamma")
-    if isinstance(configured, dict):
-        return resolve_adaptive_gamma_config(
-            args,
-            {"adaptive_gamma": configured},
-        )
-    return resolve_adaptive_gamma_config(args, cfg.get("watermark", {}))
+    raise RuntimeError(
+        "legacy extract adaptive-gamma config resolution has been archived; "
+        "see archive/legacy_wfcllm_2026_07/."
+    )
 
 
 def resolve_token_channel_config(
     section: dict | None,
     args: argparse.Namespace | None = None,
 ):
-    from wfcllm.watermark.token_channel.core.config import TokenChannelConfig
-
-    if section is None:
-        configured = {}
-    elif isinstance(section, dict):
-        configured = section
-    else:
-        raise ValueError("token_channel must be a JSON object")
-
-    if args is not None:
-        configured = _apply_token_channel_cli_overrides(configured, args)
-
-    return TokenChannelConfig.from_mapping(configured)
+    raise RuntimeError(
+        "token-channel config resolution belongs to the archived legacy "
+        "WFCLLM pipeline; see archive/legacy_wfcllm_2026_07/."
+    )
 
 
 def _apply_token_channel_cli_overrides(
@@ -180,65 +134,14 @@ def build_extract_calibration_contract_builder(
     adaptive_gamma_config,
     lsh_d: int,
 ):
-    if not getattr(adaptive_detection_config, "prefer_adaptive", False):
-        return None
-    if not getattr(adaptive_gamma_config, "enabled", False):
-        return None
-
-    from wfcllm.extract.alignment import rebuild_block_contracts
-
-    def builder(code: str) -> dict[str, dict]:
-        return {
-            contract["block_id"]: contract
-            for contract in rebuild_block_contracts(
-                code,
-                adaptive_gamma_config=adaptive_gamma_config,
-                default_lsh_d=lsh_d,
-            )
-        }
-
-    return builder
+    raise RuntimeError(
+        "legacy extract calibration contract building has been archived; "
+        "see archive/legacy_wfcllm_2026_07/."
+    )
 
 
 def resolve_adaptive_detection_config(args: argparse.Namespace, ext_cfg: dict):
-    from wfcllm.extract.config import AdaptiveDetectionConfig
-
-    configured = ext_cfg.get("adaptive_detection") or {}
-    defaults = AdaptiveDetectionConfig()
-
-    require_block_contract_check = bool(
-        configured.get(
-            "require_block_contract_check",
-            defaults.require_block_contract_check,
-        )
-    )
-    fail_on_structure_mismatch = bool(
-        configured.get(
-            "fail_on_structure_mismatch",
-            defaults.fail_on_structure_mismatch,
-        )
-    )
-    if getattr(args, "strict_contract", False):
-        require_block_contract_check = True
-        fail_on_structure_mismatch = True
-
-    return AdaptiveDetectionConfig(
-        mode=(
-            getattr(args, "adaptive_detection_mode", None)
-            or configured.get("mode", defaults.mode)
-        ),
-        require_block_contract_check=require_block_contract_check,
-        fail_on_structure_mismatch=fail_on_structure_mismatch,
-        warn_on_numeric_mismatch=bool(
-            configured.get(
-                "warn_on_numeric_mismatch",
-                defaults.warn_on_numeric_mismatch,
-            )
-        ),
-        exclude_invalid_samples=bool(
-            configured.get(
-                "exclude_invalid_samples",
-                defaults.exclude_invalid_samples,
-            )
-        ),
+    raise RuntimeError(
+        "legacy adaptive detection config resolution has been archived; "
+        "see archive/legacy_wfcllm_2026_07/."
     )

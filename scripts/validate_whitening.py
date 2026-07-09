@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from wfcllm.encoder.config import EncoderConfig
 from wfcllm.encoder.model import SemanticEncoder
 from wfcllm.lang.python.parser import extract_statement_blocks
-from wfcllm.watermark.lsh_space import LSHSpace
+from wfcllm.semantic.lsh_space import LSHSpace
 
 
 def load_encoder(checkpoint: str, device: str):

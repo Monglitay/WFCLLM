@@ -8,7 +8,7 @@ from collections import Counter
 from dataclasses import dataclass
 
 from wfcllm.evaluation.anchor_validation.schema import RegionMetricRow
-from wfcllm.watermark.anchor_lsh import pairwise_hamming_diversity
+from wfcllm.semantic.anchor_lsh import pairwise_hamming_diversity
 
 
 @dataclass(frozen=True)

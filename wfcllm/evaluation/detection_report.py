@@ -1,6 +1,6 @@
 """Offline helpers for comparing saved watermark extraction artifacts.
 
-(Phase 2 refactor: moved from wfcllm.extract.offline_analysis.)
+(Phase 2 refactor: moved out of the legacy extract offline-analysis module.)
 """
 
 from __future__ import annotations
