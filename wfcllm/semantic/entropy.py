@@ -11,7 +11,7 @@ class NodeEntropyEstimator:
 
     DEFAULT_ENTROPY: float = 0.1
 
-    # Pre-computed from experiment/node_entropy — 133 AST node types
+    # Pre-computed from the historical node-entropy experiment: 133 AST node types.
     ENTROPY_TABLE: dict[str, float] = {
         "boolean_operator": 0.959,
         "for_statement": 0.7095,

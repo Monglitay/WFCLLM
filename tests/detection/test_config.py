@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import importlib
 import json
 from decimal import Decimal
 from fractions import Fraction
 
 import pytest
 
-import wfcllm.sawr as sawr
 import wfcllm.detection as detect
 from wfcllm.detection.config import (
     DETECTOR_MODE,
@@ -139,6 +139,8 @@ def test_detector_config_package_exports() -> None:
 
 
 def test_sawr_root_reexports_detector_config_names() -> None:
+    sawr = importlib.import_module("wfcllm.sawr")
+
     assert sawr.DETECTOR_MODE == DETECTOR_MODE
     assert sawr.BucketEdges is BucketEdges
     assert sawr.SawrDetectionConfig is WFCLLMDetectionConfig

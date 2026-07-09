@@ -1,8 +1,30 @@
 """Tests for wfcllm.encoder.dataset."""
 
-import pytest
-from unittest.mock import patch, MagicMock
+import torch
+
 from wfcllm.encoder.dataset import TripletCodeDataset, build_triplets_from_blocks
+
+
+class _FakeTokenizer:
+    def __call__(
+        self,
+        text: str,
+        *,
+        max_length: int,
+        padding: str,
+        truncation: bool,
+        return_tensors: str,
+    ) -> dict[str, torch.Tensor]:
+        assert padding == "max_length"
+        assert truncation is True
+        assert return_tensors == "pt"
+        token_count = min(len(text.split()), max_length)
+        input_ids = torch.zeros((1, max_length), dtype=torch.long)
+        attention_mask = torch.zeros((1, max_length), dtype=torch.long)
+        if token_count:
+            input_ids[0, :token_count] = torch.arange(1, token_count + 1)
+            attention_mask[0, :token_count] = 1
+        return {"input_ids": input_ids, "attention_mask": attention_mask}
 
 
 class TestBuildTripletsFromBlocks:
@@ -58,8 +80,7 @@ class TestTripletCodeDataset:
             {"anchor": "x = 1", "positive": "x = 2", "negative": "y = 3"},
             {"anchor": "a = 1", "positive": "a = 2", "negative": "b = 3"},
         ]
-        from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained("Salesforce/codet5-base")
+        tokenizer = _FakeTokenizer()
         ds = TripletCodeDataset(triplets, tokenizer, max_length=64)
         assert len(ds) == 2
 
@@ -67,8 +88,7 @@ class TestTripletCodeDataset:
         triplets = [
             {"anchor": "x = 1", "positive": "x = 2", "negative": "y = 3"},
         ]
-        from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained("Salesforce/codet5-base")
+        tokenizer = _FakeTokenizer()
         ds = TripletCodeDataset(triplets, tokenizer, max_length=64)
         item = ds[0]
         assert "anchor_input_ids" in item
@@ -82,8 +102,7 @@ class TestTripletCodeDataset:
         triplets = [
             {"anchor": "x = 1", "positive": "x = 2", "negative": "y = 3"},
         ]
-        from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained("Salesforce/codet5-base")
+        tokenizer = _FakeTokenizer()
         max_len = 64
         ds = TripletCodeDataset(triplets, tokenizer, max_length=max_len)
         item = ds[0]
