@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 
-from wfcllm.diagnostics.evidence_selector import select_candidate_rows
 from wfcllm.diagnostics.quality_selector import mark_quality_selector_diagnostic
+from wfcllm.diagnostics.quality_selector import select_candidate_rows
 from wfcllm.diagnostics.static_selector import select_static_candidates
 
 

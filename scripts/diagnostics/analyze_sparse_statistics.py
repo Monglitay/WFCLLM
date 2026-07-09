@@ -809,6 +809,10 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
 def write_json(path: Path, payload: Any) -> None:
     if isinstance(payload, dict):
         payload = mark_sparse_statistics_diagnostic(payload)
+    elif isinstance(payload, list):
+        payload = mark_sparse_statistics_diagnostic(
+            {"artifact_type": path.stem, "rows": payload}
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(payload, ensure_ascii=False, allow_nan=False, indent=2, sort_keys=True),

@@ -1,16 +1,28 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from wfcllm.diagnostics.quality_selector import mark_quality_selector_diagnostic
-from wfcllm.diagnostics.static_selector import (
-    CandidateSelectionFeatures,
-    evaluate_candidate_quality,
-    select_best_candidate,
-)
 from wfcllm.method.contracts import require_diagnostic_marker
+
+RANKING_MODES = {
+    "evidence_first",
+    "detector_first",
+}
+
+
+@dataclass(frozen=True)
+class EvidenceCandidateFeatures:
+    sample_id: str
+    candidate_index: int
+    detector_score: float
+    scoreable_contexts: int = 0
+    proxy_windows: int = 0
+    insufficient_evidence: bool = False
+    score_delta_vs_baseline: float | None = None
+    proxy_delta_vs_baseline: int | None = None
 
 
 def mark_evidence_selector_diagnostic(payload: dict[str, Any]) -> dict[str, Any]:
@@ -33,14 +45,16 @@ def select_candidate_rows(
     min_scoreable_contexts: int = 0,
     require_not_insufficient: bool = False,
     require_proxy_ge_baseline: bool = False,
-    require_public_doctest_passed: bool = False,
-    reject_suspicious_tail: bool = False,
-    ranking_mode: str = "quality_first",
+    ranking_mode: str = "evidence_first",
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if not candidate_paths:
         raise ValueError("at least one --candidate-jsonl is required")
     if detail_paths and len(detail_paths) != len(candidate_paths):
         raise ValueError("--candidate-details count must match --candidate-jsonl count")
+    if ranking_mode not in RANKING_MODES:
+        raise ValueError(
+            f"ranking_mode must be one of {sorted(RANKING_MODES)}, got {ranking_mode!r}"
+        )
 
     candidate_rows = [_load_jsonl(path) for path in candidate_paths]
     detail_features = [_load_detail_features(path) for path in detail_paths]
@@ -52,15 +66,7 @@ def select_candidate_rows(
     per_sample: list[dict[str, Any]] = []
 
     for sample_id in sample_ids:
-        rows_for_id = [
-            row
-            for rows in candidate_rows
-            for row in rows
-            if str(row.get("id") or "") == sample_id
-        ]
-        if not rows_for_id:
-            continue
-        features: list[CandidateSelectionFeatures] = []
+        features: list[EvidenceCandidateFeatures] = []
         row_by_candidate: dict[int, dict[str, Any]] = {}
         for candidate_index, rows in enumerate(candidate_rows):
             row = _first_row_for_id(rows, sample_id)
@@ -68,29 +74,15 @@ def select_candidate_rows(
                 continue
             detail = detail_features[candidate_index].get(sample_id, {})
             baseline_detail = detail_features[0].get(sample_id, {}) if detail_features else {}
-            row_by_candidate[candidate_index] = row
-            features.append(
-                evaluate_candidate_quality(
-                    row,
-                    detector_score=_float_feature(detail.get("score"), default=0.0),
-                    candidate_index=candidate_index,
-                    scoreable_contexts=_int_feature(detail.get("scoreable_contexts")),
-                    proxy_windows=_int_feature(detail.get("proxy_windows")),
-                    insufficient_evidence=bool(
-                        detail.get("insufficient_evidence", False)
-                    ),
-                    baseline_detector_score=(
-                        _float_feature(baseline_detail.get("score"), default=0.0)
-                        if baseline_detail
-                        else None
-                    ),
-                    baseline_proxy_windows=(
-                        _int_feature(baseline_detail.get("proxy_windows"))
-                        if baseline_detail
-                        else None
-                    ),
-                )
+            feature = _evidence_features(
+                sample_id,
+                detail,
+                candidate_index=candidate_index,
+                baseline_detail=baseline_detail if baseline_detail else None,
             )
+            row_by_candidate[candidate_index] = row
+            features.append(feature)
+
         eligible = _eligible_features(
             features,
             min_detector_score=min_detector_score,
@@ -99,28 +91,29 @@ def select_candidate_rows(
             min_scoreable_contexts=min_scoreable_contexts,
             require_not_insufficient=require_not_insufficient,
             require_proxy_ge_baseline=require_proxy_ge_baseline,
-            require_public_doctest_passed=require_public_doctest_passed,
-            reject_suspicious_tail=reject_suspicious_tail,
         )
-        selected = select_best_candidate(eligible, ranking_mode=ranking_mode)
+        selected = max(
+            eligible,
+            key=lambda item: _ranking_key(item, ranking_mode=ranking_mode),
+        )
         selected_row = row_by_candidate[selected.candidate_index]
         selected_rows.append(_sanitized_output_row(selected_row))
         per_sample.append(
             {
                 "id": sample_id,
                 "selected_candidate_index": selected.candidate_index,
-                "selection_reason": selected.selection_reason,
+                "selection_reason": ranking_mode,
                 "candidates": [feature.__dict__ for feature in features],
             }
         )
 
     analysis = {
-        "artifact_type": "sawr_candidate_selection_analysis",
+        "artifact_type": "evidence_only_selector_diagnostic",
         "candidate_paths": [str(path) for path in candidate_paths],
         "detail_paths": [str(path) for path in detail_paths],
         "sample_count": len(selected_rows),
         "selected_by_candidate_index": _count_selected(per_sample),
-        "quality_counts": _quality_counts(per_sample),
+        "evidence_counts": _evidence_counts(per_sample),
         "policy": {
             "min_detector_score": min_detector_score,
             "max_score_drop_vs_baseline": max_score_drop_vs_baseline,
@@ -128,18 +121,16 @@ def select_candidate_rows(
             "min_scoreable_contexts": min_scoreable_contexts,
             "require_not_insufficient": require_not_insufficient,
             "require_proxy_ge_baseline": require_proxy_ge_baseline,
-            "require_public_doctest_passed": require_public_doctest_passed,
-            "reject_suspicious_tail": reject_suspicious_tail,
             "ranking_mode": ranking_mode,
         },
         "per_sample": per_sample,
     }
-    return selected_rows, mark_quality_selector_diagnostic(analysis)
+    return selected_rows, mark_evidence_selector_diagnostic(analysis)
 
 
 def selection_analysis_markdown(analysis: dict[str, Any]) -> str:
     lines = [
-        "# Candidate Selection",
+        "# Evidence-Only Candidate Selection",
         "",
         f"Selected rows: {analysis['sample_count']}",
         "",
@@ -148,10 +139,69 @@ def selection_analysis_markdown(analysis: dict[str, Any]) -> str:
     ]
     for key, count in sorted(analysis["selected_by_candidate_index"].items()):
         lines.append(f"- candidate {key}: {count}")
-    lines.extend(["", "## Quality Counts", ""])
-    for key, count in sorted(analysis["quality_counts"].items()):
+    lines.extend(["", "## Evidence Counts", ""])
+    for key, count in sorted(analysis["evidence_counts"].items()):
         lines.append(f"- {key}: {count}")
     return "\n".join(lines) + "\n"
+
+
+def _evidence_features(
+    sample_id: str,
+    detail: dict[str, Any],
+    *,
+    candidate_index: int,
+    baseline_detail: dict[str, Any] | None,
+) -> EvidenceCandidateFeatures:
+    detector_score = _float_feature(detail.get("score"), default=0.0)
+    proxy_windows = _int_feature(detail.get("proxy_windows"))
+    baseline_score = (
+        _float_feature(baseline_detail.get("score"), default=0.0)
+        if baseline_detail
+        else None
+    )
+    baseline_proxy_windows = (
+        _int_feature(baseline_detail.get("proxy_windows"))
+        if baseline_detail
+        else None
+    )
+    return EvidenceCandidateFeatures(
+        sample_id=sample_id,
+        candidate_index=candidate_index,
+        detector_score=detector_score,
+        scoreable_contexts=_int_feature(detail.get("scoreable_contexts")),
+        proxy_windows=proxy_windows,
+        insufficient_evidence=bool(detail.get("insufficient_evidence", False)),
+        score_delta_vs_baseline=(
+            detector_score - baseline_score if baseline_score is not None else None
+        ),
+        proxy_delta_vs_baseline=(
+            proxy_windows - baseline_proxy_windows
+            if baseline_proxy_windows is not None
+            else None
+        ),
+    )
+
+
+def _ranking_key(
+    item: EvidenceCandidateFeatures,
+    *,
+    ranking_mode: str,
+) -> tuple[object, ...]:
+    if ranking_mode == "detector_first":
+        return (
+            item.detector_score,
+            not item.insufficient_evidence,
+            item.proxy_windows,
+            item.scoreable_contexts,
+            -item.candidate_index,
+        )
+    return (
+        not item.insufficient_evidence,
+        item.detector_score,
+        item.proxy_windows,
+        item.scoreable_contexts,
+        -item.candidate_index,
+    )
 
 
 def _sanitized_output_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -164,7 +214,7 @@ def _sanitized_output_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _eligible_features(
-    features: list[CandidateSelectionFeatures],
+    features: list[EvidenceCandidateFeatures],
     *,
     min_detector_score: float | None,
     max_score_drop_vs_baseline: float | None,
@@ -172,9 +222,7 @@ def _eligible_features(
     min_scoreable_contexts: int,
     require_not_insufficient: bool,
     require_proxy_ge_baseline: bool,
-    require_public_doctest_passed: bool,
-    reject_suspicious_tail: bool,
-) -> list[CandidateSelectionFeatures]:
+) -> list[EvidenceCandidateFeatures]:
     if not features:
         return []
     baseline = min(features, key=lambda feature: feature.candidate_index)
@@ -201,12 +249,6 @@ def _eligible_features(
             and feature.proxy_delta_vs_baseline is not None
             and feature.proxy_delta_vs_baseline < 0
         ):
-            continue
-        if require_public_doctest_passed and not feature.public_doctest_passed:
-            continue
-        if feature.public_doctest_timeout or feature.public_doctest_parse_error:
-            continue
-        if reject_suspicious_tail and feature.suspicious_tail:
             continue
         eligible.append(feature)
     return eligible
@@ -262,7 +304,7 @@ def _count_selected(per_sample: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
-def _quality_counts(per_sample: list[dict[str, Any]]) -> dict[str, int]:
+def _evidence_counts(per_sample: list[dict[str, Any]]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for row in per_sample:
         selected_index = row["selected_candidate_index"]
@@ -271,12 +313,12 @@ def _quality_counts(per_sample: list[dict[str, Any]]) -> dict[str, int]:
             for candidate in row["candidates"]
             if candidate["candidate_index"] == selected_index
         )
-        for key in (
-            "syntax_valid",
-            "target_function_present",
-            "signature_compatible",
-            "prompt_doctest_passed",
-        ):
-            if selected[key]:
-                counts[key] = counts.get(key, 0) + 1
+        if not selected["insufficient_evidence"]:
+            counts["sufficient_evidence"] = counts.get("sufficient_evidence", 0) + 1
+        if selected["proxy_windows"] > 0:
+            counts["has_proxy_windows"] = counts.get("has_proxy_windows", 0) + 1
+        if selected["scoreable_contexts"] > 0:
+            counts["has_scoreable_contexts"] = (
+                counts.get("has_scoreable_contexts", 0) + 1
+            )
     return counts

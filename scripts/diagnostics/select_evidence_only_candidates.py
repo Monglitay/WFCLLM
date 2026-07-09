@@ -14,10 +14,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from wfcllm.diagnostics.evidence_selector import (  # noqa: E402
+    RANKING_MODES,
     select_candidate_rows,
     selection_analysis_markdown,
 )
-from wfcllm.diagnostics.static_selector import RANKING_MODES  # noqa: E402
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -35,15 +35,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-scoreable-contexts", type=int, default=0)
     parser.add_argument("--require-not-insufficient", action="store_true")
     parser.add_argument("--require-proxy-ge-baseline", action="store_true")
-    parser.add_argument("--require-public-doctest-passed", action="store_true")
-    parser.add_argument("--reject-suspicious-tail", action="store_true")
     parser.add_argument(
         "--ranking-mode",
-        default="quality_first",
+        default="evidence_first",
         choices=sorted(RANKING_MODES),
         help=(
-            "Candidate ranking after gates. This diagnostic path is not an "
-            "official method and analysis output is marked accordingly."
+            "Evidence-only ranking after detector/evidence gates. This "
+            "diagnostic path is not an official method."
         ),
     )
     return parser
@@ -61,8 +59,6 @@ def main(argv: list[str] | None = None) -> int:
             min_scoreable_contexts=args.min_scoreable_contexts,
             require_not_insufficient=args.require_not_insufficient,
             require_proxy_ge_baseline=args.require_proxy_ge_baseline,
-            require_public_doctest_passed=args.require_public_doctest_passed,
-            reject_suspicious_tail=args.reject_suspicious_tail,
             ranking_mode=args.ranking_mode,
         )
         _write_jsonl(Path(args.output_jsonl), selected)

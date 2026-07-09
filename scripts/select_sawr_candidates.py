@@ -13,12 +13,12 @@ if str(REPO_ROOT) not in sys.path:
 
 warnings.warn(
     "scripts/select_sawr_candidates.py is deprecated; use "
-    "scripts/diagnostics/select_evidence_only_candidates.py",
+    "scripts/diagnostics/select_quality_candidates_diagnostic.py",
     DeprecationWarning,
     stacklevel=2,
 )
 
-from scripts.diagnostics import select_evidence_only_candidates as _impl
+from scripts.diagnostics import select_quality_candidates_diagnostic as _impl
 
 for _name, _value in vars(_impl).items():
     if not (_name.startswith("__") and _name.endswith("__")):
