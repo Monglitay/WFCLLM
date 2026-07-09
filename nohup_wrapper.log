@@ -1,0 +1,34 @@
+nohup: ignoring input
+=== 阶段二：生成时水印嵌入 ===
+[自动] 编码器使用本地模型: data/models/codet5-base
+[加载] 编码器权重来自: data/models/encoder/best_model.pt
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:02<00:02,  2.42s/it]Loading checkpoint shards: 100%|██████████| 2/2 [00:03<00:00,  1.57s/it]Loading checkpoint shards: 100%|██████████| 2/2 [00:03<00:00,  1.70s/it]
+Using the latest cached version of the dataset since openai/openai_humaneval couldn't be found on the Hugging Face Hub (offline mode is enabled).
+datasets.load WARNING Using the latest cached version of the dataset since openai/openai_humaneval couldn't be found on the Hugging Face Hub (offline mode is enabled).
+Found the latest cached dataset configuration 'openai_humaneval' at data/datasets/humaneval/openai___openai_humaneval/openai_humaneval/0.0.0/7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544 (last modified on Sun Mar  8 19:45:27 2026).
+datasets.packaged_modules.cache.cache WARNING Found the latest cached dataset configuration 'openai_humaneval' at data/datasets/humaneval/openai___openai_humaneval/openai_humaneval/0.0.0/7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544 (last modified on Sun Mar  8 19:45:27 2026).
+Watermarking humaneval:   0%|          | 0/164 [00:00<?, ?prompt/s]We detected that you are passing `past_key_values` as a tuple of tuples. This is deprecated and will be removed in v4.47. Please convert your cache or use an appropriate `Cache` class (https://huggingface.co/docs/transformers/kv_cache#legacy-cache-format)
+  ✓ HumanEval/0 | blocks: 0/0 | failed: 0 | fallback: 0 | embed_rate: 0.0%
+Watermarking humaneval:   1%|          | 1/164 [00:01<04:13,  1.56s/prompt]  ✓ HumanEval/1 | blocks: 4/19 | failed: 4 | fallback: 0 | embed_rate: 21.1%
+Watermarking humaneval:   1%|          | 2/164 [00:41<1:05:31, 24.27s/prompt]  ✓ HumanEval/2 | blocks: 0/0 | failed: 0 | fallback: 0 | embed_rate: 0.0%
+Watermarking humaneval:   2%|▏         | 3/164 [00:55<52:48, 19.68s/prompt]    ✓ HumanEval/3 | blocks: 3/3 | failed: 0 | fallback: 0 | embed_rate: 100.0%
+Watermarking humaneval:   2%|▏         | 4/164 [00:56<32:46, 12.29s/prompt]  ✓ HumanEval/4 | blocks: 8/23 | failed: 4 | fallback: 2 | embed_rate: 34.8%
+Watermarking humaneval:   3%|▎         | 5/164 [02:23<1:43:09, 38.93s/prompt]  ✓ HumanEval/5 | blocks: 0/0 | failed: 0 | fallback: 0 | embed_rate: 0.0%
+Watermarking humaneval:   4%|▎         | 6/164 [02:24<1:08:32, 26.03s/prompt]  ✓ HumanEval/6 | blocks: 6/11 | failed: 1 | fallback: 0 | embed_rate: 54.5%
+Watermarking humaneval:   4%|▍         | 7/164 [02:36<56:33, 21.62s/prompt]    ✓ HumanEval/7 | blocks: 3/5 | failed: 1 | fallback: 1 | embed_rate: 60.0%
+Watermarking humaneval:   5%|▍         | 8/164 [02:48<48:07, 18.51s/prompt]  ✓ HumanEval/8 | blocks: 6/6 | failed: 0 | fallback: 0 | embed_rate: 100.0%
+Watermarking humaneval:   5%|▌         | 9/164 [02:52<35:44, 13.83s/prompt]  ✓ HumanEval/9 | blocks: 9/52 | failed: 10 | fallback: 3 | embed_rate: 17.3%
+Watermarking humaneval:   6%|▌         | 10/164 [06:06<2:59:02, 69.75s/prompt]  ✓ HumanEval/10 | blocks: 7/34 | failed: 5 | fallback: 2 | embed_rate: 20.6%
+Watermarking humaneval:   7%|▋         | 11/164 [07:03<2:47:22, 65.64s/prompt]  ✓ HumanEval/11 | blocks: 17/25 | failed: 2 | fallback: 0 | embed_rate: 68.0%
+Watermarking humaneval:   7%|▋         | 12/164 [07:31<2:17:35, 54.31s/prompt]  ✓ HumanEval/12 | blocks: 0/0 | failed: 0 | fallback: 0 | embed_rate: 0.0%
+Watermarking humaneval:   8%|▊         | 13/164 [07:31<1:35:24, 37.91s/prompt]  ✓ HumanEval/13 | blocks: 5/5 | failed: 0 | fallback: 0 | embed_rate: 100.0%
+Watermarking humaneval:   9%|▊         | 14/164 [07:35<1:08:55, 27.57s/prompt]  ✓ HumanEval/14 | blocks: 4/4 | failed: 0 | fallback: 0 | embed_rate: 100.0%
+Watermarking humaneval:   9%|▉         | 15/164 [07:38<49:44, 20.03s/prompt]    ✓ HumanEval/15 | blocks: 2/3 | failed: 1 | fallback: 0 | embed_rate: 66.7%
+Watermarking humaneval:  10%|▉         | 16/164 [07:48<42:03, 17.05s/prompt]  ✓ HumanEval/16 | blocks: 4/4 | failed: 0 | fallback: 0 | embed_rate: 100.0%
+Watermarking humaneval:  10%|█         | 17/164 [07:50<30:57, 12.64s/prompt]  ✓ HumanEval/17 | blocks: 6/7 | failed: 1 | fallback: 0 | embed_rate: 85.7%
+Watermarking humaneval:  11%|█         | 18/164 [08:03<30:54, 12.70s/prompt]  ✓ HumanEval/18 | blocks: 3/5 | failed: 1 | fallback: 1 | embed_rate: 60.0%
+Watermarking humaneval:  12%|█▏        | 19/164 [08:10<26:41, 11.05s/prompt]  ✓ HumanEval/19 | blocks: 1/1 | failed: 0 | fallback: 0 | embed_rate: 100.0%
+Watermarking humaneval:  12%|█▏        | 20/164 [08:10<18:46,  7.82s/prompt]  ✓ HumanEval/20 | blocks: 2/2 | failed: 0 | fallback: 0 | embed_rate: 100.0%
+Watermarking humaneval:  13%|█▎        | 21/164 [08:12<14:07,  5.92s/prompt]  ✓ HumanEval/21 | blocks: 2/2 | failed: 0 | fallback: 0 | embed_rate: 100.0%
+Watermarking humaneval:  13%|█▎        | 22/164 [08:13<10:39,  4.50s/prompt]  ✓ HumanEval/22 | blocks: 1/2 | failed: 1 | fallback: 0 | embed_rate: 50.0%
+Watermarking humaneval:  14%|█▍        | 23/164 [10:45<1:54:12, 48.60s/prompt]
