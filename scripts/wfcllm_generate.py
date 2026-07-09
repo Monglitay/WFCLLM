@@ -32,14 +32,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default="data/wfcllm")
     parser.add_argument("--sample-limit", type=int, default=None)
     parser.add_argument("--sample-offset", type=int, default=None)
-    parser.add_argument("--max-new-tokens", type=int, default=512)
-    parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--top-p", type=float, default=1.0)
+    parser.add_argument("--max-new-tokens", type=int, default=256)
+    parser.add_argument("--temperature", type=float, default=0.25)
+    parser.add_argument("--top-p", type=float, default=0.95)
     parser.add_argument("--top-k", type=int, default=0)
     parser.add_argument(
         "--retry-repetition-penalty",
         type=float,
-        default=1.0,
+        default=4.0,
         help=(
             "Custom retry-aware prefix penalty. 1.0 disables it; values above "
             "1.0 penalize the next token that would repeat a rolled-back attempt."
@@ -47,12 +47,18 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--torch-dtype",
-        default="auto",
+        default="bf16",
         choices=["auto", "fp32", "fp16", "bf16"],
     )
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--load-in-4bit", action="store_true")
+    parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument(
+        "--load-in-4bit",
+        dest="load_in_4bit",
+        action="store_true",
+        default=True,
+    )
+    parser.add_argument("--no-load-in-4bit", dest="load_in_4bit", action="store_false")
     parser.add_argument("--eos-token-id", type=int, default=None)
     parser.add_argument(
         "--prompt-mode",
@@ -61,16 +67,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Prompt formatting mode. Use completion for official HumanEval prompt completion.",
     )
     parser.add_argument("--max-group-statements", type=int, default=2)
-    parser.add_argument("--retry-budget", type=int, default=1)
-    parser.add_argument("--statement-retry-budget", type=int, default=None)
-    parser.add_argument("--window-retry-budget", type=int, default=None)
-    parser.add_argument("--compound-retry-budget", type=int, default=None)
-    parser.add_argument("--global-rollback-budget", type=int, default=None)
-    parser.add_argument("--max-total-sampled-tokens", type=int, default=None)
+    parser.add_argument("--retry-budget", type=int, default=2)
+    parser.add_argument("--statement-retry-budget", type=int, default=4)
+    parser.add_argument("--window-retry-budget", type=int, default=3)
+    parser.add_argument("--compound-retry-budget", type=int, default=2)
+    parser.add_argument("--global-rollback-budget", type=int, default=180)
+    parser.add_argument("--max-total-sampled-tokens", type=int, default=32768)
     parser.add_argument(
         "--evidence-retry-attempts",
         type=int,
-        default=1,
+        default=3,
         help=(
             "Number of generation attempts per sample for evidence-only retry. "
             "Attempts are selected only by WFCLLM audit evidence, never tests or "
@@ -80,12 +86,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--evidence-retry-seed-stride",
         type=int,
-        default=1009,
+        default=101,
         help="Seed stride between evidence-only retry attempts.",
     )
     parser.add_argument(
         "--rule-name",
-        default="hash",
+        default="semantic_lsh",
         choices=["hash", "semantic_lsh"],
     )
     parser.add_argument("--target-accept-rate", type=float, default=0.5)
@@ -97,7 +103,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--encoder-use-bf16", action="store_true")
     parser.add_argument("--secret-key", default="1010")
     parser.add_argument("--lsh-d", type=int, default=4)
-    parser.add_argument("--lsh-gamma", type=float, default=0.75)
+    parser.add_argument("--lsh-gamma", type=float, default=0.25)
     parser.add_argument("--semantic-margin", type=float, default=0.0)
     parser.add_argument("--lsh-whitening-path", default=None)
     parser.add_argument("--use-ordinal-keying", action="store_true")

@@ -64,8 +64,6 @@ class BenchmarkConfig:
     watermarked_dirs: list[str] | None = None
     positive_details: str | None = None
     negative_details: str | None = None
-    auto_generate: bool = False
-    negative_corpus: str | None = None
     output_dir: str = "data/eval/benchmark"
     min_blocks: int = 0
 
@@ -126,14 +124,7 @@ class BenchmarkRunner:
 
         test_cases = self._load_test_cases()
 
-        if self._config.auto_generate:
-            watermarked_records, pos_path, neg_path = self._auto_generate()
-            if not self._config.positive_details:
-                self._config.positive_details = pos_path
-            if not self._config.negative_details:
-                self._config.negative_details = neg_path
-        else:
-            watermarked_records = self._load_watermarked_records()
+        watermarked_records = self._load_watermarked_records()
 
         if self._config.min_blocks > 0:
             before = len(watermarked_records)
@@ -177,76 +168,6 @@ class BenchmarkRunner:
             json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         return report
-
-    def _auto_generate(self) -> tuple[list[dict[str, Any]], str, str]:
-        """Run watermark + extract phases automatically."""
-        import os
-
-        output_dir = Path(self._config.output_dir)
-        env = dict(os.environ)
-        env.setdefault("HF_HUB_OFFLINE", "1")
-
-        all_records: list[dict[str, Any]] = []
-        watermarked_paths: list[Path] = []
-
-        for i in range(self._config.num_candidates):
-            candidate_dir = output_dir / f"watermarked_candidate_{i + 1}"
-            candidate_dir.mkdir(parents=True, exist_ok=True)
-            cmd = [
-                "python", "run.py",
-                "--config", self._config.config_path,
-                "--phase", "watermark",
-                "--dataset", self._config.dataset,
-                "--output-dir", str(candidate_dir),
-            ]
-            self._run_command(cmd, env)
-            jsonl_files = list(candidate_dir.glob("*.jsonl"))
-            if jsonl_files:
-                path = max(jsonl_files, key=lambda p: p.stat().st_mtime)
-                watermarked_paths.append(path)
-                records = self._read_jsonl(path)
-                for r in records:
-                    r["candidate_index"] = i
-                all_records.extend(records)
-
-        pos_details_path = ""
-        pos_extract_dir = output_dir / "positive_extract"
-        if watermarked_paths:
-            cmd = [
-                "python", "run.py",
-                "--config", self._config.config_path,
-                "--phase", "extract",
-                "--input-file", str(watermarked_paths[0]),
-                "--extract-output-dir", str(pos_extract_dir),
-            ]
-            self._run_command(cmd, env)
-            pos_details_path = str(
-                pos_extract_dir / f"{watermarked_paths[0].stem}_details.jsonl"
-            )
-
-        neg_extract_dir = output_dir / "negative_extract"
-        neg_corpus = self._config.negative_corpus or "data/negative_corpus.jsonl"
-        neg_corpus_path = Path(neg_corpus)
-        cmd = [
-            "python", "run.py",
-            "--config", self._config.config_path,
-            "--phase", "extract",
-            "--input-file", str(neg_corpus_path),
-            "--extract-output-dir", str(neg_extract_dir),
-        ]
-        self._run_command(cmd, env)
-        neg_details_path = str(
-            neg_extract_dir / f"{neg_corpus_path.stem}_details.jsonl"
-        )
-
-        return all_records, pos_details_path, neg_details_path
-
-    def _run_command(self, cmd: list[str], env: dict[str, str] | None = None) -> None:
-        """Run a subprocess command, raise on failure."""
-        import subprocess as _sp
-        result = _sp.run(cmd, capture_output=True, text=True, check=False, env=env)
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr or result.stdout or "command failed")
 
     def _load_test_cases(self) -> dict[str, Any]:
         from wfcllm.datasets.loaders.local import load_test_cases

@@ -202,58 +202,13 @@ def test_bench_cli_parser_existing_results() -> None:
     assert args.positive_details == "pos.jsonl"
 
 
-def test_bench_cli_parser_auto_generate() -> None:
+def test_bench_cli_parser_rejects_archived_auto_generate() -> None:
     parser = _build_parser()
-    args = parser.parse_args([
-        "bench",
-        "--dataset", "mbpp",
-        "--config", "configs/base_config.json",
-        "--auto-generate",
-        "--num-candidates", "10",
-    ])
-    assert args.subcommand == "bench"
-    assert args.dataset == "mbpp"
-    assert args.auto_generate is True
-    assert args.num_candidates == 10
-
-
-def test_benchmark_runner_auto_generate_invokes_phases(tmp_path: Path) -> None:
-    """In auto-generate mode, BenchmarkRunner calls watermark + extract phases."""
-    output_dir = tmp_path / "output"
-    config = BenchmarkConfig(
-        dataset="humaneval",
-        config_path="configs/base_config.json",
-        dataset_path="data/datasets",
-        num_candidates=2,
-        auto_generate=True,
-        negative_corpus="data/negative_corpus.jsonl",
-        output_dir=str(output_dir),
-    )
-    runner = BenchmarkRunner(config)
-
-    commands_called: list[list[str]] = []
-
-    def mock_run_command(cmd, env=None):
-        commands_called.append(cmd)
-        # Create a fake JSONL file when watermark phase is called
-        if "--phase" in cmd and "watermark" in cmd:
-            out_idx = cmd.index("--output-dir") + 1
-            out_dir = Path(cmd[out_idx])
-            out_dir.mkdir(parents=True, exist_ok=True)
-            fake_jsonl = out_dir / "fake_watermarked.jsonl"
-            fake_jsonl.write_text(
-                '{"id": "HumanEval/0", "generated_code": "def f(): return 1"}\n',
-                encoding="utf-8",
-            )
-        return None
-
-    with patch.object(runner, "_run_command", mock_run_command):
-        with patch.object(runner, "_load_test_cases", return_value={}):
-            with patch.object(runner, "_evaluate_correctness", return_value=[]):
-                with patch.object(runner, "_load_details", return_value=[]):
-                    runner.run()
-
-    watermark_calls = [c for c in commands_called if "--phase" in c and "watermark" in c]
-    extract_calls = [c for c in commands_called if "--phase" in c and "extract" in c]
-    assert len(watermark_calls) == 2
-    assert len(extract_calls) >= 1
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            "bench",
+            "--dataset", "mbpp",
+            "--config", "configs/base_config.json",
+            "--auto-generate",
+            "--num-candidates", "10",
+        ])

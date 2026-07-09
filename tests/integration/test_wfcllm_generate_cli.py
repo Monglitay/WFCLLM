@@ -62,3 +62,34 @@ def test_wfcllm_generate_cli_builds_pipeline_config(
     assert f"[完成] WFCLLM final-code rows saved to {output_path}" in (
         capsys.readouterr().err
     )
+
+
+def test_wfcllm_generate_cli_defaults_match_official_preset(tmp_path: Path) -> None:
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+    parser = generate_cli._build_parser()
+    args = parser.parse_args(["--model-path", str(model_path)])
+
+    assert args.max_new_tokens == 256
+    assert args.temperature == 0.25
+    assert args.top_p == 0.95
+    assert args.top_k == 0
+    assert args.retry_repetition_penalty == 4.0
+    assert args.torch_dtype == "bf16"
+    assert args.device == "cuda"
+    assert args.seed == 7
+    assert args.load_in_4bit is True
+    assert args.prompt_mode == "completion"
+    assert args.max_group_statements == 2
+    assert args.retry_budget == 2
+    assert args.statement_retry_budget == 4
+    assert args.window_retry_budget == 3
+    assert args.compound_retry_budget == 2
+    assert args.global_rollback_budget == 180
+    assert args.max_total_sampled_tokens == 32768
+    assert args.evidence_retry_attempts == 3
+    assert args.evidence_retry_seed_stride == 101
+    assert args.rule_name == "semantic_lsh"
+    assert args.lsh_d == 4
+    assert args.lsh_gamma == 0.25
+    assert args.semantic_margin == 0.0

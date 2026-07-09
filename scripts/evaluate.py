@@ -102,8 +102,6 @@ def _cmd_bench(args: argparse.Namespace) -> int:
         watermarked_dirs=args.watermarked_dirs,
         positive_details=args.positive_details,
         negative_details=args.negative_details,
-        auto_generate=args.auto_generate,
-        negative_corpus=args.negative_corpus,
         output_dir=args.output_dir,
         min_blocks=args.min_blocks,
     )
@@ -172,8 +170,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     bench_parser.add_argument("--positive-details", default=None)
     bench_parser.add_argument("--negative-details", default=None)
-    bench_parser.add_argument("--negative-corpus", default=None)
-    bench_parser.add_argument("--auto-generate", action="store_true")
     bench_parser.add_argument("--num-candidates", type=int, default=10)
     bench_parser.add_argument("--timeout", type=float, default=5.0)
     bench_parser.add_argument("--output-dir", default="data/eval/benchmark")
