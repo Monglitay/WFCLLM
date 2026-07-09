@@ -1,58 +1,103 @@
-# WFCLLM: 基于语句块语义特征的生成时代码水印
+# WFCLLM Agent Guide
 
-> 方案文档：`docs/design/基于语句块的语义特征的生成时代码水印方案.md`
+This repository contains the live WFCLLM mainline: a structure-aware generation-time semantic watermarking method for code LLMs. The default official method preset is `evidence_retry_seed7x3`.
 
-## 项目架构
+## Project Architecture
 
+```text
+wfcllm/
+  method/
+  generation/
+  semantic/
+  detection/
+  audit/
+  diagnostics/
+  cli/
+  orchestration/
+  datasets/
+  lang/
+  encoder/
+  common/
 ```
-wfcllm/              # 主包
-├── encoder/          # 阶段一：鲁棒语义编码器预训练
-├── watermark/        # 阶段二：生成时水印嵌入
-├── extract/          # 阶段三：提取与验证
-├── cli/              # CLI 入口、参数解析、配置合并、各阶段 runner
-├── orchestration/    # 跨阶段编排：RunStateManager / PhaseOrchestrator / 预置依赖
-└── common/           # 共享工具（AST 解析、Registry[T] 等）
 
-run.py                # 顶层入口脚本（薄壳，转发到 wfcllm.cli.entry:main）
-experiment/           # 前期实验代码（仅供算法逻辑参考）
-tests/                # 测试代码
-docs/                 # 文档与设计
-data/                 # 数据
+`run.py` is intentionally a thin shim that forwards to `wfcllm.cli.entry:main`. Keep business logic inside the package.
+
+## Mainline Phases
+
+The live phases are:
+
+- `generate`
+- `calibrate`
+- `detect`
+- `report`
+- `audit`
+
+Running without `--phase` executes the default mainline phase sequence from the resolved config. `--status` and run state handling belong to `wfcllm.orchestration`.
+
+## Method Rules
+
+- The official preset is `evidence_retry_seed7x3`.
+- Official detector input rows contain exactly `id`, `dataset`, `prompt`, and `final_code`.
+- Pass/test/correctness proxies are forbidden during generation, retry, final selection, calibration, and detection.
+- Posthoc pass reports are allowed only as after-the-fact utility reports and must carry the full marker documented in `docs/NO_QUALITY_GATE_PROTOCOL.md`.
+- Diagnostic selectors are not official methods. Their outputs must carry `diagnostic_only=true` and `not_official_method=true`.
+- Do not leak secrets into public JSON, JSONL, reports, or docs.
+
+## Repository Boundaries
+
+- Live package code is under `wfcllm/`.
+- Archived legacy code is reference-only under `archive/`.
+- Historical docs are reference-only under `docs/archive/`.
+- Never import `experiment.*` from production code under `wfcllm/`.
+- Do not import archived code from live package modules.
+- Treat large local resources under `data/models/`, `data/datasets/`, `data/checkpoints/`, and run outputs as local artifacts unless explicitly requested.
+
+## Development Commands
+
+Use the `WFCLLM` conda environment.
+
+```bash
+conda run -n WFCLLM python run.py --status
+HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/method -v
+HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/generation -v
+HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/detection -v
+HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/audit -v
+HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/diagnostics -v
+conda run -n WFCLLM python -m compileall wfcllm run.py scripts tools
 ```
 
-## Git 规范
+Use `HF_HUB_OFFLINE=1` for pytest commands unless the user explicitly asks for online behavior. Prefer local model and dataset paths under `data/`.
 
-**分支模型（Git Flow 简化版）：**
-- `main`：稳定版本，里程碑合并
-- `develop`：开发主线，日常合入
-- `feature/*`：功能分支，从 develop 创建，PR 合入 develop
-- `experiment/*`：实验分支，从 develop 创建，PR 合入 develop
+## Coding Conventions
 
-**Commit 格式：** `<type>: <description>`
+- Prefer small, direct changes inside existing module boundaries.
+- Use `pathlib.Path` for paths.
+- Use UTF-8 explicitly for file reads and writes.
+- Use modern type hints such as `list[str]`, `dict[str, Any]`, and `str | None`.
+- Use dataclasses for config and value records when appropriate.
+- Keep library identifiers and most docstrings in English.
+- Raise `ValueError` for invalid config, malformed data, and incompatible artifacts unless nearby code uses a narrower exception.
+- Keep logs factual and low-noise.
 
-type 取值：feat / fix / refactor / test / docs / chore
+## Testing Guidance
 
-## 测试规范
+- Use `pytest`.
+- Use `tmp_path` for filesystem-isolated tests.
+- Use `monkeypatch`, `unittest.mock.patch`, and `MagicMock` for model, dataset, and external boundaries.
+- Use `pytest.raises(..., match=...)` for validation paths.
+- Use `pytest.approx(...)` for floating-point assertions.
+- Update nearby tests for behavior changes.
 
-- 框架：pytest
-- 目录：`tests/`，子包测试放 `tests/<subpackage>/`
-- 命名：`test_<module>.py`，测试函数 `test_<行为描述>()`
-- 要求：每个公共函数/类必须有对应测试
-- 运行：`HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/ -v`
-- **必须加 `HF_HUB_OFFLINE=1`**：测试使用本地离线模型/数据集，禁止访问 HF Hub
-- 本地模型路径：`data/models/codet5-base/`；本地数据集路径：`data/datasets/`
-- 涉及 `SemanticEncoder` 的测试须在 `EncoderConfig` 中传入 `model_name="data/models/codet5-base"`
+For broad changes, run the targeted suites first, then the full suite if feasible:
 
-## 代码迁移规范
+```bash
+HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/ -v
+```
 
-- `experiment/` 下的代码仅作为算法逻辑参考
-- **严禁** `wfcllm/` 中 import `experiment` 下的任何模块
-- 所有逻辑必须按 `wfcllm/` 的架构与编码规范重写
+## Git Hygiene
 
-## 环境管理
-
-- Conda 环境名：`WFCLLM`
-- 依赖清单：`requirements.txt`
-- 核心业务依赖（tree-sitter 等）精确锁定版本号
-- CUDA / PyTorch 等硬件相关依赖不锁版本，视目标服务器适配
-- **严禁** 在 `base` 环境中安装业务依赖或运行项目代码
+- Check `git status --short` before editing.
+- Do not revert unrelated user changes.
+- Do not commit local models, datasets, checkpoints, large run artifacts, or generated logs.
+- Commit format is `<type>: <description>`.
+- Allowed commit types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`.
