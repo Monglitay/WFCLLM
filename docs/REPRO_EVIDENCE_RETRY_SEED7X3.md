@@ -13,6 +13,8 @@ python run.py --phase detect --input data/runs/<run_id>/inputs/final_code.jsonl
 
 Run from the repository root in the `WFCLLM` conda environment. For pytest and local validation, set `HF_HUB_OFFLINE=1` unless online behavior is explicitly required.
 
+These commands are the official `run.py` reproduction contract. In this refactor branch, the mainline phase runners currently provide phase names and run-state behavior while the low-level artifact-producing entry points remain available through scripts such as `scripts/wfcllm_generate.py`.
+
 ## Expected Artifact Root
 
 The official run root is:
@@ -26,6 +28,17 @@ The official detector input for generated positives is:
 ```text
 data/runs/<run_id>/inputs/final_code.jsonl
 ```
+
+## Expected Known Metrics
+
+| Metric | Value |
+| --- | --- |
+| pass@1 | 104/164 = 63.41% |
+| AUROC | 0.660080 |
+| TP@<=8FP | 43/164 |
+| FP | 8 |
+| positive insufficient | 20 |
+| model-negative AUROC | 0.510332 |
 
 ## Appendix A: Preset Values
 

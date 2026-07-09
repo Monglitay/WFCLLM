@@ -1,6 +1,6 @@
 # Artifact Schema
 
-WFCLLM writes official run artifacts under `data/runs/<run_id>/`.
+WFCLLM's official run artifact contract is rooted at `data/runs/<run_id>/`. Artifact-producing workflows must write the layout below when connected to the mainline pipeline.
 
 ## Run Layout
 

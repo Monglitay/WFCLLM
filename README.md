@@ -18,6 +18,8 @@ python run.py --phase audit --run-dir data/runs/<run_id>
 
 The default run root is `data/runs/`. Generated official detector inputs are written as `inputs/final_code.jsonl` with exactly `id`, `dataset`, `prompt`, and `final_code`.
 
+The command block above is the official `run.py` workflow contract for the mainline phases. In this refactor branch, the phase runners currently establish phase names and run-state behavior; for direct artifact-producing generation while those runners are being wired to the full pipeline, use `scripts/wfcllm_generate.py` with the same preset values documented in [docs/REPRO_EVIDENCE_RETRY_SEED7X3.md](docs/REPRO_EVIDENCE_RETRY_SEED7X3.md).
+
 ## Official Method
 
 The main method preset is documented in [docs/WFCLLM_METHOD.md](docs/WFCLLM_METHOD.md). Reproduction notes for the default preset are in [docs/REPRO_EVIDENCE_RETRY_SEED7X3.md](docs/REPRO_EVIDENCE_RETRY_SEED7X3.md).

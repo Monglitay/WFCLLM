@@ -32,7 +32,7 @@ The live phases are:
 - `report`
 - `audit`
 
-Running without `--phase` executes the default mainline phase sequence from the resolved config. `--status` and run state handling belong to `wfcllm.orchestration`.
+Running without `--phase` executes the `PHASES` sequence from `wfcllm/orchestration/state.py`. Keep config `runtime.default_phases` aligned with that source of truth until orchestration explicitly supports config-driven phase sequencing. `--status` and run state handling belong to `wfcllm.orchestration`.
 
 ## Method Rules
 
