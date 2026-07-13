@@ -25,7 +25,11 @@ from wfcllm.detection.pipeline_v2 import (  # noqa: E402
     load_v2_calibration_artifact,
     write_v2_calibration_artifact,
 )
-from wfcllm.detection.signature_v2 import load_v2_signature_scorer  # noqa: E402
+from wfcllm.detection.signature_v2 import (  # noqa: E402
+    SUPPORTED_AGGREGATIONS,
+    TRIMMED_UNIT_MEAN,
+    load_v2_signature_scorer,
+)
 
 SECRET_KEY_ENV_VAR = "WFCLLM_SECRET_KEY"
 
@@ -80,6 +84,11 @@ def _add_detector_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--signature-bits", type=int, default=16)
     parser.add_argument("--min-canonical-units", type=int, default=1)
     parser.add_argument("--target-fpr", type=float, default=0.05)
+    parser.add_argument(
+        "--aggregation",
+        choices=sorted(SUPPORTED_AGGREGATIONS),
+        default=TRIMMED_UNIT_MEAN,
+    )
 
 
 def _build_pipeline(args: argparse.Namespace) -> WFCLLMV2DetectionPipeline:
@@ -89,6 +98,7 @@ def _build_pipeline(args: argparse.Namespace) -> WFCLLMV2DetectionPipeline:
         signature_bits=args.signature_bits,
         min_canonical_units=args.min_canonical_units,
         target_fpr=args.target_fpr,
+        aggregation=args.aggregation,
     )
     scorer = load_v2_signature_scorer(
         encoder_model_path=args.encoder_model_path,
@@ -100,6 +110,7 @@ def _build_pipeline(args: argparse.Namespace) -> WFCLLMV2DetectionPipeline:
         secret_key=secret_key,
         signature_bits=args.signature_bits,
         whitening_path=args.lsh_whitening_path,
+        aggregation=args.aggregation,
     )
     return WFCLLMV2DetectionPipeline(config=config, scorer=scorer)
 

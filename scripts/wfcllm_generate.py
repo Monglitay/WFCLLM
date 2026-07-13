@@ -12,7 +12,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from wfcllm.detection.signature_v2 import load_v2_signature_scorer  # noqa: E402
+from wfcllm.detection.signature_v2 import (  # noqa: E402
+    SUPPORTED_AGGREGATIONS,
+    TRIMMED_UNIT_MEAN,
+    load_v2_signature_scorer,
+)
 from wfcllm.generation.generator import WFCLLMGenerator  # noqa: E402
 from wfcllm.generation.pipeline import WFCLLMGenerationPipeline  # noqa: E402
 from wfcllm.generation.selection_v2 import V2RetryAttemptSelector  # noqa: E402
@@ -122,6 +126,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--encoder-use-bf16", action="store_true")
     parser.add_argument("--secret-key", default=None)
     parser.add_argument("--v2-signature-bits", type=int, default=16)
+    parser.add_argument(
+        "--v2-aggregation",
+        choices=sorted(SUPPORTED_AGGREGATIONS),
+        default=TRIMMED_UNIT_MEAN,
+    )
     parser.add_argument("--retry-attempt-ledger-output", default=None)
     parser.add_argument("--lsh-d", type=int, default=4)
     parser.add_argument("--lsh-gamma", type=float, default=0.25)
@@ -241,6 +250,7 @@ def main(argv: list[str] | None = None) -> int:
                 secret_key=secret_key,
                 signature_bits=args.v2_signature_bits,
                 whitening_path=args.lsh_whitening_path,
+                aggregation=args.v2_aggregation,
             )
             retry_selector = V2RetryAttemptSelector(scorer=v2_scorer)
         generator = WFCLLMGenerator(config=generation_config, rule=rule)

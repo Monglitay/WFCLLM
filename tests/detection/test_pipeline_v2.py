@@ -39,12 +39,16 @@ def _row(index: int, score: float) -> dict[str, str]:
     }
 
 
-def _config(secret_key: str = "secret") -> WFCLLMV2DetectionConfig:
+def _config(
+    secret_key: str = "secret",
+    aggregation: str = "trimmed_unit_mean",
+) -> WFCLLMV2DetectionConfig:
     return WFCLLMV2DetectionConfig(
         secret_key=secret_key,
         signature_bits=16,
         min_canonical_units=1,
         target_fpr=0.05,
+        aggregation=aggregation,
     )
 
 
@@ -130,3 +134,24 @@ def test_v2_artifact_writer_rejects_recursive_raw_secret(tmp_path: Path) -> None
 
     with pytest.raises(ValueError, match="forbidden"):
         write_v2_calibration_artifact(tmp_path / "bad.json", artifact)
+
+
+def test_standardized_aggregation_artifact_is_explicit_and_not_silently_mixed(
+    tmp_path: Path,
+) -> None:
+    repaired = WFCLLMV2DetectionPipeline(
+        config=_config(aggregation="standardized_bit_sum"),
+        scorer=_FakeScorer(),
+    )
+    artifact = repaired.calibrate([_row(index, index / 100.0) for index in range(20)])
+    path = tmp_path / "standardized.json"
+    write_v2_calibration_artifact(path, artifact)
+    loaded = load_v2_calibration_artifact(path)
+
+    assert loaded.config["aggregation"] == "standardized_bit_sum"
+    trimmed = WFCLLMV2DetectionPipeline(
+        config=_config(aggregation="trimmed_unit_mean"),
+        scorer=_FakeScorer(),
+    )
+    with pytest.raises(ValueError, match="incompatible"):
+        trimmed.detect_one(_row(22, 0.8), artifact=loaded)

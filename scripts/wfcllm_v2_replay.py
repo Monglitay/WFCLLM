@@ -18,7 +18,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from wfcllm.detection.pipeline import load_jsonl_records  # noqa: E402
-from wfcllm.detection.signature_v2 import load_v2_signature_scorer  # noqa: E402
+from wfcllm.detection.signature_v2 import (  # noqa: E402
+    SUPPORTED_AGGREGATIONS,
+    TRIMMED_UNIT_MEAN,
+    load_v2_signature_scorer,
+)
 from wfcllm.generation.selection_v2 import (  # noqa: E402
     V2_RETRY_LEDGER_SCHEMA_VERSION,
 )
@@ -46,6 +50,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--encoder-use-bf16", action="store_true")
     parser.add_argument("--lsh-whitening-path", default=None)
     parser.add_argument("--signature-bits", type=int, default=16)
+    parser.add_argument(
+        "--aggregation",
+        choices=sorted(SUPPORTED_AGGREGATIONS),
+        default=TRIMMED_UNIT_MEAN,
+    )
     return parser
 
 
@@ -77,6 +86,7 @@ def _scorer_args(args: argparse.Namespace, *, secret_key: str) -> dict[str, Any]
         "secret_key": secret_key,
         "signature_bits": args.signature_bits,
         "whitening_path": args.lsh_whitening_path,
+        "aggregation": args.aggregation,
     }
 
 
@@ -255,6 +265,7 @@ def _build_report(args: argparse.Namespace) -> dict[str, Any]:
             "use_lora": args.encoder_use_lora,
             "use_bf16": args.encoder_use_bf16,
             "signature_bits": args.signature_bits,
+            "aggregation": args.aggregation,
             "whitening_path": args.lsh_whitening_path,
         },
         "positive_sample_count": len(positive_rows),

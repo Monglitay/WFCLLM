@@ -9,6 +9,10 @@ from typing import Any
 
 from wfcllm.detection.calibration import empirical_upper_tail_p
 from wfcllm.detection.pipeline import validate_final_code_detector_input_record
+from wfcllm.detection.signature_v2 import (
+    SUPPORTED_AGGREGATIONS,
+    TRIMMED_UNIT_MEAN,
+)
 
 V2_DETECTOR_MODE = "wfcllm-aligned-canonical-signature/v2"
 V2_METHOD_SCHEMA_VERSION = "wfcllm-method/v2"
@@ -34,7 +38,7 @@ class WFCLLMV2DetectionConfig:
     signature_bits: int = 16
     min_canonical_units: int = 1
     target_fpr: float = 0.05
-    aggregation: str = "trimmed_unit_mean"
+    aggregation: str = TRIMMED_UNIT_MEAN
     detector_mode: str = V2_DETECTOR_MODE
     method_schema_version: str = V2_METHOD_SCHEMA_VERSION
     canonical_unit_schema_version: str = V2_CANONICAL_UNIT_SCHEMA_VERSION
@@ -61,8 +65,8 @@ class WFCLLMV2DetectionConfig:
             or not 0 < float(self.target_fpr) < 1
         ):
             raise ValueError("target_fpr must be in (0, 1)")
-        if self.aggregation != "trimmed_unit_mean":
-            raise ValueError("aggregation must be 'trimmed_unit_mean'")
+        if self.aggregation not in SUPPORTED_AGGREGATIONS:
+            raise ValueError(f"unsupported V2 aggregation: {self.aggregation!r}")
         if self.detector_mode != V2_DETECTOR_MODE:
             raise ValueError(f"detector_mode must be {V2_DETECTOR_MODE!r}")
         if self.method_schema_version != V2_METHOD_SCHEMA_VERSION:

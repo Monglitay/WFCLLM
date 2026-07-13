@@ -80,6 +80,8 @@ def test_v2_calibrate_cli_uses_environment_secret_and_writes_v2_artifact(
     assert config.secret_key == "env-secret-key"
     assert config.signature_bits == 16
     assert config.min_canonical_units == 1
+    assert config.aggregation == "trimmed_unit_mean"
+    assert load_scorer.call_args.kwargs["aggregation"] == "trimmed_unit_mean"
     assert load_scorer.call_args.kwargs["secret_key"] == "env-secret-key"
     assert pipeline_cls.call_args.kwargs["scorer"] is scorer
     pipeline.calibrate.assert_called_once_with([_row()])
@@ -188,3 +190,42 @@ def test_v2_detect_cli_evaluate_reuses_standard_detection_report(tmp_path: Path)
 
     assert rc == 0
     write.assert_called_once_with(output_path, report)
+
+
+def test_v2_calibrate_cli_wires_standardized_bit_sum(tmp_path: Path, monkeypatch) -> None:
+    model_path = tmp_path / "encoder"
+    model_path.mkdir()
+    input_path = tmp_path / "negative.jsonl"
+    _write_jsonl(input_path, [_row()])
+    monkeypatch.setenv("WFCLLM_SECRET_KEY", "env-secret-key")
+    pipeline = MagicMock()
+    pipeline.calibrate.return_value = object()
+
+    with (
+        patch(
+            "scripts.wfcllm_v2_detect.load_v2_signature_scorer",
+            return_value=object(),
+        ) as load_scorer,
+        patch(
+            "scripts.wfcllm_v2_detect.WFCLLMV2DetectionPipeline",
+            return_value=pipeline,
+        ) as pipeline_cls,
+        patch("scripts.wfcllm_v2_detect.write_v2_calibration_artifact"),
+    ):
+        rc = detect_cli.main(
+            [
+                "calibrate",
+                "--input",
+                str(input_path),
+                "--output",
+                str(tmp_path / "calibration.json"),
+                *_detector_args(model_path),
+                "--aggregation",
+                "standardized_bit_sum",
+            ]
+        )
+
+    assert rc == 0
+    config = pipeline_cls.call_args.kwargs["config"]
+    assert config.aggregation == "standardized_bit_sum"
+    assert load_scorer.call_args.kwargs["aggregation"] == "standardized_bit_sum"

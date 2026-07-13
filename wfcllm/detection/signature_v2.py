@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -10,6 +11,10 @@ from wfcllm.detection.canonical_v2 import CanonicalUnit, extract_canonical_units
 from wfcllm.semantic.lsh import load_semantic_lsh_components
 
 _TARGET_DOMAIN = b"wfcllm-aligned-canonical-signature/v2\x00"
+
+TRIMMED_UNIT_MEAN = "trimmed_unit_mean"
+STANDARDIZED_BIT_SUM = "standardized_bit_sum"
+SUPPORTED_AGGREGATIONS = frozenset({TRIMMED_UNIT_MEAN, STANDARDIZED_BIT_SUM})
 
 
 @dataclass(frozen=True)
@@ -75,6 +80,24 @@ def robust_unit_mean(values: list[float]) -> float:
     return sum(ordered) / len(ordered)
 
 
+def standardized_bit_sum(*, matched_bits: int, total_bits: int) -> float:
+    """Return a null-standardized sum over unique canonical signature bits."""
+
+    if isinstance(total_bits, bool) or not isinstance(total_bits, int) or total_bits < 0:
+        raise ValueError("total_bits must be a non-negative integer")
+    if (
+        isinstance(matched_bits, bool)
+        or not isinstance(matched_bits, int)
+        or not 0 <= matched_bits <= total_bits
+    ):
+        raise ValueError("matched_bits must be an integer in [0, total_bits]")
+    if total_bits == 0:
+        return 0.0
+    expected = total_bits / 2.0
+    null_standard_deviation = math.sqrt(total_bits / 4.0)
+    return (matched_bits - expected) / null_standard_deviation
+
+
 class CanonicalSignatureScorer:
     def __init__(
         self,
@@ -82,6 +105,7 @@ class CanonicalSignatureScorer:
         verifier: Any,
         secret_key: str,
         signature_bits: int = 16,
+        aggregation: str = TRIMMED_UNIT_MEAN,
     ) -> None:
         _validate_signature_bits(signature_bits)
         if not isinstance(secret_key, str) or not secret_key:
@@ -89,6 +113,9 @@ class CanonicalSignatureScorer:
         self._verifier = verifier
         self._secret_key = secret_key
         self._signature_bits = signature_bits
+        if aggregation not in SUPPORTED_AGGREGATIONS:
+            raise ValueError(f"unsupported V2 aggregation: {aggregation!r}")
+        self._aggregation = aggregation
 
     def score_code(self, final_code: str) -> V2CodeScore:
         extraction = extract_canonical_units(final_code)
@@ -130,8 +157,15 @@ class CanonicalSignatureScorer:
 
         matched_bits = sum(item.matched_bits for item in evidence)
         total_bits = len(evidence) * self._signature_bits
+        if self._aggregation == STANDARDIZED_BIT_SUM:
+            raw_score = standardized_bit_sum(
+                matched_bits=matched_bits,
+                total_bits=total_bits,
+            )
+        else:
+            raw_score = robust_unit_mean([item.unit_score for item in evidence])
         return V2CodeScore(
-            raw_score=robust_unit_mean([item.unit_score for item in evidence]),
+            raw_score=raw_score,
             unit_count=len(evidence),
             duplicate_count=extraction.duplicate_count,
             total_bits=total_bits,
@@ -151,6 +185,7 @@ def load_v2_signature_scorer(
     secret_key: str,
     signature_bits: int,
     whitening_path: str | None = None,
+    aggregation: str = TRIMMED_UNIT_MEAN,
 ) -> CanonicalSignatureScorer:
     """Load the exact encoder/LSH stack shared by V2 generation and detection."""
 
@@ -170,6 +205,7 @@ def load_v2_signature_scorer(
         verifier=components.verifier,
         secret_key=secret_key,
         signature_bits=signature_bits,
+        aggregation=aggregation,
     )
 
 

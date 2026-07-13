@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +10,7 @@ from wfcllm.detection.signature_v2 import (
     CanonicalSignatureScorer,
     derive_target_signature,
     robust_unit_mean,
+    standardized_bit_sum,
 )
 
 
@@ -69,6 +71,36 @@ def test_robust_unit_mean_trims_one_value_per_tail_from_five_units() -> None:
     assert robust_unit_mean([0.0, 0.25, 0.5, 0.75]) == pytest.approx(0.375)
     assert robust_unit_mean([0.0, 0.25, 0.5, 0.75, 1.0]) == pytest.approx(0.5)
     assert robust_unit_mean([]) == 0.0
+
+
+def test_standardized_bit_sum_accounts_for_effective_bit_count() -> None:
+    assert standardized_bit_sum(matched_bits=6, total_bits=8) == pytest.approx(
+        math.sqrt(2.0)
+    )
+    assert standardized_bit_sum(matched_bits=12, total_bits=16) == pytest.approx(2.0)
+    assert standardized_bit_sum(matched_bits=0, total_bits=0) == 0.0
+
+    with pytest.raises(ValueError, match="matched_bits"):
+        standardized_bit_sum(matched_bits=9, total_bits=8)
+
+
+def test_scorer_can_use_standardized_bit_sum_aggregation() -> None:
+    code = "def target(x):\n    return x + 1\n"
+    unit = extract_canonical_units(code).units[0]
+    target = derive_target_signature(unit, secret_key="key", bits=8)
+    actual = tuple([*target[:6], 1 - target[6], 1 - target[7]])
+    scorer = CanonicalSignatureScorer(
+        verifier=_FakeVerifier({unit.normalized_text: actual}),
+        secret_key="key",
+        signature_bits=8,
+        aggregation="standardized_bit_sum",
+    )
+
+    score = scorer.score_code(code)
+
+    assert score.matched_bits == 6
+    assert score.total_bits == 8
+    assert score.raw_score == pytest.approx(math.sqrt(2.0))
 
 
 def test_scorer_deduplicates_units_before_aggregation() -> None:

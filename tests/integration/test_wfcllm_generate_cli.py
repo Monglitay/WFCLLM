@@ -171,6 +171,8 @@ def test_wfcllm_generate_cli_builds_v2_retry20_selector(
                 "HumanEval/0",
                 "--v2-signature-bits",
                 "16",
+                "--v2-aggregation",
+                "standardized_bit_sum",
             ]
         )
 
@@ -178,6 +180,9 @@ def test_wfcllm_generate_cli_builds_v2_retry20_selector(
     load_v2_scorer.assert_called_once()
     assert load_v2_scorer.call_args.kwargs["secret_key"] == "env-secret-key"
     assert load_v2_scorer.call_args.kwargs["signature_bits"] == 16
+    assert (
+        load_v2_scorer.call_args.kwargs["aggregation"] == "standardized_bit_sum"
+    )
     selector_cls.assert_called_once_with(scorer=v2_scorer)
     config = pipeline_cls.call_args.kwargs["config"]
     assert config.method_version == "v2"
