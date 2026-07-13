@@ -2,7 +2,12 @@
 
 ## Status
 
-This document freezes the V2 design before implementation and pilot generation. The method is experimental until the pre-registered pilot and full gates pass. Failure leaves v1 as the official default.
+V2 has been implemented and evaluated on the preregistered 30-task pilot. The
+original method and its single allowed development repair both failed the pilot
+hard gates, so v1 remains the official default and V2 remains experimental.
+After that stopping decision, the user explicitly authorized one 164-task run;
+it is recorded as a post-gate exploratory validation and cannot be treated as
+preregistered confirmation or retroactively make the pilot pass.
 
 ## Design alternatives considered
 
@@ -39,7 +44,28 @@ The existing fine-tuned CodeT5 encoder and secret-conditioned LSH projection pro
 schema_version || node_type || parent_node_type || ordinal
 ```
 
-under the secret key. Neither target bits nor the key are public artifacts. A unit score is the fraction of matching bits. The sample raw score is a robust mean of unit scores: ordinary mean below five unique units, and a one-unit trimmed mean at five or more. The statistic is bounded, prevents a single large margin from dominating, and provides 16 recoverable bits even for a one-statement solution.
+under the secret key. Neither target bits nor the key are public artifacts. A
+unit score is the fraction of matching bits. The preregistered original V2
+sample score is a robust mean of unit scores: ordinary mean below five unique
+units, and a one-unit trimmed mean at five or more. This statistic is bounded,
+prevents a single large margin from dominating, and provides 16 recoverable
+bits even for a one-statement solution.
+
+The original pilot falsified the prediction that this bounded statistic would
+improve legal TPR. The one allowed development repair therefore retained the
+same canonical units, encoder, projection, HMAC targets, quality gate, retry-20
+candidate pool, and final-code-only detector, but replaced only sample
+aggregation with `standardized_bit_sum`:
+
+```text
+score = (matched_bits - total_bits / 2) / sqrt(total_bits / 4)
+```
+
+This is the binomial-null standardized sum over all deduplicated canonical
+signature bits. Generation and detection select the aggregation explicitly;
+the aggregation name is part of calibration compatibility. A trimmed artifact
+cannot be used by the standardized detector or vice versa. The repair is a
+labeled development iteration, not a new held-out method.
 
 Wrong keys change both the keyed projection and target derivation. Ordinary negative code and wrong-key positives must be checked against independently calibrated null behavior.
 
@@ -51,7 +77,8 @@ Current-R20 selects with the existing v1 accepted-evidence key. V2-R20 performs:
 
 1. Build the strict final code for every attempt.
 2. Apply the public static quality gate.
-3. Within the highest valid quality tier, select maximum V2 raw detector score.
+3. Within the highest valid quality tier, select the maximum V2 raw detector
+   score under the explicitly configured aggregation.
 4. Break ties by larger unique-unit count, fewer v1 fallbacks, then lower attempt index.
 5. If no attempt passes the legal quality tier, emit the earliest best-quality candidate as `no_embedding` rather than select a visibly damaged candidate for watermark score.
 
@@ -75,14 +102,23 @@ HumanEval execution happens only after final selection and cannot affect the out
 
 The detector mode is `wfcllm-aligned-canonical-signature/v2`. The calibration artifact schema is `wfcllm-detect-calibration/v2` and records the public config, key hash, encoder/checkpoint/tokenizer fingerprints, calibration score list, strict threshold, and calibration row count. It never contains the raw key.
 
-For 82 calibration negatives and target FPR 0.05, V2 uses a pre-registered strict upper order statistic:
+For 82 calibration negatives and target FPR 0.05, V2 uses the frozen strict
+upper order statistic:
 
 ```text
 i = ceil((n + 1) * (1 - alpha)) - 1
 threshold = nextafter(sorted_scores[i], +infinity)
 ```
 
-with zero-based clipping. Detection uses `score >= threshold`. The nextafter step handles ties conservatively. Held-out negatives are never used to select or adjust this threshold.
+with zero-based clipping. Detection uses `score >= threshold`. The nextafter
+step handles ties conservatively. Held-out negatives are never used to select
+or adjust this threshold.
+
+The original trimmed-mean threshold is `0.6562500000000001`. The single
+standardized-bit repair was recalibrated once on the same independent 82-row
+calibration split before any held-out use; its frozen threshold is
+`1.9445436482630059`. Neither threshold was selected from pilot or held-out
+negatives.
 
 A result is insufficient only if no canonical unit can be recovered. V2 emits raw score, calibrated empirical p-value, unique-unit count, total signature bits, duplicate count, and threshold. These fields are detector outputs, not inputs.
 
@@ -106,8 +142,17 @@ The following are frozen compatibility inputs:
 - key-target derivation domain separator;
 - retry seed schedule and attempt count.
 
-Phase A requires 100% equality between generation-time selected raw score and a fresh detector process scoring the saved final code. It also requires identical unit hashes and signatures across two independent encoder loads. Failure blocks the pilot.
+Phase A passed before pilot generation: generation-time selected raw scores and
+a fresh detector process agreed exactly, unit hashes/signatures were identical
+across independent loads, wrong-key behavior was checked, and v1/v2 artifact
+mixing failed fast. Pilot and repair replay then achieved 100% deterministic
+final-code replay and exact generation-to-final selected-score recovery.
 
 ## Claims and limits
 
-If all hard gates pass, the supported claim is limited to improvement on the frozen single-seed HumanEval setting. V2 does not establish cross-seed stability. If any Pass, FPR, TPR, replay, leakage, or final-code-only gate fails, V2 remains experimental and the report states a negative result.
+The pilot hard gates did not pass: the original V2 TPR was below Current-R20,
+the repair only tied Current-R20, and both V2 variants had 10% FPR on the frozen
+30-row pilot negative panel. Accordingly, V2 remains experimental regardless
+of the post-gate exploratory full result. That full result may describe what
+happened on this one frozen seed, but it cannot support a preregistered
+improvement claim and does not establish cross-seed stability.
