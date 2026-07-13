@@ -1,0 +1,76 @@
+{
+  "artifact_type": "wfcllm_v2_repair_config",
+  "schema_version": "wfcllm-v2-repair-config/v1",
+  "status": "experimental_rejected_at_pilot_gate",
+  "development_iteration": true,
+  "parent_preregistration": {
+    "path": "configs/wfcllm/v2_retry20_preregistration.json",
+    "sha256": "f41967c1964105993578b990ce89765ec12c2660aa58d3dccf7f0a3b4767e94b"
+  },
+  "seed": 20260713,
+  "retry": 20,
+  "pilot_task_count": 30,
+  "generation_candidate_pool": {
+    "source": "saved V2-R20 retry ledger",
+    "sha256": "ee0fde132edb83afbc6a131b60eac575799deda1f97cddcd9afacfd6d9217ebb",
+    "attempt_count": 600,
+    "regeneration": false
+  },
+  "unchanged_components": [
+    "canonical_unit_schema=wfcllm-canonical-unit/v2",
+    "signature_bits=16",
+    "key_conditioning=secret-conditioned LSH plus HMAC target",
+    "encoder=data/models/codet5-base",
+    "encoder_checkpoint=data/models/encoder/best_model.pt",
+    "static_quality_gate",
+    "strict_final-code-only detector input"
+  ],
+  "repair": {
+    "aggregation": "standardized_bit_sum",
+    "formula": "(matched_bits - total_bits / 2) / sqrt(total_bits / 4)",
+    "selection_order": [
+      "static_quality_eligible",
+      "maximum standardized_bit_sum",
+      "larger unique canonical unit count",
+      "fewer v1 fallbacks",
+      "lower attempt index"
+    ]
+  },
+  "calibration": {
+    "negative_count": 82,
+    "negative_sha256": "af782bbb8eb1cabd0f5fef7489f75d982e1b3eda12d97ce8601edadda5735ba2",
+    "threshold_rule": "nextafter strict upper order statistic at target_fpr=0.05",
+    "threshold": 1.9445436482630059,
+    "artifact_sha256": "3af57a28a78cb3326c0b7cd243f95c357a6cf06deb246f46fe8654dabb3f69dd"
+  },
+  "heldout_negative_opened": false,
+  "preregistered_full_confirmation_permitted": false,
+  "user_authorized_post_gate_exploratory": true,
+  "post_gate_exploratory": {
+    "classification": "post-gate exploratory",
+    "confirmatory": false,
+    "status": "running",
+    "launched_at": "2026-07-13T15:47:31+08:00",
+    "task_count": 164,
+    "strategy": "reuse the closed 30-task pilot outputs and generate the frozen complementary 134 tasks per arm",
+    "arms": [
+      "Current-R20",
+      "V2-R20 standardized_bit_sum"
+    ],
+    "frozen_unchanged": [
+      "seed=20260713",
+      "retry=20",
+      "HumanEval/0..163",
+      "model and encoder checkpoints",
+      "decoding parameters",
+      "calibration splits and thresholds",
+      "held-out negative split",
+      "detector implementations"
+    ],
+    "claim_limit": "results cannot retroactively satisfy the failed pilot gate or be presented as preregistered confirmation"
+  },
+  "failure_reasons": [
+    "pilot TPR 7/30 did not exceed Current-R20 TPR 7/30",
+    "pilot negative FPR 3/30 exceeded 5%"
+  ]
+}
