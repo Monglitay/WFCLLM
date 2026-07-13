@@ -10,6 +10,7 @@ from typing import Any
 
 from wfcllm.generation.generator import WFCLLMGenerateResult, WFCLLMGenerator
 from wfcllm.generation.retry import evidence_retry_key
+from wfcllm.generation.selection_v2 import RetryAttempt
 from wfcllm.generation.state_machine import AuditEvent
 from wfcllm.method.artifacts import FinalCodeRecord
 from wfcllm.method.config import WFCLLMPipelineConfig
@@ -86,9 +87,19 @@ def load_prompts(
 class WFCLLMGenerationPipeline:
     """Batch SAWR smoke pipeline over local HumanEval or MBPP prompts."""
 
-    def __init__(self, generator: WFCLLMGenerator, config: WFCLLMPipelineConfig) -> None:
+    def __init__(
+        self,
+        generator: WFCLLMGenerator,
+        config: WFCLLMPipelineConfig,
+        retry_selector: Any | None = None,
+    ) -> None:
         self._generator = generator
         self._config = config
+        self._retry_selector = retry_selector
+        if self._config.method_version == "v2" and retry_selector is None:
+            raise ValueError("v2 generation requires a retry_selector")
+        if self._config.method_version == "v1" and retry_selector is not None:
+            raise ValueError("retry_selector is only valid for v2 generation")
 
     def run(self) -> str:
         out_dir = Path(self._config.output_dir)
@@ -96,6 +107,7 @@ class WFCLLMGenerationPipeline:
         final_path, audit_path, mode = self._resolve_output_paths(out_dir)
         processed_ids = self._load_processed_ids(final_path) if mode == "a" else set()
         candidate_sidecar_file = self._open_candidate_sidecar(mode)
+        retry_ledger_file = self._open_retry_attempt_ledger(mode)
 
         prompts = load_prompts(
             self._config.dataset,
@@ -103,6 +115,7 @@ class WFCLLMGenerationPipeline:
             sample_limit=self._config.sample_limit,
             sample_offset=self._config.sample_offset,
         )
+        prompts = self._select_explicit_prompts(prompts)
 
         try:
             with final_path.open(mode, encoding="utf-8") as final_file:
@@ -141,7 +154,7 @@ class WFCLLMGenerationPipeline:
                                 generate_kwargs["compound_retry_budget"] = (
                                     self._config.compound_retry_budget
                                 )
-                            result = self._generate_with_evidence_retry(
+                            result, retry_ledger_rows = self._generate_with_evidence_retry(
                                 generate_kwargs,
                             )
                         except Exception as exc:
@@ -189,40 +202,65 @@ class WFCLLMGenerationPipeline:
                                 candidate_sidecar_file.write(
                                     json.dumps(sidecar_row, ensure_ascii=False) + "\n"
                                 )
+                        if retry_ledger_file is not None:
+                            for ledger_row in retry_ledger_rows:
+                                retry_ledger_file.write(
+                                    json.dumps(ledger_row, ensure_ascii=False) + "\n"
+                                )
                         final_file.flush()
                         audit_file.flush()
                         if candidate_sidecar_file is not None:
                             candidate_sidecar_file.flush()
+                        if retry_ledger_file is not None:
+                            retry_ledger_file.flush()
         finally:
             if candidate_sidecar_file is not None:
                 candidate_sidecar_file.close()
+            if retry_ledger_file is not None:
+                retry_ledger_file.close()
 
         return str(final_path)
 
     def _generate_with_evidence_retry(
         self,
         generate_kwargs: dict[str, object],
-    ) -> WFCLLMGenerateResult:
+    ) -> tuple[WFCLLMGenerateResult, tuple[dict[str, Any], ...]]:
         attempts = int(self._config.evidence_retry_attempts)
         if attempts == 1:
-            return self._generator.generate(**generate_kwargs)
+            return self._generator.generate(**generate_kwargs), ()
 
         base_seed = int(self._config.generation.seed)
         seed_stride = int(self._config.evidence_retry_seed_stride)
         best_result: WFCLLMGenerateResult | None = None
         best_key: tuple[int, int, int, int, int] | None = None
+        retry_attempts: list[RetryAttempt] = []
         for attempt_index in range(attempts):
+            active_seed = base_seed + attempt_index * seed_stride
             result = self._generator.generate(
                 **generate_kwargs,
-                seed_override=base_seed + attempt_index * seed_stride,
+                seed_override=active_seed,
+            )
+            retry_attempts.append(
+                RetryAttempt(
+                    attempt_index=attempt_index,
+                    seed=active_seed,
+                    result=result,
+                )
             )
             key = self._evidence_retry_key(result, attempt_index)
             if best_key is None or key > best_key:
                 best_result = result
                 best_key = key
+        if self._retry_selector is not None:
+            selection = self._retry_selector.select(
+                sample_id=str(generate_kwargs["sample_id"]),
+                prompt=str(generate_kwargs["prompt"]),
+                attempts=tuple(retry_attempts),
+            )
+            return selection.result, tuple(selection.ledger_rows)
         if best_result is None:
             raise ValueError("evidence retry produced no generation attempts")
-        return best_result
+        return best_result, ()
 
     @staticmethod
     def _evidence_retry_key(
@@ -332,6 +370,34 @@ class WFCLLMGenerationPipeline:
         path = Path(self._config.candidate_sidecar_output)
         path.parent.mkdir(parents=True, exist_ok=True)
         return path.open(mode, encoding="utf-8")
+
+    def _open_retry_attempt_ledger(self, mode: str):
+        if self._config.retry_attempt_ledger_output is None:
+            return None
+        path = Path(self._config.retry_attempt_ledger_output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path.open(mode, encoding="utf-8")
+
+    def _select_explicit_prompts(
+        self,
+        prompts: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if self._config.sample_ids is None:
+            return prompts
+        by_id: dict[str, dict[str, Any]] = {}
+        for prompt in prompts:
+            sample_id = str(prompt.get("id", ""))
+            if sample_id in by_id:
+                raise ValueError(f"dataset contains duplicate sample id: {sample_id}")
+            by_id[sample_id] = prompt
+        missing = [
+            sample_id
+            for sample_id in self._config.sample_ids
+            if sample_id not in by_id
+        ]
+        if missing:
+            raise ValueError(f"sample_ids missing from dataset: {missing}")
+        return [by_id[sample_id] for sample_id in self._config.sample_ids]
 
     @staticmethod
     def _build_audit_row(sample_id: str, event: AuditEvent) -> dict[str, object]:

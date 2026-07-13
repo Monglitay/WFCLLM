@@ -158,6 +158,61 @@ class EvidenceRetryGenerator:
         )
 
 
+class TwentyAttemptGenerator:
+    def __init__(self) -> None:
+        self.calls: list[int] = []
+
+    def generate(self, **kwargs) -> WFCLLMGenerateResult:
+        seed = int(kwargs["seed_override"])
+        self.calls.append(seed)
+        attempt_index = len(self.calls) - 1
+        prompt = str(kwargs["prompt"])
+        return WFCLLMGenerateResult(
+            final_code=prompt + f"    return {attempt_index}\n",
+            accepted_hit_count=attempt_index,
+            closed_without_hit_count=0,
+            fallback_count=0,
+            candidate_count=1,
+            audit_events=[],
+        )
+
+
+class CapturingRetrySelector:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def select(self, *, sample_id, prompt, attempts):
+        self.calls.append(
+            {
+                "sample_id": sample_id,
+                "prompt": prompt,
+                "attempts": attempts,
+            }
+        )
+        selected = attempts[-1]
+        rows = tuple(
+            {
+                "artifact_type": "wfcllm_v2_retry_attempt",
+                "schema_version": "wfcllm-v2-retry-ledger/v2",
+                "id": sample_id,
+                "audit_only": True,
+                "detector_input_allowed": False,
+                "attempt_index": attempt.attempt_index,
+                "selected": attempt is selected,
+            }
+            for attempt in attempts
+        )
+        return type(
+            "Selection",
+            (),
+            {
+                "result": selected.result,
+                "attempt_index": selected.attempt_index,
+                "ledger_rows": rows,
+            },
+        )()
+
+
 def _config(tmp_path: Path, **overrides: object) -> WFCLLMPipelineConfig:
     model_path = tmp_path / "model"
     model_path.mkdir(exist_ok=True)
@@ -243,6 +298,77 @@ def test_pipeline_evidence_retry_selects_by_generation_evidence_only(
         {"sample_id": "HumanEval/0", "seed_override": 22},
     ]
     assert not (FORBIDDEN_FINAL_FIELDS & set(rows[0]))
+
+
+def test_pipeline_v2_selector_receives_exactly_twenty_attempts_and_writes_ledger(
+    tmp_path: Path,
+) -> None:
+    prompts = [{"id": "HumanEval/0", "prompt": "def foo():\n"}]
+    generator = TwentyAttemptGenerator()
+    selector = CapturingRetrySelector()
+    ledger_path = tmp_path / "run" / "retry_ledger.jsonl"
+    pipeline = WFCLLMGenerationPipeline(
+        generator=generator,
+        config=_config(
+            tmp_path,
+            method_version="v2",
+            evidence_retry_attempts=20,
+            evidence_retry_seed_stride=101,
+            retry_attempt_ledger_output=str(ledger_path),
+        ),
+        retry_selector=selector,
+    )
+
+    with patch("wfcllm.generation.pipeline.load_prompts", return_value=prompts):
+        final_path = Path(pipeline.run())
+
+    assert generator.calls == [index * 101 for index in range(20)]
+    assert len(selector.calls) == 1
+    assert len(selector.calls[0]["attempts"]) == 20
+    assert _read_jsonl(final_path)[0]["final_code"].endswith("return 19\n")
+    ledger_rows = _read_jsonl(ledger_path)
+    assert len(ledger_rows) == 20
+    assert sum(bool(row["selected"]) for row in ledger_rows) == 1
+    assert all(row["audit_only"] is True for row in ledger_rows)
+    assert all(row["detector_input_allowed"] is False for row in ledger_rows)
+    assert set(_read_jsonl(final_path)[0]) == {"id", "dataset", "prompt", "final_code"}
+
+
+def test_pipeline_filters_and_orders_explicit_sample_ids(tmp_path: Path) -> None:
+    prompts = [
+        {"id": "HumanEval/0", "prompt": "def zero():\n"},
+        {"id": "HumanEval/1", "prompt": "def one():\n"},
+        {"id": "HumanEval/2", "prompt": "def two():\n"},
+    ]
+    generator = FakeGenerator()
+    pipeline = WFCLLMGenerationPipeline(
+        generator=generator,
+        config=_config(
+            tmp_path,
+            sample_ids=("HumanEval/2", "HumanEval/0"),
+        ),
+    )
+
+    with patch("wfcllm.generation.pipeline.load_prompts", return_value=prompts):
+        final_path = Path(pipeline.run())
+
+    assert [row["id"] for row in _read_jsonl(final_path)] == [
+        "HumanEval/2",
+        "HumanEval/0",
+    ]
+
+
+def test_pipeline_explicit_sample_ids_fail_if_dataset_row_missing(tmp_path: Path) -> None:
+    pipeline = WFCLLMGenerationPipeline(
+        generator=FakeGenerator(),
+        config=_config(tmp_path, sample_ids=("HumanEval/404",)),
+    )
+
+    with (
+        patch("wfcllm.generation.pipeline.load_prompts", return_value=[]),
+        pytest.raises(ValueError, match="sample_ids missing"),
+    ):
+        pipeline.run()
 
 
 def test_pipeline_final_rows_remain_detector_clean_with_structure_audit(

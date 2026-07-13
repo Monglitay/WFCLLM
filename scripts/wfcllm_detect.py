@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,20 @@ from wfcllm.detection.pipeline import (  # noqa: E402
     load_jsonl_records,
 )
 from wfcllm.detection.scoring import load_wfcllm_window_scorer  # noqa: E402
+
+
+SECRET_KEY_ENV_VAR = "WFCLLM_SECRET_KEY"
+
+
+def _resolve_secret_key(cli_secret_key: str | None) -> str:
+    if cli_secret_key:
+        return cli_secret_key
+    env_secret_key = os.environ.get(SECRET_KEY_ENV_VAR)
+    if env_secret_key:
+        return env_secret_key
+    raise ValueError(
+        f"secret key must be provided via --secret-key or {SECRET_KEY_ENV_VAR}"
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -79,7 +94,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _add_detector_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--secret-key", required=True)
+    parser.add_argument("--secret-key", default=None)
     parser.add_argument("--encoder-model-path", required=True)
     parser.add_argument("--encoder-checkpoint-path", default=None)
     parser.add_argument("--encoder-embed-dim", type=int, default=128)
@@ -119,7 +134,7 @@ def _add_detector_args(parser: argparse.ArgumentParser) -> None:
 
 def _build_pipeline(args: argparse.Namespace) -> WFCLLMDetectionPipeline:
     config = WFCLLMDetectionConfig(
-        secret_key=args.secret_key,
+        secret_key=_resolve_secret_key(args.secret_key),
         lsh_d=args.lsh_d,
         gamma=args.gamma,
         semantic_margin=args.semantic_margin,

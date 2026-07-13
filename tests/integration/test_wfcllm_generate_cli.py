@@ -64,6 +64,153 @@ def test_wfcllm_generate_cli_builds_pipeline_config(
     )
 
 
+def test_wfcllm_generate_cli_uses_env_secret_key_for_semantic_rule(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+    output_path = tmp_path / "run" / "inputs" / "final_code.jsonl"
+    semantic_rule = object()
+    pipeline = MagicMock()
+    pipeline.run.return_value = str(output_path)
+    monkeypatch.setenv("WFCLLM_SECRET_KEY", "env-secret-key")
+
+    with (
+        patch(
+            "scripts.wfcllm_generate.load_semantic_lsh_rule",
+            return_value=semantic_rule,
+        ) as load_rule,
+        patch("scripts.wfcllm_generate.WFCLLMGenerator") as generator_cls,
+        patch(
+            "scripts.wfcllm_generate.WFCLLMGenerationPipeline",
+            return_value=pipeline,
+        ),
+    ):
+        rc = generate_cli.main(["--model-path", str(model_path)])
+
+    assert rc == 0
+    assert load_rule.call_args.kwargs["secret_key"] == "env-secret-key"
+    assert generator_cls.call_args.kwargs["rule"] is semantic_rule
+
+
+def test_wfcllm_generate_cli_secret_key_arg_takes_precedence_over_env(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+    output_path = tmp_path / "run" / "inputs" / "final_code.jsonl"
+    semantic_rule = object()
+    pipeline = MagicMock()
+    pipeline.run.return_value = str(output_path)
+    monkeypatch.setenv("WFCLLM_SECRET_KEY", "env-secret-key")
+
+    with (
+        patch(
+            "scripts.wfcllm_generate.load_semantic_lsh_rule",
+            return_value=semantic_rule,
+        ) as load_rule,
+        patch("scripts.wfcllm_generate.WFCLLMGenerator"),
+        patch(
+            "scripts.wfcllm_generate.WFCLLMGenerationPipeline",
+            return_value=pipeline,
+        ),
+    ):
+        rc = generate_cli.main(
+            ["--model-path", str(model_path), "--secret-key", "cli-secret-key"]
+        )
+
+    assert rc == 0
+    assert load_rule.call_args.kwargs["secret_key"] == "cli-secret-key"
+
+
+def test_wfcllm_generate_cli_builds_v2_retry20_selector(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+    output_path = tmp_path / "run" / "final.jsonl"
+    ledger_path = tmp_path / "run" / "retry_ledger.jsonl"
+    semantic_rule = object()
+    v2_scorer = object()
+    pipeline = MagicMock()
+    pipeline.run.return_value = str(output_path)
+    monkeypatch.setenv("WFCLLM_SECRET_KEY", "env-secret-key")
+
+    with (
+        patch(
+            "scripts.wfcllm_generate.load_semantic_lsh_rule",
+            return_value=semantic_rule,
+        ),
+        patch(
+            "scripts.wfcllm_generate.load_v2_signature_scorer",
+            return_value=v2_scorer,
+        ) as load_v2_scorer,
+        patch("scripts.wfcllm_generate.V2RetryAttemptSelector") as selector_cls,
+        patch("scripts.wfcllm_generate.WFCLLMGenerator"),
+        patch(
+            "scripts.wfcllm_generate.WFCLLMGenerationPipeline",
+            return_value=pipeline,
+        ) as pipeline_cls,
+    ):
+        rc = generate_cli.main(
+            [
+                "--model-path",
+                str(model_path),
+                "--method-version",
+                "v2",
+                "--evidence-retry-attempts",
+                "20",
+                "--retry-attempt-ledger-output",
+                str(ledger_path),
+                "--sample-id",
+                "HumanEval/2",
+                "--sample-id",
+                "HumanEval/0",
+                "--v2-signature-bits",
+                "16",
+            ]
+        )
+
+    assert rc == 0
+    load_v2_scorer.assert_called_once()
+    assert load_v2_scorer.call_args.kwargs["secret_key"] == "env-secret-key"
+    assert load_v2_scorer.call_args.kwargs["signature_bits"] == 16
+    selector_cls.assert_called_once_with(scorer=v2_scorer)
+    config = pipeline_cls.call_args.kwargs["config"]
+    assert config.method_version == "v2"
+    assert config.evidence_retry_attempts == 20
+    assert config.sample_ids == ("HumanEval/2", "HumanEval/0")
+    assert config.retry_attempt_ledger_output == str(ledger_path)
+    assert pipeline_cls.call_args.kwargs["retry_selector"] is selector_cls.return_value
+
+
+def test_wfcllm_generate_cli_rejects_v2_retry_other_than_twenty(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+
+    rc = generate_cli.main(
+        [
+            "--model-path",
+            str(model_path),
+            "--method-version",
+            "v2",
+            "--evidence-retry-attempts",
+            "19",
+            "--retry-attempt-ledger-output",
+            str(tmp_path / "ledger.jsonl"),
+        ]
+    )
+
+    assert rc == 1
+    assert "exactly 20" in capsys.readouterr().err
+
+
 def test_wfcllm_generate_cli_defaults_match_official_preset(tmp_path: Path) -> None:
     model_path = tmp_path / "model"
     model_path.mkdir()

@@ -104,6 +104,139 @@ def test_detect_cli_maps_detector_args_and_writes_details(tmp_path: Path) -> Non
     )
 
 
+def test_calibrate_cli_uses_env_secret_key_when_cli_secret_omitted(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    input_path = tmp_path / "negative.jsonl"
+    input_record = _final_code_row("neg", "def target():\n    return 0\n")
+    _write_jsonl(input_path, [input_record])
+    output_path = tmp_path / "calibration.json"
+    detector_paths = _make_detector_paths(tmp_path)
+    pipeline = MagicMock()
+    artifact = MagicMock()
+    scorer = object()
+    pipeline.calibrate.return_value = artifact
+    monkeypatch.setenv("WFCLLM_SECRET_KEY", "env-secret-key")
+
+    with (
+        patch(
+            "scripts.wfcllm_detect.load_wfcllm_window_scorer",
+            return_value=scorer,
+        ) as load_scorer,
+        patch(
+            "scripts.wfcllm_detect.WFCLLMDetectionPipeline",
+            return_value=pipeline,
+        ) as pipeline_cls,
+        patch("scripts.wfcllm_detect.write_calibration_artifact") as write_artifact,
+    ):
+        rc = detect_cli.main(
+            [
+                "calibrate",
+                "--input",
+                str(input_path),
+                "--output",
+                str(output_path),
+                *_detector_cli_args(detector_paths, secret_key=None),
+            ]
+        )
+
+    assert rc == 0
+    _assert_detector_mapping(
+        load_scorer=load_scorer,
+        pipeline_cls=pipeline_cls,
+        scorer=scorer,
+        detector_paths=detector_paths,
+        expected_secret_key="env-secret-key",
+    )
+    pipeline.calibrate.assert_called_once_with([input_record])
+    write_artifact.assert_called_once_with(output_path, artifact)
+
+
+def test_detect_cli_secret_key_arg_takes_precedence_over_env(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    input_path = tmp_path / "rows.jsonl"
+    input_record = _final_code_row("pos", "def target():\n    return 1\n")
+    _write_jsonl(input_path, [input_record])
+    calibration_path = tmp_path / "calibration.json"
+    output_path = tmp_path / "details.jsonl"
+    detector_paths = _make_detector_paths(tmp_path)
+    pipeline = MagicMock()
+    artifact = MagicMock()
+    scorer = object()
+    monkeypatch.setenv("WFCLLM_SECRET_KEY", "env-secret-key")
+
+    with (
+        patch(
+            "scripts.wfcllm_detect.load_wfcllm_window_scorer",
+            return_value=scorer,
+        ) as load_scorer,
+        patch(
+            "scripts.wfcllm_detect.WFCLLMDetectionPipeline",
+            return_value=pipeline,
+        ) as pipeline_cls,
+        patch(
+            "scripts.wfcllm_detect.load_calibration_artifact",
+            return_value=artifact,
+        ),
+    ):
+        rc = detect_cli.main(
+            [
+                "detect",
+                "--input",
+                str(input_path),
+                "--calibration",
+                str(calibration_path),
+                "--output",
+                str(output_path),
+                *_detector_cli_args(detector_paths, secret_key="cli-secret-key"),
+            ]
+        )
+
+    assert rc == 0
+    _assert_detector_mapping(
+        load_scorer=load_scorer,
+        pipeline_cls=pipeline_cls,
+        scorer=scorer,
+        detector_paths=detector_paths,
+        expected_secret_key="cli-secret-key",
+    )
+
+
+def test_calibrate_missing_secret_key_fails_without_leaking_value(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    input_path = tmp_path / "negative.jsonl"
+    _write_jsonl(input_path, [_final_code_row("neg", "def target():\n    return 0\n")])
+    output_path = tmp_path / "calibration.json"
+    detector_paths = _make_detector_paths(tmp_path)
+    monkeypatch.delenv("WFCLLM_SECRET_KEY", raising=False)
+
+    with patch("scripts.wfcllm_detect.load_wfcllm_window_scorer") as load_scorer:
+        rc = detect_cli.main(
+            [
+                "calibrate",
+                "--input",
+                str(input_path),
+                "--output",
+                str(output_path),
+                *_detector_cli_args(detector_paths, secret_key=None),
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "[错误]" in captured.err
+    assert "WFCLLM_SECRET_KEY" in captured.err
+    assert "env-secret-key" not in captured.err
+    assert "cli-secret-key" not in captured.err
+    load_scorer.assert_not_called()
+
+
 def test_calibrate_missing_input_fails_before_scorer_load(
     tmp_path: Path,
     capsys,
@@ -444,12 +577,14 @@ def _make_detector_paths(tmp_path: Path) -> dict[str, Path]:
     }
 
 
-def _detector_cli_args(paths: dict[str, Path]) -> list[str]:
-    return [
+def _detector_cli_args(
+    paths: dict[str, Path],
+    *,
+    secret_key: str | None = "1010",
+) -> list[str]:
+    args = [
         "--encoder-model-path",
         str(paths["encoder_model_path"]),
-        "--secret-key",
-        "1010",
         "--encoder-checkpoint-path",
         str(paths["encoder_checkpoint_path"]),
         "--encoder-embed-dim",
@@ -487,6 +622,9 @@ def _detector_cli_args(paths: dict[str, Path]) -> list[str]:
         "700",
         "--no-structure-aware",
     ]
+    if secret_key is not None:
+        args.extend(["--secret-key", secret_key])
+    return args
 
 
 def _assert_detector_mapping(
@@ -495,6 +633,7 @@ def _assert_detector_mapping(
     pipeline_cls: MagicMock,
     scorer: object,
     detector_paths: dict[str, Path],
+    expected_secret_key: str = "1010",
 ) -> None:
     pipeline_kwargs = pipeline_cls.call_args.kwargs
     config = pipeline_kwargs["config"]
@@ -509,7 +648,7 @@ def _assert_detector_mapping(
         "use_bf16": True,
         "whitening_path": str(detector_paths["lsh_whitening_path"]),
     }
-    assert config.secret_key == "1010"
+    assert config.secret_key == expected_secret_key
     assert config.lsh_d == 6
     assert config.gamma == 0.5
     assert config.semantic_margin == 0.125

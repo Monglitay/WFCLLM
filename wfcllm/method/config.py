@@ -151,6 +151,9 @@ class SawrPipelineConfig:
     resume: str | None = None
     candidate_sidecar_output: str | None = None
     run_id: str | None = None
+    method_version: str = "v1"
+    sample_ids: tuple[str, ...] | None = None
+    retry_attempt_ledger_output: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.generation, SawrGenerationConfig):
@@ -204,6 +207,39 @@ class SawrPipelineConfig:
             raise ValueError("evidence_retry_attempts must be positive")
         if self.evidence_retry_seed_stride <= 0:
             raise ValueError("evidence_retry_seed_stride must be positive")
+        if self.method_version not in {"v1", "v2"}:
+            raise ValueError("method_version must be 'v1' or 'v2'")
+        if self.method_version == "v2" and self.evidence_retry_attempts != 20:
+            raise ValueError("v2 evidence_retry_attempts must be exactly 20")
+        if self.sample_ids is not None:
+            if isinstance(self.sample_ids, str) or not isinstance(
+                self.sample_ids,
+                (tuple, list),
+            ):
+                raise ValueError("sample_ids must be a non-empty sequence of unique ids")
+            normalized_sample_ids = tuple(self.sample_ids)
+            if (
+                not normalized_sample_ids
+                or any(
+                    not isinstance(sample_id, str) or not sample_id
+                    for sample_id in normalized_sample_ids
+                )
+                or len(set(normalized_sample_ids)) != len(normalized_sample_ids)
+            ):
+                raise ValueError("sample_ids must be a non-empty sequence of unique ids")
+            if self.sample_limit is not None or self.sample_offset is not None:
+                raise ValueError(
+                    "sample_ids cannot be combined with sample_limit or sample_offset"
+                )
+            object.__setattr__(self, "sample_ids", normalized_sample_ids)
+        if self.retry_attempt_ledger_output is not None:
+            if (
+                not isinstance(self.retry_attempt_ledger_output, str)
+                or not self.retry_attempt_ledger_output
+            ):
+                raise ValueError("retry_attempt_ledger_output must be a non-empty string")
+            if self.method_version != "v2":
+                raise ValueError("retry_attempt_ledger_output is only valid for v2")
         if self.resume is not None and self.resume != "latest":
             raise ValueError("resume must be None or 'latest'")
         if self.candidate_sidecar_output is not None and not isinstance(
