@@ -38,3 +38,31 @@ density alone does not guarantee independent or discriminative evidence.
 - do not claim legal TPR@5%FPR when observed held-out FPR exceeds 5%;
 - any future candidate needs new independent calibration and held-out splits;
 - keep V2 experimental and preserve all negative artifacts.
+
+## 2026-07-14: Watermark mechanism V3, dynamic semantic retry=20
+
+### Outcome
+
+Target claim rejected for the frozen implementation. The repaired pilot achieved only 27/30 exact generation-to-R3 replay, below the absolute 30/30 gate. Held-out negatives and HumanEval-164 were intentionally not opened/run.
+
+### What worked
+
+- exact shared-pool fairness: 600/600 ordered candidate hashes;
+- mean semantic selection/replay cost fell 49.79% relative to the complete-final profile baseline;
+- Current and V3 both passed 15/30 tasks;
+- V3 primary-key scores shifted upward on 19 task pairs, with no analogous wrong-key shift;
+- no tracked/public raw-key leak was found.
+
+### What failed
+
+- float32 neural representations remained batch-composition dependent at quantization boundaries;
+- three selected programs had one quantized-embedding mismatch under final-only replay;
+- the single repair budget was exhausted, so all downstream confirmatory gates were closed.
+
+### Constraints for future work
+
+- do not reuse this V3 held-out split for a mechanism designed from this failure;
+- do not equate cosine closeness with exact discrete-evidence replay;
+- remove batch-neighborhood dependence before measuring TPR/FPR or robustness;
+- preserve final-only detection and identical raw candidate pools;
+- treat any further representation/quantization change as a new preregistered mechanism.

@@ -1,0 +1,21 @@
+{
+  "artifact_type": "wfcllm_dynamic_semantic_v3_gpu_profile",
+  "schema_version": "wfcllm-gpu-profile/v1",
+  "gpu": "NVIDIA GeForce RTX 5090",
+  "gpu_memory_mib": 32607,
+  "pytorch": "2.11.0+cu130",
+  "transformers": "4.46.3",
+  "python": "3.11.15",
+  "pilot_tasks": 30,
+  "retry": 20,
+  "semantic_seconds_per_task_mean": 0.10113179149727027,
+  "semantic_seconds_per_task_median": 0.09621240943670273,
+  "semantic_seconds_per_task_bootstrap_95_ci": [
+    0.0834781030813853,
+    0.12044090419076384
+  ],
+  "profile_baseline_seconds_per_task": 0.201412,
+  "cost_reduction_fraction": 0.49788596758251613,
+  "encoder_calls_per_task_mean": 4.733333333333333,
+  "peak_allocated_mib": 687.95361328125
+}

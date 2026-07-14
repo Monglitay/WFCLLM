@@ -1,60 +1,56 @@
 {
-  "schema_version": "aris-experiment-audit/v1",
-  "date": "2026-07-14",
-  "auditor": "fresh-codex-read-only-snapshot-reviewer",
-  "overall_verdict": "warn",
+  "artifact_type": "wfcllm_experiment_integrity_audit",
+  "schema_version": "wfcllm-experiment-audit/v1",
   "integrity_status": "warn",
-  "classification": "post-gate exploratory",
+  "provisional": true,
+  "pending_external_review": true,
+  "auditor": "primary Codex fallback",
+  "independent_reviewer": "not run: system policy prohibits subagent delegation without explicit user request",
+  "scientific_gate_status": "failed_r3_exact_replay",
   "checks": {
-    "gt_provenance": {
-      "status": "warn",
-      "details": "164 ID-complete execution rows per arm and no fake-GT evidence, but executor/test-loader implementation and dataset test hash were absent from the independent snapshot."
-    },
-    "score_normalization": {
+    "candidate_pool_hashes": {
       "status": "pass",
-      "details": "Raw frozen detector decisions, FPR, TPR, AUROC and paired deltas; no self-output max/min/mean normalization."
+      "matched": 600,
+      "total": 600
     },
-    "result_existence": {
-      "status": "pass_after_remediation",
-      "details": "All full artifacts and hashes exist. Three stale pre-full reports were replaced before commit."
+    "r3_exact_replay": {
+      "status": "fail",
+      "matched": 27,
+      "total": 30
     },
-    "dead_code": {
+    "heldout_access": {
       "status": "pass",
-      "details": "Claimed execution, detection, paired bootstrap and replay metrics are on executed pipelines and have retained outputs."
+      "opened": false
     },
-    "scope": {
+    "full_humaneval_164": {
+      "status": "pass",
+      "run": false
+    },
+    "raw_key_occurrences_tracked": {
+      "status": "pass",
+      "count": 0
+    },
+    "raw_key_occurrences_public": {
+      "status": "pass",
+      "count": 0
+    },
+    "tests": {
+      "status": "pass",
+      "passed": 819,
+      "warnings": 27,
+      "seconds": 30.18
+    },
+    "compileall": {
+      "status": "pass",
+      "exit_code": 0
+    },
+    "encoder_provenance": {
       "status": "warn",
-      "details": "One seed, HumanEval only, full run after failed pilot; exploratory claims only."
+      "scope": "within-benchmark only"
     },
-    "heldout_isolation": {
+    "live_generation_equivalence": {
       "status": "warn",
-      "details": "Manifest records one post-closure opening; snapshot lacked append-only access log."
-    },
-    "schema_compatibility": {
-      "status": "warn",
-      "details": "Versioned artifacts are consistent; calibration loader/tests were outside the snapshot."
-    },
-    "retry_freeze": {
-      "status": "warn",
-      "details": "Preregistration and manifest record retry=20; raw full attempt ledger was outside the snapshot."
-    },
-    "eval_type": "intended_real_gt_plus_controlled_key_conditioned_statistical_detection"
-  },
-  "integrity_evidence": {
-    "current_detector_rows": 164,
-    "v2_detector_rows": 164,
-    "staged_and_tracked_files_scanned": 708,
-    "total_public_files_scanned_per_arm": 794,
-    "current_secret_matches": 0,
-    "v2_secret_matches": 0,
-    "v2_final_code_replay_rate": 1.0,
-    "v2_ledger_code_replay_rate": 1.0,
-    "v2_ledger_score_replay_rate": 1.0
-  },
-  "claims": [
-    {"id": "final_code_only_contract", "impact": "supported"},
-    {"id": "evidence_coverage_improved_on_single_seed", "impact": "supported_with_scope_qualifier"},
-    {"id": "legal_tpr_at_5fpr_improved", "impact": "unsupported"},
-    {"id": "method_improvement_success", "impact": "unsupported"}
-  ]
+      "scope": "saved trajectory replay"
+    }
+  }
 }

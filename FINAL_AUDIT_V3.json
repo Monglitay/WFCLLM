@@ -1,0 +1,53 @@
+{
+  "artifact_type": "wfcllm_dynamic_semantic_v3_final_audit",
+  "schema_version": "wfcllm-final-audit/v3",
+  "status": "complete_negative_result",
+  "branch": "codex/watermark-mechanism-v3-dynamic-semantic-reset",
+  "v2_baseline": "eac59bfbdc80a91bd5eb5d1332dcace75442d9ad",
+  "implementation_commit": "5f8b908",
+  "pilot_results_commit": "922a12b715ef35e50627ef1f0a1f9a28124d7531",
+  "pilot": {
+    "tasks": 30,
+    "retry": 20,
+    "all_gates_pass": false,
+    "failed_hard_gates": [
+      "r3_replay_rate"
+    ],
+    "r3_exact": {
+      "count": 27,
+      "total": 30
+    }
+  },
+  "conditional_phases": {
+    "heldout_opened": false,
+    "humaneval_164_run": false,
+    "robustness_run": false
+  },
+  "repair_budget": {
+    "allowed": 1,
+    "used": 1,
+    "remaining": 0
+  },
+  "verification": {
+    "pytest": {
+      "command": "HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/ -q --tb=short",
+      "passed": 819,
+      "warnings": 27,
+      "seconds": 30.18
+    },
+    "compileall": {
+      "command": "conda run -n WFCLLM python -m compileall -q wfcllm run.py scripts tools",
+      "exit_code": 0
+    },
+    "git_diff_check": "pass before final commit"
+  },
+  "integrity_status": "warn",
+  "result_to_claim": {
+    "claim_supported": "no",
+    "confidence": "high",
+    "pending_external_review": true
+  },
+  "secret_scan": "SECRET_SCAN_V3.json",
+  "file_access_audit": "FILE_ACCESS_AUDIT_V3.json",
+  "artifact_hash_manifest": "ARTIFACT_HASHES_V3.json"
+}

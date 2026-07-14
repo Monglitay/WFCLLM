@@ -1,0 +1,25 @@
+{
+  "artifact_type": "wfcllm_dynamic_semantic_v3_file_access_audit",
+  "schema_version": "wfcllm-file-access-audit/v1",
+  "calibration_negative": {
+    "rows": 250,
+    "opened_for_fit_and_audit": true
+  },
+  "heldout_negative": {
+    "rows": 250,
+    "opened_for_detection": false,
+    "result_artifacts_found": false
+  },
+  "humaneval_pilot": {
+    "rows": 30,
+    "retry": 20,
+    "run": true
+  },
+  "humaneval_full": {
+    "rows": 164,
+    "retry": 20,
+    "run": false,
+    "result_artifacts_found": false
+  },
+  "reason": "pilot R3 exact replay failed after the single allowed repair"
+}
