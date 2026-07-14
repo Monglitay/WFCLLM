@@ -1,0 +1,10 @@
+{
+  "schema_version": "aris-experiment-audit-trace/v1",
+  "snapshot_sha256": "761b7536086bd8bb793bf25c871d8194b1b2ecbc2b918fbb83a183e05b754ff7",
+  "pre_remediation_verdict": "fail",
+  "pre_remediation_failure": "three final reports falsely stated full run absent and heldout unopened",
+  "post_remediation_verdict": "warn",
+  "post_remediation_integrity_status": "warn",
+  "scope_warning": "single seed HumanEval post-gate exploratory",
+  "claim_impact": "target method-improvement claim unsupported"
+}

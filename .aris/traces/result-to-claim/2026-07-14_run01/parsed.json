@@ -1,0 +1,15 @@
+{
+  "schema_version": "aris-result-to-claim-trace/v1",
+  "claim_supported": "no",
+  "confidence": "high",
+  "integrity_status": "pending_experiment_audit_at_review_time",
+  "classification": "post-gate exploratory",
+  "single_seed": 20260713,
+  "decisive_failures": {
+    "v2_heldout_fpr": 0.07317073170731707,
+    "fpr_limit": 0.05,
+    "v2_tpr": 0.23170731707317074,
+    "current_tpr": 0.25609756097560976
+  },
+  "routing": "retain_v2_experimental_keep_current_default_stop_experiments"
+}

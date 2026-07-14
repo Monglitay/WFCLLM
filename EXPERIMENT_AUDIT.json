@@ -1,0 +1,60 @@
+{
+  "schema_version": "aris-experiment-audit/v1",
+  "date": "2026-07-14",
+  "auditor": "fresh-codex-read-only-snapshot-reviewer",
+  "overall_verdict": "warn",
+  "integrity_status": "warn",
+  "classification": "post-gate exploratory",
+  "checks": {
+    "gt_provenance": {
+      "status": "warn",
+      "details": "164 ID-complete execution rows per arm and no fake-GT evidence, but executor/test-loader implementation and dataset test hash were absent from the independent snapshot."
+    },
+    "score_normalization": {
+      "status": "pass",
+      "details": "Raw frozen detector decisions, FPR, TPR, AUROC and paired deltas; no self-output max/min/mean normalization."
+    },
+    "result_existence": {
+      "status": "pass_after_remediation",
+      "details": "All full artifacts and hashes exist. Three stale pre-full reports were replaced before commit."
+    },
+    "dead_code": {
+      "status": "pass",
+      "details": "Claimed execution, detection, paired bootstrap and replay metrics are on executed pipelines and have retained outputs."
+    },
+    "scope": {
+      "status": "warn",
+      "details": "One seed, HumanEval only, full run after failed pilot; exploratory claims only."
+    },
+    "heldout_isolation": {
+      "status": "warn",
+      "details": "Manifest records one post-closure opening; snapshot lacked append-only access log."
+    },
+    "schema_compatibility": {
+      "status": "warn",
+      "details": "Versioned artifacts are consistent; calibration loader/tests were outside the snapshot."
+    },
+    "retry_freeze": {
+      "status": "warn",
+      "details": "Preregistration and manifest record retry=20; raw full attempt ledger was outside the snapshot."
+    },
+    "eval_type": "intended_real_gt_plus_controlled_key_conditioned_statistical_detection"
+  },
+  "integrity_evidence": {
+    "current_detector_rows": 164,
+    "v2_detector_rows": 164,
+    "staged_and_tracked_files_scanned": 708,
+    "total_public_files_scanned_per_arm": 794,
+    "current_secret_matches": 0,
+    "v2_secret_matches": 0,
+    "v2_final_code_replay_rate": 1.0,
+    "v2_ledger_code_replay_rate": 1.0,
+    "v2_ledger_score_replay_rate": 1.0
+  },
+  "claims": [
+    {"id": "final_code_only_contract", "impact": "supported"},
+    {"id": "evidence_coverage_improved_on_single_seed", "impact": "supported_with_scope_qualifier"},
+    {"id": "legal_tpr_at_5fpr_improved", "impact": "unsupported"},
+    {"id": "method_improvement_success", "impact": "unsupported"}
+  ]
+}
