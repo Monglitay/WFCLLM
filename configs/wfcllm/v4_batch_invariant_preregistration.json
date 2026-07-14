@@ -1,0 +1,354 @@
+{
+  "artifact_type": "wfcllm_batch_invariant_semantic_v4_preregistration",
+  "artifact_schema": {
+    "exact_evidence": "wfcllm-v4-exact-evidence/v1",
+    "pilot_audit": "wfcllm-v4-pilot-audit/v1",
+    "public_config": "wfcllm-batch-invariant-semantic-watermark/v4",
+    "split": "wfcllm-v4-negative-split/v1"
+  },
+  "baseline": {
+    "current_formal_baseline": "eac59bfbdc80a91bd5eb5d1332dcace75442d9ad",
+    "v3_final_commit": "8693e0879cbd5657b335913b7d49171bd6c77c3b",
+    "v3_formal_arm": "Streaming-SharedPool-V3-R20",
+    "v3_result_is_immutable_negative_evidence": true
+  },
+  "batch_invariance_contract": {
+    "cache_hit_miss_exact": true,
+    "cold_process_count_required": 3,
+    "exact_independent_of": [
+      "batch_size",
+      "batch_composition",
+      "batch_order",
+      "padding_shape",
+      "CUDA_kernel_path",
+      "TF32",
+      "matmul_precision",
+      "GPU_warmup",
+      "process_cache_state",
+      "other_candidates"
+    ],
+    "representation_is_pure_final_code_function": true
+  },
+  "branch": "codex/watermark-mechanism-v4-batch-invariant-semantic",
+  "calibration": {
+    "calibration_only_fitting": true,
+    "conservative_tie_policy": "count calibration scores greater than or equal to observed",
+    "decision": "eligible and empirical_p_value <= 0.05",
+    "empirical_p_value": "(1 + count(calibration_score >= observed_score)) / 231",
+    "heldout_path_forbidden_before_pilot_pass": true,
+    "minimum_independent_units": 3,
+    "target_fpr": 0.05,
+    "threshold_method": "calibration empirical survival p-value; no held-out adjustment",
+    "wrong_key_control": "domain-separated derivation from primary V4 key"
+  },
+  "candidate_pool_fairness": {
+    "attempt_seed_rule": "seed + attempt_index * 101",
+    "baseline_arm": "Current-R20",
+    "ordered_raw_candidate_sha256_required": 20,
+    "required_hash_match_rate": 1.0,
+    "same_candidate_order": true,
+    "same_candidate_validity": true,
+    "same_decoding": true,
+    "same_model_tokenizer_prompt": true,
+    "same_retry_budget": true,
+    "shared_raw_trajectories": true
+  },
+  "canonical_context": {
+    "bounded_dataflow": "normalized previous-to-current identifier definition/use edges",
+    "compound_units": "non-overlapping header shells plus recursive child statements",
+    "duplicate_unit_id_policy": "erase every occurrence",
+    "global_ordinal_keying": false,
+    "identifier_rename_normalization": true,
+    "max_context_bytes": 8192,
+    "max_unit_bytes": 4096,
+    "no_truncation": true,
+    "oversize_policy": "erasure",
+    "parse_failure_policy": "code-level erasure",
+    "role": "statement_type|parent_type|statement_list_field",
+    "schema_version": "wfcllm-batch-invariant-structural-context/v4"
+  },
+  "channel": {
+    "bit_count_per_unit": 32,
+    "ecc": "none; exact discrete replay is required before aggregation",
+    "erasure_rule": "parse, oversize, or duplicate structural unit only",
+    "hmac_header": "WFCLLM_BATCH_INVARIANT_SEMANTIC_V4_FORMAL",
+    "margin": "not applicable; no floating boundary",
+    "minimum_independent_units": 3,
+    "projection_domain": "v4-formal/structural-signature",
+    "projection_rule": "HMAC bits over public representation bytes",
+    "quantization": "identity uint8 SHA-256 representation bytes",
+    "target_domain": "v4-formal/unit-target",
+    "target_rule": "HMAC bits over public unit ID",
+    "wrong_key_domain": "v4-formal/wrong-key-control"
+  },
+  "cost_gates": {
+    "complete_final_baseline_seconds_per_task": 0.201412,
+    "maximum_mean_semantic_seconds_per_task": 0.1409884,
+    "minimum_reduction_fraction": 0.3,
+    "model_load_and_warmup_reported_separately": true,
+    "peak_allocated_vram_mib_max": 32607,
+    "timed_scope": "dynamic selection plus exactly one selected-final replay"
+  },
+  "debug": {
+    "ids": [
+      "HumanEval/131",
+      "HumanEval/116",
+      "HumanEval/119",
+      "HumanEval/133",
+      "HumanEval/9"
+    ],
+    "root_cause_regression_only_ids": [
+      "HumanEval/34",
+      "HumanEval/39",
+      "HumanEval/71"
+    ],
+    "status": "engineering only; no confirmatory claim"
+  },
+  "detector": {
+    "allowed_payload": [
+      "final_code"
+    ],
+    "exact_fields": [
+      "sorted unit IDs",
+      "canonical context hashes",
+      "representations",
+      "quantized values",
+      "erasure masks",
+      "signature bits",
+      "target bits",
+      "match counts",
+      "per-unit numerator and denominator",
+      "aggregate numerator and denominator",
+      "independent units",
+      "eligibility",
+      "p-value",
+      "final decision"
+    ],
+    "forbidden_payload": [
+      "prompt",
+      "task ID",
+      "candidate pool",
+      "attempt index",
+      "generation trace",
+      "generation-time semantic ledger",
+      "accepted-event ledger",
+      "token logits",
+      "token probabilities",
+      "batch composition",
+      "generation-time embeddings",
+      "generation-time unit metadata"
+    ],
+    "inputs": [
+      "final_code",
+      "frozen public config",
+      "private key file"
+    ],
+    "mode": "R3-final-code-only",
+    "tolerance_comparison_forbidden": true
+  },
+  "deterministic_runtime": {
+    "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+    "cpu_structural_runtime": true,
+    "cuda_required": false,
+    "deterministic_algorithms": true,
+    "encoder_model_eval": "not applicable to formal V4",
+    "float32_matmul_precision": "not applicable to formal V4",
+    "offline_environment": true,
+    "tf32": false
+  },
+  "failure_policy": {
+    "debug_failure": "stop before pilot and publish complete pre-pilot negative result",
+    "full_failure": "stop robustness and publish complete negative result",
+    "heldout_failure": "stop full and robustness; no tuning",
+    "no_post_outcome_tuning": true,
+    "pilot_failure": "do not open held-out, run full, or run robustness",
+    "preserve_all_raw_evidence": true
+  },
+  "formal_arm": "CanonicalStructuralReplay-V4-R20",
+  "frozen_at": "2026-07-14T23:30:00+08:00",
+  "full": {
+    "allowed_only_after_pilot_and_heldout_pass": true,
+    "candidate_pool_hash_match_rate": 1.0,
+    "cold_replay_required": 164,
+    "count": 164,
+    "dataset": "humaneval",
+    "heldout_fpr_max": 0.05,
+    "integrity_audit_must_pass": true,
+    "pass_count_min": 82,
+    "pass_delta_min": -2,
+    "r3_replay_required": 164,
+    "retry": 20,
+    "v4_tpr_strictly_greater_than_current": true,
+    "wrong_key_no_positive_shift": true
+  },
+  "generation": {
+    "dataset": "humaneval",
+    "load_in_4bit": false,
+    "max_new_tokens": 256,
+    "model_path": "data/models/deepseek-coder-1.3b-instruct",
+    "prompt_mode": "completion",
+    "quality_gate": "existing Current-R20 static quality gate at baseline commit",
+    "retry": 20,
+    "retry_repetition_penalty": 4.0,
+    "seed": 20260714,
+    "temperature": 0.25,
+    "top_k": 0,
+    "top_p": 0.95,
+    "torch_dtype": "bf16"
+  },
+  "heldout_upgrade": {
+    "access_count": 1,
+    "allowed_only_after_all_pilot_gates": true,
+    "fpr_max": 0.05,
+    "mechanism_or_threshold_adjustment_after_access": false,
+    "wrong_key_fpr_max": 0.05
+  },
+  "neural_encoder_identity": {
+    "checkpoint_path": "data/models/encoder/best_model.pt",
+    "checkpoint_sha256": "9da80dfdbb3f8e682298e588e822f15967e460c9dfd640a243aad8ed1ba51d25",
+    "formal_v4_uses_encoder": false,
+    "historical_training_overlap_risk": "unknown and not provably excludable from local artifacts",
+    "model_path": "data/models/codet5-base",
+    "reason_recorded": "identity frozen for V3 comparison and leakage audit"
+  },
+  "negative_split": {
+    "calibration_count": 230,
+    "heldout_count": 229,
+    "heldout_policy": "forbidden to detector before all pilot gates; open once if upgraded",
+    "manifest": "configs/wfcllm/v4_batch_invariant_split_manifest.json",
+    "manifest_sha256_at_freeze": "d5891abe1cd7e423c0d5cdff0ac7fd27b2ab8dbca9b1f098cb59f06bf8f056c4",
+    "source": "MBPP train and validation after AST/content deduplication and V3-test/HumanEval exclusion",
+    "v3_split_reused": false
+  },
+  "pilot": {
+    "allowed_targeted_repairs": 1,
+    "count": 30,
+    "dataset": "humaneval",
+    "gates": {
+      "artifact_hash_and_schema_pass": true,
+      "batch_size_composition_order_replay_rate": 1.0,
+      "cache_hit_miss_replay_rate": 1.0,
+      "calibration_negative_rate_max": 0.05,
+      "candidate_pool_hash_match_rate": 1.0,
+      "cold_process_r3_replay_count": 3,
+      "eos_complete_candidate_neural_rescore_count": 0,
+      "generation_to_r3_replay_rate": 1.0,
+      "independent_integrity_audit_no_fail": true,
+      "mean_semantic_seconds_per_task_max": 0.1409884,
+      "pass_count_min": 15,
+      "pass_delta_min_vs_current": -1,
+      "peak_vram_mib_max": 32607,
+      "positive_shift_not_single_outlier": true,
+      "raw_key_leak_count": 0,
+      "repair_budget_not_exceeded": true,
+      "secret_influence_on_generation": false,
+      "v4_tpr_strictly_greater_than_current": true,
+      "wrong_key_no_equal_positive_shift": true
+    },
+    "ids": [
+      "HumanEval/107",
+      "HumanEval/83",
+      "HumanEval/146",
+      "HumanEval/136",
+      "HumanEval/141",
+      "HumanEval/91",
+      "HumanEval/10",
+      "HumanEval/60",
+      "HumanEval/134",
+      "HumanEval/11",
+      "HumanEval/138",
+      "HumanEval/58",
+      "HumanEval/5",
+      "HumanEval/4",
+      "HumanEval/44",
+      "HumanEval/151",
+      "HumanEval/160",
+      "HumanEval/108",
+      "HumanEval/45",
+      "HumanEval/153",
+      "HumanEval/118",
+      "HumanEval/86",
+      "HumanEval/98",
+      "HumanEval/84",
+      "HumanEval/7",
+      "HumanEval/15",
+      "HumanEval/81",
+      "HumanEval/155",
+      "HumanEval/68",
+      "HumanEval/106"
+    ],
+    "retry": 20,
+    "selection_algorithm": "sort remaining IDs by sha256(wfcllm-v4-batch-invariant-humaneval-selection || NUL || 20260714 || NUL || id) after excluding all V3 debug and pilot IDs",
+    "v3_debug_or_pilot_overlap": 0
+  },
+  "public_config": "configs/wfcllm/v4_batch_invariant_public.json",
+  "public_config_sha256_at_freeze": "423a821ee20e0889ceff0e88ba23d18dddbd6d662b7c16c23d3f34c5948bbf42",
+  "rejected_candidates": {
+    "A": "exact but measured 0.3108760490 seconds/task, above cost gate",
+    "B": "18/22932 erasure-mask mismatch rows and empirical non-certified bound",
+    "D": "no measured benefit over C and reintroduces neural assumptions"
+  },
+  "repair_policy": {
+    "allowed": [
+      "code does not implement preregistered behavior",
+      "deterministic configuration not active",
+      "cache returns wrong object",
+      "scheduler violates frozen order",
+      "artifact writer or exact-comparison bug"
+    ],
+    "forbidden": [
+      "mechanism",
+      "encoder",
+      "precision",
+      "quantization",
+      "margin",
+      "projection",
+      "ECC",
+      "threshold method",
+      "split",
+      "pilot IDs",
+      "retry",
+      "minimum independent units",
+      "target FPR",
+      "sample deletion",
+      "exactness relaxation"
+    ],
+    "maximum": 1
+  },
+  "reporting_scope": "single-seed within-benchmark canonical structural/data-flow watermark validation; no neural semantic, cross-model, cross-language, or arbitrary-refactoring claim",
+  "robustness": {
+    "allowed_only_after_clean_pilot_heldout_and_full": true,
+    "attacks": [
+      "format normalization",
+      "identifier rename",
+      "dead-code insertion",
+      "independent-statement deletion",
+      "independent-statement reordering"
+    ],
+    "report_all_samples": true,
+    "required_metrics": [
+      "clean and attacked statistic",
+      "statistic degradation",
+      "clean and attacked TPR",
+      "eligible-unit change",
+      "erasure change",
+      "independent-unit theoretical upper bound",
+      "per-attack exact replay"
+    ]
+  },
+  "schema_version": "wfcllm-v4-preregistration/v1",
+  "secret_hygiene": {
+    "artifact_manifest_forbids_key_fingerprint": true,
+    "cli_raw_key_forbidden": true,
+    "generation_cannot_access_key": true,
+    "key_file_mode": "0600",
+    "key_path": "gitignored V4 private directory",
+    "new_independent_key": true,
+    "public_artifacts_forbid_key_fingerprint_or_sha256": true,
+    "raw_key_leak_count_required": 0,
+    "v3_key_access_forbidden": true
+  },
+  "selected_candidate": "C",
+  "selection_reason": "only runnable family satisfying exactness, detector purity, cost-risk, coverage, and absence of new numerical assumptions",
+  "single_seed_only": true
+}

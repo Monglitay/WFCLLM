@@ -1,0 +1,143 @@
+{
+  "artifact_type": "wfcllm_batch_invariant_semantic_v4_public_config",
+  "cache": {
+    "key_fields": [
+      "schema_version",
+      "public_config_identity",
+      "canonical_context_sha256"
+    ],
+    "private_key_in_key": false,
+    "task_candidate_batch_metadata_in_key": false
+  },
+  "canonical_context": {
+    "ast_attributes_included": false,
+    "bounded_dataflow": "previous-to-current normalized identifier definition/use edges",
+    "comments_and_formatting_included": false,
+    "compound_representation": "header shell with child statement lists replaced by explicit pass markers",
+    "duplicate_unit_id_policy": "erase every occurrence",
+    "global_ordinal_keying": false,
+    "identifier_normalization": "deterministic scoped encounter-order slots with explicit builtin names",
+    "language": "python",
+    "max_context_bytes": 8192,
+    "max_unit_bytes": 4096,
+    "no_truncation": true,
+    "oversize_policy": "unit erasure",
+    "parse_failure_policy": "code-level erasure",
+    "parser": "python stdlib ast",
+    "recursive_statement_fields": [
+      "body",
+      "orelse",
+      "finalbody",
+      "ExceptHandler.body",
+      "match_case.body"
+    ],
+    "role_fields": [
+      "statement_type",
+      "parent_type",
+      "statement_list_field"
+    ],
+    "schema_version": "wfcllm-batch-invariant-structural-context/v4",
+    "unit_id": "sha256(schema_version || NUL || role || NUL || representation_sha256)"
+  },
+  "channel": {
+    "aggregate_denominator": "sum of per-unit denominator over unique eligible units",
+    "aggregate_numerator": "sum of per-unit numerator over unique eligible units",
+    "bit_count_per_unit": 32,
+    "ecc": "none",
+    "erasure_mask": "all false for emitted discrete units; structural erasures are omitted with reason counts",
+    "hmac_derivation": "HMAC-SHA256 counter expansion",
+    "hmac_header": "WFCLLM_BATCH_INVARIANT_SEMANTIC_V4_FORMAL",
+    "identity_quantization_range": [
+      0,
+      255
+    ],
+    "margin_rule": "not applicable to discrete representation",
+    "minimum_independent_units": 3,
+    "projection_domain": "v4-formal/structural-signature",
+    "projection_rule": "domain-separated HMAC bits over representation bytes",
+    "quantization": "identity over the 32 SHA-256 representation bytes",
+    "representation": "SHA-256 bytes of sorted versioned canonical JSON",
+    "target_domain": "v4-formal/unit-target",
+    "target_rule": "domain-separated HMAC bits over unit_id",
+    "unit_denominator": 32,
+    "unit_numerator": "2 * matching_bits - 32",
+    "wrong_key_domain": "v4-formal/wrong-key-control"
+  },
+  "decision": {
+    "calibration_artifact": "data/experiments/watermark_v4_batch_invariant_20260714/public/calibration.json",
+    "conservative_ties": "greater-than-or-equal",
+    "empirical_p_value": "(1 + count(calibration_score >= observed_score)) / 231",
+    "eligible_requires_minimum_independent_units": true,
+    "target_fpr": 0.05
+  },
+  "detector": {
+    "allowed_payload_fields": [
+      "final_code"
+    ],
+    "exact_fields": [
+      "sorted_unit_ids",
+      "canonical_context_sha256",
+      "representation_bytes",
+      "quantized_values",
+      "erasure_masks",
+      "signature_bits",
+      "target_bits",
+      "match_counts",
+      "unit_numerators",
+      "unit_denominators",
+      "aggregate_numerator",
+      "aggregate_denominator",
+      "independent_units",
+      "eligibility",
+      "p_value",
+      "decision"
+    ],
+    "forbidden_payload_fields": [
+      "prompt",
+      "task_id",
+      "candidate_pool",
+      "attempt_index",
+      "generation_trace",
+      "generation_semantic_ledger",
+      "accepted_event_ledger",
+      "token_logits",
+      "token_probabilities",
+      "batch_composition",
+      "generation_embeddings",
+      "generation_unit_metadata"
+    ],
+    "inputs": [
+      "final_code",
+      "frozen_public_config",
+      "private_key_file"
+    ],
+    "mode": "R3-final-code-only"
+  },
+  "runtime": {
+    "batch_invariance_contract": "representation is a pure function of final_code and public config and is independent of batch size, composition, order, padding, CUDA, warm-up, cache, and process state",
+    "cuda_required": false,
+    "deterministic_algorithms": true,
+    "device": "cpu",
+    "encoder_used": false,
+    "float32_matmul_precision": "not_applicable",
+    "model_eval": "not_applicable",
+    "neural_auxiliary_used": false,
+    "tf32": false
+  },
+  "schema_version": "wfcllm-batch-invariant-semantic-watermark/v4",
+  "secret_metadata_included": false,
+  "selection": {
+    "all_ineligible_fallback": "existing Current static-quality selection",
+    "candidate_generation_accesses_key": false,
+    "end_of_sequence_all_candidate_neural_rescore": false,
+    "order": [
+      "highest existing static quality tier",
+      "eligible structural statistic",
+      "most independent units",
+      "fewest public structural erasures",
+      "lowest attempt index"
+    ],
+    "retry": 20,
+    "selected_final_replay_count": 1
+  }
+}
