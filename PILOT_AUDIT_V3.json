@@ -1,0 +1,126 @@
+{
+  "artifact_type": "wfcllm_dynamic_semantic_v3_pilot_audit",
+  "schema_version": "wfcllm-dynamic-semantic-pilot-audit/v3",
+  "status": "hard_gate_failed_negative_result",
+  "seed": 20260713,
+  "baseline_git_head": "eac59bfbdc80a91bd5eb5d1332dcace75442d9ad",
+  "implementation_git_head": "5f8b908",
+  "formal_arm": "Streaming-SharedPool-V3-R20",
+  "pilot_count": 30,
+  "retry": 20,
+  "metrics": {
+    "candidate_pool_hash_match_rate": 1.0,
+    "candidate_pool_hashes_checked": 600,
+    "candidate_pool_attempt_sequences_exact": true,
+    "r3_replay_rate": 0.9,
+    "r3_replay_exact_count": 27,
+    "r3_replay_mismatch_ids": [
+      "HumanEval/34",
+      "HumanEval/39",
+      "HumanEval/71"
+    ],
+    "eos_complete_candidate_semantic_rescore_count": 0,
+    "semantic_seconds_per_task_mean": 0.10113179149727027,
+    "semantic_seconds_per_task_median": 0.09621240943670273,
+    "semantic_seconds_per_task_bootstrap_95_ci": [
+      0.0834781030813853,
+      0.12044090419076384
+    ],
+    "semantic_cost_reduction_fraction_vs_profile_baseline": 0.49788596758251613,
+    "encoder_calls_per_task_mean": 4.733333333333333,
+    "encoded_contexts_total": 745,
+    "peak_allocated_mib": 687.95361328125,
+    "current_pass_count": 15,
+    "v3_pass_count": 15,
+    "pass_delta": 0,
+    "pass_changed_current_fail_to_v3_pass": 4,
+    "pass_changed_current_pass_to_v3_fail": 4,
+    "current_tpr": 0.03333333333333333,
+    "current_tpr_bootstrap_95_ci": [
+      0.0,
+      0.1
+    ],
+    "v3_tpr": 0.23333333333333334,
+    "v3_tpr_bootstrap_95_ci": [
+      0.1,
+      0.4
+    ],
+    "wrong_key_pilot_positive_rate": 0.03333333333333333,
+    "mean_current_score": -0.04444444444444444,
+    "mean_v3_score": 0.13258503401360544,
+    "mean_paired_score_delta": 0.17702947845804987,
+    "mean_paired_score_delta_bootstrap_95_ci": [
+      0.09417233560090701,
+      0.25866213151927436
+    ],
+    "paired_score_delta_sign_counts": {
+      "positive": 19,
+      "negative": 4,
+      "zero": 7
+    },
+    "paired_score_delta_two_sided_sign_test_p": 0.002599477767944336,
+    "calibration_primary_fpr": 0.044,
+    "calibration_primary_positive_count": 11,
+    "calibration_primary_count": 250,
+    "calibration_primary_bootstrap_95_ci": [
+      0.02,
+      0.072
+    ],
+    "calibration_wrong_key_fpr": 0.004,
+    "calibration_wrong_key_positive_count": 1,
+    "calibration_wrong_key_count": 250,
+    "calibration_wrong_key_bootstrap_95_ci": [
+      0.0,
+      0.012
+    ]
+  },
+  "gate_results": {
+    "candidate_pool_hash_match_rate": true,
+    "r3_replay_rate": false,
+    "eos_complete_candidate_semantic_rescore_count": true,
+    "semantic_seconds_per_task_max": true,
+    "required_cost_reduction_fraction": true,
+    "peak_vram_mib_max": true,
+    "pass_count_min": true,
+    "pass_delta_min_vs_current": true,
+    "v3_tpr_strictly_greater_than_current": true,
+    "positive_shift_not_single_outlier_only": true,
+    "pilot_negative_fpr_max": true,
+    "raw_key_leak_count": true,
+    "secret_influence_on_raw_generation": true
+  },
+  "all_pilot_gates_pass": false,
+  "failed_hard_gates": [
+    "r3_replay_rate"
+  ],
+  "repair_budget": {
+    "allowed": 1,
+    "used": 1,
+    "remaining": 0
+  },
+  "escalation": {
+    "heldout_opened": false,
+    "full_humaneval_164_run": false,
+    "reason": "R3 exact replay was 27/30 after the single allowed implementation repair."
+  },
+  "scope": "single-seed frozen within-benchmark mechanism validation; no cross-seed, cross-model, cross-language, or natural-code generalization claim",
+  "artifact_sha256": {
+    "/root/autodl-tmp/WFCLLM-worktrees/dynamic-semantic-v3/configs/wfcllm/v3_dynamic_semantic_preregistration.json": "25e9c64d0c90913b4390afa1e31b52ff8b41b80817af2964bb83353d71a27862",
+    "/root/autodl-tmp/WFCLLM-worktrees/dynamic-semantic-v3/configs/wfcllm/v3_dynamic_semantic_public.json": "04f4ff8518ef0eb5a32de6645eec14ae50d052ae508437b94891d93070fb7d40",
+    "/root/autodl-tmp/WFCLLM-worktrees/dynamic-semantic-v3/configs/wfcllm/v3_dynamic_semantic_split_manifest.json": "669c03b613aef191d417d795f6346ad5a41f12c804e33a45ed9bec1cbc3695b2",
+    "/root/autodl-tmp/WFCLLM-worktrees/dynamic-semantic-v3/data/experiments/watermark_v3_dynamic_semantic_20260714/pilot30_finalrepair/run_summary.json": "d00ccb251a0eed7f84835e7f0c56fa1f0fbac66e254a1fbb03cb0abe7657ca82",
+    "/root/autodl-tmp/WFCLLM-worktrees/dynamic-semantic-v3/data/experiments/watermark_v3_dynamic_semantic_20260714/pilot30_finalrepair/current_final_code.jsonl": "ff335186dc0f24ed0ff8e1ac9f93271c30103e15e65a1458b2594ab3867b7766",
+    "/root/autodl-tmp/WFCLLM-worktrees/dynamic-semantic-v3/data/experiments/watermark_v3_dynamic_semantic_20260714/pilot30_finalrepair/v3_final_code.jsonl": "1d7e5d586f8d0342e99bc9b631a38925264a11d823aed0877aca78bf7964466a",
+    "/root/autodl-tmp/WFCLLM-worktrees/dynamic-semantic-v3/data/experiments/watermark_v3_dynamic_semantic_20260714/pilot30_finalrepair/r3_replay.jsonl": "500243d0555aaadefada04c14a4ded1f5428f79f37bfa1855576e14ca1b09f55",
+    "/root/autodl-tmp/WFCLLM-worktrees/dynamic-semantic-v3/data/experiments/watermark_v3_dynamic_semantic_20260714/pilot30_finalrepair/current_r3.jsonl": "a6f160b30a3b6504aba46a95b4d80f3f52a63c53e05e95bd9e097e096e105c74",
+    "/root/autodl-tmp/WFCLLM-worktrees/dynamic-semantic-v3/data/experiments/watermark_v3_dynamic_semantic_20260714/pilot30_finalrepair/v3_wrong_key_r3.jsonl": "a323fd04d0f29bca50884043669bfe2cbf098cc58abf9d0a0dfc3280c5815947",
+    "/root/autodl-tmp/WFCLLM-worktrees/dynamic-semantic-v3/data/experiments/watermark_v3_dynamic_semantic_20260714/pilot30_finalrepair/v3_exec.jsonl": "6f773af5a27c85577090a80404ae96548ce6c2e412849a77fb2be0f6787e2953",
+    "/root/autodl-tmp/WFCLLM-worktrees/dynamic-semantic-v3/data/experiments/watermark_v3_dynamic_semantic_20260714/pilot30/current_exec.jsonl": "231a0ef23a83a7886b681ec67775b60ae2c43bdea73b7a201d6be5904b9ac171",
+    "/root/autodl-tmp/WFCLLM-worktrees/dynamic-semantic-v3/data/experiments/watermark_v3_dynamic_semantic_20260714/audit/calibration_primary_r3.jsonl": "3833285e2ce02eb531811beb8c366ad801a3b00f1191e159b65409e278a735fd",
+    "/root/autodl-tmp/WFCLLM-worktrees/dynamic-semantic-v3/data/experiments/watermark_v3_dynamic_semantic_20260714/audit/calibration_wrong_r3.jsonl": "cdb4bee56a96c4f116ec255aac499938fa14045ddd51cfe057090f7c456430a0",
+    "/root/autodl-tmp/WFCLLM-worktrees/dynamic-semantic-v3/data/experiments/watermark_v3_dynamic_semantic_20260714/public/whitening.json": "37ada6e60926f90f0e80b350a5037a5cac277792fd7425c7197ab45bdab30703",
+    "/root/autodl-tmp/WFCLLM-worktrees/dynamic-semantic-v3/data/experiments/watermark_v3_dynamic_semantic_20260714/public/calibration.json": "4b9783756876126c555e9e6a0da7644f75983aaf15147c3d479acfc0c037efb8",
+    "/root/autodl-tmp/WFCLLM/data/experiments/watermark_v2_retry20_20260713/pilot/v2_r20/retry_ledger.jsonl": "ee0fde132edb83afbc6a131b60eac575799deda1f97cddcd9afacfd6d9217ebb"
+  },
+  "statistical_note": "Percentile paired/task bootstrap, 20,000 resamples; single frozen seed; descriptive pilot inference only."
+}
