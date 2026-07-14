@@ -1,0 +1,60 @@
+{
+  "artifact_type": "wfcllm_v4_gpu_profile",
+  "schema_version": "wfcllm-v4-gpu-profile/v1",
+  "status": "pass",
+  "formal_runtime": {
+    "device": "cpu",
+    "encoder_used": false,
+    "neural_auxiliary_used": false,
+    "gpu_present": "NVIDIA GeForce RTX 5090",
+    "peak_allocated_mib": 0.0
+  },
+  "scope": {
+    "cold_processes": 3,
+    "task_count_per_process": 8,
+    "retry": 20,
+    "candidate_count_per_process": 160,
+    "metric": "dynamic selection plus exactly one selected-final replay",
+    "saved_pool_replay": true,
+    "candidate_generation_timed": false
+  },
+  "timing_seconds": {
+    "initialization_and_ledger_load_mean": 0.07199334725737572,
+    "warmup_mean": 0.0005615311674773693,
+    "dynamic_selection_mean_per_task": 0.03099600183001409,
+    "selected_final_replay_mean_per_task": 0.0016959731583483517,
+    "semantic_total_mean_per_task": 0.03269197498836244
+  },
+  "gates": {
+    "semantic_seconds_per_task_max": 0.1409884,
+    "semantic_seconds_pass": true,
+    "complete_final_baseline_seconds_per_task": 0.201412,
+    "cost_reduction_fraction": 0.8376860614642502,
+    "cost_reduction_minimum": 0.3,
+    "cost_reduction_pass": true,
+    "peak_allocated_mib_max": 32607,
+    "peak_allocated_mib_pass": true,
+    "selected_final_replay_count_per_process": 8,
+    "eos_all_candidate_neural_rescore_count": 0
+  },
+  "cold_runs": [
+    {
+      "id": "cold0",
+      "raw_artifact_sha256": "82e9e8b86ec924cc69ec67290c7bab7f28fc03cae9ea1fdd19b26ed648c02cc8",
+      "semantic_seconds_per_task": 0.031208073836751282
+    },
+    {
+      "id": "cold1",
+      "raw_artifact_sha256": "329425cff65d29b16fc888f397cc985352f06a460fb1c45c787a2b897227c725",
+      "semantic_seconds_per_task": 0.03278707532444969
+    },
+    {
+      "id": "cold2",
+      "raw_artifact_sha256": "92a927a2aa4bae80edaf97f2d578ac54e2b7ce4da805a21fed36c53ad0fd338f",
+      "semantic_seconds_per_task": 0.034080775803886354
+    }
+  ],
+  "exact_identity_sha256": "a6f89db32ad87d86e97258a5aa304e4bd19f38ff082295de6c47fd70670c560f",
+  "secret_metadata_included": false,
+  "heldout_accessed": false
+}
