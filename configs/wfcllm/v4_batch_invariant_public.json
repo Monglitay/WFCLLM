@@ -65,9 +65,12 @@
   },
   "decision": {
     "calibration_artifact": "data/experiments/watermark_v4_batch_invariant_20260714/public/calibration.json",
+    "calibration_reference_domain": "v4-public/calibration-null-reference",
+    "calibration_reference_is_private": false,
     "conservative_ties": "greater-than-or-equal",
     "empirical_p_value": "(1 + count(calibration_score >= observed_score)) / 231",
     "eligible_requires_minimum_independent_units": true,
+    "primary_private_key_used_for_fitting": false,
     "target_fpr": 0.05
   },
   "detector": {

@@ -32,11 +32,14 @@
   "branch": "codex/watermark-mechanism-v4-batch-invariant-semantic",
   "calibration": {
     "calibration_only_fitting": true,
+    "calibration_reference_domain": "v4-public/calibration-null-reference",
+    "calibration_reference_is_public_and_key_independent": true,
     "conservative_tie_policy": "count calibration scores greater than or equal to observed",
     "decision": "eligible and empirical_p_value <= 0.05",
     "empirical_p_value": "(1 + count(calibration_score >= observed_score)) / 231",
     "heldout_path_forbidden_before_pilot_pass": true,
     "minimum_independent_units": 3,
+    "primary_private_key_used_for_fitting": false,
     "target_fpr": 0.05,
     "threshold_method": "calibration empirical survival p-value; no held-out adjustment",
     "wrong_key_control": "domain-separated derivation from primary V4 key"
@@ -282,7 +285,7 @@
     "v3_debug_or_pilot_overlap": 0
   },
   "public_config": "configs/wfcllm/v4_batch_invariant_public.json",
-  "public_config_sha256_at_freeze": "423a821ee20e0889ceff0e88ba23d18dddbd6d662b7c16c23d3f34c5948bbf42",
+  "public_config_sha256_at_freeze": "65556318950a6ba1ffe377516f629d8d91480331d36445df88a83e77f9b8e25c",
   "rejected_candidates": {
     "A": "exact but measured 0.3108760490 seconds/task, above cost gate",
     "B": "18/22932 erasure-mask mismatch rows and empirical non-certified bound",
@@ -345,6 +348,7 @@
     "key_path": "gitignored V4 private directory",
     "new_independent_key": true,
     "public_artifacts_forbid_key_fingerprint_or_sha256": true,
+    "public_calibration_forbids_primary_key_dependent_score_vector": true,
     "raw_key_leak_count_required": 0,
     "v3_key_access_forbidden": true
   },
