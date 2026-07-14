@@ -1,0 +1,175 @@
+{
+  "arms": {
+    "current": {
+      "eligible_count": 25,
+      "mean_score": 0.00993882275132275,
+      "pass_count": 18,
+      "pass_rate": 0.6,
+      "tpr": 0.0,
+      "tpr_count": 0
+    },
+    "v4": {
+      "eligible_count": 28,
+      "mean_erasure_rate": 0.06369047619047619,
+      "mean_independent_units": 5.866666666666666,
+      "mean_score": 0.07040757275132274,
+      "pass_count": 15,
+      "pass_rate": 0.5,
+      "tpr": 0.0,
+      "tpr_count": 0
+    },
+    "wrong_key": {
+      "current_positive_count": 0,
+      "current_tpr": 0.0,
+      "paired_mean_score_shift": -0.02275132275132275,
+      "v4_positive_count": 1,
+      "v4_tpr": 0.03333333333333333
+    }
+  },
+  "artifact_type": "wfcllm_v4_pilot_audit",
+  "calibration_control": {
+    "heldout_accessed": false,
+    "primary_positive_count": 2,
+    "primary_positive_rate": 0.008695652173913044,
+    "wrong_positive_count": 1,
+    "wrong_positive_rate": 0.004347826086956522
+  },
+  "failed_gates": [
+    "pass_delta",
+    "tpr_strict_improvement"
+  ],
+  "full_run_triggered": false,
+  "gates": {
+    "batch_size_composition_order_replay": true,
+    "cache_hit_miss_replay": true,
+    "calibration_negative_rate": true,
+    "candidate_pool_hash_match_rate": true,
+    "cost_reduction": true,
+    "detector_final_code_only": true,
+    "eos_complete_candidate_neural_rescore_zero": true,
+    "generation_to_r3_exact_replay": true,
+    "heldout_not_accessed": true,
+    "key_did_not_influence_generation": true,
+    "pass_count": true,
+    "pass_delta": false,
+    "peak_vram": true,
+    "pilot_ids_frozen": true,
+    "positive_shift_not_single_outlier": true,
+    "repair_budget": true,
+    "semantic_cost": true,
+    "three_cold_process_replay": true,
+    "tpr_strict_improvement": false,
+    "wrong_key_no_equal_positive_shift": true
+  },
+  "heldout_accessed": false,
+  "ids": [
+    "HumanEval/107",
+    "HumanEval/83",
+    "HumanEval/146",
+    "HumanEval/136",
+    "HumanEval/141",
+    "HumanEval/91",
+    "HumanEval/10",
+    "HumanEval/60",
+    "HumanEval/134",
+    "HumanEval/11",
+    "HumanEval/138",
+    "HumanEval/58",
+    "HumanEval/5",
+    "HumanEval/4",
+    "HumanEval/44",
+    "HumanEval/151",
+    "HumanEval/160",
+    "HumanEval/108",
+    "HumanEval/45",
+    "HumanEval/153",
+    "HumanEval/118",
+    "HumanEval/86",
+    "HumanEval/98",
+    "HumanEval/84",
+    "HumanEval/7",
+    "HumanEval/15",
+    "HumanEval/81",
+    "HumanEval/155",
+    "HumanEval/68",
+    "HumanEval/106"
+  ],
+  "inputs": {
+    "calibration_control": {
+      "path": "data/experiments/watermark_v4_batch_invariant_20260714/audit/calibration_key_control.json",
+      "sha256": "f9de34b554327c1a7ef2cf257e7be0d539a48905024f8d17836534ca300d5baa"
+    },
+    "current_execution": {
+      "path": "data/experiments/watermark_v4_batch_invariant_20260714/pilot/prepared/current_execution.jsonl",
+      "sha256": "544fe181089916854ffe35c8a9f34565ee5dba2a69a04e5ea3b370e946a7ebbc"
+    },
+    "prepared_audit": {
+      "path": "data/experiments/watermark_v4_batch_invariant_20260714/pilot/prepared/prepared_audit.json",
+      "sha256": "624917035bf2179b188bdaf3811e316bbe09d9b3b953885b921a827d15cc2638"
+    },
+    "v4_execution": {
+      "path": "data/experiments/watermark_v4_batch_invariant_20260714/pilot/prepared/v4_execution.jsonl",
+      "sha256": "0565ad0b609a277bfe8a72f8effaad01ecb56175fc55ef7f9ac884ee8967a135"
+    }
+  },
+  "paired": {
+    "detection_mcnemar": {
+      "both": 0,
+      "current_only": 0,
+      "exact_two_sided_p": 1.0,
+      "neither": 30,
+      "v4_only": 0
+    },
+    "largest_positive_delta_share": 0.14482177939938257,
+    "mean_score_delta": 0.06046874999999999,
+    "pass_delta": -3,
+    "pass_delta_bootstrap_95": [
+      -0.23333333333333334,
+      0.03333333333333333
+    ],
+    "pass_mcnemar": {
+      "both": 14,
+      "current_only": 4,
+      "exact_two_sided_p": 0.375,
+      "neither": 11,
+      "v4_only": 1
+    },
+    "score_delta_bootstrap_95": [
+      0.035838190310846556,
+      0.08727298280423278
+    ],
+    "score_exact_sign_test": {
+      "exact_two_sided_p": 1.0967254638671875e-05,
+      "negative": 1,
+      "positive": 21,
+      "ties": 8
+    },
+    "tpr_delta": 0.0,
+    "tpr_delta_bootstrap_95": [
+      0.0,
+      0.0
+    ]
+  },
+  "performance": {
+    "cold_semantic_seconds_per_task": [
+      0.022675944725051522,
+      0.022438751207664608,
+      0.022864989330992104
+    ],
+    "cost_reduction_vs_complete_final": 0.8874948111934604,
+    "mean_semantic_seconds_per_task": 0.022659895087902743,
+    "peak_allocated_mib": 0.0
+  },
+  "repair": {
+    "classification": "code did not implement preregistered all-ineligible fallback",
+    "maximum": 1,
+    "mechanism_changed": false,
+    "used": 1
+  },
+  "retry": 20,
+  "robustness_triggered": false,
+  "sample_count": 30,
+  "schema_version": "wfcllm-v4-pilot-audit/v1",
+  "secret_metadata_included": false,
+  "status": "fail"
+}
