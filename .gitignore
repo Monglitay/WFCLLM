@@ -43,3 +43,7 @@ code-watermark-main/
 
 # Large data files
 data/token_channel/
+
+# Dynamic Semantic V3 raw/private experiment state; public manifests and reports
+# remain tracked outside this directory.
+data/experiments/watermark_v3_dynamic_semantic_20260714/

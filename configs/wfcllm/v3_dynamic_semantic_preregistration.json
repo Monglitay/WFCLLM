@@ -1,0 +1,271 @@
+{
+  "artifact_type": "wfcllm_dynamic_semantic_v3_preregistration",
+  "schema_version": "wfcllm-dynamic-semantic-code-watermark/v3",
+  "frozen_at": "2026-07-14T19:10:00+08:00",
+  "baseline_git_head": "eac59bfbdc80a91bd5eb5d1332dcace75442d9ad",
+  "branch": "codex/watermark-mechanism-v3-dynamic-semantic-reset",
+  "seed": 20260713,
+  "single_seed_only": true,
+  "formal_arm": "Streaming-SharedPool-V3-R20",
+  "rejected_as_formal_arms": [
+    "complete-final-code semantic retry scoring",
+    "historical mutable proxy-window scoring",
+    "syntax codebook selection",
+    "block rollback semantic search",
+    "semantic beam search",
+    "token-level semantic shift with a different encoder"
+  ],
+  "candidate_pool_fairness": {
+    "baseline_arm": "Current-R20",
+    "shared_raw_trajectories": true,
+    "task_prompt_model_decoding_attempt_seeds_retry_budget_identical": true,
+    "attempt_seed_rule": "seed + attempt_index * 101",
+    "required_audit": "sha256 of every ordered raw attempt final_code must match between arms",
+    "secret_may_not_affect": [
+      "sampling seed",
+      "token logits",
+      "stopping",
+      "candidate validity",
+      "quality tier",
+      "repair"
+    ]
+  },
+  "generation": {
+    "dataset": "humaneval",
+    "model_path": "data/models/deepseek-coder-1.3b-instruct",
+    "max_new_tokens": 256,
+    "temperature": 0.25,
+    "top_p": 0.95,
+    "top_k": 0,
+    "retry_repetition_penalty": 4.0,
+    "torch_dtype": "bf16",
+    "load_in_4bit": false,
+    "prompt_mode": "completion",
+    "retry": 20,
+    "evidence_retry_seed_stride": 101,
+    "quality_gate": "existing Current-R20 static quality gate at baseline commit"
+  },
+  "semantic_encoder": {
+    "base_model_path": "data/models/codet5-base",
+    "checkpoint_path": "data/models/encoder/best_model.pt",
+    "checkpoint_sha256": "9da80dfdbb3f8e682298e588e822f15967e460c9dfd640a243aad8ed1ba51d25",
+    "use_lora": true,
+    "official_precision": "float32",
+    "trainable": false,
+    "max_context_tokens": 256,
+    "max_current_unit_tokens": 128,
+    "truncation": false,
+    "embedding_normalization": "frozen project semantic encoder normalized representation",
+    "leakage_scope": "checkpoint provenance includes project HumanEval/MBPP-derived training material; only within-benchmark mechanism validation may be claimed"
+  },
+  "canonical_context": {
+    "schema_version": "wfcllm-dynamic-semantic-context/v3",
+    "language": "python",
+    "parser": "stdlib ast",
+    "canonicalizer": "ast.unparse with LF and UTF-8",
+    "eligible_unit": "complete direct function-body statement or bounded supported compound-statement region",
+    "role_fields": ["node_type", "parent_node_type", "structural_field_name"],
+    "unit_id": "sha256(schema_version || role || canonical_current)",
+    "global_ordinal_keying": false,
+    "context_fields": ["domain_header", "public_role", "canonical_previous_or_BOS", "canonical_current"],
+    "duplicate_unit_id_policy": "erase every occurrence in that code",
+    "parse_failure_policy": "code-level erasure",
+    "oversize_policy": "unit erasure; never truncate"
+  },
+  "dynamic_scheduler": {
+    "source": "generation-time public incremental unit-stability events with rollback-aware live-unit tracking",
+    "target_batch_contexts": 32,
+    "max_batch_contexts": 128,
+    "max_queue_completed_attempts": 4,
+    "flush_conditions": ["queue_count >= 32", "four attempts completed since last flush", "final residual"],
+    "queue_order": ["attempt_index", "closure_index"],
+    "end_of_sequence_all_candidate_rescore": false,
+    "selected_final_replays": 1,
+    "accumulator": "exact sum of signed Hamming bit matches and independent unit count"
+  },
+  "semantic_channel": {
+    "whitening_dimensions": 64,
+    "whitening_fit_data": "frozen calibration negatives only",
+    "l2_normalize": true,
+    "quantization_scale": 4096,
+    "projection_rows": 7,
+    "projection_values": [-1, 1],
+    "projection_dot_product": "signed integer",
+    "target_data_bits": 4,
+    "ecc": "Hamming(7,4)",
+    "key_derivation": "HMAC-SHA256 with separate domains for projection, unit target, wrong-key control, and private audit ID",
+    "key_file_mode": "0600",
+    "key_on_cli": false,
+    "public_key_fingerprint": false,
+    "unit_score": "(2 * matching_bits - 7) / 7",
+    "code_score": "untrimmed mean unit_score over unique recoverable unit IDs",
+    "minimum_independent_units": 3
+  },
+  "selection": {
+    "order": [
+      "highest existing static quality tier",
+      "highest accumulated V3 statistic",
+      "most independent recoverable units",
+      "fewest public erasures/fallbacks",
+      "lowest attempt index"
+    ],
+    "all_ineligible_fallback": "existing best static quality candidate; mark no_embedding"
+  },
+  "detector": {
+    "mode": "R3-final-code-only",
+    "inputs": ["final_code", "public_config", "private_key_file"],
+    "forbidden_inputs": [
+      "prompt",
+      "task id",
+      "candidate pool",
+      "generation trace",
+      "accepted-event ledger",
+      "token log probabilities",
+      "generation-time unit metadata"
+    ],
+    "exact_fields": [
+      "sorted unit_ids",
+      "context_sha256",
+      "quantized_embeddings",
+      "signature_bits",
+      "target_bits",
+      "match_counts",
+      "aggregate numerator",
+      "aggregate denominator",
+      "decision"
+    ],
+    "float_diagnostics": {
+      "cosine_similarity_min": 0.99999,
+      "max_absolute_difference_max": 0.0001
+    },
+    "replay_rate_required": 1.0
+  },
+  "negative_split": {
+    "manifest": "configs/wfcllm/v3_dynamic_semantic_split_manifest.json",
+    "manifest_sha256_at_freeze": "669c03b613aef191d417d795f6346ad5a41f12c804e33a45ed9bec1cbc3695b2",
+    "source": "MBPP test, 500 canonical solutions",
+    "algorithm": "sort by sha256(wfcllm-dynamic-semantic-v3-negative-split + NUL + 20260713 + NUL + canonical id)",
+    "calibration_count": 250,
+    "calibration_jsonl_sha256": "ca3c970e0213cde6ec879a7dce0d7f98ec0b76e37b4bb638c5a2d7ec1dfe825f",
+    "heldout_count": 250,
+    "heldout_jsonl_sha256": "c7207c198c83efb6de40eed8462b5339fd9cf317dcd5cf515b5972a50b2351fc",
+    "heldout_policy": "open exactly once after calibration and all pilot gates are frozen; no outcome may tune the method"
+  },
+  "calibration": {
+    "target_fpr": 0.05,
+    "p_value": "(1 + count(calibration_score >= observed_score)) / 251",
+    "decision": "p_value <= 0.05 and independent_units >= 3",
+    "tie_policy": "greater-than-or-equal count; conservative",
+    "wrong_key": "HMAC(primary_private_key, domain-separated wrong-key-control label)",
+    "wrong_key_expected": "no positive shift and held-out FPR <= 0.05"
+  },
+  "debug": {
+    "dataset": "humaneval",
+    "ids": [
+      "HumanEval/93",
+      "HumanEval/14",
+      "HumanEval/161",
+      "HumanEval/70",
+      "HumanEval/66",
+      "HumanEval/148",
+      "HumanEval/62",
+      "HumanEval/74"
+    ],
+    "status": "development only; never a confirmatory outcome"
+  },
+  "pilot": {
+    "dataset": "humaneval",
+    "count": 30,
+    "retry": 20,
+    "ids": [
+      "HumanEval/124",
+      "HumanEval/111",
+      "HumanEval/87",
+      "HumanEval/154",
+      "HumanEval/65",
+      "HumanEval/79",
+      "HumanEval/56",
+      "HumanEval/54",
+      "HumanEval/75",
+      "HumanEval/122",
+      "HumanEval/55",
+      "HumanEval/13",
+      "HumanEval/145",
+      "HumanEval/34",
+      "HumanEval/0",
+      "HumanEval/100",
+      "HumanEval/48",
+      "HumanEval/89",
+      "HumanEval/52",
+      "HumanEval/32",
+      "HumanEval/92",
+      "HumanEval/50",
+      "HumanEval/71",
+      "HumanEval/39",
+      "HumanEval/123",
+      "HumanEval/147",
+      "HumanEval/46",
+      "HumanEval/22",
+      "HumanEval/130",
+      "HumanEval/152"
+    ],
+    "gates": {
+      "candidate_pool_hash_match_rate": 1.0,
+      "r3_replay_rate": 1.0,
+      "eos_complete_candidate_semantic_rescore_count": 0,
+      "semantic_seconds_per_task_max": 0.1409884,
+      "profile_baseline_semantic_seconds_per_task": 0.201412,
+      "required_cost_reduction_fraction": 0.3,
+      "peak_vram_mib_max": 32607,
+      "pass_count_min": 15,
+      "pass_delta_min_vs_current": -1,
+      "v3_tpr_strictly_greater_than_current": true,
+      "positive_shift_not_single_outlier_only": true,
+      "pilot_negative_fpr_max": 0.05,
+      "raw_key_leak_count": 0,
+      "secret_influence_on_raw_generation": false
+    },
+    "allowed_targeted_repairs": 1
+  },
+  "full": {
+    "allowed_only_if_all_pilot_gates_pass": true,
+    "dataset": "humaneval",
+    "count": 164,
+    "retry": 20,
+    "gates": {
+      "pass_count_min": 82,
+      "heldout_fpr_max": 0.05,
+      "v3_tpr_strictly_greater_than_current": true,
+      "candidate_pool_hash_match_rate": 1.0,
+      "r3_replay_rate": 1.0,
+      "paired_statistics_required": true,
+      "integrity_security_audits_required": true
+    }
+  },
+  "robustness": {
+    "positive_scope": "pilot positives only after clean pilot gates",
+    "attacks": [
+      "format normalization",
+      "identifier rename",
+      "dead-code insertion",
+      "independent-statement deletion",
+      "independent-statement reordering"
+    ],
+    "report": "measured statistic/TPR degradation plus independent-unit theoretical upper bounds"
+  },
+  "cost_environment": {
+    "server_gpu": "NVIDIA GeForce RTX 5090",
+    "gpu_memory_mib": 32607,
+    "pytorch": "2.11.0+cu130",
+    "transformers": "4.46.3",
+    "python": "3.11.15",
+    "offline": true
+  },
+  "repair_policy": {
+    "maximum": 1,
+    "allowed": "restore preregistered behavior for a demonstrated implementation defect",
+    "forbidden": "change mechanism, context, encoder, precision, statistic, split, threshold, retry budget, target FPR, or escalation gate based on outcomes"
+  },
+  "failure_policy": "If any hard gate fails after the allowed implementation repair, stop escalation and publish a complete negative result with raw evidence and root-cause audit.",
+  "reporting_scope": "single-seed frozen within-benchmark mechanism validation; no cross-seed, cross-model, cross-language, or natural-code generalization claim"
+}
