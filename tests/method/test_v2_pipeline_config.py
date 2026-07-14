@@ -97,3 +97,17 @@ def test_v1_rejects_v2_retry_ledger_output(tmp_path: Path) -> None:
             ),
             retry_attempt_ledger_output=str(tmp_path / "ledger.jsonl"),
         )
+
+
+def test_v3_pipeline_config_requires_retry_twenty(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path,
+        method_version="v3",
+        evidence_retry_attempts=20,
+        retry_attempt_ledger_output=str(tmp_path / "v3-ledger.jsonl"),
+    )
+
+    assert config.method_version == "v3"
+
+    with pytest.raises(ValueError, match="exactly 20"):
+        _config(tmp_path, method_version="v3", evidence_retry_attempts=19)

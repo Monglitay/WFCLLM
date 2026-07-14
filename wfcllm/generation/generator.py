@@ -338,6 +338,7 @@ class SawrGenerator:
         window_retry_budget: int | None = None,
         compound_retry_budget: int | None = None,
         seed_override: int | None = None,
+        prefix_observer: Any | None = None,
     ) -> SawrGenerateResult:
         active_seed = self.config.seed if seed_override is None else seed_override
         torch.manual_seed(active_seed)
@@ -374,6 +375,11 @@ class SawrGenerator:
             if not step.token_text:
                 continue
 
+            _notify_prefix_observer(
+                prefix_observer,
+                _compose_final_code(prompt, context.generated_text, self.config.stop_sequences),
+            )
+
             previous_text = context.generated_text[: -len(step.token_text)]
             event_text, stop_reached = _event_text_before_stop(
                 previous_text,
@@ -407,6 +413,14 @@ class SawrGenerator:
                 break
             if event_result == "rolled_back":
                 global_rollback_count += 1
+                _notify_prefix_observer(
+                    prefix_observer,
+                    _compose_final_code(
+                        prompt,
+                        context.generated_text,
+                        self.config.stop_sequences,
+                    ),
+                )
                 continue
             if stop_reached:
                 break
@@ -425,8 +439,10 @@ class SawrGenerator:
 
         generated = strip_repeated_prompt_function(prompt, context.generated_text)
         generated = truncate_at_stop_sequences(generated, self.config.stop_sequences)
+        final_code = prompt + generated
+        _flush_prefix_observer(prefix_observer, final_code)
         return SawrGenerateResult(
-            final_code=prompt + generated,
+            final_code=final_code,
             accepted_hit_count=state_machine.accepted_hit_count,
             closed_without_hit_count=state_machine.closed_without_hit_count,
             fallback_count=state_machine.fallback_count,
@@ -497,6 +513,28 @@ class SawrGenerator:
                     state_machine.rollback(snapshot)
                 return "rolled_back"
         return None
+
+
+def _compose_final_code(
+    prompt: str,
+    generated_text: str,
+    stop_sequences: tuple[str, ...],
+) -> str:
+    generated = strip_repeated_prompt_function(prompt, generated_text)
+    generated = truncate_at_stop_sequences(generated, stop_sequences)
+    return prompt + generated
+
+
+def _notify_prefix_observer(observer: Any | None, final_code_prefix: str) -> None:
+    if observer is None:
+        return
+    observer.observe_prefix(final_code_prefix)
+
+
+def _flush_prefix_observer(observer: Any | None, final_code: str) -> None:
+    if observer is None:
+        return
+    observer.flush(final_code)
 
 
 def build_chat_prompt(prompt: str, tokenizer: Any) -> str:

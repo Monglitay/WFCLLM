@@ -1,0 +1,28 @@
+{
+  "schema_version": "wfcllm-dynamic-semantic-code-watermark/v3",
+  "context": {
+    "schema_version": "wfcllm-dynamic-semantic-context/v3",
+    "max_context_tokens": 256,
+    "max_current_unit_tokens": 128,
+    "global_ordinal_keying": false
+  },
+  "encoder": {
+    "model_path": "data/models/codet5-base",
+    "checkpoint_path": "data/models/encoder/best_model.pt",
+    "checkpoint_sha256": "9da80dfdbb3f8e682298e588e822f15967e460c9dfd640a243aad8ed1ba51d25",
+    "official_precision": "float32",
+    "embedding_dimensions": 128
+  },
+  "channel": {
+    "whitening_dimensions": 64,
+    "quantization_scale": 4096,
+    "projection_rows": 7,
+    "target_data_bits": 4,
+    "minimum_independent_units": 3
+  },
+  "scheduler": {
+    "target_batch_contexts": 32,
+    "max_batch_contexts": 128,
+    "max_queue_completed_attempts": 4
+  }
+}

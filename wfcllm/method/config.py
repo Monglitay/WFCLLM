@@ -207,10 +207,12 @@ class SawrPipelineConfig:
             raise ValueError("evidence_retry_attempts must be positive")
         if self.evidence_retry_seed_stride <= 0:
             raise ValueError("evidence_retry_seed_stride must be positive")
-        if self.method_version not in {"v1", "v2"}:
-            raise ValueError("method_version must be 'v1' or 'v2'")
-        if self.method_version == "v2" and self.evidence_retry_attempts != 20:
-            raise ValueError("v2 evidence_retry_attempts must be exactly 20")
+        if self.method_version not in {"v1", "v2", "v3"}:
+            raise ValueError("method_version must be 'v1', 'v2', or 'v3'")
+        if self.method_version in {"v2", "v3"} and self.evidence_retry_attempts != 20:
+            raise ValueError(
+                f"{self.method_version} evidence_retry_attempts must be exactly 20"
+            )
         if self.sample_ids is not None:
             if isinstance(self.sample_ids, str) or not isinstance(
                 self.sample_ids,
@@ -238,8 +240,10 @@ class SawrPipelineConfig:
                 or not self.retry_attempt_ledger_output
             ):
                 raise ValueError("retry_attempt_ledger_output must be a non-empty string")
-            if self.method_version != "v2":
-                raise ValueError("retry_attempt_ledger_output is only valid for v2")
+            if self.method_version not in {"v2", "v3"}:
+                raise ValueError(
+                    "retry_attempt_ledger_output is only valid for v2 or v3"
+                )
         if self.resume is not None and self.resume != "latest":
             raise ValueError("resume must be None or 'latest'")
         if self.candidate_sidecar_output is not None and not isinstance(

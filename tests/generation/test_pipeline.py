@@ -213,6 +213,66 @@ class CapturingRetrySelector:
         )()
 
 
+class _Observer:
+    def __init__(self) -> None:
+        self.prefixes = []
+        self.final = None
+
+    def observe_prefix(self, prefix: str) -> None:
+        self.prefixes.append(prefix)
+
+    def flush(self, final_code: str) -> None:
+        self.final = final_code
+
+
+class CapturingDynamicController:
+    def __init__(self) -> None:
+        self.observers = {}
+        self.completed = []
+        self.selection_attempts = ()
+
+    def observer_for_attempt(self, attempt_index: int):
+        observer = _Observer()
+        self.observers[attempt_index] = observer
+        return observer
+
+    def attempt_completed(self, attempt_index: int) -> None:
+        self.completed.append(attempt_index)
+
+    def select(self, *, sample_id, prompt, attempts):
+        self.selection_attempts = attempts
+        selected = attempts[-1]
+        return type(
+            "Selection",
+            (),
+            {
+                "result": selected.result,
+                "attempt_index": selected.attempt_index,
+                "ledger_rows": tuple(
+                    {
+                        "artifact_type": "wfcllm_dynamic_semantic_v3_attempt",
+                        "schema_version": "wfcllm-dynamic-semantic-attempt/v3",
+                        "id": sample_id,
+                        "audit_only": True,
+                        "detector_input_allowed": False,
+                        "attempt_index": attempt.attempt_index,
+                        "selected": attempt is selected,
+                    }
+                    for attempt in attempts
+                ),
+            },
+        )()
+
+
+class ObserverAwareTwentyAttemptGenerator(TwentyAttemptGenerator):
+    def generate(self, **kwargs) -> WFCLLMGenerateResult:
+        result = super().generate(**kwargs)
+        observer = kwargs["prefix_observer"]
+        observer.observe_prefix(result.final_code)
+        observer.flush(result.final_code)
+        return result
+
+
 def _config(tmp_path: Path, **overrides: object) -> WFCLLMPipelineConfig:
     model_path = tmp_path / "model"
     model_path.mkdir(exist_ok=True)
@@ -332,6 +392,51 @@ def test_pipeline_v2_selector_receives_exactly_twenty_attempts_and_writes_ledger
     assert all(row["audit_only"] is True for row in ledger_rows)
     assert all(row["detector_input_allowed"] is False for row in ledger_rows)
     assert set(_read_jsonl(final_path)[0]) == {"id", "dataset", "prompt", "final_code"}
+
+
+def test_pipeline_v3_shares_twenty_raw_attempts_with_read_only_observers(
+    tmp_path: Path,
+) -> None:
+    prompts = [{"id": "HumanEval/0", "prompt": "def foo():\n"}]
+    generator = ObserverAwareTwentyAttemptGenerator()
+    controller = CapturingDynamicController()
+    ledger_path = tmp_path / "run" / "v3-ledger.jsonl"
+    pipeline = WFCLLMGenerationPipeline(
+        generator=generator,
+        config=_config(
+            tmp_path,
+            method_version="v3",
+            evidence_retry_attempts=20,
+            evidence_retry_seed_stride=101,
+            retry_attempt_ledger_output=str(ledger_path),
+        ),
+        dynamic_semantic_controller=controller,
+    )
+
+    with patch("wfcllm.generation.pipeline.load_prompts", return_value=prompts):
+        final_path = Path(pipeline.run())
+
+    assert generator.calls == [index * 101 for index in range(20)]
+    assert controller.completed == list(range(20))
+    assert len(controller.selection_attempts) == 20
+    assert [attempt.result.final_code for attempt in controller.selection_attempts] == [
+        "def foo():\n" + f"    return {index}\n" for index in range(20)
+    ]
+    assert all(controller.observers[index].final is not None for index in range(20))
+    assert _read_jsonl(final_path)[0]["final_code"].endswith("return 19\n")
+    assert len(_read_jsonl(ledger_path)) == 20
+
+
+def test_pipeline_rejects_v3_without_dynamic_controller(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="dynamic_semantic_controller"):
+        WFCLLMGenerationPipeline(
+            generator=TwentyAttemptGenerator(),
+            config=_config(
+                tmp_path,
+                method_version="v3",
+                evidence_retry_attempts=20,
+            ),
+        )
 
 
 def test_pipeline_filters_and_orders_explicit_sample_ids(tmp_path: Path) -> None:

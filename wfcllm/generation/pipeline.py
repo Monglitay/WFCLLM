@@ -92,14 +92,28 @@ class WFCLLMGenerationPipeline:
         generator: WFCLLMGenerator,
         config: WFCLLMPipelineConfig,
         retry_selector: Any | None = None,
+        dynamic_semantic_controller: Any | None = None,
     ) -> None:
         self._generator = generator
         self._config = config
         self._retry_selector = retry_selector
+        self._dynamic_semantic_controller = dynamic_semantic_controller
         if self._config.method_version == "v2" and retry_selector is None:
             raise ValueError("v2 generation requires a retry_selector")
-        if self._config.method_version == "v1" and retry_selector is not None:
+        if self._config.method_version != "v2" and retry_selector is not None:
             raise ValueError("retry_selector is only valid for v2 generation")
+        if (
+            self._config.method_version == "v3"
+            and dynamic_semantic_controller is None
+        ):
+            raise ValueError("v3 generation requires dynamic_semantic_controller")
+        if (
+            self._config.method_version != "v3"
+            and dynamic_semantic_controller is not None
+        ):
+            raise ValueError(
+                "dynamic_semantic_controller is only valid for v3 generation"
+            )
 
     def run(self) -> str:
         out_dir = Path(self._config.output_dir)
@@ -236,8 +250,15 @@ class WFCLLMGenerationPipeline:
         retry_attempts: list[RetryAttempt] = []
         for attempt_index in range(attempts):
             active_seed = base_seed + attempt_index * seed_stride
+            attempt_kwargs = dict(generate_kwargs)
+            if self._dynamic_semantic_controller is not None:
+                attempt_kwargs["prefix_observer"] = (
+                    self._dynamic_semantic_controller.observer_for_attempt(
+                        attempt_index
+                    )
+                )
             result = self._generator.generate(
-                **generate_kwargs,
+                **attempt_kwargs,
                 seed_override=active_seed,
             )
             retry_attempts.append(
@@ -247,10 +268,19 @@ class WFCLLMGenerationPipeline:
                     result=result,
                 )
             )
+            if self._dynamic_semantic_controller is not None:
+                self._dynamic_semantic_controller.attempt_completed(attempt_index)
             key = self._evidence_retry_key(result, attempt_index)
             if best_key is None or key > best_key:
                 best_result = result
                 best_key = key
+        if self._dynamic_semantic_controller is not None:
+            selection = self._dynamic_semantic_controller.select(
+                sample_id=str(generate_kwargs["sample_id"]),
+                prompt=str(generate_kwargs["prompt"]),
+                attempts=tuple(retry_attempts),
+            )
+            return selection.result, tuple(selection.ledger_rows)
         if self._retry_selector is not None:
             selection = self._retry_selector.select(
                 sample_id=str(generate_kwargs["sample_id"]),
