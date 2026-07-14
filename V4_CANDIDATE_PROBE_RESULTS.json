@@ -1,0 +1,64 @@
+{
+  "artifact_type": "wfcllm_v4_candidate_probe_summary",
+  "candidate_results": {
+    "A": {
+      "cache_hit_rate": 0.6363636363636364,
+      "cost_gate_pass": false,
+      "cost_gate_seconds_per_task": 0.1409884,
+      "cost_reduction_vs_complete_final": -0.5434832532729947,
+      "generation_to_r3_exact_rate": 1.0,
+      "mean_score_delta": 0.2333333333333333,
+      "mean_semantic_seconds_per_task": 0.3108760490082204,
+      "peak_allocated_mib": 468.75,
+      "positive_delta_tasks": 4,
+      "rejected_reason": "exact but exceeds the cost gate",
+      "shape_schedule_exact_replays": 189,
+      "shape_schedule_total_replays": 189,
+      "status": "rejected"
+    },
+    "B": {
+      "absolute_dot_bound": 30,
+      "bound_is_certified": false,
+      "erased_candidate_bits": 1438,
+      "erased_reference_bits": 1456,
+      "erasure_mask_mismatch_rows": 18,
+      "exact_rows": 22914,
+      "rejected_reason": "erasure masks are not exact and the bound is empirical",
+      "row_count": 22932,
+      "signature_mismatch_rows_outside_union_erasure": 0,
+      "status": "rejected"
+    },
+    "C": {
+      "candidate_count": 100,
+      "candidate_pool_match_rate": 1.0,
+      "cold_process_count": 3,
+      "cold_process_public_summary_exact": true,
+      "eligible_candidate_count_minimum_units_3": 79,
+      "eligible_task_count_minimum_units_3": 4,
+      "largest_positive_delta_share": 0.45112781954887216,
+      "mean_score_delta": 0.05541666666666667,
+      "positive_delta_tasks": 3,
+      "selected_reason": "only candidate satisfying exactness, R3 purity, cost-risk, and coverage requirements",
+      "status": "selected",
+      "task_count": 5,
+      "total_independent_units": 656
+    },
+    "D": {
+      "neural_auxiliary_used": false,
+      "rejected_reason": "no measured benefit over C and adds neural assumptions",
+      "signed_evidence_identical_to_C": true,
+      "status": "rejected"
+    }
+  },
+  "complete_final_baseline_seconds_per_task": 0.201412,
+  "diagnostic_only": true,
+  "formal_pilot_evidence": false,
+  "heldout_accessed": false,
+  "minimum_independent_units_evaluated": 3,
+  "raw_candidate_pool_source_role": "read_only_v3_diagnostic_slice",
+  "retry": 20,
+  "schema_version": "wfcllm-v4-candidate-probe-summary/v1",
+  "secret_metadata_included": false,
+  "selected_candidate": "C",
+  "task_count": 5
+}

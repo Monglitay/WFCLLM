@@ -2,7 +2,7 @@
 
 Date: 2026-07-14
 
-Status: candidate design frozen for Stage B probes; winner not yet selected.
+Status: Stage B probes complete; Candidate C selected for preregistration.
 
 ## Shared inputs and outputs
 
@@ -92,4 +92,30 @@ Probe:
 | Semantic-claim risk | Low | Low | Medium/high | Medium |
 | Added assumptions | Frozen runtime path | Valid bound + stable mask | Canonicalizer semantics | C plus harmless auxiliary |
 
-The winner will be recorded only after runnable probe artifacts are produced. No probe may open V4 held-out data or influence the later frozen negative split.
+## Runnable probe results
+
+The implementation followed five red/green TDD cycles and finished with 20
+targeted tests passing. The raw probe is retained in the ignored V4 experiment
+directory; `V4_CANDIDATE_PROBE_RESULTS.json` is the tracked, secret-free
+summary. The diagnostic slice contained five V3 tasks and 100 ordered raw
+candidates. It is capacity evidence only, not a V4 pilot.
+
+| Candidate | Strict replay | Cost / VRAM | Coverage or erasure | Capacity proxy | Decision |
+|---|---:|---:|---:|---:|---|
+| A | 5/5 selected-final; 189/189 schedule replays | 0.310876 s/task; 468.75 MiB | cache hit 63.64% | 4/5 positive; mean +0.233333 | Reject: cost is 120.50% above the 0.1409884 gate and 54.35% slower than complete-final baseline |
+| B | 22,914/22,932 rows | neural cost inherited | 1,456/160,524 reference bits erased; 18 mask-mismatch rows | not used | Reject: the erasure mask is not exact and the bound is empirical, not certified |
+| C | exact by construction; three cold-process summaries byte-identical | CPU-only; formal profile pending | 79/100 candidates and 4/5 tasks eligible at minimum units=3; 656 units | 3/5 positive; mean +0.055417; largest share 45.11% | Select: only candidate satisfying the joint pre-preregistration exactness, purity, cost-risk, and coverage rule |
+| D | signed evidence identical to C | auxiliary not run | same as C | no incremental benefit measured | Reject: adds a batch-dependent component without evidence of benefit |
+
+The first C implementation counted only top-level statements and yielded
+52/100 eligible candidates and three of five eligible tasks at minimum units
+three. Before preregistration, the already-declared nested-compound requirement
+was implemented as non-overlapping compound-header shells plus recursively
+scored child statements. The revised result is 79/100 candidates, four of five
+tasks, and 656 independent structural atoms. This design iteration is recorded
+because suppressing it would make the coverage result misleading. No negative
+split, threshold, pilot result, or held-out data existed or was consulted.
+
+No probe opened V4 calibration or held-out data. No V3 key or V3 threshold was
+read. Candidate C is frozen only after the separate Stage C split and config
+checks complete.

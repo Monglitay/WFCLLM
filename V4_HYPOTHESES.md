@@ -67,3 +67,25 @@ Expected risk: D adds complexity without improving detection capacity; if so, C 
 ## Decision rule
 
 Prefer the least complex candidate that has 100% strict replay, pure final-code-only R3 input, sufficient coverage, no forbidden generation influence, and a measured cost with credible headroom below the formal gate. Candidate B cannot win while its bound remains empirical. Candidate D cannot win without measured benefit over C.
+
+## Probe disposition
+
+- H-A exactness was supported, but its joint hypothesis was falsified by a
+  measured 0.310876 seconds/task, above the 0.1409884 hard gate and slower than
+  the 0.201412 complete-final baseline. Shape isolation cannot be selected.
+- H-B was falsified under its frozen empirical bound: 18 of 22,932 raw rows
+  changed the erasure mask. Signature signs outside the union of erasures were
+  stable, but stable signs do not make an inconsistent mask exact or certified.
+- H-C was supported for the bounded structural/data-flow scope. The final
+  nested, non-overlapping extractor preserved all 100 raw candidates, provided
+  79 eligible candidates at minimum units three, produced a positive capacity
+  proxy in three of five diagnostic tasks, and produced identical public
+  evidence summaries in three cold processes.
+- H-D did not earn selection. Its signed fields were identical to C and no
+  auxiliary benefit was measured; a neural auxiliary would restore the batch
+  and cost assumptions that C removes.
+
+The selected formal hypothesis is H-C. This does not support the broader claim
+that neural semantic embeddings are replayable, nor that the representation is
+invariant to statement reorder, insertion, deletion, or arbitrary semantic
+preserving transforms.
