@@ -1,0 +1,276 @@
+{
+  "status": "formal_stage_b_review_not_preregistration",
+  "search_date": "2026-07-14",
+  "url_field_policy": "Each url is a DOI resolver, arXiv abstract page, or official publisher/framework page.",
+  "source_methods": [
+    "first three pages of 18 relevant repository-local PDFs",
+    "official PyTorch and NVIDIA documentation",
+    "publisher pages from ACL Anthology, PMLR, ACM, OpenReview, and arXiv"
+  ],
+  "entries": [
+    {
+      "title": "Numerical accuracy",
+      "authors": ["PyTorch contributors"],
+      "year": 2026,
+      "venue": "PyTorch official documentation",
+      "url": "https://docs.pytorch.org/docs/stable/notes/numerical_accuracy.html",
+      "primary_source": true,
+      "relation": "Batched and per-slice computations are not guaranteed bitwise equal; documents TF32 accuracy behavior.",
+      "candidate_effect": {"A": "supports shape isolation", "B": "supports boundary-risk premise", "C": "supports avoiding neural final evidence"},
+      "reproducibility_limit": "No guarantee across different batch shapes, releases, platforms, CPU and GPU."
+    },
+    {
+      "title": "Reproducibility",
+      "authors": ["PyTorch contributors"],
+      "year": 2025,
+      "venue": "PyTorch official documentation",
+      "url": "https://docs.pytorch.org/docs/stable/notes/randomness.html",
+      "primary_source": true,
+      "relation": "Defines deterministic settings and their performance/platform limits.",
+      "candidate_effect": {"A": "supports deterministic runtime controls"},
+      "reproducibility_limit": "Determinism for a fixed input path is not batch invariance across paths."
+    },
+    {
+      "title": "cuBLAS Results Reproducibility",
+      "authors": ["NVIDIA"],
+      "year": 2026,
+      "venue": "NVIDIA official documentation",
+      "url": "https://docs.nvidia.com/cuda/cublas/index.html",
+      "primary_source": true,
+      "relation": "Documents workspace, stream, atomics, toolkit, and architecture conditions for bitwise reproducibility.",
+      "candidate_effect": {"A": "supports frozen workspace and single-stream probe"},
+      "reproducibility_limit": "Does not promise equality across distinct GEMM shapes or toolkit versions."
+    },
+    {
+      "title": "Deterministic Inference across Tensor Parallel Sizes That Eliminates Training-Inference Mismatch",
+      "authors": ["Ziyang Zhang", "Xinheng Ding", "Jiayi Yuan", "Rixin Liu", "Huizi Mao", "Jiarong Xing", "Zirui Liu"],
+      "year": 2025,
+      "venue": "arXiv preprint",
+      "url": "https://arxiv.org/abs/2511.17826",
+      "primary_source": true,
+      "relation": "Aligns reduction trees to guarantee bitwise invariant inference across tensor-parallel sizes.",
+      "candidate_effect": {"A": "supports invariant-kernel rationale", "D": "supports integer/tree-reduction probe"},
+      "reproducibility_limit": "Triton/vLLM/FSDP setting is not the frozen CodeT5 encoder stack."
+    },
+    {
+      "title": "LLM-42: Enabling Determinism in LLM Inference with Verified Speculation",
+      "authors": ["Raja Gond", "Aditya K Kamath", "Arkaprava Basu", "Ramachandran Ramjee", "Ashish Panwar"],
+      "year": 2026,
+      "venue": "arXiv preprint",
+      "url": "https://arxiv.org/abs/2601.17768",
+      "primary_source": true,
+      "relation": "Fixed-shape verification and rollback around a fast path.",
+      "candidate_effect": {"A": "supports selected-final replay", "D": "supports verify-rollback hybrid"},
+      "reproducibility_limit": "Token decoding determinism is not semantic-embedding evidence determinism."
+    },
+    {
+      "title": "Certified Adversarial Robustness via Randomized Smoothing",
+      "authors": ["Jeremy Cohen", "Elan Rosenfeld", "Zico Kolter"],
+      "year": 2019,
+      "venue": "ICML",
+      "url": "https://proceedings.mlr.press/v97/cohen19c.html",
+      "primary_source": true,
+      "relation": "Separates empirical robustness from a formal probability/radius certificate.",
+      "candidate_effect": {"B": "supports certification discipline"},
+      "reproducibility_limit": "Gaussian input perturbations differ from implementation-level floating-point noise."
+    },
+    {
+      "title": "Improved, Deterministic Smoothing for L1 Certified Robustness",
+      "authors": ["Alexander J. Levine", "Soheil Feizi"],
+      "year": 2021,
+      "venue": "ICML",
+      "url": "https://proceedings.mlr.press/v139/levine21a.html",
+      "primary_source": true,
+      "relation": "Deterministic partitions for quantized inputs.",
+      "candidate_effect": {"B": "supports stable-partition probe"},
+      "reproducibility_limit": "Not a direct certificate for GPU kernel variation."
+    },
+    {
+      "title": "Watermarking Language Models with Error Correcting Codes",
+      "authors": ["Patrick Chao", "Yan Sun", "Edgar Dobriban", "Hamed Hassani"],
+      "year": 2024,
+      "venue": "arXiv / TMLR submission",
+      "url": "https://arxiv.org/abs/2406.10281",
+      "primary_source": true,
+      "relation": "ECC aggregation, formal detection tests, edit/deletion robustness.",
+      "candidate_effect": {"B": "supports erasure-aware ECC", "C": "supports repeated discrete votes"},
+      "reproducibility_limit": "Token-channel assumptions do not establish encoder bit stability."
+    },
+    {
+      "title": "Multi-Channel Spread-Spectrum Code Watermarking",
+      "authors": ["Soohyeon Choi", "Debin Gao", "Yue Duan"],
+      "year": 2026,
+      "venue": "arXiv preprint",
+      "url": "https://arxiv.org/abs/2607.06009",
+      "primary_source": true,
+      "relation": "Stable code sites, independent votes, majority vote, and Reed-Solomon outer coding.",
+      "candidate_effect": {"C": "supports canonical discrete sites"},
+      "reproducibility_limit": "Post-hoc transformation watermark differs from generation-time selection."
+    },
+    {
+      "title": "SemStamp: A Semantic Watermark with Paraphrastic Robustness for Text Generation",
+      "authors": ["Abe Hou", "Jingyu Zhang", "Tianxing He", "Yichen Wang", "Yung-Sung Chuang", "Hongwei Wang", "Lingfeng Shen", "Benjamin Van Durme", "Daniel Khashabi", "Yulia Tsvetkov"],
+      "year": 2024,
+      "venue": "NAACL",
+      "url": "https://aclanthology.org/2024.naacl-long.226/",
+      "primary_source": true,
+      "relation": "Semantic embedding LSH and rejection sampling.",
+      "candidate_effect": {"A": "supports preserving V3 semantic mechanism", "B": "supports projection-margin analysis"},
+      "reproducibility_limit": "Does not claim batch-invariant bit-exact encoder replay."
+    },
+    {
+      "title": "k-SemStamp: A Clustering-Based Semantic Watermark for Detection of Machine-Generated Text",
+      "authors": ["Abe Hou", "Jingyu Zhang", "Yichen Wang", "Daniel Khashabi", "Tianxing He"],
+      "year": 2024,
+      "venue": "Findings of ACL",
+      "url": "https://aclanthology.org/2024.findings-acl.98/",
+      "primary_source": true,
+      "relation": "Data-aware semantic partitions improve robustness/sampling efficiency.",
+      "candidate_effect": {"D": "supports frozen-codebook probe"},
+      "reproducibility_limit": "Adds codebook identity and Voronoi-boundary stability requirements."
+    },
+    {
+      "title": "Who Wrote this Code? Watermarking for Code Generation",
+      "authors": ["Taehyun Lee", "Seokhee Hong", "Jaewoo Ahn", "Ilgee Hong", "Hwaran Lee", "Sangdoo Yun", "Jamin Shin", "Gunhee Kim"],
+      "year": 2024,
+      "venue": "ACL",
+      "url": "https://aclanthology.org/2024.acl-long.268/",
+      "primary_source": true,
+      "relation": "Low-entropy code and selective eligibility.",
+      "candidate_effect": {"A": "supports minimum independent evidence", "C": "supports syntax-aware sites"},
+      "reproducibility_limit": "Token-level method and detector differ from semantic replay."
+    },
+    {
+      "title": "CodeIP: A Grammar-Guided Multi-Bit Watermark for Large Language Models of Code",
+      "authors": ["Batu Guan", "Yao Wan", "Zhangqian Bi", "Zheng Wang", "Hongyu Zhang", "Pan Zhou", "Lichao Sun"],
+      "year": 2024,
+      "venue": "Findings of EMNLP",
+      "url": "https://aclanthology.org/2024.findings-emnlp.541/",
+      "primary_source": true,
+      "relation": "Grammar-guided validity and multi-bit evidence.",
+      "candidate_effect": {"C": "supports canonical syntax roles"},
+      "reproducibility_limit": "Generation-token method is not final-code-only semantic evidence."
+    },
+    {
+      "title": "Marking Code Without Breaking It: Code Watermarking for Detecting LLM-Generated Code",
+      "authors": ["Jungin Kim", "Shinwoo Park", "Yo-Sub Han"],
+      "year": 2026,
+      "venue": "Findings of EACL",
+      "url": "https://aclanthology.org/2026.findings-eacl.207/",
+      "primary_source": true,
+      "relation": "Syntax-aware eligibility protects correctness.",
+      "candidate_effect": {"C": "supports structural site filtering"},
+      "reproducibility_limit": "Detection/exact replay contract differs from V4."
+    },
+    {
+      "title": "Practical and Effective Code Watermarking for Large Language Models",
+      "authors": ["Zhimeng Guo", "Minhao Cheng"],
+      "year": 2025,
+      "venue": "NeurIPS",
+      "url": "https://openreview.net/forum?id=RpE4HeuX69",
+      "primary_source": true,
+      "relation": "AST-guided adaptive code watermarking.",
+      "candidate_effect": {"C": "supports AST role features"},
+      "reproducibility_limit": "Different detector inputs and no V4 batch-invariance contract."
+    },
+    {
+      "title": "Disappearing Ink: Obfuscation Breaks N-gram Code Watermarks in Theory and Practice",
+      "authors": ["Gehao Zhang", "Eugene Bagdasarian", "Juan Zhai", "Shiqing Ma"],
+      "year": 2025,
+      "venue": "arXiv preprint",
+      "url": "https://arxiv.org/abs/2507.05512",
+      "primary_source": true,
+      "relation": "Negative robustness evidence under semantics-preserving obfuscation.",
+      "candidate_effect": {"C": "opposes broad robustness claims"},
+      "reproducibility_limit": "Targets n-gram schemes, so transfer to structural evidence must be tested."
+    },
+    {
+      "title": "Detecting Code Clones with Graph Neural Network and Flow-Augmented Abstract Syntax Tree",
+      "authors": ["Wenhan Wang", "Ge Li", "Bo Ma", "Xin Xia", "Zhi Jin"],
+      "year": 2020,
+      "venue": "arXiv preprint",
+      "url": "https://arxiv.org/abs/2002.08653",
+      "primary_source": true,
+      "relation": "AST plus bounded control/data-flow carries more semantic structure than syntax alone.",
+      "candidate_effect": {"C": "supports structural-semantic representation"},
+      "reproducibility_limit": "Neural GNN representation would reintroduce numerical replay risk."
+    },
+    {
+      "title": "GraphCodeBERT: Pre-training Code Representations with Data Flow",
+      "authors": ["Daya Guo", "Shuo Ren", "Shuai Lu", "Zhangyin Feng", "Duyu Tang", "Shujie Liu", "Long Zhou", "Nan Duan", "Alexey Svyatkovskiy", "Shengyu Fu", "Michele Tufano", "Shao Kun Deng", "Colin Clement", "Dawn Drain", "Neel Sundaresan", "Jian Yin", "Daxin Jiang", "Ming Zhou"],
+      "year": 2021,
+      "venue": "ICLR",
+      "url": "https://openreview.net/forum?id=jLoC4ez43PZ",
+      "primary_source": true,
+      "relation": "Data-flow edges as program-semantic structure.",
+      "candidate_effect": {"C": "supports deterministic data-flow features"},
+      "reproducibility_limit": "Learned embedding remains floating-point and batch-path dependent unless isolated."
+    },
+    {
+      "title": "SynCoBERT: Syntax-Guided Multi-Modal Contrastive Pre-Training for Code Representation",
+      "authors": ["Xin Wang", "Yasheng Wang", "Fei Mi", "Pingyi Zhou", "Yao Wan", "Xiao Liu", "Li Li", "Hao Wu", "Jin Liu", "Xin Jiang"],
+      "year": 2021,
+      "venue": "arXiv preprint",
+      "url": "https://arxiv.org/abs/2108.04556",
+      "primary_source": true,
+      "relation": "Source, AST and identifiers are complementary modalities.",
+      "candidate_effect": {"C": "supports qualified structural-semantic claim"},
+      "reproducibility_limit": "Does not define canonical final-code-only bit evidence."
+    },
+    {
+      "title": "torch.use_deterministic_algorithms",
+      "authors": ["PyTorch contributors"],
+      "year": 2026,
+      "venue": "PyTorch official API documentation",
+      "url": "https://docs.pytorch.org/docs/stable/generated/torch.use_deterministic_algorithms.html",
+      "primary_source": true,
+      "relation": "Defines deterministic operation selection and fail-fast behavior.",
+      "candidate_effect": {"A": "supports runtime validation but not cross-shape invariance"},
+      "reproducibility_limit": "The API explicitly does not make an application fully reproducible by itself."
+    },
+    {
+      "title": "Similarity Estimation Techniques from Rounding Algorithms",
+      "authors": ["Moses S. Charikar"],
+      "year": 2002,
+      "venue": "STOC",
+      "url": "https://doi.org/10.1145/509907.509965",
+      "primary_source": true,
+      "relation": "Foundational random-hyperplane sign hashing; collision probability tracks angular similarity.",
+      "candidate_effect": {"B": "supports projection hashing", "C": "opposes calling an unqualified sign hash a semantic certificate"},
+      "reproducibility_limit": "LSH probability theory does not guarantee numerical stability near a hyperplane."
+    },
+    {
+      "title": "A Robust and Secure Perceptual Hashing System Based on a Quantization Step Analysis",
+      "authors": ["Azhar Hadmi", "William Puech", "Brahim Ait Es Said", "Abdellah Ait Ouahman"],
+      "year": 2013,
+      "venue": "Signal Processing: Image Communication",
+      "url": "https://doi.org/10.1016/j.image.2012.11.009",
+      "primary_source": true,
+      "relation": "Analyzes robustness/security around feature quantization steps and fixed-length hashes.",
+      "candidate_effect": {"B": "supports explicit boundary analysis and rejects robustness-by-cosine-only"},
+      "reproducibility_limit": "Image perturbation models and Gaussian assumptions do not bound implementation noise in a code encoder."
+    },
+    {
+      "title": "CodeT5: Identifier-aware Unified Pre-trained Encoder-Decoder Models for Code Understanding and Generation",
+      "authors": ["Yue Wang", "Weishi Wang", "Shafiq Joty", "Steven C. H. Hoi"],
+      "year": 2021,
+      "venue": "EMNLP",
+      "url": "https://doi.org/10.18653/v1/2021.emnlp-main.685",
+      "primary_source": true,
+      "relation": "Defines the encoder family underlying the frozen V3 checkpoint and emphasizes identifier-aware code semantics.",
+      "candidate_effect": {"A": "supports semantic utility", "C": "shows what structural-only evidence omits"},
+      "reproducibility_limit": "The paper evaluates task performance, not batch-invariant bitwise embeddings."
+    },
+    {
+      "title": "Is Watermarking LLM-Generated Code Robust?",
+      "authors": ["Tarun Suresh", "Shubham Ugare", "Gagandeep Singh", "Sasa Misailovic"],
+      "year": 2024,
+      "venue": "Tiny Papers @ ICLR 2024",
+      "url": "https://openreview.net/forum?id=8PhI1PzSYY",
+      "primary_source": true,
+      "relation": "Shows variable rename, dead-code insertion, and other semantics-preserving AST transformations can erase code watermarks.",
+      "candidate_effect": {"C": "requires transformation-specific evaluation", "D": "opposes broad robustness claims without attacks"},
+      "reproducibility_limit": "Evaluates existing token watermarks; results do not automatically transfer to a new structural channel."
+    }
+  ]
+}
