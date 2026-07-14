@@ -1,0 +1,1263 @@
+{
+  "artifact_type": "root_cause_matrix_summary",
+  "axes_present": [
+    "batch_size",
+    "composition",
+    "deterministic",
+    "grad_mode",
+    "masked_tail",
+    "matmul_precision",
+    "order",
+    "padding",
+    "reference",
+    "tf32",
+    "warmup"
+  ],
+  "axis_summary": {
+    "batch_size": {
+      "exact": 0,
+      "exact_rate": 0.0,
+      "quantized_mismatch": 1170,
+      "quantized_mismatch_rate": 0.09984639016897082,
+      "signature_mismatch": 0,
+      "signature_mismatch_rate": 0.0,
+      "trials": 11718
+    },
+    "composition": {
+      "exact": 0,
+      "exact_rate": 0.0,
+      "quantized_mismatch": 234,
+      "quantized_mismatch_rate": 0.08253968253968254,
+      "signature_mismatch": 0,
+      "signature_mismatch_rate": 0.0,
+      "trials": 2835
+    },
+    "deterministic": {
+      "exact": 0,
+      "exact_rate": 0.0,
+      "quantized_mismatch": 60,
+      "quantized_mismatch_rate": 0.09523809523809523,
+      "signature_mismatch": 0,
+      "signature_mismatch_rate": 0.0,
+      "trials": 630
+    },
+    "grad_mode": {
+      "exact": 0,
+      "exact_rate": 0.0,
+      "quantized_mismatch": 36,
+      "quantized_mismatch_rate": 0.09523809523809523,
+      "signature_mismatch": 0,
+      "signature_mismatch_rate": 0.0,
+      "trials": 378
+    },
+    "masked_tail": {
+      "exact": 0,
+      "exact_rate": 0.0,
+      "quantized_mismatch": 36,
+      "quantized_mismatch_rate": 0.09523809523809523,
+      "signature_mismatch": 0,
+      "signature_mismatch_rate": 0.0,
+      "trials": 378
+    },
+    "matmul_precision": {
+      "exact": 0,
+      "exact_rate": 0.0,
+      "quantized_mismatch": 660,
+      "quantized_mismatch_rate": 0.6984126984126984,
+      "signature_mismatch": 0,
+      "signature_mismatch_rate": 0.0,
+      "trials": 945
+    },
+    "order": {
+      "exact": 0,
+      "exact_rate": 0.0,
+      "quantized_mismatch": 63,
+      "quantized_mismatch_rate": 0.1111111111111111,
+      "signature_mismatch": 0,
+      "signature_mismatch_rate": 0.0,
+      "trials": 567
+    },
+    "padding": {
+      "exact": 0,
+      "exact_rate": 0.0,
+      "quantized_mismatch": 30,
+      "quantized_mismatch_rate": 0.07936507936507936,
+      "signature_mismatch": 0,
+      "signature_mismatch_rate": 0.0,
+      "trials": 378
+    },
+    "reference": {
+      "exact": 3969,
+      "exact_rate": 1.0,
+      "quantized_mismatch": 0,
+      "quantized_mismatch_rate": 0.0,
+      "signature_mismatch": 0,
+      "signature_mismatch_rate": 0.0,
+      "trials": 3969
+    },
+    "tf32": {
+      "exact": 0,
+      "exact_rate": 0.0,
+      "quantized_mismatch": 345,
+      "quantized_mismatch_rate": 0.5476190476190477,
+      "signature_mismatch": 0,
+      "signature_mismatch_rate": 0.0,
+      "trials": 630
+    },
+    "warmup": {
+      "exact": 0,
+      "exact_rate": 0.0,
+      "quantized_mismatch": 54,
+      "quantized_mismatch_rate": 0.09523809523809523,
+      "signature_mismatch": 0,
+      "signature_mismatch_rate": 0.0,
+      "trials": 567
+    }
+  },
+  "bound_scope": "empirical observed matrix only; not a certified universal bound",
+  "condition_value_summary": {
+    "batch_size": {
+      "batch_size=16": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 288,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 3024
+      },
+      "batch_size=2": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.047619047619047616,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 378
+      },
+      "batch_size=32": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 672,
+        "quantized_mismatch_rate": 0.1111111111111111,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 6048
+      },
+      "batch_size=4": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 48,
+        "quantized_mismatch_rate": 0.06349206349206349,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 756
+      },
+      "batch_size=8": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 144,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 1512
+      }
+    },
+    "composition": {
+      "batch_size=16|composition=failure_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=16|composition=long_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=16|composition=short_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=2|composition=failure_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 9,
+        "quantized_mismatch_rate": 0.047619047619047616,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=2|composition=long_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 9,
+        "quantized_mismatch_rate": 0.047619047619047616,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=2|composition=short_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 9,
+        "quantized_mismatch_rate": 0.047619047619047616,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=32|composition=failure_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 21,
+        "quantized_mismatch_rate": 0.1111111111111111,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=32|composition=long_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 21,
+        "quantized_mismatch_rate": 0.1111111111111111,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=32|composition=short_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 21,
+        "quantized_mismatch_rate": 0.1111111111111111,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=4|composition=failure_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 12,
+        "quantized_mismatch_rate": 0.06349206349206349,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=4|composition=long_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 12,
+        "quantized_mismatch_rate": 0.06349206349206349,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=4|composition=short_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 12,
+        "quantized_mismatch_rate": 0.06349206349206349,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=8|composition=failure_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=8|composition=long_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=8|composition=short_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      }
+    },
+    "deterministic": {
+      "deterministic_algorithms=false": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 30,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 315
+      },
+      "deterministic_algorithms=true": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 30,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 315
+      }
+    },
+    "grad_mode": {
+      "grad_mode=inference_mode": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "grad_mode=no_grad": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      }
+    },
+    "masked_tail": {
+      "masked_tail_variant=alternate_token": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "masked_tail_variant=pad_token": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      }
+    },
+    "matmul_precision": {
+      "matmul_precision=high": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 315,
+        "quantized_mismatch_rate": 1.0,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 315
+      },
+      "matmul_precision=highest": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 30,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 315
+      },
+      "matmul_precision=medium": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 315,
+        "quantized_mismatch_rate": 1.0,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 315
+      }
+    },
+    "order": {
+      "order=forward": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 21,
+        "quantized_mismatch_rate": 0.1111111111111111,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "order=random": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 21,
+        "quantized_mismatch_rate": 0.1111111111111111,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "order=reverse": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 21,
+        "quantized_mismatch_rate": 0.1111111111111111,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      }
+    },
+    "padding": {
+      "padding=dynamic": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 12,
+        "quantized_mismatch_rate": 0.06349206349206349,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "padding=fixed_256": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      }
+    },
+    "reference": {
+      "reference=true": {
+        "exact": 3969,
+        "exact_rate": 1.0,
+        "quantized_mismatch": 0,
+        "quantized_mismatch_rate": 0.0,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 3969
+      }
+    },
+    "tf32": {
+      "tf32=false": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 30,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 315
+      },
+      "tf32=true": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 315,
+        "quantized_mismatch_rate": 1.0,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 315
+      }
+    },
+    "warmup": {
+      "warmup_count=0": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "warmup_count=1": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "warmup_count=5": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      }
+    }
+  },
+  "context_counts": {
+    "boundary": 20,
+    "control": 20,
+    "failure": 3,
+    "synthetic": 20
+  },
+  "coverage": {
+    "batch_sizes": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      32
+    ],
+    "cold_cuda_full_restart_count": 3,
+    "compositions": [
+      "failure_mix",
+      "long_mix",
+      "self_repeat",
+      "short_mix"
+    ],
+    "cpu_reference_present": true,
+    "deterministic_values": [
+      false,
+      true
+    ],
+    "grad_modes": [
+      "inference_mode",
+      "no_grad"
+    ],
+    "matmul_precisions": [
+      "high",
+      "highest",
+      "medium"
+    ],
+    "orders": [
+      "forward",
+      "random",
+      "reverse"
+    ],
+    "padding": [
+      "dynamic",
+      "fixed_256"
+    ],
+    "tf32_values": [
+      false,
+      true
+    ],
+    "warmup_counts": [
+      0,
+      1,
+      5
+    ]
+  },
+  "cpu_gpu_reference_discrete_exact": {
+    "quantized_exact": 59,
+    "quantized_rate": 0.9365079365079365,
+    "signature_exact": 63,
+    "signature_rate": 1.0,
+    "total": 63
+  },
+  "cross_cold_process_all_conditions_strict_exact": {
+    "exact": 7308,
+    "rate": 1.0,
+    "required_restart_count": 3,
+    "total": 7308
+  },
+  "cross_cold_process_reference_exact": {
+    "cuda_full_restart_ids": [
+      "gpu-cold0-workspace4096",
+      "gpu-cold1-workspace4096",
+      "gpu-cold2-workspace4096"
+    ],
+    "exact": 126,
+    "rate": 1.0,
+    "total": 126
+  },
+  "cuda_full_condition_value_summary": {
+    "batch_size": {
+      "batch_size=16": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 288,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 3024
+      },
+      "batch_size=2": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.047619047619047616,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 378
+      },
+      "batch_size=32": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 672,
+        "quantized_mismatch_rate": 0.1111111111111111,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 6048
+      },
+      "batch_size=4": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 48,
+        "quantized_mismatch_rate": 0.06349206349206349,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 756
+      },
+      "batch_size=8": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 144,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 1512
+      }
+    },
+    "composition": {
+      "batch_size=16|composition=failure_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=16|composition=long_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=16|composition=short_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=2|composition=failure_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 9,
+        "quantized_mismatch_rate": 0.047619047619047616,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=2|composition=long_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 9,
+        "quantized_mismatch_rate": 0.047619047619047616,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=2|composition=short_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 9,
+        "quantized_mismatch_rate": 0.047619047619047616,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=32|composition=failure_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 21,
+        "quantized_mismatch_rate": 0.1111111111111111,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=32|composition=long_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 21,
+        "quantized_mismatch_rate": 0.1111111111111111,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=32|composition=short_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 21,
+        "quantized_mismatch_rate": 0.1111111111111111,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=4|composition=failure_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 12,
+        "quantized_mismatch_rate": 0.06349206349206349,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=4|composition=long_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 12,
+        "quantized_mismatch_rate": 0.06349206349206349,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=4|composition=short_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 12,
+        "quantized_mismatch_rate": 0.06349206349206349,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=8|composition=failure_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=8|composition=long_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "batch_size=8|composition=short_mix": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      }
+    },
+    "deterministic": {
+      "deterministic_algorithms=false": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "deterministic_algorithms=true": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      }
+    },
+    "grad_mode": {
+      "grad_mode=inference_mode": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "grad_mode=no_grad": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      }
+    },
+    "masked_tail": {
+      "masked_tail_variant=alternate_token": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "masked_tail_variant=pad_token": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      }
+    },
+    "matmul_precision": {
+      "matmul_precision=high": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 189,
+        "quantized_mismatch_rate": 1.0,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "matmul_precision=highest": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "matmul_precision=medium": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 189,
+        "quantized_mismatch_rate": 1.0,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      }
+    },
+    "order": {
+      "order=forward": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 21,
+        "quantized_mismatch_rate": 0.1111111111111111,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "order=random": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 21,
+        "quantized_mismatch_rate": 0.1111111111111111,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "order=reverse": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 21,
+        "quantized_mismatch_rate": 0.1111111111111111,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      }
+    },
+    "padding": {
+      "padding=dynamic": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 12,
+        "quantized_mismatch_rate": 0.06349206349206349,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "padding=fixed_256": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      }
+    },
+    "reference": {
+      "reference=true": {
+        "exact": 3780,
+        "exact_rate": 1.0,
+        "quantized_mismatch": 0,
+        "quantized_mismatch_rate": 0.0,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 3780
+      }
+    },
+    "tf32": {
+      "tf32=false": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "tf32=true": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 189,
+        "quantized_mismatch_rate": 1.0,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      }
+    },
+    "warmup": {
+      "warmup_count=0": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "warmup_count=1": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      },
+      "warmup_count=5": {
+        "exact": 0,
+        "exact_rate": 0.0,
+        "quantized_mismatch": 18,
+        "quantized_mismatch_rate": 0.09523809523809523,
+        "signature_mismatch": 0,
+        "signature_mismatch_rate": 0.0,
+        "trials": 189
+      }
+    }
+  },
+  "downstream_isolated_first_divergent_counts": {
+    "None": 3969,
+    "whitening_pre_norm": 19026
+  },
+  "failure_context_summary": {
+    "failure-HumanEval-34-unit-3": {
+      "exact": 63,
+      "quantized_mismatch": 210,
+      "trials": 365
+    },
+    "failure-HumanEval-39-unit-6": {
+      "exact": 63,
+      "quantized_mismatch": 206,
+      "trials": 365
+    },
+    "failure-HumanEval-71-unit-2": {
+      "exact": 63,
+      "quantized_mismatch": 88,
+      "trials": 365
+    }
+  },
+  "first_divergent_layer_counts": {
+    "None": 3969,
+    "input_ids": 189,
+    "t5_block_00_layer_00_SelfAttention": 18837
+  },
+  "maximum_observed_absolute_difference_by_stage": {
+    "attention_mask": 0.0,
+    "cpu_centered": 0.0004054158926010132,
+    "input_ids": 1.0,
+    "model_post_norm": 0.0004054233431816101,
+    "projection_dots": 30.0,
+    "projection_pre_norm": 0.00039486587047576904,
+    "quantized": 5.0,
+    "runtime_post_norm": 0.0004054158926010132,
+    "signature_bits": 0.0,
+    "t5_block_00_layer_00_SelfAttention": 0.0028247833251953125,
+    "t5_block_00_layer_00_layer_norm": 0.0,
+    "t5_block_00_layer_01_DenseReluDense": 0.0038204193115234375,
+    "t5_block_00_layer_01_layer_norm": 9.384751319885254e-05,
+    "t5_block_00_output": 0.00318145751953125,
+    "t5_block_01_layer_00_SelfAttention": 0.0022187232971191406,
+    "t5_block_01_layer_00_layer_norm": 6.014108657836914e-05,
+    "t5_block_01_layer_01_DenseReluDense": 0.0041294097900390625,
+    "t5_block_01_layer_01_layer_norm": 0.00028777122497558594,
+    "t5_block_01_output": 0.0049076080322265625,
+    "t5_block_02_layer_00_SelfAttention": 0.0022520720958709717,
+    "t5_block_02_layer_00_layer_norm": 0.00012433528900146484,
+    "t5_block_02_layer_01_DenseReluDense": 0.004414081573486328,
+    "t5_block_02_layer_01_layer_norm": 0.00032639503479003906,
+    "t5_block_02_output": 0.004848480224609375,
+    "t5_block_03_layer_00_SelfAttention": 0.0011416077613830566,
+    "t5_block_03_layer_00_layer_norm": 7.808208465576172e-05,
+    "t5_block_03_layer_01_DenseReluDense": 0.0038025379180908203,
+    "t5_block_03_layer_01_layer_norm": 0.0003559589385986328,
+    "t5_block_03_output": 0.0052337646484375,
+    "t5_block_04_layer_00_SelfAttention": 0.0007849633693695068,
+    "t5_block_04_layer_00_layer_norm": 7.468461990356445e-05,
+    "t5_block_04_layer_01_DenseReluDense": 0.00445556640625,
+    "t5_block_04_layer_01_layer_norm": 0.0005183219909667969,
+    "t5_block_04_output": 0.0058917999267578125,
+    "t5_block_05_layer_00_SelfAttention": 0.0007798820734024048,
+    "t5_block_05_layer_00_layer_norm": 0.00011217594146728516,
+    "t5_block_05_layer_01_DenseReluDense": 0.002449214458465576,
+    "t5_block_05_layer_01_layer_norm": 0.0005757808685302734,
+    "t5_block_05_output": 0.005725860595703125,
+    "t5_block_06_layer_00_SelfAttention": 0.0010460913181304932,
+    "t5_block_06_layer_00_layer_norm": 0.0001375824213027954,
+    "t5_block_06_layer_01_DenseReluDense": 0.0018219202756881714,
+    "t5_block_06_layer_01_layer_norm": 0.000667572021484375,
+    "t5_block_06_output": 0.006259918212890625,
+    "t5_block_07_layer_00_SelfAttention": 0.0008447766304016113,
+    "t5_block_07_layer_00_layer_norm": 0.00018390268087387085,
+    "t5_block_07_layer_01_DenseReluDense": 0.001153111457824707,
+    "t5_block_07_layer_01_layer_norm": 0.00066375732421875,
+    "t5_block_07_output": 0.0070896148681640625,
+    "t5_block_08_layer_00_SelfAttention": 0.000712960958480835,
+    "t5_block_08_layer_00_layer_norm": 0.00021104421466588974,
+    "t5_block_08_layer_01_DenseReluDense": 0.001139998435974121,
+    "t5_block_08_layer_01_layer_norm": 0.000884711742401123,
+    "t5_block_08_output": 0.0073833465576171875,
+    "t5_block_09_layer_00_SelfAttention": 0.0019860267639160156,
+    "t5_block_09_layer_00_layer_norm": 0.00023496896028518677,
+    "t5_block_09_layer_01_DenseReluDense": 0.002077937126159668,
+    "t5_block_09_layer_01_layer_norm": 0.0009894371032714844,
+    "t5_block_09_output": 0.0071563720703125,
+    "t5_block_10_layer_00_SelfAttention": 0.0019724369049072266,
+    "t5_block_10_layer_00_layer_norm": 0.00028440356254577637,
+    "t5_block_10_layer_01_DenseReluDense": 0.002726316452026367,
+    "t5_block_10_layer_01_layer_norm": 0.0011320114135742188,
+    "t5_block_10_output": 0.007389068603515625,
+    "t5_block_11_layer_00_SelfAttention": 0.005839347839355469,
+    "t5_block_11_layer_00_layer_norm": 0.0003364086151123047,
+    "t5_block_11_layer_01_DenseReluDense": 0.004378616809844971,
+    "t5_block_11_layer_01_layer_norm": 0.0011472702026367188,
+    "t5_block_11_output": 0.007579803466796875,
+    "t5_cls_hidden": 0.0007919967174530029,
+    "whitening_post_norm": 0.0012444518506526947,
+    "whitening_pre_norm": 0.010920524597167969
+  },
+  "process_summary": {
+    "cpu-reference-singlethread": {
+      "cublas_workspace_config": null,
+      "device": "cpu",
+      "exact": 63,
+      "exact_rate": 1.0,
+      "profile": "cpu_reference",
+      "quantized_mismatch": 0,
+      "quantized_mismatch_rate": 0.0,
+      "signature_mismatch": 0,
+      "signature_mismatch_rate": 0.0,
+      "trials": 63
+    },
+    "gpu-cold0-workspace4096": {
+      "cublas_workspace_config": ":4096:8",
+      "device": "cuda",
+      "exact": 1260,
+      "exact_rate": 0.1724137931034483,
+      "profile": "full",
+      "quantized_mismatch": 754,
+      "quantized_mismatch_rate": 0.10317460317460317,
+      "signature_mismatch": 0,
+      "signature_mismatch_rate": 0.0,
+      "trials": 7308
+    },
+    "gpu-cold1-workspace4096": {
+      "cublas_workspace_config": ":4096:8",
+      "device": "cuda",
+      "exact": 1260,
+      "exact_rate": 0.1724137931034483,
+      "profile": "full",
+      "quantized_mismatch": 754,
+      "quantized_mismatch_rate": 0.10317460317460317,
+      "signature_mismatch": 0,
+      "signature_mismatch_rate": 0.0,
+      "trials": 7308
+    },
+    "gpu-cold2-workspace4096": {
+      "cublas_workspace_config": ":4096:8",
+      "device": "cuda",
+      "exact": 1260,
+      "exact_rate": 0.1724137931034483,
+      "profile": "full",
+      "quantized_mismatch": 754,
+      "quantized_mismatch_rate": 0.10317460317460317,
+      "signature_mismatch": 0,
+      "signature_mismatch_rate": 0.0,
+      "trials": 7308
+    },
+    "gpu-workspace-unset-runtime-flags": {
+      "cublas_workspace_config": null,
+      "device": "cuda",
+      "exact": 63,
+      "exact_rate": 0.125,
+      "profile": "runtime_flags",
+      "quantized_mismatch": 213,
+      "quantized_mismatch_rate": 0.4226190476190476,
+      "signature_mismatch": 0,
+      "signature_mismatch_rate": 0.0,
+      "trials": 504
+    },
+    "gpu-workspace16-runtime-flags": {
+      "cublas_workspace_config": ":16:8",
+      "device": "cuda",
+      "exact": 63,
+      "exact_rate": 0.125,
+      "profile": "runtime_flags",
+      "quantized_mismatch": 213,
+      "quantized_mismatch_rate": 0.4226190476190476,
+      "signature_mismatch": 0,
+      "signature_mismatch_rate": 0.0,
+      "trials": 504
+    }
+  },
+  "provisional_classification": "A2-encoder-and-downstream-batch-dependence",
+  "raw_processes": [
+    {
+      "artifact_type": "process_metadata",
+      "condition_count": 40,
+      "cpu_threads": 1,
+      "cublas_workspace_config": ":4096:8",
+      "cuda_version": "13.0",
+      "cudnn_version": 91900,
+      "device": "cuda",
+      "encoder_checkpoint_sha256": "9da80dfdbb3f8e682298e588e822f15967e460c9dfd640a243aad8ed1ba51d25",
+      "gpu_name": "NVIDIA GeForce RTX 5090",
+      "interop_threads": 1,
+      "profile": "full",
+      "python_version": "3.11.15",
+      "restart_id": "gpu-cold0-workspace4096",
+      "schema_version": "wfcllm-v4-numerical-replay-diagnosis/v1",
+      "secret_metadata_included": false,
+      "torch_version": "2.11.0+cu130"
+    },
+    {
+      "artifact_type": "process_metadata",
+      "condition_count": 40,
+      "cpu_threads": 1,
+      "cublas_workspace_config": ":4096:8",
+      "cuda_version": "13.0",
+      "cudnn_version": 91900,
+      "device": "cuda",
+      "encoder_checkpoint_sha256": "9da80dfdbb3f8e682298e588e822f15967e460c9dfd640a243aad8ed1ba51d25",
+      "gpu_name": "NVIDIA GeForce RTX 5090",
+      "interop_threads": 1,
+      "profile": "full",
+      "python_version": "3.11.15",
+      "restart_id": "gpu-cold1-workspace4096",
+      "schema_version": "wfcllm-v4-numerical-replay-diagnosis/v1",
+      "secret_metadata_included": false,
+      "torch_version": "2.11.0+cu130"
+    },
+    {
+      "artifact_type": "process_metadata",
+      "condition_count": 40,
+      "cpu_threads": 1,
+      "cublas_workspace_config": ":4096:8",
+      "cuda_version": "13.0",
+      "cudnn_version": 91900,
+      "device": "cuda",
+      "encoder_checkpoint_sha256": "9da80dfdbb3f8e682298e588e822f15967e460c9dfd640a243aad8ed1ba51d25",
+      "gpu_name": "NVIDIA GeForce RTX 5090",
+      "interop_threads": 1,
+      "profile": "full",
+      "python_version": "3.11.15",
+      "restart_id": "gpu-cold2-workspace4096",
+      "schema_version": "wfcllm-v4-numerical-replay-diagnosis/v1",
+      "secret_metadata_included": false,
+      "torch_version": "2.11.0+cu130"
+    },
+    {
+      "artifact_type": "process_metadata",
+      "condition_count": 8,
+      "cpu_threads": 1,
+      "cublas_workspace_config": ":16:8",
+      "cuda_version": "13.0",
+      "cudnn_version": 91900,
+      "device": "cuda",
+      "encoder_checkpoint_sha256": "9da80dfdbb3f8e682298e588e822f15967e460c9dfd640a243aad8ed1ba51d25",
+      "gpu_name": "NVIDIA GeForce RTX 5090",
+      "interop_threads": 1,
+      "profile": "runtime_flags",
+      "python_version": "3.11.15",
+      "restart_id": "gpu-workspace16-runtime-flags",
+      "schema_version": "wfcllm-v4-numerical-replay-diagnosis/v1",
+      "secret_metadata_included": false,
+      "torch_version": "2.11.0+cu130"
+    },
+    {
+      "artifact_type": "process_metadata",
+      "condition_count": 8,
+      "cpu_threads": 1,
+      "cublas_workspace_config": null,
+      "cuda_version": "13.0",
+      "cudnn_version": 91900,
+      "device": "cuda",
+      "encoder_checkpoint_sha256": "9da80dfdbb3f8e682298e588e822f15967e460c9dfd640a243aad8ed1ba51d25",
+      "gpu_name": "NVIDIA GeForce RTX 5090",
+      "interop_threads": 1,
+      "profile": "runtime_flags",
+      "python_version": "3.11.15",
+      "restart_id": "gpu-workspace-unset-runtime-flags",
+      "schema_version": "wfcllm-v4-numerical-replay-diagnosis/v1",
+      "secret_metadata_included": false,
+      "torch_version": "2.11.0+cu130"
+    },
+    {
+      "artifact_type": "process_metadata",
+      "condition_count": 1,
+      "cpu_threads": 1,
+      "cublas_workspace_config": null,
+      "cuda_version": "13.0",
+      "cudnn_version": 91900,
+      "device": "cpu",
+      "encoder_checkpoint_sha256": "9da80dfdbb3f8e682298e588e822f15967e460c9dfd640a243aad8ed1ba51d25",
+      "gpu_name": "NVIDIA GeForce RTX 5090",
+      "interop_threads": 1,
+      "profile": "cpu_reference",
+      "python_version": "3.11.15",
+      "restart_id": "cpu-reference-singlethread",
+      "schema_version": "wfcllm-v4-numerical-replay-diagnosis/v1",
+      "secret_metadata_included": false,
+      "torch_version": "2.11.0+cu130"
+    }
+  ],
+  "same_process_repeat_exact": {
+    "exact": 3591,
+    "rate": 1.0,
+    "total": 3591
+  },
+  "schema_version": "wfcllm-v4-numerical-replay-diagnosis/v1",
+  "secret_metadata_included": false,
+  "total_contexts": 63,
+  "trial_count": 22995,
+  "within_batch_copy_strict_exact": {
+    "exact": 10773,
+    "rate": 1.0,
+    "total": 10773
+  }
+}
