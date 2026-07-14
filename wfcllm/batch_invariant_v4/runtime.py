@@ -24,6 +24,7 @@ class RawCandidate:
     final_code_sha256: str
     quality_tier: int
     valid: bool
+    fallback_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -95,6 +96,8 @@ class CandidateRuntime:
             actual = hashlib.sha256(item.final_code.encode("utf-8")).hexdigest()
             if not _SHA256.fullmatch(item.final_code_sha256) or actual != item.final_code_sha256:
                 raise ValueError("candidate final-code SHA-256 mismatch")
+            if item.fallback_count < 0:
+                raise ValueError("candidate fallback_count must be non-negative")
         return items
 
     def select(
@@ -116,8 +119,6 @@ class CandidateRuntime:
             if item.valid and evidence[item.attempt_index].eligible
         ]
         valid = [item for item in items if item.valid]
-        if not valid:
-            raise ValueError("candidate pool contains no valid candidate")
         if eligible:
             selected = max(
                 eligible,
@@ -132,8 +133,17 @@ class CandidateRuntime:
                     -item.attempt_index,
                 ),
             )
-        else:
+        elif valid:
             selected = max(valid, key=lambda item: (item.quality_tier, -item.attempt_index))
+        else:
+            selected = max(
+                items,
+                key=lambda item: (
+                    item.quality_tier,
+                    -item.fallback_count,
+                    -item.attempt_index,
+                ),
+            )
         input_sha = _pool_sha256(items)
         output_items = tuple(items)
         output_sha = _pool_sha256(output_items)

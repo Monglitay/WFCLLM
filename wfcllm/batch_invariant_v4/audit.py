@@ -73,6 +73,7 @@ def rows_to_candidates(
                 final_code_sha256=str(row["final_code_sha256"]),
                 quality_tier=int(quality["quality_tier"]),
                 valid=bool(quality["eligible"]),
+                fallback_count=int(row.get("v1_fallback_count", 0)),
             )
         )
     return tuple(candidates)

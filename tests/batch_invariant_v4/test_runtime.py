@@ -117,6 +117,36 @@ def test_invalid_candidate_is_never_resurrected_by_secret_score() -> None:
     assert result.selected.attempt_index == 0
 
 
+def test_all_ineligible_pool_uses_frozen_current_quality_fallback() -> None:
+    runtime = CandidateRuntime.for_test(
+        key=V4SecretKey.from_material_for_test(b"f" * 32),
+        public_config_sha256="f" * 64,
+        minimum_independent_units=1,
+    )
+    candidates = []
+    for attempt, tier, fallback_count in (
+        (0, 1, 0),
+        (1, 2, 3),
+        (2, 2, 1),
+        (3, 2, 1),
+    ):
+        base = _candidate("HumanEval/5", attempt)
+        candidates.append(
+            RawCandidate(
+                **{
+                    **base.__dict__,
+                    "valid": False,
+                    "quality_tier": tier,
+                    "fallback_count": fallback_count,
+                }
+            )
+        )
+
+    result = runtime.select(tuple(candidates), retry=4)
+
+    assert result.selected.attempt_index == 2
+
+
 def test_raw_candidate_repr_does_not_contain_secret() -> None:
     candidate = _candidate("HumanEval/4", 0)
     assert "secret" not in repr(candidate).lower()
@@ -127,4 +157,5 @@ def test_raw_candidate_repr_does_not_contain_secret() -> None:
         "final_code_sha256",
         "quality_tier",
         "valid",
+        "fallback_count",
     }
