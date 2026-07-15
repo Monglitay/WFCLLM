@@ -1,0 +1,41 @@
+{
+  "artifact_type": "wfcllm_v4_experiment_audit",
+  "schema_version": "wfcllm-v4-experiment-audit/v1",
+  "date": "2026-07-15",
+  "auditor": "primary-agent-non-independent",
+  "independent_final_audit_available": false,
+  "independent_root_cause_review_available": true,
+  "overall_verdict": "warn",
+  "integrity_status": "warn",
+  "checks": {
+    "ground_truth_provenance": {"status": "pass", "classification": "real_gt"},
+    "score_normalization": {"status": "pass", "self_normalization": false},
+    "result_existence_and_recomputation": {"status": "pass"},
+    "code_path_and_dead_code": {"status": "warn", "detail": "cache audit path is exercised, but PublicContextCache is not integrated into CandidateRuntime.select"},
+    "scope": {"status": "warn", "detail": "single-seed saved-pool 30-task HumanEval pilot"},
+    "candidate_pool_equality": {"status": "pass", "matched": 600, "total": 600},
+    "retry_cardinality": {"status": "pass", "retry": 20},
+    "seed_freeze": {"status": "pass"},
+    "threshold_freeze": {"status": "pass"},
+    "split_isolation": {"status": "pass"},
+    "heldout_access": {"status": "pass", "detector_accessed": false, "limitation": "no OS syscall tracing"},
+    "detector_input_purity": {"status": "pass", "allowed_payload_fields": ["final_code"]},
+    "exact_replay": {"status": "pass", "rate": 1.0, "cold_processes": 3},
+    "cache_fairness": {"status": "pass"},
+    "key_influence_on_generation": {"status": "pass", "influence": false},
+    "raw_key_leak": {"status": "pass", "matches": 0},
+    "encoder_identity_and_leakage": {"status": "pass", "formal_encoder_used": false, "historical_training_membership_unknown": true},
+    "metric_recomputation": {"status": "pass"},
+    "post_hoc_tuning": {"status": "pass", "occurred": false},
+    "repair_budget": {"status": "pass", "used": 1, "maximum": 1},
+    "full_run_policy": {"status": "pass", "triggered": false}
+  },
+  "claims": [
+    {"id": "exact-replay", "impact": "supported"},
+    {"id": "cost-gate", "impact": "supported"},
+    {"id": "detection-superiority", "impact": "unsupported"},
+    {"id": "correctness-preservation", "impact": "unsupported"},
+    {"id": "joint-watermark-success", "impact": "unsupported"}
+  ],
+  "pending_external_review": true
+}

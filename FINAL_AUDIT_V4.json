@@ -1,0 +1,35 @@
+{
+  "artifact_type": "wfcllm_v4_final_audit",
+  "schema_version": "wfcllm-v4-final-audit/v1",
+  "date": "2026-07-15",
+  "closure": "negative_result",
+  "overall_status": "complete_with_warnings",
+  "integrity_status": "warn",
+  "claim_supported": "no",
+  "terminal_failed_gates": ["pass_delta", "tpr_strict_improvement"],
+  "pilot": {
+    "candidate_pool_match_rate": 1.0,
+    "exact_replay_rate": 1.0,
+    "cold_processes": 3,
+    "current_tpr_count": 0,
+    "v4_tpr_count": 0,
+    "current_pass_count": 18,
+    "v4_pass_count": 15,
+    "mean_score_delta": 0.06046875,
+    "mean_semantic_seconds_per_task": 0.022659895087902743,
+    "peak_allocated_mib": 0.0
+  },
+  "escalation": {
+    "heldout_detector_opened": false,
+    "humaneval_164_run": false,
+    "robustness_run": false,
+    "post_pilot_tuning": false
+  },
+  "repair": {"used": 1, "maximum": 1, "compliant": true},
+  "audit_independence": {
+    "root_cause_review": "independent_read_only",
+    "final_result_review": "primary_agent_non_independent",
+    "pending_external_review": true
+  },
+  "secret_metadata_included": false
+}

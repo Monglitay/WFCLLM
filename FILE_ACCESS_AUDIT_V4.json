@@ -1,0 +1,35 @@
+{
+  "artifact_type": "wfcllm_v4_file_access_audit",
+  "calibration": {
+    "detector_accessed": true,
+    "source_sha256_verified": true
+  },
+  "evidence_basis": [
+    "application-level heldout_accessed flags",
+    "pilot gate status and failure policy",
+    "absence of full/robustness artifact directories",
+    "review of executed detector inputs"
+  ],
+  "full": {
+    "artifact_file_count": 0,
+    "triggered": false
+  },
+  "heldout": {
+    "content_rehashed_during_final_audit": false,
+    "created_and_hashed_at_freeze": true,
+    "detector_accessed": false,
+    "frozen_count": 229,
+    "frozen_sha256": "9f49194fa9685c8fce0e41159182309b0624b775598cbbd5389eaa4d7ec984ec",
+    "reported_flags": [
+      false,
+      false
+    ]
+  },
+  "limitation": "No OS-level syscall tracing was active; this is an application/artifact audit, not a kernel-forensic access proof.",
+  "robustness": {
+    "artifact_file_count": 0,
+    "triggered": false
+  },
+  "schema_version": "wfcllm-v4-file-access-audit/v1",
+  "status": "pass"
+}

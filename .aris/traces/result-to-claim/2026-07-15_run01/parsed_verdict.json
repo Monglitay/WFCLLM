@@ -1,0 +1,7 @@
+{
+  "claim_supported": "no",
+  "confidence": "high",
+  "integrity_status": "warn",
+  "pending_external_review": true,
+  "routing_action": "record negative result and stop mechanism"
+}

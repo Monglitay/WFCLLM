@@ -66,3 +66,33 @@ Target claim rejected for the frozen implementation. The repaired pilot achieved
 - remove batch-neighborhood dependence before measuring TPR/FPR or robustness;
 - preserve final-only detection and identical raw candidate pools;
 - treat any further representation/quantization change as a new preregistered mechanism.
+
+## 2026-07-14: Watermark mechanism V4, batch-invariant structural replay
+
+### Outcome
+
+Target joint claim rejected. V4 achieved exact final-code-only replay and large
+cost savings, but the frozen 30-task pilot failed strict TPR improvement and the
+paired correctness floor. Held-out, HumanEval-164, and robustness stayed closed.
+
+### What worked
+
+- 600/600 candidate hashes and 30/30 selected evidence matched in three cold processes;
+- batch size, composition, order, process state, and cache paths were bit-exact;
+- mean semantic cost was 0.022659895 seconds/task with zero CUDA allocation;
+- calibration primary/wrong-key rates were below 5%;
+- paired scores increased by 0.06046875 with a positive bootstrap interval.
+
+### What failed
+
+- Current and V4 both detected 0/30, so there was no strict TPR improvement;
+- V4 pass was 15/30 versus Current 18/30, below the permitted paired delta;
+- the score shift never cleared the conservative frozen calibration upper tail.
+
+### Constraints for future work
+
+- do not tune Candidate C, its threshold, or its split on these results;
+- do not call a score shift watermark success;
+- keep exact final-only replay and shared-pool fairness as non-negotiable contracts;
+- treat any correctness-aware ranking, new structural evidence, integer encoder,
+  or certified margin scheme as a new preregistered mechanism.
