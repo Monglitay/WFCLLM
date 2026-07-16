@@ -1,0 +1,8 @@
+{
+  "method": {
+    "name": "gated_semantic_window_v1"
+  },
+  "gate_data": {
+    "scale": "pilot"
+  }
+}

@@ -73,6 +73,13 @@ def _gate_args(tmp_path, monkeypatch):
     config["gate_data"]["scale"] = "pilot"
     source = tmp_path / "source.json"
     source.write_text('{"schema_version":"wfcllm-gate-source-manifest/v1"}\n')
+    catalog = tmp_path / "catalog.jsonl"
+    catalog.write_text("{}\n", encoding="utf-8")
+    generation_model = tmp_path / "generation-model"
+    semantic_model = tmp_path / "semantic-model"
+    gate_model = tmp_path / "gate-model"
+    for path in (generation_model, semantic_model, gate_model):
+        path.mkdir()
     training = tmp_path / "training.keys"
     holdout = tmp_path / "holdout.keys"
     training.write_bytes(b"training-runtime-secret")
@@ -82,6 +89,18 @@ def _gate_args(tmp_path, monkeypatch):
         run_dir=str(tmp_path / "run"),
         run_id=None,
         gate_source_manifest=str(source),
+        gate_source_catalog=str(catalog),
+        generation_model_path=str(generation_model),
+        rewrite_model_path=None,
+        semantic_encoder_model_path=str(semantic_model),
+        semantic_encoder_checkpoint_path=None,
+        semantic_whitening_path=None,
+        gate_base_model_path=str(gate_model),
+        model_device="cpu",
+        gate_device="cpu",
+        gate_cache_dir=str(tmp_path / "cache"),
+        gate_batch_size=9,
+        gate_resume_checkpoint=None,
         pilot_feasibility=None,
         training_key_bank_file=str(training),
         training_key_bank_env=None,
@@ -241,7 +260,7 @@ def test_gate_validate_input_hash_changes_with_holdout_key(tmp_path):
     assert before != after
 
 
-def test_real_main_gate_data_reports_missing_approved_formal_adapter(tmp_path):
+def test_real_main_gate_data_reports_missing_production_runtime_path(tmp_path):
     import os
     import subprocess
     import sys
@@ -275,8 +294,7 @@ def test_real_main_gate_data_reports_missing_approved_formal_adapter(tmp_path):
     )
 
     assert result.returncode == 1
-    assert "no allowlisted production gate adapter is configured" in result.stderr
-    assert "Task 12/13 do not implement the formal experiment adapter" in result.stderr
+    assert "--gate-source-catalog is required for gate-data" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -314,7 +332,7 @@ def test_real_main_gate_phase_reports_specific_missing_local_resource(
 
 
 @pytest.mark.parametrize("phase", ["gate-data", "gate-train", "gate-validate"])
-def test_entry_main_rejects_unimplemented_formal_adapter_for_each_gate_phase(
+def test_entry_main_requires_production_runtime_for_each_gate_phase(
     tmp_path, monkeypatch, capsys, phase
 ):
     from wfcllm.cli.entry import main
@@ -358,7 +376,7 @@ def test_entry_main_rejects_unimplemented_formal_adapter_for_each_gate_phase(
     ])
 
     assert rc == 1
-    assert "no allowlisted production gate adapter is configured" in capsys.readouterr().err
+    assert f"--gate-source-catalog is required for {phase}" in capsys.readouterr().err
 
 
 def test_entry_main_non_gated_config_cannot_skip_matching_old_gate_state(

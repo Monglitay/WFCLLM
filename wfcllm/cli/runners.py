@@ -169,9 +169,15 @@ def _optional_gated_generation_pipeline(args: argparse.Namespace):
         factory = getattr(args, "_gated_generation_pipeline_factory", None)
         if callable(factory):
             pipeline = factory(args)
+    if pipeline is None and getattr(args, "generation_model_path", None):
+        pipeline = _build_local_gated_generation_pipeline(args)
     if pipeline is None:
-        # Orchestration resolution/status tests do not load model or dataset
-        # runtimes.  A real generate invocation supplies one of the hooks above.
+        if hasattr(args, "generation_model_path"):
+            raise ValueError(
+                "--generation-model-path is required for gated generation"
+            )
+        # Narrow dependency-injected orchestration tests use Namespaces that do
+        # not expose production runtime flags.
         return None
     if not callable(getattr(pipeline, "run", None)):
         raise ValueError("gated generation runtime pipeline is not configured")
@@ -189,6 +195,7 @@ def run_calibrate(args: argparse.Namespace, state: RunStateManager) -> int:
         calibration_path = None
         negative_input = getattr(args, "negative_input", None)
         if negative_input is not None:
+            setattr(args, "_gated_negative_corpus_hash", _safe_file_hash(Path(negative_input)))
             pipeline = _require_gated_detection_pipeline(args)
             calibration_path = _gated_calibration_output(args, config)
             pipeline.calibrate_jsonl(negative_input, output_path=calibration_path)
@@ -219,13 +226,18 @@ def run_detect(args: argparse.Namespace, state: RunStateManager) -> int:
         if detector_input is not None:
             from wfcllm.detection.gated_pipeline import load_gated_calibration_artifact
 
-            pipeline = _require_gated_detection_pipeline(args)
             calibration_path = getattr(args, "calibration", None) or state.get(
                 "calibrate", "calibration_path"
             )
             if not calibration_path:
                 raise ValueError("gated detect requires a calibration artifact")
             artifact = load_gated_calibration_artifact(calibration_path)
+            artifact_negative_hash = getattr(
+                artifact, "negative_corpus_manifest_sha256", None
+            )
+            if isinstance(artifact_negative_hash, str):
+                setattr(args, "_gated_negative_corpus_hash", artifact_negative_hash)
+            pipeline = _require_gated_detection_pipeline(args)
             details_path = _gated_detection_output(args, config)
             pipeline.detect_jsonl(
                 detector_input,
@@ -506,7 +518,9 @@ def run_gate_data(args: argparse.Namespace, state: RunStateManager) -> int:
     run_dir = _gate_run_dir(args, config)
     gate_data = config["gate_data"]
     method = config["method"]
-    resolved_hash = _canonical_hash(config)
+    from wfcllm.gate.production import experiment_contract_hash
+
+    resolved_hash = experiment_contract_hash(config)
     thresholds = tuple(
         (name, gate_data["feasibility_thresholds"][name])
         for name, _value in FEASIBILITY_THRESHOLD_ITEMS
@@ -556,7 +570,9 @@ def run_gate_train(args: argparse.Namespace, state: RunStateManager) -> int:
     pilot = _optional_runtime_path(args, "pilot_feasibility")
     if pilot is None:
         pilot = data_dir / "feasibility_summary.json"
-    resolved_hash = _canonical_hash(config)
+    from wfcllm.gate.production import experiment_contract_hash
+
+    resolved_hash = experiment_contract_hash(config)
     input_hash = compute_phase_input_hash(args, "gate-train")
     result = pipeline(GateTrainPipelineConfig(run_dir, data_dir, pilot, resolved_hash), dependencies)
     expected_output, expected_manifest = _require_expected_gate_result_paths(
@@ -589,7 +605,9 @@ def run_gate_validate(args: argparse.Namespace, state: RunStateManager) -> int:
     candidate = run_dir / "gate-train" / "candidate_bundle"
     _load_formal_json(data_dir / "manifest.json", "gate-data")
     _load_formal_json(run_dir / "gate-train" / "candidate_bundle_manifest.json", "gate-train")
-    resolved_hash = _canonical_hash(config)
+    from wfcllm.gate.production import experiment_contract_hash
+
+    resolved_hash = experiment_contract_hash(config)
     input_hash = compute_phase_input_hash(args, "gate-validate")
     result = pipeline(
         GateValidatePipelineConfig(run_dir, candidate, data_dir, resolved_hash),
@@ -639,6 +657,8 @@ def compute_phase_input_hash(args: argparse.Namespace, phase: str) -> str:
     if phase == "gate-data":
         source = _required_runtime_path(args, "gate_source_manifest")
         parts.append(bytes.fromhex(_safe_file_hash(source)))
+        catalog = _required_runtime_path(args, "gate_source_catalog")
+        parts.append(bytes.fromhex(_safe_file_hash(catalog)))
         parts.append(hashlib.sha256(_runtime_secret(args, "training_key_bank", refresh=True)).digest())
         parts.append(hashlib.sha256(_runtime_secret(args, "holdout_key_bank", refresh=True)).digest())
         pilot = _optional_runtime_path(args, "pilot_feasibility")
@@ -742,11 +762,146 @@ def _require_gated_detection_pipeline(args: argparse.Namespace):
         factory = getattr(args, "_gated_detection_pipeline_factory", None)
         if callable(factory):
             pipeline = factory(args)
+    if pipeline is None and getattr(args, "semantic_encoder_model_path", None):
+        pipeline = _build_local_gated_detection_pipeline(args)
     if not callable(getattr(pipeline, "calibrate_jsonl", None)) or not callable(
         getattr(pipeline, "detect_jsonl", None)
     ):
         raise ValueError("gated detection runtime pipeline is not configured")
     return pipeline
+
+
+def _build_local_gated_generation_pipeline(args: argparse.Namespace):
+    from wfcllm.datasets.loaders.local import load_prompts
+    from wfcllm.detection.gated_windows import GatedWindowExtractor
+    from wfcllm.gate.production import (
+        LocalHFProgramGenerator,
+        LocalRuntimeGateBundle,
+        build_local_semantic_window_scorer,
+        load_local_causal_rewriter,
+        local_semantic_runtime_hash,
+    )
+    from wfcllm.generation.gated_generator import GatedGenerator
+    from wfcllm.generation.gated_pipeline import (
+        GatedGenerationPipeline,
+        GatedGenerationPipelineConfig,
+    )
+
+    config = _require_gated_config(args)
+    options = _local_hf_runtime_options(args, config, "generate")
+    bundle_path, bundle_hash = resolve_validated_gate_bundle(args)
+    deployment_key = _runtime_secret(args, "deployment")
+    runtime_bundle = LocalRuntimeGateBundle(
+        root=bundle_path,
+        base_model_path=options.gate_base_model_path,
+        bundle_sha256=bundle_hash,
+    )
+    generation = config.get("generation")
+    if not isinstance(generation, Mapping):
+        raise ValueError("gated generation config is missing")
+    program = LocalHFProgramGenerator(
+        model_path=options.generation_model_path,
+        device=options.model_device,
+        max_new_tokens=int(generation.get("max_new_tokens", 256)),
+        temperature=float(generation.get("temperature", 0.25)),
+        top_p=float(generation.get("top_p", 0.95)),
+        seed=int(generation.get("seed", 7)),
+        rewrite_max_new_tokens=options.rewrite_max_new_tokens,
+        load_in_4bit=bool(generation.get("load_in_4bit", False)),
+        torch_dtype=str(generation.get("torch_dtype", "bf16")),
+    )
+    semantic_scorer = build_local_semantic_window_scorer(options, deployment_key)
+    extractor = GatedWindowExtractor(runtime_bundle)
+    generator = GatedGenerator(
+        partitioner=extractor.partitioner,
+        scorer=semantic_scorer,
+        rewriter=(
+            program.rewriter
+            if options.effective_rewrite_model_path == options.generation_model_path
+            else load_local_causal_rewriter(options)
+        ),
+        max_rewrites=int(config["method"]["rewrite"]["max_attempts"]),
+    )
+    dataset = str(generation.get("dataset", "humaneval"))
+    dataset_path = getattr(args, "dataset_path", None) or "data/datasets"
+    samples = load_prompts(
+        dataset,
+        dataset_path,
+        sample_limit=getattr(args, "sample_limit", None),
+        sample_offset=getattr(args, "sample_offset", None),
+    )
+    run_dir = _gate_run_dir(args, config)
+    semantic_hash = local_semantic_runtime_hash(options)
+    return GatedGenerationPipeline(
+        config=GatedGenerationPipelineConfig(
+            output_dir=run_dir,
+            dataset=dataset,
+            bundle_path=bundle_path,
+            bundle_sha256=bundle_hash,
+            parser_contract=runtime_bundle.manifest.window_contract_version,
+            gate_input_contract=runtime_bundle.manifest.gate_input_contract_version,
+            tokenizer_sha256=runtime_bundle.manifest.tokenizer_sha256,
+            semantic_encoder_sha256=semantic_hash,
+            lsh_config_sha256=_canonical_hash(config["semantic_lsh"]),
+            generation_config_sha256=_canonical_hash(generation),
+            secret_source_type=(
+                "file" if getattr(args, "secret_key_file", None) else "environment"
+            ),
+        ),
+        base_model=program,
+        generator=generator,
+        data_adapter=samples,
+        deployment_key=deployment_key,
+    )
+
+
+def _build_local_gated_detection_pipeline(args: argparse.Namespace):
+    from wfcllm.detection.gated_pipeline import (
+        GatedDetectionBindings,
+        GatedDetectionPipeline,
+    )
+    from wfcllm.detection.gated_windows import GatedWindowExtractor
+    from wfcllm.detection.scoring import GatedWindowScorer
+    from wfcllm.gate.production import (
+        LocalRuntimeGateBundle,
+        build_local_semantic_window_scorer,
+        local_semantic_runtime_hash,
+    )
+
+    config = _require_gated_config(args)
+    options = _local_hf_runtime_options(args, config, "detect")
+    bundle_path, bundle_hash = resolve_validated_gate_bundle(args)
+    deployment_key = _runtime_secret(args, "deployment")
+    runtime_bundle = LocalRuntimeGateBundle(
+        root=bundle_path,
+        base_model_path=options.gate_base_model_path,
+        bundle_sha256=bundle_hash,
+    )
+    negative_hash = getattr(args, "_gated_negative_corpus_hash", None)
+    if not isinstance(negative_hash, str) or _DIGEST.fullmatch(negative_hash) is None:
+        negative_input = getattr(args, "negative_input", None)
+        if not negative_input:
+            raise ValueError("gated detector runtime requires the calibration corpus hash")
+        negative_hash = _safe_file_hash(Path(negative_input))
+    detector = config.get("detector")
+    if not isinstance(detector, Mapping):
+        raise ValueError("gated detector config is missing")
+    semantic_hash = local_semantic_runtime_hash(options)
+    return GatedDetectionPipeline(
+        extractor=GatedWindowExtractor(runtime_bundle),
+        scorer=GatedWindowScorer(
+            semantic_scorer=build_local_semantic_window_scorer(options, deployment_key),
+            minimum_reliable_windows=int(detector.get("minimum_reliable_windows", 2)),
+        ),
+        bindings=GatedDetectionBindings(
+            gate_bundle_sha256=bundle_hash,
+            semantic_encoder_sha256=semantic_hash,
+            lsh_config_sha256=_canonical_hash(config["semantic_lsh"]),
+            key_identifier_sha256=hashlib.sha256(deployment_key).hexdigest(),
+            negative_corpus_manifest_sha256=negative_hash,
+        ),
+        target_fpr=float(detector.get("target_fpr", 0.05)),
+    )
 
 
 def _gated_calibration_output(
@@ -834,10 +989,10 @@ def _require_expected_gate_result_paths(
 def _formal_gate_dependencies(args: argparse.Namespace, phase: str) -> object:
     config = _require_gated_config(args)
     source_manifest = _optional_runtime_path(args, "gate_source_manifest")
-    gate_train = config.get("gate_train")
-    base_model_id = gate_train.get("base_encoder_id") if isinstance(gate_train, Mapping) else None
-    base_model_path = Path(base_model_id) if isinstance(base_model_id, str) else None
+    adapter_options = _local_hf_runtime_options(args, config, phase)
+    base_model_path = adapter_options.gate_base_model_path
     from wfcllm.gate.dependencies import build_local_gate_dependencies
+    from wfcllm.gate.production import LOCAL_HF_ADAPTER_NAME
 
     dependencies = build_local_gate_dependencies(
         source_manifest=source_manifest,
@@ -846,10 +1001,66 @@ def _formal_gate_dependencies(args: argparse.Namespace, phase: str) -> object:
         holdout_key_file=getattr(args, "holdout_key_bank_file", None),
         holdout_key_env=getattr(args, "holdout_key_bank_env", None),
         base_model_path=base_model_path,
+        adapter_name=LOCAL_HF_ADAPTER_NAME,
+        adapter_options=adapter_options,
     )
     if getattr(dependencies, "diagnostic_test_backend", None) is not False:
         raise ValueError("main orchestration rejects diagnostic test backend artifacts")
     return dependencies
+
+
+def _local_hf_runtime_options(
+    args: argparse.Namespace, config: Mapping[str, object], phase: str
+):
+    gate_train = config.get("gate_train")
+    base_model_id = gate_train.get("base_encoder_id") if isinstance(gate_train, Mapping) else None
+    base_model_override = getattr(args, "gate_base_model_path", None)
+    base_model_path = (
+        Path(base_model_override)
+        if isinstance(base_model_override, str) and base_model_override
+        else Path(base_model_id) if isinstance(base_model_id, str) else None
+    )
+    from wfcllm.gate.production import LocalHFGateRuntimeOptions
+
+    def required_runtime_path(name: str) -> Path:
+        value = getattr(args, name, None)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"--{name.replace('_', '-')} is required for {phase}")
+        return Path(value)
+
+    if base_model_path is None:
+        raise ValueError(f"--gate-base-model-path is required for {phase}")
+    return LocalHFGateRuntimeOptions(
+        source_catalog=required_runtime_path("gate_source_catalog"),
+        generation_model_path=required_runtime_path("generation_model_path"),
+        rewrite_model_path=_optional_runtime_path(args, "rewrite_model_path"),
+        semantic_encoder_model_path=required_runtime_path("semantic_encoder_model_path"),
+        semantic_encoder_checkpoint_path=_optional_runtime_path(
+            args, "semantic_encoder_checkpoint_path"
+        ),
+        semantic_whitening_path=_optional_runtime_path(args, "semantic_whitening_path"),
+        gate_base_model_path=base_model_path,
+        model_device=getattr(args, "model_device", "cuda"),
+        gate_device=getattr(args, "gate_device", "cuda"),
+        cache_dir=Path(getattr(args, "gate_cache_dir", "data/gate-cache")),
+        gate_batch_size=getattr(args, "gate_batch_size", 9),
+        gate_epochs=(
+            int(gate_train.get("max_epochs", 20))
+            if isinstance(gate_train, Mapping)
+            else 20
+        ),
+        gate_learning_rate=(
+            float(gate_train.get("learning_rate", 2e-5))
+            if isinstance(gate_train, Mapping)
+            else 2e-5
+        ),
+        gate_early_stopping_patience=(
+            int(gate_train.get("early_stopping_patience", 3))
+            if isinstance(gate_train, Mapping)
+            else 3
+        ),
+        gate_resume_checkpoint=_optional_runtime_path(args, "gate_resume_checkpoint"),
+    )
 
 
 def _runtime_secret(

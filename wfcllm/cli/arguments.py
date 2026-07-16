@@ -40,6 +40,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="WFCLLM run id；不传则按时间和 method 名生成",
     )
     parser.add_argument(
+        "--state-file",
+        default=None,
+        help="运行状态文件路径；用于隔离并行或远程实验",
+    )
+    parser.add_argument(
         "--run-dir",
         default=None,
         help="WFCLLM run directory；优先于 config artifacts.run_root",
@@ -135,7 +140,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--holdout-key-bank-file", default=None)
     parser.add_argument("--holdout-key-bank-env", default=None)
     parser.add_argument("--gate-source-manifest", default=None)
+    parser.add_argument("--gate-source-catalog", default=None)
     parser.add_argument("--pilot-feasibility", default=None)
+    parser.add_argument("--generation-model-path", default=None)
+    parser.add_argument("--rewrite-model-path", default=None)
+    parser.add_argument("--semantic-encoder-model-path", default=None)
+    parser.add_argument("--semantic-encoder-checkpoint-path", default=None)
+    parser.add_argument("--semantic-whitening-path", default=None)
+    parser.add_argument("--gate-base-model-path", default=None)
+    parser.add_argument("--model-device", default="cuda")
+    parser.add_argument("--gate-device", default="cuda")
+    parser.add_argument("--detector-device", default="cpu")
+    parser.add_argument("--gate-cache-dir", default="data/gate-cache")
+    parser.add_argument("--gate-batch-size", type=int, default=9)
+    parser.add_argument("--gate-resume-checkpoint", default=None)
     parser.add_argument("--lm-model-path", default=None, help="legacy watermark 阶段使用：代码生成 LLM 路径")
     parser.add_argument(
         "--dataset",

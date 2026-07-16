@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+from pathlib import Path
 import sys
 
 from wfcllm.cli.arguments import build_parser
@@ -94,7 +95,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        state = RunStateManager(path=DEFAULT_STATE_FILE)
+        state_path = Path(args.state_file) if args.state_file else DEFAULT_STATE_FILE
+        state = RunStateManager(path=state_path)
     except (OSError, UnicodeError, ValueError, RuntimeError) as exc:
         print(f"[错误] 运行状态无效：{exc}", file=sys.stderr)
         return 1
