@@ -27,7 +27,19 @@ PRODUCTION_GATE_ADAPTER_CAPABILITIES = frozenset(
         "validate_candidate",
     }
 )
-_PRODUCTION_ADAPTER_FACTORIES = MappingProxyType({})
+
+
+def _local_hf_adapter_factory(options: object):
+    from wfcllm.gate.production import LocalHFGateRuntimeOptions, LocalHFProductionAdapter
+
+    if not isinstance(options, LocalHFGateRuntimeOptions):
+        raise ValueError("local-hf-v1 requires LocalHFGateRuntimeOptions")
+    return LocalHFProductionAdapter(options)
+
+
+_PRODUCTION_ADAPTER_FACTORIES = MappingProxyType(
+    {"local-hf-v1": _local_hf_adapter_factory}
+)
 _CONSTRUCTION_TOKEN = object()
 
 
@@ -148,6 +160,7 @@ class LocalGateDependencies:
         holdout_keys: SecretReference,
         base_model_path: Path | None,
         adapter: ProductionGateAdapter,
+        adapter_name: str,
         _token: object,
     ) -> None:
         if _token is not _CONSTRUCTION_TOKEN:
@@ -157,6 +170,7 @@ class LocalGateDependencies:
         self._key_sources = {"training": training_keys, "holdout": holdout_keys}
         self._base_model_path = base_model_path
         self._adapter = adapter
+        self.adapter_name = adapter_name
         self._private_banks: dict[str, _PrivateKeyBank] = {}
 
     def load_source_manifest(self, config: GateDataPipelineConfig) -> dict[str, Any]:
@@ -312,13 +326,9 @@ def build_local_gate_dependencies(
     holdout_key_env: str | None,
     base_model_path: Path | None,
     adapter_name: str | None = None,
+    adapter_options: object | None = None,
 ) -> LocalGateDependencies:
-    """Construct from a static whitelist; arbitrary imports/objects are forbidden.
-
-    Task 12 explicitly leaves formal experiment execution for a later approved
-    stage, so the v1 registry is intentionally empty rather than fabricating an
-    unapproved parser/rewriter/trainer implementation.
-    """
+    """Construct from a static whitelist; arbitrary imports/objects are forbidden."""
 
     if adapter_name is None:
         raise ValueError(
@@ -328,7 +338,7 @@ def build_local_gate_dependencies(
     factory = _PRODUCTION_ADAPTER_FACTORIES.get(adapter_name)
     if factory is None:
         raise ValueError("adapter_name must select an allowlisted production gate adapter")
-    adapter = factory()
+    adapter = factory(adapter_options)
     return _build_dependencies(
         source_manifest=source_manifest,
         training_key_file=training_key_file,
@@ -337,6 +347,7 @@ def build_local_gate_dependencies(
         holdout_key_env=holdout_key_env,
         base_model_path=base_model_path,
         adapter=adapter,
+        adapter_name=adapter_name,
     )
 
 
@@ -360,6 +371,7 @@ def build_trusted_test_gate_dependencies(
         holdout_key_env=holdout_key_env,
         base_model_path=base_model_path,
         adapter=adapter,
+        adapter_name="trusted-test",
     )
 
 
@@ -372,6 +384,7 @@ def _build_dependencies(
     holdout_key_env: str | None,
     base_model_path: Path | None,
     adapter: ProductionGateAdapter,
+    adapter_name: str,
 ) -> LocalGateDependencies:
     _validate_production_adapter(adapter)
 
@@ -381,6 +394,7 @@ def _build_dependencies(
         holdout_keys=SecretReference(holdout_key_file, holdout_key_env),
         base_model_path=base_model_path,
         adapter=adapter,
+        adapter_name=adapter_name,
         _token=_CONSTRUCTION_TOKEN,
     )
 

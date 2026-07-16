@@ -120,7 +120,9 @@ def load_semantic_lsh_components(
         encoder.load_state_dict(state_dict)
     encoder.to(device)
 
-    tokenizer = AutoTokenizer.from_pretrained(encoder_model_path)
+    tokenizer = AutoTokenizer.from_pretrained(
+        encoder_model_path, local_files_only=True
+    )
     lsh_space = LSHSpace(
         secret_key=secret_key,
         embed_dim=embed_dim,
