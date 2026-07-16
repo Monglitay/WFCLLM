@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass, replace
+import uuid
+from copy import deepcopy
+from dataclasses import dataclass, field, fields as dataclass_fields, is_dataclass
 from typing import Any
 
 import torch
@@ -11,11 +13,18 @@ import torch.nn.functional as F
 from wfcllm.generation.boundary import (
     BoundaryDetectorState,
     BoundaryEvent,
+    Candidate,
     PromptAwareBoundaryDetector,
 )
+from wfcllm.generation.kv_cache import CacheSnapshot
 from wfcllm.method.config import SawrGenerationConfig
 from wfcllm.semantic.rules import EmbeddingRule
-from wfcllm.generation.state_machine import AuditEvent, SawrStateMachine, StateMachineSnapshot
+from wfcllm.generation.state_machine import (
+    AuditEvent,
+    LayerFrame,
+    SawrStateMachine,
+    StateMachineSnapshot,
+)
 
 
 class _LazyAutoTokenizer:
@@ -62,12 +71,46 @@ class SawrCheckpoint:
     boundary_state: BoundaryDetectorState | None
     next_logits: torch.Tensor | None
     state_machine_state: StateMachineSnapshot[SawrCheckpoint] | None
+    _context_id: str = field(repr=False, compare=False)
+    _generation_id: int = field(repr=False, compare=False)
+    _checkpoint_id: int = field(repr=False, compare=False)
 
 
 @dataclass(frozen=True)
-class _GeneratedStep:
+class GeneratedToken:
     token_id: int
     token_text: str
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.token_id, bool)
+            or not isinstance(self.token_id, int)
+            or self.token_id < 0
+        ):
+            raise ValueError("token_id must be a non-negative integer")
+        if not isinstance(self.token_text, str):
+            raise ValueError("token_text must be a string")
+
+
+@dataclass(frozen=True)
+class GeneratedByteCheckpoint:
+    checkpoint: SawrCheckpoint
+    protected_prefix: str
+    exact_start_byte: int
+
+
+@dataclass(frozen=True)
+class _CheckpointRecord:
+    generated_ids: tuple[int, ...]
+    generated_text: str
+    kv_seq_len: int
+    boundary_state: BoundaryDetectorState | None
+    boundary_id: object | None
+    next_logits: torch.Tensor | None
+    state_machine_state: StateMachineSnapshot[SawrCheckpoint] | None
+    state_machine_fingerprint: str | None
+    public_state_object: StateMachineSnapshot[SawrCheckpoint] | None
+    intern_key: tuple[Any, ...]
 
 
 @dataclass(frozen=True)
@@ -80,6 +123,10 @@ class SawrModelContext:
     """Small causal-LM generation context with rollback support."""
 
     _MAX_RETRY_PENALTY_SEQUENCES = 128
+    _CHECKPOINT_REGISTRY_HEADROOM = 512
+    _SUPPORTED_STATE_DATACLASSES = frozenset(
+        {StateMachineSnapshot, LayerFrame, AuditEvent, Candidate}
+    )
 
     def __init__(
         self,
@@ -102,6 +149,14 @@ class SawrModelContext:
         self._step_history: list[SawrCheckpoint] = []
         self._boundary_checkpoints: list[SawrCheckpoint] = []
         self._retry_penalty_sequences: list[_RetryPenaltySequence] = []
+        self._context_id = uuid.uuid4().hex
+        self._generation_id = 0
+        self._next_checkpoint_id = 0
+        self._checkpoint_records: dict[int, _CheckpointRecord] = {}
+        self._interned_checkpoints: dict[tuple[Any, ...], SawrCheckpoint] = {}
+        self._max_checkpoint_records = (
+            2 * self._config.max_new_tokens + self._CHECKPOINT_REGISTRY_HEADROOM
+        )
 
     @property
     def eos_id(self) -> int | None:
@@ -123,6 +178,10 @@ class SawrModelContext:
         self._step_history = []
         self._boundary_checkpoints = []
         self._retry_penalty_sequences = []
+        self._generation_id += 1
+        self._next_checkpoint_id = 0
+        self._checkpoint_records = {}
+        self._interned_checkpoints = {}
 
     def checkpoint(
         self,
@@ -133,18 +192,208 @@ class SawrModelContext:
         boundary_state = (
             self.boundary.checkpoint() if self.boundary is not None else None
         )
-        return SawrCheckpoint(
-            generated_ids=list(self.generated_ids),
+        kv_seq_len = self._cache_mgr.snapshot(self.past_kv).seq_len
+        intern_key = self._checkpoint_intern_key(
+            generated_ids=tuple(self.generated_ids),
             generated_text=self.generated_text,
-            kv_snapshot=self._cache_mgr.snapshot(self.past_kv),
+            kv_seq_len=kv_seq_len,
+            boundary_state=boundary_state,
+            boundary_id=self.boundary,
+            next_logits=self._next_logits,
+            state_machine_fingerprint=None,
+        )
+        existing = self._interned_checkpoints.get(intern_key)
+        if existing is not None:
+            self._validate_checkpoint(existing)
+            base = existing
+        else:
+            base = self._register_checkpoint(
+                generated_ids=tuple(self.generated_ids),
+                generated_text=self.generated_text,
+                kv_seq_len=kv_seq_len,
+                boundary_state=boundary_state,
+                boundary_id=self.boundary,
+                next_logits=self._next_logits,
+                state_machine_state=None,
+                state_machine_fingerprint=None,
+                public_state_object=None,
+                intern_key=intern_key,
+            )
+        if state_machine_state is not None:
+            return self.attach_state_machine_state(base, state_machine_state)
+        return base
+
+    def attach_state_machine_state(
+        self,
+        checkpoint: SawrCheckpoint,
+        state_machine_state: StateMachineSnapshot[SawrCheckpoint],
+    ) -> SawrCheckpoint:
+        self._validate_checkpoint(checkpoint)
+        if not isinstance(state_machine_state, StateMachineSnapshot):
+            raise ValueError("state_machine_state must be a StateMachineSnapshot")
+        fingerprint = repr(self._canonical_state_value(state_machine_state, set()))
+        try:
+            stored_state = deepcopy(state_machine_state)
+            public_state = deepcopy(stored_state)
+        except Exception as exc:
+            raise ValueError("state_machine_state must support safe deepcopy") from exc
+        base_record = self._checkpoint_records[checkpoint._checkpoint_id]
+        intern_key = self._checkpoint_intern_key(
+            generated_ids=base_record.generated_ids,
+            generated_text=base_record.generated_text,
+            kv_seq_len=base_record.kv_seq_len,
+            boundary_state=base_record.boundary_state,
+            boundary_id=base_record.boundary_id,
+            next_logits=base_record.next_logits,
+            state_machine_fingerprint=fingerprint,
+        )
+        existing = self._interned_checkpoints.get(intern_key)
+        if existing is not None:
+            self._validate_checkpoint(existing)
+            return existing
+        return self._register_checkpoint(
+            generated_ids=base_record.generated_ids,
+            generated_text=base_record.generated_text,
+            kv_seq_len=base_record.kv_seq_len,
+            boundary_state=base_record.boundary_state,
+            boundary_id=base_record.boundary_id,
+            next_logits=base_record.next_logits,
+            state_machine_state=stored_state,
+            state_machine_fingerprint=fingerprint,
+            public_state_object=public_state,
+            intern_key=intern_key,
+        )
+
+    def _canonical_state_value(
+        self,
+        value: Any,
+        active_ids: set[int],
+    ) -> Any:
+        if value is None or isinstance(value, (bool, int, str)):
+            return value
+        if isinstance(value, float):
+            if not math.isfinite(value):
+                raise ValueError("state_machine_state contains a non-finite float")
+            return value
+        if isinstance(value, SawrCheckpoint):
+            return (
+                "SawrCheckpoint",
+                value._context_id,
+                value._generation_id,
+                value._checkpoint_id,
+            )
+        value_id = id(value)
+        if value_id in active_ids:
+            raise ValueError("state_machine_state must not contain cycles")
+        if isinstance(value, (tuple, list)):
+            active_ids.add(value_id)
+            result = tuple(
+                self._canonical_state_value(item, active_ids) for item in value
+            )
+            active_ids.remove(value_id)
+            return (type(value).__name__, result)
+        if isinstance(value, (set, frozenset)):
+            active_ids.add(value_id)
+            items = [self._canonical_state_value(item, active_ids) for item in value]
+            active_ids.remove(value_id)
+            return (type(value).__name__, tuple(sorted(items, key=repr)))
+        if isinstance(value, dict):
+            if any(not isinstance(key, str) for key in value):
+                raise ValueError("state_machine_state dict keys must be strings")
+            active_ids.add(value_id)
+            items = tuple(
+                (key, self._canonical_state_value(value[key], active_ids))
+                for key in sorted(value)
+            )
+            active_ids.remove(value_id)
+            return ("dict", items)
+        if is_dataclass(value) and type(value) in self._SUPPORTED_STATE_DATACLASSES:
+            active_ids.add(value_id)
+            result = (
+                type(value).__name__,
+                tuple(
+                    (
+                        item.name,
+                        self._canonical_state_value(getattr(value, item.name), active_ids),
+                    )
+                    for item in dataclass_fields(value)
+                ),
+            )
+            active_ids.remove(value_id)
+            return result
+        raise ValueError(
+            "state_machine_state contains an unsupported mutable or runtime value"
+        )
+
+    def _checkpoint_intern_key(
+        self,
+        *,
+        generated_ids: tuple[int, ...],
+        generated_text: str,
+        kv_seq_len: int,
+        boundary_state: BoundaryDetectorState | None,
+        boundary_id: object | None,
+        next_logits: torch.Tensor | None,
+        state_machine_fingerprint: str | None,
+    ) -> tuple[Any, ...]:
+        return (
+            self._generation_id,
+            generated_ids,
+            generated_text,
+            kv_seq_len,
+            boundary_state,
+            id(boundary_id),
+            id(next_logits),
+            state_machine_fingerprint,
+        )
+
+    def _register_checkpoint(
+        self,
+        *,
+        generated_ids: tuple[int, ...],
+        generated_text: str,
+        kv_seq_len: int,
+        boundary_state: BoundaryDetectorState | None,
+        boundary_id: object | None,
+        next_logits: torch.Tensor | None,
+        state_machine_state: StateMachineSnapshot[SawrCheckpoint] | None,
+        state_machine_fingerprint: str | None,
+        public_state_object: StateMachineSnapshot[SawrCheckpoint] | None,
+        intern_key: tuple[Any, ...],
+    ) -> SawrCheckpoint:
+        if len(self._checkpoint_records) >= self._max_checkpoint_records:
+            raise ValueError("checkpoint registry capacity exceeded")
+        checkpoint_id = self._next_checkpoint_id
+        self._next_checkpoint_id += 1
+        checkpoint = SawrCheckpoint(
+            generated_ids=list(generated_ids),
+            generated_text=generated_text,
+            kv_snapshot=CacheSnapshot(seq_len=kv_seq_len),
             boundary_state=boundary_state,
             next_logits=(
-                self._next_logits.detach().clone()
-                if self._next_logits is not None
+                next_logits.detach().clone()
+                if next_logits is not None
                 else None
             ),
-            state_machine_state=state_machine_state,
+            state_machine_state=public_state_object,
+            _context_id=self._context_id,
+            _generation_id=self._generation_id,
+            _checkpoint_id=checkpoint_id,
         )
+        self._checkpoint_records[checkpoint_id] = _CheckpointRecord(
+            generated_ids=generated_ids,
+            generated_text=generated_text,
+            kv_seq_len=kv_seq_len,
+            boundary_state=boundary_state,
+            boundary_id=boundary_id,
+            next_logits=next_logits,
+            state_machine_state=state_machine_state,
+            state_machine_fingerprint=state_machine_fingerprint,
+            public_state_object=public_state_object,
+            intern_key=intern_key,
+        )
+        self._interned_checkpoints[intern_key] = checkpoint
+        return checkpoint
 
     def rollback(
         self,
@@ -154,26 +403,119 @@ class SawrModelContext:
     ) -> StateMachineSnapshot[SawrCheckpoint] | None:
         if self.past_kv is None:
             raise ValueError("cannot rollback before prefill")
+        self._validate_checkpoint(checkpoint)
+        record = self._checkpoint_records[checkpoint._checkpoint_id]
         if remember_failed_sequence:
             self._remember_failed_sequence(checkpoint)
         self.past_kv = self._cache_mgr.rollback(self.past_kv, checkpoint.kv_snapshot)
-        self.generated_ids = list(checkpoint.generated_ids)
-        self.generated_text = checkpoint.generated_text
-        if self.boundary is not None and checkpoint.boundary_state is not None:
-            self.boundary.rollback(checkpoint.boundary_state)
-        self._next_logits = (
-            checkpoint.next_logits.detach().clone()
-            if checkpoint.next_logits is not None
-            else None
-        )
+        self.generated_ids = list(record.generated_ids)
+        self.generated_text = record.generated_text
+        if self.boundary is not None and record.boundary_state is not None:
+            self.boundary.rollback(record.boundary_state)
+        self._next_logits = record.next_logits
         self._step_history = self._step_history[: len(self.generated_ids)]
         boundary_count = (
-            len(checkpoint.boundary_state.token_boundaries)
-            if checkpoint.boundary_state is not None
+            len(record.boundary_state.token_boundaries)
+            if record.boundary_state is not None
             else 0
         )
         self._boundary_checkpoints = self._boundary_checkpoints[:boundary_count]
-        return checkpoint.state_machine_state
+        self._prune_checkpoint_registry(record, checkpoint._checkpoint_id)
+        return (
+            deepcopy(record.state_machine_state)
+            if record.state_machine_state is not None
+            else None
+        )
+
+    def _prune_checkpoint_registry(
+        self,
+        target: _CheckpointRecord,
+        target_checkpoint_id: int,
+    ) -> None:
+        retained_ids = {
+            checkpoint_id
+            for checkpoint_id, record in self._checkpoint_records.items()
+            if (
+                checkpoint_id == target_checkpoint_id
+                or (
+                    len(record.generated_ids) <= len(target.generated_ids)
+                    and target.generated_ids[: len(record.generated_ids)]
+                    == record.generated_ids
+                    and target.generated_text.startswith(record.generated_text)
+                    and record.kv_seq_len <= target.kv_seq_len
+                )
+            )
+        }
+        self._checkpoint_records = {
+            checkpoint_id: record
+            for checkpoint_id, record in self._checkpoint_records.items()
+            if checkpoint_id in retained_ids
+        }
+        self._interned_checkpoints = {
+            key: value
+            for key, value in self._interned_checkpoints.items()
+            if value._checkpoint_id in retained_ids
+        }
+
+    def _validate_checkpoint(self, checkpoint: SawrCheckpoint) -> None:
+        if not isinstance(checkpoint, SawrCheckpoint):
+            raise ValueError("checkpoint must be a SawrCheckpoint")
+        if checkpoint._context_id != self._context_id:
+            raise ValueError("checkpoint does not belong to the current context")
+        if checkpoint._generation_id != self._generation_id:
+            raise ValueError("checkpoint is stale after a newer prefill")
+        record = self._checkpoint_records.get(checkpoint._checkpoint_id)
+        if record is None:
+            raise ValueError("checkpoint is stale or unknown")
+        next_logits_match = (
+            record.next_logits is None
+            and checkpoint.next_logits is None
+        ) or (
+            record.next_logits is not None
+            and checkpoint.next_logits is not None
+            and record.next_logits.shape == checkpoint.next_logits.shape
+            and record.next_logits.dtype == checkpoint.next_logits.dtype
+            and torch.equal(record.next_logits, checkpoint.next_logits)
+        )
+        if (
+            tuple(checkpoint.generated_ids) != record.generated_ids
+            or checkpoint.generated_text != record.generated_text
+            or checkpoint.kv_snapshot.seq_len != record.kv_seq_len
+            or checkpoint.boundary_state != record.boundary_state
+            or not next_logits_match
+        ):
+            raise ValueError("checkpoint was modified after creation")
+        try:
+            observed_state_fingerprint = (
+                repr(self._canonical_state_value(checkpoint.state_machine_state, set()))
+                if checkpoint.state_machine_state is not None
+                else None
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "checkpoint state_machine_state was modified after creation"
+            ) from exc
+        if (
+            record.state_machine_fingerprint is None
+            and checkpoint.state_machine_state is not None
+        ) or (
+            record.state_machine_fingerprint is not None
+            and observed_state_fingerprint != record.state_machine_fingerprint
+        ):
+            raise ValueError("checkpoint state_machine_state was modified after creation")
+        if self.boundary is not record.boundary_id:
+            raise ValueError("checkpoint boundary detector does not match current context")
+        if len(self.generated_ids) < len(record.generated_ids):
+            raise ValueError("checkpoint snapshot is stale for the current branch")
+        if tuple(self.generated_ids[: len(record.generated_ids)]) != record.generated_ids:
+            raise ValueError("checkpoint snapshot is stale for the current branch")
+        if not self.generated_text.startswith(record.generated_text):
+            raise ValueError("checkpoint snapshot is stale for the current branch")
+        if self.past_kv is None:
+            raise ValueError("cannot validate checkpoint before prefill")
+        current_seq_len = self._cache_mgr.snapshot(self.past_kv).seq_len
+        if record.kv_seq_len > current_seq_len:
+            raise ValueError("checkpoint snapshot is stale for the current KV cache")
 
     def _remember_failed_sequence(self, checkpoint: SawrCheckpoint) -> None:
         if self._config.retry_repetition_penalty <= 1.0:
@@ -198,21 +540,128 @@ class SawrModelContext:
         self,
         state_machine: SawrStateMachine[SawrCheckpoint],
     ) -> None:
-        checkpoint = self.checkpoint(state_machine.checkpoint())
-        self._boundary_checkpoints.append(checkpoint)
+        if not self._boundary_checkpoints:
+            raise ValueError("cannot attach state before a generated token checkpoint")
+        self._boundary_checkpoints[-1] = self.attach_state_machine_state(
+            self._boundary_checkpoints[-1],
+            state_machine.checkpoint(),
+        )
 
-    def forward_and_sample(self) -> _GeneratedStep:
+    def forward_and_sample(self) -> GeneratedToken:
         step_checkpoint = self.checkpoint()
         logits = self._next_token_logits()
         next_id = self._sample(logits)
-        token_text = self._tokenizer.decode([next_id], skip_special_tokens=True)
+        token_text = self._decode_generated_token(next_id)
+        self._forward_forced_token(next_id)
 
         self.generated_ids.append(next_id)
         self.generated_text += token_text
         self._step_history.append(step_checkpoint)
-        if token_text:
-            self._boundary_checkpoints.append(step_checkpoint)
-        return _GeneratedStep(token_id=next_id, token_text=token_text)
+        self._boundary_checkpoints.append(step_checkpoint)
+        return GeneratedToken(token_id=next_id, token_text=token_text)
+
+    def replay_from_checkpoint(
+        self,
+        checkpoint: SawrCheckpoint,
+        *,
+        replacement_steps: list[GeneratedToken] | tuple[GeneratedToken, ...],
+    ) -> SawrCheckpoint:
+        if not isinstance(replacement_steps, (list, tuple)) or not replacement_steps:
+            raise ValueError("replacement_steps must be a non-empty sequence")
+        if any(not isinstance(step, GeneratedToken) for step in replacement_steps):
+            raise ValueError("replacement_steps must contain only GeneratedToken values")
+        if not "".join(step.token_text for step in replacement_steps):
+            raise ValueError("replacement token text must be non-empty in aggregate")
+        self._validate_checkpoint(checkpoint)
+        for index, step in enumerate(replacement_steps):
+            if step.token_text != self._decode_generated_token(step.token_id):
+                raise ValueError(
+                    "replacement token text does not match tokenizer decode "
+                    f"at token index {index}"
+                )
+        penalties_before = list(self._retry_penalty_sequences)
+        self.rollback(checkpoint)
+        start_length = len(checkpoint.generated_ids)
+        try:
+            for step in replacement_steps:
+                step_checkpoint = self.checkpoint()
+                self._forward_forced_token(step.token_id)
+                self.generated_ids.append(step.token_id)
+                self.generated_text += step.token_text
+                self._step_history.append(step_checkpoint)
+                self._boundary_checkpoints.append(step_checkpoint)
+                if self.boundary is not None:
+                    self.boundary.feed_text(step.token_text)
+        except Exception:
+            self.rollback(checkpoint)
+            self._retry_penalty_sequences = penalties_before
+            raise
+        self._retry_penalty_sequences = [
+            sequence
+            for sequence in penalties_before
+            if len(sequence.base_ids) < start_length
+        ]
+        return self.checkpoint()
+
+    def _decode_generated_token(self, token_id: int) -> str:
+        token_text = self._tokenizer.decode(
+            [token_id],
+            skip_special_tokens=True,
+        )
+        if not isinstance(token_text, str):
+            raise ValueError("tokenizer.decode must return a string")
+        return token_text
+
+    def _forward_forced_token(self, token_id: int) -> None:
+        if self.past_kv is None:
+            raise ValueError("cannot replay before prefill")
+        input_ids = torch.tensor([[token_id]], dtype=torch.long, device=self._device)
+        with torch.no_grad():
+            output = self._model(
+                input_ids=input_ids,
+                past_key_values=self.past_kv,
+                use_cache=True,
+            )
+        self.past_kv = output.past_key_values
+        self._next_logits = output.logits[:, -1, :].detach().clone()
+
+    def checkpoint_for_generated_byte(self, start_byte: int) -> GeneratedByteCheckpoint:
+        if isinstance(start_byte, bool) or not isinstance(start_byte, int):
+            raise ValueError("start_byte must be an integer")
+        generated_bytes = self.generated_text.encode("utf-8")
+        if start_byte < 0 or start_byte > len(generated_bytes):
+            raise ValueError("start_byte is outside generated text")
+        try:
+            generated_bytes[:start_byte].decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("start_byte must be a UTF-8 codepoint boundary") from exc
+
+        candidates = [*self._step_history, self.checkpoint()]
+        eligible = [
+            candidate
+            for candidate in candidates
+            if len(candidate.generated_text.encode("utf-8")) <= start_byte
+        ]
+        if not eligible:
+            raise ValueError("no valid token checkpoint exists for start_byte")
+        _, selected = max(
+            enumerate(eligible),
+            key=lambda item: (
+                len(item[1].generated_text.encode("utf-8")),
+                item[0],
+            ),
+        )
+        selected_end = len(selected.generated_text.encode("utf-8"))
+        protected_bytes = generated_bytes[selected_end:start_byte]
+        try:
+            protected_prefix = protected_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("start_byte must be a UTF-8 codepoint boundary") from exc
+        return GeneratedByteCheckpoint(
+            checkpoint=selected,
+            protected_prefix=protected_prefix,
+            exact_start_byte=start_byte,
+        )
 
     def checkpoint_for_token_start(self, token_start_idx: int) -> SawrCheckpoint:
         if 0 <= token_start_idx < len(self._boundary_checkpoints):
@@ -371,16 +820,19 @@ class SawrGenerator:
 
             step = context.forward_and_sample()
             absolute_sampled_tokens += 1
-            if not step.token_text:
-                continue
 
-            previous_text = context.generated_text[: -len(step.token_text)]
+            previous_text = (
+                context.generated_text
+                if not step.token_text
+                else context.generated_text[: -len(step.token_text)]
+            )
             event_text, stop_reached = _event_text_before_stop(
                 previous_text,
                 step.token_text,
                 self.config.stop_sequences,
             )
             if not event_text:
+                context.boundary.feed_text("")
                 if stop_reached:
                     break
                 continue
@@ -452,10 +904,13 @@ class SawrGenerator:
                 )
                 checkpoint = (
                     base_checkpoint
-                    if base_checkpoint.state_machine_state is not None
-                    else replace(
+                    if (
+                        base_checkpoint.state_machine_state is not None
+                        or batch_state_snapshot is None
+                    )
+                    else context.attach_state_machine_state(
                         base_checkpoint,
-                        state_machine_state=batch_state_snapshot,
+                        batch_state_snapshot,
                     )
                 )
             elif event.kind == "simple_candidate" and event.candidate is not None:
@@ -464,10 +919,13 @@ class SawrGenerator:
                 )
                 checkpoint = (
                     base_checkpoint
-                    if base_checkpoint.state_machine_state is not None
-                    else replace(
+                    if (
+                        base_checkpoint.state_machine_state is not None
+                        or batch_state_snapshot is None
+                    )
+                    else context.attach_state_machine_state(
                         base_checkpoint,
-                        state_machine_state=batch_state_snapshot,
+                        batch_state_snapshot,
                     )
                 )
 

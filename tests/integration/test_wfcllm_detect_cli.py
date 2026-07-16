@@ -8,6 +8,55 @@ from unittest.mock import MagicMock, patch
 import scripts.wfcllm_detect as detect_cli
 
 
+def test_unified_gated_runners_dispatch_to_gated_pipeline(tmp_path, monkeypatch) -> None:
+    import argparse
+    from types import SimpleNamespace
+
+    from wfcllm.cli.runners import _safe_tree_hash, run_calibrate, run_detect
+    from wfcllm.method.presets import GATED_SEMANTIC_WINDOW_V1_NAME, load_method_preset
+    from wfcllm.orchestration.state import RunStateManager
+
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "formal.bin").write_bytes(b"formal")
+    config = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME).to_dict()
+    config["method"]["gate"]["bundle_path"] = str(bundle)
+    config["method"]["gate"]["bundle_sha256"] = _safe_tree_hash(bundle)
+    negative = tmp_path / "negative.jsonl"
+    positive = tmp_path / "positive.jsonl"
+    negative.write_text("", encoding="utf-8")
+    positive.write_text("", encoding="utf-8")
+    calibration = tmp_path / "calibration.json"
+    calibration.write_text("{}", encoding="utf-8")
+    pipeline = SimpleNamespace(
+        calibrate_jsonl=MagicMock(), detect_jsonl=MagicMock()
+    )
+    deployment = tmp_path / "deployment.key"
+    deployment.write_bytes(b"deployment-secret")
+    args = argparse.Namespace(
+        _config_cache=config, run_dir=str(tmp_path / "run"), run_id=None,
+        negative_input=str(negative), input=None, calibration=str(calibration),
+        positive_details=str(tmp_path / "details.jsonl"),
+        secret_key_file=str(deployment), secret_key_env=None,
+        _gated_detection_pipeline=pipeline,
+    )
+    monkeypatch.setattr("wfcllm.gate.bundle.GateBundle.load", lambda path: object())
+    state = RunStateManager(tmp_path / "state.json")
+    state.mark_done("generate", gate_bundle_sha256=config["method"]["gate"]["bundle_sha256"])
+
+    assert run_calibrate(args, state) == 0
+    pipeline.calibrate_jsonl.assert_called_once()
+    args.input = str(positive)
+    monkeypatch.setattr(
+        "wfcllm.detection.gated_pipeline.load_gated_calibration_artifact",
+        lambda path: object(),
+    )
+    assert run_detect(args, state) == 0
+    pipeline.detect_jsonl.assert_called_once()
+    assert state.get("detect", "method") == GATED_SEMANTIC_WINDOW_V1_NAME
+    assert state.get("detect", "detector_mode") == "wfcllm-gated-semantic-window/v1"
+
+
 def test_calibrate_cli_maps_detector_args_and_writes_artifact(tmp_path: Path) -> None:
     input_path = tmp_path / "negative.jsonl"
     input_record = _final_code_row("neg", "def target():\n    return 0\n")

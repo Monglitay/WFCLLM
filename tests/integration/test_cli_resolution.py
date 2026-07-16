@@ -38,6 +38,377 @@ def test_parser_secret_key_override():
     assert args.secret_key == "abc"
 
 
+def test_parser_accepts_gate_phases_and_non_public_secret_sources():
+    parser = build_parser()
+    args = parser.parse_args([
+        "--phase", "gate-data",
+        "--secret-key-file", "deployment.key",
+        "--training-key-bank-file", "training.keys",
+        "--holdout-key-bank-env", "WFCLLM_HOLDOUT_KEYS",
+    ])
+
+    assert args.phase == "gate-data"
+    assert args.secret_key_file == "deployment.key"
+    assert args.training_key_bank_file == "training.keys"
+    assert args.holdout_key_bank_env == "WFCLLM_HOLDOUT_KEYS"
+
+
+def test_runtime_config_resolver_expands_and_validates_gated_preset():
+    from wfcllm.cli.config_resolver import resolve_method_config
+    from wfcllm.method.presets import GATED_SEMANTIC_WINDOW_V1_NAME
+
+    resolved = resolve_method_config({"method": {"name": GATED_SEMANTIC_WINDOW_V1_NAME}})
+
+    assert resolved["method"]["name"] == GATED_SEMANTIC_WINDOW_V1_NAME
+    assert resolved["runtime"]["default_phases"][:3] == [
+        "gate-data", "gate-train", "gate-validate"
+    ]
+
+
+def _gate_args(tmp_path, monkeypatch):
+    import argparse
+    from wfcllm.method.presets import GATED_SEMANTIC_WINDOW_V1_NAME, load_method_preset
+
+    config = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME).to_dict()
+    config["gate_data"]["scale"] = "pilot"
+    source = tmp_path / "source.json"
+    source.write_text('{"schema_version":"wfcllm-gate-source-manifest/v1"}\n')
+    training = tmp_path / "training.keys"
+    holdout = tmp_path / "holdout.keys"
+    training.write_bytes(b"training-runtime-secret")
+    holdout.write_bytes(b"holdout-runtime-secret")
+    args = argparse.Namespace(
+        _config_cache=config,
+        run_dir=str(tmp_path / "run"),
+        run_id=None,
+        gate_source_manifest=str(source),
+        pilot_feasibility=None,
+        training_key_bank_file=str(training),
+        training_key_bank_env=None,
+        holdout_key_bank_file=str(holdout),
+        holdout_key_bank_env=None,
+        secret_key_file=None,
+        secret_key_env=None,
+    )
+    return args, source
+
+
+def test_gate_data_runner_persists_config_input_and_output_hashes(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from wfcllm.cli.runners import run_gate_data
+    from wfcllm.orchestration.state import RunStateManager
+
+    args, _source = _gate_args(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "wfcllm.cli.runners._formal_gate_dependencies",
+        lambda _args, _phase: SimpleNamespace(diagnostic_test_backend=False),
+    )
+
+    def fake_pipeline(config, dependencies):
+        output = config.output_root / "gate-data"
+        output.mkdir(parents=True)
+        manifest = {
+            "schema_version": "wfcllm-gate-data-manifest/v1",
+            "config_hash": config.config_hash,
+            "diagnostic_test_backend": False,
+            "formal_eligible": True,
+        }
+        path = output / "manifest.json"
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        return SimpleNamespace(manifest=manifest, manifest_path=path, output_dir=output)
+
+    monkeypatch.setattr("wfcllm.gate.pipeline.run_gate_data", fake_pipeline)
+    state = RunStateManager(tmp_path / "state.json")
+
+    assert run_gate_data(args, state) == 0
+    for field in ("config_hash", "input_hash", "output_manifest_hash", "output_artifact_hash"):
+        assert len(state.get("gate-data", field)) == 64
+
+
+def test_gate_data_runner_rejects_input_mutation_during_pipeline(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from wfcllm.cli.runners import run_gate_data
+    from wfcllm.orchestration.state import RunStateManager
+
+    args, source = _gate_args(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "wfcllm.cli.runners._formal_gate_dependencies",
+        lambda _args, _phase: SimpleNamespace(diagnostic_test_backend=False),
+    )
+
+    def mutating_pipeline(config, dependencies):
+        source.write_text('{"changed":true}\n')
+        output = config.output_root / "gate-data"
+        output.mkdir(parents=True)
+        manifest = {"schema_version": "wfcllm-gate-data-manifest/v1", "config_hash": config.config_hash, "diagnostic_test_backend": False, "formal_eligible": True}
+        path = output / "manifest.json"
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        return SimpleNamespace(manifest=manifest, manifest_path=path, output_dir=output)
+
+    monkeypatch.setattr("wfcllm.gate.pipeline.run_gate_data", mutating_pipeline)
+    state = RunStateManager(tmp_path / "state.json")
+
+    with pytest.raises(ValueError, match="input changed"):
+        run_gate_data(args, state)
+    assert state.is_done("gate-data") is False
+
+
+def test_main_orchestration_rejects_diagnostic_gate_dependencies(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from wfcllm.cli.runners import run_gate_data
+    from wfcllm.orchestration.state import RunStateManager
+
+    args, _source = _gate_args(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "wfcllm.gate.dependencies.build_local_gate_dependencies",
+        lambda **_kwargs: SimpleNamespace(diagnostic_test_backend=True),
+    )
+
+    with pytest.raises(ValueError, match="diagnostic test backend"):
+        run_gate_data(args, RunStateManager(tmp_path / "state.json"))
+
+
+def test_external_validated_bundle_hash_is_bound_across_main_phases(tmp_path, monkeypatch):
+    import argparse
+    from wfcllm.cli.runners import _safe_tree_hash, run_calibrate, run_detect, run_generate
+    from wfcllm.method.presets import GATED_SEMANTIC_WINDOW_V1_NAME, load_method_preset
+    from wfcllm.orchestration.state import RunStateManager
+
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "formal.bin").write_bytes(b"formal")
+    config = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME).to_dict()
+    config["method"]["gate"]["bundle_path"] = str(bundle)
+    config["method"]["gate"]["bundle_sha256"] = _safe_tree_hash(bundle)
+    deployment = tmp_path / "deployment.key"
+    deployment.write_bytes(b"deployment")
+    args = argparse.Namespace(
+        _config_cache=config,
+        run_dir=str(tmp_path / "run"), run_id=None,
+        secret_key_file=str(deployment), secret_key_env=None,
+    )
+    monkeypatch.setattr("wfcllm.gate.bundle.GateBundle.load", lambda path: object())
+    state = RunStateManager(tmp_path / "state.json")
+
+    assert run_generate(args, state) == 0
+    assert run_calibrate(args, state) == 0
+    assert run_detect(args, state) == 0
+    hashes = {state.get(phase, "gate_bundle_sha256") for phase in ("generate", "calibrate", "detect")}
+    assert hashes == {config["method"]["gate"]["bundle_sha256"]}
+
+
+def test_external_bundle_hash_mismatch_is_rejected_before_model_load(tmp_path, monkeypatch):
+    import argparse
+    from wfcllm.cli.runners import run_generate
+    from wfcllm.method.presets import GATED_SEMANTIC_WINDOW_V1_NAME, load_method_preset
+    from wfcllm.orchestration.state import RunStateManager
+
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "formal.bin").write_bytes(b"formal")
+    config = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME).to_dict()
+    config["method"]["gate"]["bundle_path"] = str(bundle)
+    config["method"]["gate"]["bundle_sha256"] = "0" * 64
+    deployment = tmp_path / "deployment.key"
+    deployment.write_bytes(b"deployment")
+    args = argparse.Namespace(_config_cache=config, run_dir=str(tmp_path / "run"), run_id=None, secret_key_file=str(deployment), secret_key_env=None)
+    loaded = []
+    monkeypatch.setattr("wfcllm.gate.bundle.GateBundle.load", lambda path: loaded.append(path))
+
+    with pytest.raises(ValueError, match="hash mismatch"):
+        run_generate(args, RunStateManager(tmp_path / "state.json"))
+    assert loaded == []
+
+
+def test_gate_validate_input_hash_changes_with_holdout_key(tmp_path):
+    from wfcllm.cli.runners import compute_phase_input_hash
+
+    args, _source = _gate_args(tmp_path, None)
+    run = Path(args.run_dir)
+    data = run / "gate-data"
+    candidate = run / "gate-train" / "candidate_bundle"
+    candidate.mkdir(parents=True)
+    data.mkdir(parents=True)
+    (data / "manifest.json").write_text("data")
+    (candidate / "model.bin").write_bytes(b"candidate")
+    (candidate.parent / "candidate_bundle_manifest.json").write_text("candidate")
+
+    before = compute_phase_input_hash(args, "gate-validate")
+    assert "holdout_key_bank" not in args._gate_runtime_secrets
+    Path(args.holdout_key_bank_file).write_bytes(b"different-holdout-runtime-secret")
+    after = compute_phase_input_hash(args, "gate-validate")
+
+    assert before != after
+
+
+def test_real_main_gate_data_reports_missing_approved_formal_adapter(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parents[2]
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps({"schema_version": "wfcllm-gate-source-manifest/v1", "sources": []}))
+    training = tmp_path / "training.json"
+    holdout = tmp_path / "holdout.json"
+    training.write_text(json.dumps([f"training-{index}" for index in range(32)]))
+    holdout.write_text(json.dumps([f"holdout-{index}" for index in range(8)]))
+    pilot = tmp_path / "pilot.json"
+    pilot.write_text("{}")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(root / "run.py"),
+            "--phase", "gate-data",
+            "--config", str(root / "configs/wfcllm/gated_semantic_window_v1.json"),
+            "--run-dir", str(tmp_path / "run"),
+            "--gate-source-manifest", str(source),
+            "--training-key-bank-file", str(training),
+            "--holdout-key-bank-file", str(holdout),
+            "--pilot-feasibility", str(pilot),
+        ],
+        cwd=tmp_path,
+        env={**os.environ, "HF_HUB_OFFLINE": "1", "HF_DATASETS_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "no allowlisted production gate adapter is configured" in result.stderr
+    assert "Task 12/13 do not implement the formal experiment adapter" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("phase", "expected"),
+    [
+        ("gate-train", "requires the gate-data manifest"),
+        ("gate-validate", "requires the gate-data manifest"),
+    ],
+)
+def test_real_main_gate_phase_reports_specific_missing_local_resource(
+    tmp_path, phase, expected
+):
+    import os
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(root / "run.py"),
+            "--phase", phase,
+            "--config", str(root / "configs/wfcllm/gated_semantic_window_v1.json"),
+            "--run-dir", str(tmp_path / "empty-run"),
+        ],
+        cwd=tmp_path,
+        env={**os.environ, "HF_HUB_OFFLINE": "1", "HF_DATASETS_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert expected in result.stderr
+
+
+@pytest.mark.parametrize("phase", ["gate-data", "gate-train", "gate-validate"])
+def test_entry_main_rejects_unimplemented_formal_adapter_for_each_gate_phase(
+    tmp_path, monkeypatch, capsys, phase
+):
+    from wfcllm.cli.entry import main
+
+    root = Path(__file__).resolve().parents[2]
+    run = tmp_path / "run"
+    data = run / "gate-data"
+    train = run / "gate-train"
+    data.mkdir(parents=True)
+    (data / "manifest.json").write_text(json.dumps({
+        "schema_version": "wfcllm-gate-data-manifest/v1",
+        "diagnostic_test_backend": False,
+        "formal_eligible": True,
+    }))
+    (data / "feasibility_summary.json").write_text("{}")
+    (train / "candidate_bundle").mkdir(parents=True)
+    (train / "candidate_bundle" / "model.bin").write_bytes(b"candidate")
+    (train / "candidate_bundle_manifest.json").write_text(json.dumps({
+        "schema_version": "wfcllm-gate-train-candidate/v1",
+        "diagnostic_test_backend": False,
+        "formal_eligible": True,
+    }))
+    source = tmp_path / "source.json"
+    source.write_text("{}")
+    training = tmp_path / "training.json"
+    holdout = tmp_path / "holdout.json"
+    training.write_text(json.dumps([f"training-{index}" for index in range(32)]))
+    holdout.write_text(json.dumps([f"holdout-{index}" for index in range(8)]))
+    pilot = tmp_path / "pilot.json"
+    pilot.write_text("{}")
+
+    monkeypatch.setattr("wfcllm.cli.entry.DEFAULT_STATE_FILE", tmp_path / "state.json")
+    rc = main([
+        "--phase", phase,
+        "--config", str(root / "configs/wfcllm/gated_semantic_window_v1.json"),
+        "--run-dir", str(run),
+        "--gate-source-manifest", str(source),
+        "--training-key-bank-file", str(training),
+        "--holdout-key-bank-file", str(holdout),
+        "--pilot-feasibility", str(pilot),
+    ])
+
+    assert rc == 1
+    assert "no allowlisted production gate adapter is configured" in capsys.readouterr().err
+
+
+def test_entry_main_non_gated_config_cannot_skip_matching_old_gate_state(
+    tmp_path, monkeypatch, capsys
+):
+    import hashlib
+
+    from wfcllm.cli.entry import main
+    from wfcllm.cli.runners import _safe_tree_hash
+    from wfcllm.orchestration.state import RunStateManager
+
+    root = Path(__file__).resolve().parents[2]
+    run_dir = tmp_path / "old-run"
+    output = run_dir / "gate-data"
+    output.mkdir(parents=True)
+    manifest = output / "manifest.json"
+    manifest.write_text("stable")
+    input_hash = "a" * 64
+    state_path = tmp_path / "state.json"
+    RunStateManager(state_path).mark_done(
+        "gate-data",
+        input_hash=input_hash,
+        manifest_path=str(manifest),
+        output_manifest_hash=hashlib.sha256(b"stable").hexdigest(),
+        output_artifact_path=str(output),
+        output_artifact_hash=_safe_tree_hash(output),
+    )
+    monkeypatch.setattr("wfcllm.cli.entry.DEFAULT_STATE_FILE", state_path)
+    monkeypatch.setattr(
+        "wfcllm.cli.runners.compute_phase_input_hash",
+        lambda _args, _phase: input_hash,
+    )
+
+    rc = main(
+        [
+            "--phase",
+            "gate-data",
+            "--config",
+            str(root / "configs/base_config.json"),
+            "--run-dir",
+            str(run_dir),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "gate phases require gated_semantic_window_v1" in captured.err
+    assert "[跳过]" not in captured.out
+
+
 # --- config_resolver tests ---
 
 import json

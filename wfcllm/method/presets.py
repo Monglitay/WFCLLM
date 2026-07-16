@@ -5,6 +5,7 @@ from copy import deepcopy
 from wfcllm.method.config import WFCLLMMethodPreset
 
 EVIDENCE_RETRY_SEED7X3_NAME = "evidence_retry_seed7x3"
+GATED_SEMANTIC_WINDOW_V1_NAME = "gated_semantic_window_v1"
 
 _EVIDENCE_RETRY_SEED7X3 = WFCLLMMethodPreset(
     method={
@@ -59,9 +60,228 @@ _EVIDENCE_RETRY_SEED7X3 = WFCLLMMethodPreset(
     runtime={"default_phases": ["generate", "calibrate", "detect", "report", "audit"]},
 )
 
+_GATED_SEMANTIC_WINDOW_V1 = WFCLLMMethodPreset(
+    method={
+        "name": GATED_SEMANTIC_WINDOW_V1_NAME,
+        "strict_no_quality_gate": True,
+        "strict_code_only_detector": True,
+        "experimental": True,
+        "windowing": {
+            "enabled": True,
+            "contract_version": "python-statement-window/v1",
+            "max_units": 3,
+            "max_preceding_units": 3,
+            "excluded_statement_types": [
+                "pass",
+                "break",
+                "continue",
+                "raise",
+                "import",
+                "import_from",
+                "global",
+                "nonlocal",
+                "delete",
+                "assert",
+                "function_definition_header",
+                "class_definition_header",
+                "parser_recovery",
+            ],
+            "compound_header_singleton": True,
+        },
+        "gate": {
+            "input_contract_version": "wfcllm-gate-input/v1",
+            "bundle_contract_version": "wfcllm-gate-bundle/v1",
+            "bundle_path": None,
+            "bundle_sha256": None,
+            "require_validated": True,
+            "uncertain_boundary_policy": "close_and_skip",
+            "max_input_tokens": 512,
+        },
+        "rewrite": {
+            "candidate_zero": "original_window",
+            "max_attempts": 3,
+            "experiment_budgets": [1, 3, 6],
+            "key_blind": True,
+        },
+        "semantic": {
+            "parent_descriptor_version": "python-statement-window/v1",
+            "encoder_id": "semantic-encoder-local-v1",
+            "lsh": {
+                "d": 4,
+                "gamma": 0.25,
+                "margin": 0.0,
+                "key_derivation_version": "wfcllm-parent-key/v1",
+            },
+        },
+    },
+    generation={
+        "dataset": "humaneval",
+        "max_new_tokens": 256,
+        "temperature": 0.25,
+        "top_p": 0.95,
+        "top_k": 0,
+        "torch_dtype": "bf16",
+        "device": "cuda",
+        "seed": 7,
+        "load_in_4bit": True,
+        "prompt_mode": "completion",
+        "max_total_sampled_tokens": 32768,
+    },
+    semantic_lsh={
+        "rule_name": "semantic_lsh",
+        "lsh_d": 4,
+        "lsh_gamma": 0.25,
+        "semantic_margin": 0.0,
+        "use_ordinal_keying": False,
+    },
+    detector={
+        "mode": "wfcllm-gated-semantic-window/v1",
+        "target_fpr": 0.05,
+        "minimum_reliable_windows": 2,
+        "statistic": "reliable_window_hit_rate",
+        "abstain_policy": "exclude_from_denominator",
+    },
+    calibration={
+        "method": "empirical_right_tail_plus_one",
+        "group_by": "reliable_window_count",
+        "target_fpr": 0.05,
+        "posthoc_pass_at_1_noninferiority_absolute_drop_max": 0.02,
+    },
+    gate_data={
+        "schema_version": "wfcllm-gate-data/v1",
+        "source_manifest_version": "wfcllm-gate-source-manifest/v1",
+        "split_contract_version": "wfcllm-gate-split/v1",
+        "sources": [
+            "main_generation",
+            "mbpp_train",
+            "mbpp_validation",
+            "oss_python",
+            "parser_boundary",
+        ],
+        "human_eval_included": False,
+        "scale": "full",
+        "pilot_independent_group_min": 2000,
+        "pilot_independent_group_max": 5000,
+        "full_independent_group_min": 20000,
+        "full_independent_group_max": 50000,
+        "learning_curve_group_counts": [5000, 10000, 20000, "full"],
+        "window_lengths": [1, 2, 3],
+        "candidate_zero": "original_window",
+        "rewrite_count": 6,
+        "rewrite_budgets": [1, 3, 6],
+        "training_key_count": 32,
+        "training_key_bank_file_parameter": "training_key_bank_file",
+        "training_key_bank_manifest_sha256": None,
+        "training_key_bank_id": None,
+        "holdout_key_count": 8,
+        "holdout_key_bank_file_parameter": "holdout_key_bank_file",
+        "holdout_key_bank_manifest_sha256": None,
+        "holdout_key_bank_id": None,
+        "label_contract_version": "wfcllm-gate-label/v1",
+        "label_thresholds": {
+            "reliable_success_rate_r3_min": 0.60,
+            "structurally_valid_rewrite_rate_r3_min": 2 / 3,
+            "unstable_candidate_rate_r3_max": 0.10,
+        },
+        "feasibility_contract_version": "gate-data-feasibility/v1",
+        "feasibility_thresholds": {
+            "pilot_independent_group_min": 2000,
+            "pilot_independent_group_max": 5000,
+            "full_independent_group_min": 20000,
+            "full_independent_group_max": 50000,
+            "pilot_suitable_positive_min": 200,
+            "pilot_suitable_negative_min": 500,
+            "full_suitable_positive_min": 2000,
+            "full_suitable_negative_min": 5000,
+            "window_length_group_min": 200,
+            "major_statement_family_count_min": 4,
+            "major_statement_family_group_min": 100,
+            "r3_minus_r1_bootstrap_lower_95_exclusive_min": 0.0,
+            "holdout_key_absolute_decline_max": 0.10,
+            "validation_test_suitable_positive_min": 200,
+            "validation_test_suitable_negative_min": 500,
+        },
+    },
+    gate_train={
+        "model_contract_version": "wfcllm-gate-model-state/v1",
+        "base_encoder_id": "data/models/codet5-small",
+        "parameter_count_min": 30000000,
+        "parameter_count_max": 80000000,
+        "max_tokens": 512,
+        "optimizer": "adamw",
+        "learning_rate": 0.00002,
+        "max_epochs": 20,
+        "early_stopping_patience": 3,
+        "losses": [
+            "close_bce",
+            "suitable_bce",
+            "dangerous_negative_fp",
+            "context_consistency",
+            "batch_consistency",
+            "quantization_consistency",
+        ],
+        "loss_weights": {
+            "close_bce": 1.0,
+            "suitable_bce": 1.0,
+            "close_positive": 1.0,
+            "suitable_positive": 1.0,
+            "suitable_false_positive": 4.0,
+            "context_consistency": 1.0,
+            "batch_consistency": 1.0,
+            "quantization_consistency": 0.1,
+        },
+    },
+    gate_validate={
+        "contract_version": "wfcllm-gate-validation/v1",
+        "holdout_key_count": 8,
+        "holdout_key_bank_file_parameter": "holdout_key_bank_file",
+        "threshold_fit_grouped": True,
+        "agreement_subset_disjoint": True,
+        "batch_sizes": [1, 2, 4, 8],
+        "orders": ["original", "reverse", "fixed_random"],
+        "cpu_precisions": ["float", "dynamic_qint8"],
+        "gpu_float_if_available": True,
+        "independent_reloads": 2,
+        "formal_quantization": "torch-dynamic-qint8-linear",
+        "max_input_tokens": 512,
+        "acceptance_thresholds": {
+            "decision_agreement_min": 0.999,
+            "float_quantized_accepted_set_agreement_min": 0.999,
+            "formal_accepted_span_consensus_min": 1.0,
+            "suitable_false_positive_rate_max": 0.05,
+        },
+    },
+    artifacts={"run_root": "data/runs"},
+    runtime={
+        "default_phases": [
+            "gate-data",
+            "gate-train",
+            "gate-validate",
+            "generate",
+            "calibrate",
+            "detect",
+            "report",
+            "audit",
+        ],
+        "external_validated_bundle_phases": [
+            "generate",
+            "calibrate",
+            "detect",
+            "report",
+            "audit",
+        ],
+    },
+)
+
 
 def load_method_preset(name: str) -> WFCLLMMethodPreset:
-    if name != EVIDENCE_RETRY_SEED7X3_NAME:
+    presets = {
+        EVIDENCE_RETRY_SEED7X3_NAME: _EVIDENCE_RETRY_SEED7X3,
+        GATED_SEMANTIC_WINDOW_V1_NAME: _GATED_SEMANTIC_WINDOW_V1,
+    }
+    try:
+        preset = presets[name]
+    except (KeyError, TypeError) as exc:
         raise ValueError(f"unknown WFCLLM method preset: {name}")
-    payload = deepcopy(_EVIDENCE_RETRY_SEED7X3.to_dict())
+    payload = deepcopy(preset.to_dict())
     return WFCLLMMethodPreset(**payload)

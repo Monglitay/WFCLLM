@@ -5,6 +5,8 @@ Lifted verbatim from run.py:63-296 (Phase 1 refactor). Pure functions; no behavi
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
+from copy import deepcopy
 import json
 from pathlib import Path
 
@@ -31,6 +33,40 @@ def load_config(config_path: Path) -> dict:
         import sys
         print(f"[错误] 配置文件解析失败：{e}", file=sys.stderr)
         sys.exit(1)
+
+
+def resolve_method_config(config: Mapping[str, object]) -> dict:
+    """Expand a named public method config against its canonical preset."""
+
+    if not isinstance(config, Mapping):
+        raise ValueError("config must be a mapping")
+    method = config.get("method")
+    name = method.get("name") if isinstance(method, Mapping) else None
+    if not isinstance(name, str):
+        return deepcopy(dict(config))
+
+    from wfcllm.method.presets import (
+        EVIDENCE_RETRY_SEED7X3_NAME,
+        GATED_SEMANTIC_WINDOW_V1_NAME,
+        load_method_preset,
+    )
+
+    if name not in {EVIDENCE_RETRY_SEED7X3_NAME, GATED_SEMANTIC_WINDOW_V1_NAME}:
+        return deepcopy(dict(config))
+    merged = _deep_merge(load_method_preset(name).to_dict(), dict(config))
+    from wfcllm.method.config import WFCLLMMethodPreset
+
+    return WFCLLMMethodPreset(**merged).to_dict()
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    result = deepcopy(base)
+    for key, value in override.items():
+        if isinstance(value, Mapping) and isinstance(result.get(key), Mapping):
+            result[key] = _deep_merge(dict(result[key]), dict(value))
+        else:
+            result[key] = deepcopy(value)
+    return result
 
 
 def resolve_extract_lsh_params(first_record: dict, ext_cfg: dict) -> tuple[int, float]:
