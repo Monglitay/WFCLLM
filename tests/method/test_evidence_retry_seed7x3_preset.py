@@ -20,6 +20,32 @@ def test_evidence_retry_seed7x3_preset_matches_spec() -> None:
     assert preset.semantic_lsh["lsh_gamma"] == 0.25
     assert preset.detector["statistic"] == "calibrated_context_mean_proxy_penalized"
     assert preset.detector["proxy_penalty_alpha"] == 0.4
+    assert preset.runtime["default_phases"] == [
+        "generate",
+        "calibrate",
+        "detect",
+        "report",
+        "audit",
+    ]
+    assert preset.gate_data == {}
+    assert preset.gate_train == {}
+    assert preset.gate_validate == {}
+
+
+def test_evidence_retry_preset_is_deep_copied_between_loads() -> None:
+    first = load_method_preset(EVIDENCE_RETRY_SEED7X3_NAME)
+    first.generation["seed"] = -1
+    first.runtime["default_phases"].clear()
+
+    second = load_method_preset(EVIDENCE_RETRY_SEED7X3_NAME)
+    assert second.generation["seed"] == 7
+    assert second.runtime["default_phases"] == [
+        "generate",
+        "calibrate",
+        "detect",
+        "report",
+        "audit",
+    ]
 
 
 def test_default_preset_has_no_legacy_sections() -> None:

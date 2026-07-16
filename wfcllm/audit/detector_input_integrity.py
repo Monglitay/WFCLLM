@@ -21,9 +21,18 @@ def audit_detector_input_file(path: str | Path) -> dict[str, Any]:
 
         records_checked += 1
         try:
-            record = json.loads(line)
+            record = json.loads(line, object_pairs_hook=_unique_json_object)
             validate_final_code_record_exact(record)
         except (json.JSONDecodeError, ValueError) as exc:
             errors.append({"line": line_number, "error": str(exc)})
 
     return {"ok": not errors, "records_checked": records_checked, "errors": errors}
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, child in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON field is forbidden: {key}")
+        value[key] = child
+    return value

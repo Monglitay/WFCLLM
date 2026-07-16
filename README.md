@@ -1,6 +1,6 @@
 # WFCLLM: Structure-Aware Generation-Time Semantic Watermarking for Code LLMs
 
-WFCLLM is a structure-aware generation-time semantic watermarking method for code LLMs. The default method preset is `evidence_retry_seed7x3`.
+WFCLLM is a structure-aware generation-time semantic watermarking method for code LLMs. The default and official baseline preset remains `evidence_retry_seed7x3`. The optional `gated_semantic_window_v1` preset is experimental; offline fake tests establish its implementation contract and wiring, not real gate effectiveness or detector improvement.
 
 WFCLLM embeds semantic LSH evidence while code is generated, using structure-aware boundary detection, rollback-capable evidence-only retry, and strict final-code-only statistical detection. The official protocol forbids pass/test/correctness proxies during generation, retry, calibration, detection, and final candidate selection.
 
@@ -15,6 +15,12 @@ python run.py --phase generate
 python run.py --phase detect --input data/runs/<run_id>/inputs/final_code.jsonl
 python run.py --phase audit --run-dir data/runs/<run_id>
 ```
+
+To select the experimental gated configuration, use
+`--config configs/wfcllm/gated_semantic_window_v1.json`. Its default phase
+sequence is `gate-data`, `gate-train`, `gate-validate`, `generate`, `calibrate`,
+`detect`, `report`, `audit`. A separately validated external bundle may start
+at `generate` and then uses the normal five main phases.
 
 The default run root is `data/runs/`. Generated official detector inputs are written as `inputs/final_code.jsonl` with exactly `id`, `dataset`, `prompt`, and `final_code`.
 
@@ -87,6 +93,13 @@ conda run -n WFCLLM python -m compileall wfcllm run.py scripts tools
 
 For model-sensitive tests, prefer local resources under `data/models/` and `data/datasets/`.
 
+The gated workflow requires all resources locally: a supported base generation
+model, the semantic encoder, `data/models/codet5-small`, source datasets, a
+private 32-key training bank, a disjoint private 8-key holdout bank, and a
+deployment key supplied through the CLI's file/environment options. It never
+downloads models or datasets automatically. Keys stay outside configs and
+public artifacts; only identifiers and hashes may be published.
+
 ## Mainline Phases
 
 `run.py` is a thin entrypoint that forwards to `wfcllm.cli.entry:main`.
@@ -99,6 +112,13 @@ Default mainline phases:
 - `report`
 - `audit`
 
+The experimental gated preset prepends three phases:
+
+- `gate-data` builds provenance-bound, no-quality-proxy supervision.
+- `gate-train` trains the close/suitable gate with the fixed six-loss contract.
+- `gate-validate` fits thresholds, validates float/int8 stability, and is the
+  only formal gate-bundle publisher.
+
 The default config is `configs/base_config.json`, which points to the official method preset and the `data/runs/` artifact root.
 
 ## Protocol Summary
@@ -108,3 +128,7 @@ Detector input is final code only. Audit rows, generation traces, retry decision
 Posthoc pass reports must carry the marker described in [docs/NO_QUALITY_GATE_PROTOCOL.md](docs/NO_QUALITY_GATE_PROTOCOL.md). They can be used to report utility after the run, but they cannot influence generation, retry, final selection, calibration, or detection.
 
 Diagnostic selector outputs must be marked `diagnostic_only=true` and `not_official_method=true`; see [docs/DIAGNOSTIC_UPPER_BOUND.md](docs/DIAGNOSTIC_UPPER_BOUND.md).
+
+Do not commit `data/runs/`, gate datasets, key banks, models, checkpoints,
+bundles, generated JSONL, logs, or other experiment artifacts. The repository
+tracks contracts, code, small configs, tests, and documentation only.

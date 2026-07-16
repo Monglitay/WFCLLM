@@ -143,6 +143,10 @@ import argparse
 from wfcllm.orchestration.pipeline import PhaseOrchestrator
 
 
+def _concurrent_mark_state(path: str, phase: str) -> None:
+    RunStateManager(path=Path(path)).mark_done(phase, worker=phase)
+
+
 def _make_args(**kwargs):
     """Build minimal argparse.Namespace for orchestrator tests."""
     defaults = dict(force=False, eval_only=False, phase=None, input=None)
@@ -370,7 +374,207 @@ def test_phases_order():
         "legacy-pretrain",
         "legacy-ablation",
     ]
-    assert ALL_PHASES == PHASES + OPTIONAL_PHASES + LEGACY_PHASES
+    from wfcllm.orchestration.state import GATE_PHASES
+    assert ALL_PHASES == PHASES + GATE_PHASES + OPTIONAL_PHASES + LEGACY_PHASES
+
+
+def test_gate_phases_are_allowed_without_changing_legacy_main_phase_constant():
+    from wfcllm.orchestration.state import GATE_PHASES
+
+    assert PHASES == ["generate", "calibrate", "detect", "report", "audit"]
+    assert GATE_PHASES == ["gate-data", "gate-train", "gate-validate"]
+    assert all(phase in ALL_PHASES for phase in GATE_PHASES)
+
+
+def test_gated_method_uses_configured_eight_phase_sequence(tmp_path):
+    from wfcllm.method.presets import GATED_SEMANTIC_WINDOW_V1_NAME, load_method_preset
+
+    state = RunStateManager(tmp_path / "state.json")
+    orchestrator = PhaseOrchestrator(
+        state=state,
+        phase_registry=PhaseRegistry(),
+        prereq_registry=PrereqRegistry(),
+        resolved_config=load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME).to_dict(),
+    )
+
+    assert orchestrator.resolve_phase_sequence() == [
+        "gate-data", "gate-train", "gate-validate", "generate",
+        "calibrate", "detect", "report", "audit",
+    ]
+
+
+def test_gated_generate_run_phase_requires_validated_bundle_before_dispatch(tmp_path):
+    from wfcllm.method.presets import GATED_SEMANTIC_WINDOW_V1_NAME, load_method_preset
+
+    orchestrator = PhaseOrchestrator(
+        state=RunStateManager(tmp_path / "state.json"),
+        phase_registry=PhaseRegistry(),
+        prereq_registry=PrereqRegistry(),
+        resolved_config=load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME).to_dict(),
+    )
+
+    with pytest.raises(ValueError, match="validated gate bundle"):
+        orchestrator.run_phase("generate")
+
+
+def test_existing_method_keeps_five_phase_sequence(tmp_path):
+    from wfcllm.method.presets import EVIDENCE_RETRY_SEED7X3_NAME, load_method_preset
+
+    orchestrator = PhaseOrchestrator(
+        state=RunStateManager(tmp_path / "state.json"),
+        phase_registry=PhaseRegistry(),
+        prereq_registry=PrereqRegistry(),
+        resolved_config=load_method_preset(EVIDENCE_RETRY_SEED7X3_NAME).to_dict(),
+    )
+
+    assert orchestrator.resolve_phase_sequence() == PHASES
+
+
+def test_orchestrator_rejects_unknown_configured_default_phase(tmp_path):
+    orchestrator = PhaseOrchestrator(
+        state=RunStateManager(tmp_path / "state.json"),
+        phase_registry=PhaseRegistry(),
+        prereq_registry=PrereqRegistry(),
+        resolved_config={"runtime": {"default_phases": ["made-up"]}},
+    )
+
+    with pytest.raises(ValueError, match="default phase"):
+        orchestrator.resolve_phase_sequence()
+
+
+def test_old_five_phase_state_file_remains_readable_after_gate_phase_addition(tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({phase: {"done": phase == "generate"} for phase in PHASES}))
+
+    state = RunStateManager(path)
+
+    assert state.is_done("generate") is True
+    assert state.is_done("gate-data") is False
+    assert "gate-data" in state.status()
+
+
+def test_completed_gate_phase_is_not_skipped_when_input_hash_changes(tmp_path):
+    state = RunStateManager(tmp_path / "state.json")
+    state.mark_done("gate-train", input_hash="a" * 64)
+    args = _make_args(phase="gate-train")
+    args._phase_input_hashes = {"gate-train": "b" * 64}
+    ran = []
+    registry = PhaseRegistry()
+    registry.register("gate-train", lambda _args, _state: (ran.append(True), 0)[1])
+    orchestrator = PhaseOrchestrator(state, registry, PrereqRegistry())
+
+    assert orchestrator.run(args) == 0
+    assert ran == [True]
+
+
+@pytest.mark.parametrize("phase", ["gate-data", "gate-train", "gate-validate"])
+def test_completed_gate_phase_skips_only_when_complete_output_tree_is_unchanged(tmp_path, phase):
+    import hashlib
+    from wfcllm.cli.runners import _safe_tree_hash
+    from wfcllm.method.presets import GATED_SEMANTIC_WINDOW_V1_NAME, load_method_preset
+
+    run_dir = tmp_path / "run"
+    output = run_dir / phase
+    output.mkdir(parents=True)
+    manifest_name = {
+        "gate-data": "manifest.json",
+        "gate-train": "candidate_bundle_manifest.json",
+        "gate-validate": "gate_bundle_manifest.json",
+    }[phase]
+    manifest = output / manifest_name
+    manifest.write_text("stable")
+    declared_artifact = output / "declared.bin"
+    declared_artifact.write_bytes(b"original")
+    output_hash = hashlib.sha256(b"stable").hexdigest()
+    artifact_hash = _safe_tree_hash(output)
+    input_hash = "a" * 64
+    state = RunStateManager(tmp_path / "state.json")
+    state.mark_done(
+        phase,
+        input_hash=input_hash,
+        manifest_path=str(manifest),
+        output_manifest_hash=output_hash,
+        output_artifact_path=str(output),
+        output_artifact_hash=artifact_hash,
+    )
+    args = _make_args(phase=phase)
+    args.run_dir = str(run_dir)
+    args.run_id = None
+    args._config_cache = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME).to_dict()
+    args._phase_input_hashes = {phase: input_hash}
+    ran = []
+    registry = PhaseRegistry()
+    registry.register(phase, lambda _args, _state: (ran.append(True), 0)[1])
+    orchestrator = PhaseOrchestrator(state, registry, PrereqRegistry())
+
+    assert orchestrator.run(args) == 0
+    assert ran == []
+
+    declared_artifact.write_bytes(b"tampered")
+    assert orchestrator._should_skip(args, phase) is False
+
+
+def test_non_gated_config_cannot_use_old_gate_done_row_to_skip_runner(tmp_path):
+    import hashlib
+    from wfcllm.cli.runners import _safe_tree_hash, run_gate_data
+    from wfcllm.method.presets import EVIDENCE_RETRY_SEED7X3_NAME, load_method_preset
+
+    output = tmp_path / "old-run" / "gate-data"
+    output.mkdir(parents=True)
+    manifest = output / "manifest.json"
+    manifest.write_text("stable")
+    input_hash = "a" * 64
+    state = RunStateManager(tmp_path / "state.json")
+    state.mark_done(
+        "gate-data",
+        input_hash=input_hash,
+        manifest_path=str(manifest),
+        output_manifest_hash=hashlib.sha256(b"stable").hexdigest(),
+        output_artifact_path=str(output),
+        output_artifact_hash=_safe_tree_hash(output),
+    )
+    args = _make_args(phase="gate-data")
+    args.run_dir = str(tmp_path / "old-run")
+    args.run_id = None
+    args._config_cache = load_method_preset(EVIDENCE_RETRY_SEED7X3_NAME).to_dict()
+    args._phase_input_hashes = {"gate-data": input_hash}
+    registry = PhaseRegistry()
+    registry.register("gate-data", run_gate_data)
+
+    with pytest.raises(ValueError, match="gate phases require"):
+        PhaseOrchestrator(state, registry, PrereqRegistry()).run(args)
+
+
+def test_gate_state_paths_from_another_run_cannot_authorize_skip(tmp_path):
+    from wfcllm.cli.runners import _safe_file_hash, _stable_tree_hash
+    from wfcllm.method.presets import GATED_SEMANTIC_WINDOW_V1_NAME, load_method_preset
+
+    run_a = tmp_path / "run-a"
+    output_a = run_a / "gate-data"
+    output_a.mkdir(parents=True)
+    manifest_a = output_a / "manifest.json"
+    manifest_a.write_text("stable")
+    input_hash = "a" * 64
+    state = RunStateManager(tmp_path / "state.json")
+    state.mark_done(
+        "gate-data",
+        input_hash=input_hash,
+        manifest_path=str(manifest_a),
+        output_manifest_hash=_safe_file_hash(manifest_a),
+        output_artifact_path=str(output_a),
+        output_artifact_hash=_stable_tree_hash(output_a),
+    )
+    args = _make_args(phase="gate-data")
+    args.run_dir = str(tmp_path / "run-b")
+    args.run_id = None
+    args._config_cache = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME).to_dict()
+    args._phase_input_hashes = {"gate-data": input_hash}
+    ran = []
+    registry = PhaseRegistry()
+    registry.register("gate-data", lambda _args, _state: (ran.append(True), 0)[1])
+
+    assert PhaseOrchestrator(state, registry, PrereqRegistry()).run(args) == 0
+    assert ran == [True]
 
 
 def test_reset_clears_all(tmp_path):
@@ -389,6 +593,61 @@ def test_status_dict(tmp_path):
     assert status["encoder"]["done"] is True
     assert status["generate"]["done"] is False
     assert status["legacy-watermark"]["done"] is False
+
+
+def test_two_state_instances_merge_instead_of_stale_overwrite(tmp_path):
+    path = tmp_path / "state.json"
+    first = RunStateManager(path)
+    stale = RunStateManager(path)
+
+    first.mark_done("generate", owner="first")
+    stale.mark_done("calibrate", owner="second")
+
+    reloaded = RunStateManager(path)
+    assert reloaded.is_done("generate") is True
+    assert reloaded.get("generate", "owner") == "first"
+    assert reloaded.is_done("calibrate") is True
+    assert reloaded.get("calibrate", "owner") == "second"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {"unknown-phase": {"done": False}},
+        {"generate": {"done": "yes"}},
+        {"generate": []},
+    ],
+)
+def test_state_rejects_malformed_or_unknown_root_schema(tmp_path, payload):
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="run state"):
+        RunStateManager(path)
+
+
+@pytest.mark.parametrize("concurrency_round", range(8))
+def test_multiprocess_state_updates_do_not_lose_distinct_phases(
+    tmp_path, concurrency_round
+):
+    import multiprocessing
+
+    path = tmp_path / "state.json"
+    phases = ["generate", "calibrate", "detect", "report", "audit"]
+    context = multiprocessing.get_context("spawn")
+    workers = [
+        context.Process(target=_concurrent_mark_state, args=(str(path), phase))
+        for phase in phases
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=20)
+        assert worker.exitcode == 0
+
+    state = RunStateManager(path)
+    assert all(state.is_done(phase) for phase in phases)
+    assert path.stat().st_mode & 0o777 == 0o600
 
 
 # ── Tests migrated from tests/test_run.py (TestCLI status/reset/offline) ──────

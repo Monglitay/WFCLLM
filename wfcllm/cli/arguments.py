@@ -122,6 +122,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-bf16", action="store_true", help="禁用 BF16")
     # Legacy watermark 参数
     parser.add_argument("--secret-key", default=None, help="legacy watermark/extract 阶段使用：水印密钥")
+    parser.add_argument(
+        "--secret-key-file", default=None,
+        help="gated 方法部署密钥文件（不得写入 public config）",
+    )
+    parser.add_argument(
+        "--secret-key-env", default=None,
+        help="gated 方法部署密钥环境变量名",
+    )
+    parser.add_argument("--training-key-bank-file", default=None)
+    parser.add_argument("--training-key-bank-env", default=None)
+    parser.add_argument("--holdout-key-bank-file", default=None)
+    parser.add_argument("--holdout-key-bank-env", default=None)
+    parser.add_argument("--gate-source-manifest", default=None)
+    parser.add_argument("--pilot-feasibility", default=None)
     parser.add_argument("--lm-model-path", default=None, help="legacy watermark 阶段使用：代码生成 LLM 路径")
     parser.add_argument(
         "--dataset",

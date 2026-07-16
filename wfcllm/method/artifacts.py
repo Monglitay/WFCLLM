@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -36,6 +37,23 @@ class RunPaths:
     resolved_config: Path
     method_preset: Path
     final_code_input: Path
+    gate_data_manifest: Path
+    gate_window_groups: Path
+    gate_candidate_attempts: Path
+    gate_labels: Path
+    gate_split_manifest: Path
+    gate_training_key_bank_manifest: Path
+    gate_feasibility_summary: Path
+    gate_resolved_training_config: Path
+    gate_training_metrics: Path
+    gate_development_summary: Path
+    gate_checkpoints_dir: Path
+    gate_candidate_bundle_dir: Path
+    gate_candidate_bundle_manifest: Path
+    gate_validation_summary: Path
+    gate_agreement_details: Path
+    gate_bundle_dir: Path
+    gate_bundle_manifest: Path
     audit_log: Path
     candidate_sidecar: Path
     raw_attempt_summary: Path
@@ -52,13 +70,70 @@ class RunPaths:
     run_log: Path
 
 
+def _component_name_max(run_root: str | Path) -> int:
+    """Return a conservative byte limit for one component under run_root."""
+
+    probe = Path(run_root)
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    try:
+        detected = int(os.pathconf(probe, "PC_NAME_MAX"))
+    except (OSError, TypeError, ValueError):
+        return 255
+    return min(255, detected) if detected > 0 else 255
+
+
 def build_run_paths(run_root: str | Path, run_id: str) -> RunPaths:
+    try:
+        encoded_run_id = os.fsencode(run_id) if isinstance(run_id, str) else b""
+    except (TypeError, UnicodeError) as exc:
+        raise ValueError("run_id must be a safe, non-empty path component") from exc
+    if (
+        not isinstance(run_id, str)
+        or not run_id
+        or run_id in {".", ".."}
+        or len(encoded_run_id) > _component_name_max(run_root)
+        or "\x00" in run_id
+        or any(
+            ord(character) <= 0x1F or 0x7F <= ord(character) <= 0x9F
+            for character in run_id
+        )
+        or "/" in run_id
+        or "\\" in run_id
+        or Path(run_id).name != run_id
+    ):
+        raise ValueError("run_id must be a safe, non-empty path component")
     run_dir = Path(run_root) / run_id
     return RunPaths(
         run_dir=run_dir,
         resolved_config=run_dir / "config" / "resolved_config.json",
         method_preset=run_dir / "config" / "method_preset.json",
         final_code_input=run_dir / "inputs" / "final_code.jsonl",
+        gate_data_manifest=run_dir / "gate-data" / "manifest.json",
+        gate_window_groups=run_dir / "gate-data" / "window_groups.jsonl",
+        gate_candidate_attempts=run_dir / "gate-data" / "candidate_attempts.jsonl",
+        gate_labels=run_dir / "gate-data" / "labels.jsonl",
+        gate_split_manifest=run_dir / "gate-data" / "split_manifest.json",
+        gate_training_key_bank_manifest=(
+            run_dir / "gate-data" / "training_key_bank_manifest.json"
+        ),
+        gate_feasibility_summary=run_dir / "gate-data" / "feasibility_summary.json",
+        gate_resolved_training_config=(
+            run_dir / "gate-train" / "resolved_training_config.json"
+        ),
+        gate_training_metrics=run_dir / "gate-train" / "training_metrics.jsonl",
+        gate_development_summary=run_dir / "gate-train" / "development_summary.json",
+        gate_checkpoints_dir=run_dir / "gate-train" / "checkpoints",
+        gate_candidate_bundle_dir=run_dir / "gate-train" / "candidate_bundle",
+        gate_candidate_bundle_manifest=(
+            run_dir / "gate-train" / "candidate_bundle_manifest.json"
+        ),
+        gate_validation_summary=run_dir / "gate-validate" / "validation_summary.json",
+        gate_agreement_details=run_dir / "gate-validate" / "agreement_details.jsonl",
+        gate_bundle_dir=run_dir / "gate-validate" / "bundle",
+        gate_bundle_manifest=(
+            run_dir / "gate-validate" / "gate_bundle_manifest.json"
+        ),
         audit_log=run_dir / "generation" / "audit.jsonl",
         candidate_sidecar=run_dir / "generation" / "candidate_sidecar.jsonl",
         raw_attempt_summary=run_dir / "generation" / "raw_attempt_summary.jsonl",

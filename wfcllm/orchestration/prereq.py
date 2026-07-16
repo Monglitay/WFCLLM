@@ -10,6 +10,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+from collections.abc import Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -57,3 +58,51 @@ class PrereqRegistry:
     def clear(self) -> None:
         """Reset all registered prereqs (test fixture helper)."""
         self._by_phase.clear()
+
+
+def ensure_gate_phase_prerequisites(
+    phase: str,
+    config: Mapping[str, object],
+    args: Any,
+    state: Any,
+) -> None:
+    """Fail-closed artifact prerequisites for the gated formal mainline."""
+
+    method = config.get("method") if isinstance(config, Mapping) else None
+    if not isinstance(method, Mapping) or method.get("name") != "gated_semantic_window_v1":
+        return
+
+    from wfcllm.cli.runners import (
+        _gate_run_dir,
+        _load_formal_json,
+        _reject_symlink_path,
+        resolve_validated_gate_bundle,
+    )
+
+    if phase in {"gate-train", "gate-validate"}:
+        run_dir = _gate_run_dir(args, config)
+        data_manifest = run_dir / "gate-data" / "manifest.json"
+        _reject_symlink_path(data_manifest)
+        if not data_manifest.is_file():
+            raise ValueError(f"{phase} requires the gate-data manifest")
+        _load_formal_json(data_manifest, "gate-data")
+    if phase == "gate-validate":
+        run_dir = _gate_run_dir(args, config)
+        candidate = run_dir / "gate-train" / "candidate_bundle"
+        candidate_manifest = run_dir / "gate-train" / "candidate_bundle_manifest.json"
+        _reject_symlink_path(candidate)
+        if not candidate.is_dir() or not candidate_manifest.is_file():
+            raise ValueError("gate-validate requires the gate-train candidate bundle")
+        _load_formal_json(candidate_manifest, "gate-train")
+    if phase in {"generate", "calibrate", "detect"}:
+        try:
+            _path, bundle_hash = resolve_validated_gate_bundle(args)
+        except ValueError as exc:
+            raise ValueError(f"validated gate bundle prerequisite failed: {exc}") from exc
+        if phase == "calibrate" and state.get("generate", "gate_bundle_sha256") != bundle_hash:
+            raise ValueError("calibrate requires the same validated gate bundle as generate")
+        if phase == "detect":
+            if state.get("generate", "gate_bundle_sha256") != bundle_hash:
+                raise ValueError("detect requires the same validated gate bundle as generate")
+            if state.get("calibrate", "gate_bundle_sha256") != bundle_hash:
+                raise ValueError("detect requires the same validated gate bundle as calibrate")

@@ -7,6 +7,7 @@ data/datasets/
 data/checkpoints/
 data/results/
 data/run_state.json
+data/run_state.json.lock
 data/mbpp/
 
 # 保留目录占位文件
@@ -43,3 +44,11 @@ code-watermark-main/
 
 # Large data files
 data/token_channel/
+
+# Local gate keys, datasets, models, and run artifacts
+data/gate_keys/
+data/gate_datasets/
+data/gate_models/
+data/runs/*/gate-data/
+data/runs/*/gate-train/
+data/runs/*/gate-validate/

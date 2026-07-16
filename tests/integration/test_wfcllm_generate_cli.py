@@ -7,6 +7,50 @@ import scripts.wfcllm_generate as generate_cli
 from wfcllm.semantic.rules import HashEmbeddingRule
 
 
+def test_phase_runner_dispatches_gated_pipeline_once(tmp_path: Path, monkeypatch) -> None:
+    import argparse
+
+    from wfcllm.cli.runners import run_generate
+    from wfcllm.method.presets import GATED_SEMANTIC_WINDOW_V1_NAME, load_method_preset
+    from wfcllm.orchestration.state import RunStateManager
+
+    config = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME).to_dict()
+    pipeline = MagicMock()
+    pipeline.run.return_value = str(tmp_path / "run" / "inputs" / "final_code.jsonl")
+    args = argparse.Namespace(
+        _config_cache=config,
+        _gated_generation_pipeline=pipeline,
+        secret_key_file=tmp_path / "deployment.key",
+        secret_key_env=None,
+    )
+    args.secret_key_file.write_bytes(b"deployment")
+    monkeypatch.setattr(
+        "wfcllm.cli.runners.resolve_validated_gate_bundle",
+        lambda _args: (tmp_path / "bundle", "a" * 64),
+    )
+    state = RunStateManager(tmp_path / "state.json")
+
+    assert run_generate(args, state) == 0
+    pipeline.run.assert_called_once_with()
+    assert state.get("generate", "output_path").endswith("final_code.jsonl")
+
+
+def test_phase_runner_keeps_existing_preset_off_gated_pipeline(tmp_path: Path) -> None:
+    import argparse
+
+    from wfcllm.cli.runners import run_generate
+    from wfcllm.method.presets import EVIDENCE_RETRY_SEED7X3_NAME, load_method_preset
+    from wfcllm.orchestration.state import RunStateManager
+
+    pipeline = MagicMock()
+    args = argparse.Namespace(
+        _config_cache=load_method_preset(EVIDENCE_RETRY_SEED7X3_NAME).to_dict(),
+        _gated_generation_pipeline=pipeline,
+    )
+    assert run_generate(args, RunStateManager(tmp_path / "state.json")) == 0
+    pipeline.run.assert_not_called()
+
+
 def test_wfcllm_generate_cli_builds_pipeline_config(
     tmp_path: Path,
     capsys,

@@ -11,7 +11,7 @@ import os
 import sys
 
 from wfcllm.cli.arguments import build_parser
-from wfcllm.cli.config_resolver import load_config
+from wfcllm.cli.config_resolver import load_config, resolve_method_config
 from wfcllm.cli.runners import (
     is_compare_only_mode,
     validate_compare_only_mode,
@@ -21,6 +21,9 @@ from wfcllm.cli.runners import (
     run_diagnostic_selector,
     run_encoder,
     run_generate,
+    run_gate_data,
+    run_gate_train,
+    run_gate_validate,
     run_legacy_ablation,
     run_legacy_build_entropy_profile,
     run_legacy_extract,
@@ -43,8 +46,9 @@ from wfcllm.orchestration.state import (
 
 def _cmd_status(state: RunStateManager) -> None:
     print("=== WFCLLM 阶段状态 ===")
+    status = state.status()
     for phase in ALL_PHASES:
-        info = state.status()[phase]
+        info = status[phase]
         done_str = "✓ 完成" if info["done"] else "○ 未完成"
         extras = {k: v for k, v in info.items() if k not in ("done", "completed_at")}
         extra_str = "  " + str(extras) if extras else ""
@@ -57,6 +61,9 @@ def _cmd_reset(state: RunStateManager) -> None:
 
 
 def _populate_phase_registry(reg: PhaseRegistry) -> None:
+    reg.register("gate-data", run_gate_data)
+    reg.register("gate-train", run_gate_train)
+    reg.register("gate-validate", run_gate_validate)
     reg.register("generate", run_generate)
     reg.register("calibrate", run_calibrate)
     reg.register("detect", run_detect)
@@ -86,7 +93,11 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = build_parser()
     args = parser.parse_args(argv)
-    state = RunStateManager(path=DEFAULT_STATE_FILE)
+    try:
+        state = RunStateManager(path=DEFAULT_STATE_FILE)
+    except (OSError, UnicodeError, ValueError, RuntimeError) as exc:
+        print(f"[错误] 运行状态无效：{exc}", file=sys.stderr)
+        return 1
 
     legacy_error = validate_legacy_phase_request(args)
     if legacy_error is not None:
@@ -94,12 +105,20 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.status:
-        _cmd_status(state)
-        return 0
+        try:
+            _cmd_status(state)
+            return 0
+        except (OSError, UnicodeError, ValueError, RuntimeError) as exc:
+            print(f"[错误] 运行状态无效：{exc}", file=sys.stderr)
+            return 1
 
     if args.reset:
-        _cmd_reset(state)
-        return 0
+        try:
+            _cmd_reset(state)
+            return 0
+        except (OSError, UnicodeError, ValueError, RuntimeError) as exc:
+            print(f"[错误] 运行状态无效：{exc}", file=sys.stderr)
+            return 1
 
     compare_only_error = validate_compare_only_mode(args)
     if compare_only_error is not None:
@@ -112,7 +131,12 @@ def main(argv: list[str] | None = None) -> int:
         args.force = True
 
     # Cache the loaded config on args for downstream helpers (matches old behavior).
-    setattr(args, "_config_cache", load_config(args.config))
+    try:
+        resolved_config = resolve_method_config(load_config(args.config))
+    except (OSError, UnicodeError, ValueError, RuntimeError) as exc:
+        print(f"[错误] 配置无效：{exc}", file=sys.stderr)
+        return 1
+    setattr(args, "_config_cache", resolved_config)
 
     phase_registry = PhaseRegistry()
     _populate_phase_registry(phase_registry)
@@ -121,8 +145,13 @@ def main(argv: list[str] | None = None) -> int:
         state=state,
         phase_registry=phase_registry,
         prereq_registry=PrereqRegistry(),
+        resolved_config=resolved_config,
     )
-    return orchestrator.run(args)
+    try:
+        return orchestrator.run(args)
+    except (OSError, UnicodeError, ValueError, RuntimeError) as exc:
+        print(f"[错误] {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

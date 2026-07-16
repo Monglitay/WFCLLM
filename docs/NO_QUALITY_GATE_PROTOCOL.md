@@ -5,8 +5,15 @@ WFCLLM is evaluated as a generation-time semantic watermarking method. The offic
 ## Allowed Signals
 
 - Structure-aware code boundary events.
-- Semantic LSH evidence derived from candidate code structure.
+- Parser structure validity used only to establish formal window boundaries;
+  this is not evidence that code is correct or high quality.
+- Key-independent aggregates of semantic LSH margin/stability measured across
+  the training key bank. Raw keys and a deployment-key target region are never
+  public gate inputs.
+- Gate close/suitable probabilities from the frozen validated bundle.
 - Retry budget counters and rollback state.
+- Candidate 0 (the original complete window), bounded key-blind rewrites, and
+  deterministic rollback/restore state.
 - Sampling metadata needed to continue generation.
 - Final-code-only detector statistics derived from `id`, `dataset`, `prompt`, and `final_code`.
 - Posthoc utility reports, after all official generation and detection decisions are complete.
@@ -20,6 +27,13 @@ WFCLLM is evaluated as a generation-time semantic watermarking method. The offic
 - Calibration thresholds selected from pass/test/correctness proxies.
 - Detection scores that read generation traces, retry traces, audit logs, candidate sidecars, or posthoc utility reports.
 - Any proxy named or structured as quality, correctness, pass, fail, test outcome, benchmark outcome, reward, or oracle feedback when used as a control signal.
+- Syntax-valid or parser-valid flags treated as a quality rank, reward, or
+  correctness signal. Structural validity only permits the parser/window
+  contract to continue.
+- Single-key/deployment-key labels, target LSH region, raw training/holdout
+  keys, or any decision derived from knowing the deployment target.
+- Gate-data, gate-training metrics, checkpoints, validation rows, generation
+  audit rows, or candidate sidecars read by calibration/detection.
 
 ## Posthoc Pass Report Marker
 
@@ -37,3 +51,10 @@ Any posthoc pass report must carry this exact marker:
 ```
 
 The marker records that the report is an after-the-fact utility measurement. It does not make the report eligible for any official method decision.
+
+Posthoc correctness can compare utility and enforce the configured reporting
+non-inferiority boundary, but it must never flow back into generation, retry,
+candidate selection, gate-data labels, gate training, gate validation,
+calibration, or detection. The formal eight-stage workflow therefore ends all
+generation and detector decisions before a posthoc pass report is produced or
+merged.
