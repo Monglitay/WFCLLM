@@ -809,6 +809,45 @@ def test_gate_data_rejects_prefilled_probe_facts_that_disagree_with_raw_evidence
     assert "audit" not in deps.calls
 
 
+def test_probe_contract_accepts_explicit_semantic_rejection_without_keyed_results() -> None:
+    original = _group(0)
+    observations = {
+        length: list(rows)
+        for length, rows in original.candidate_observations_by_length.items()
+    }
+    probes = {
+        length: list(rows)
+        for length, rows in original.probe_results_by_length.items()
+    }
+    for length in ("1", "2", "3"):
+        observations[length][1] = replace(
+            observations[length][1],
+            stable_across_precision_modes=False,
+            stable_across_batch_modes=False,
+            lsh_by_key_id={},
+            lsh_signature=None,
+            semantic_reference_cosine=0.75,
+            semantic_preservation_passed=False,
+        )
+        probes[length][1] = types.MappingProxyType({})
+    rejected = replace(
+        original,
+        candidate_observations_by_length={
+            length: tuple(rows) for length, rows in observations.items()
+        },
+        probe_results_by_length={
+            length: tuple(rows) for length, rows in probes.items()
+        },
+    )
+    deps = FakeDependencies((rejected,))
+
+    gate_pipeline._validate_probe_contract(
+        (rejected,),
+        deps.load_key_bank(role="training", expected_count=32, config=None),
+        deps.load_key_bank(role="holdout", expected_count=8, config=None),
+    )
+
+
 def test_gate_data_rejects_injected_label_that_disagrees_with_causal_recompute(tmp_path: Path) -> None:
     corrupted = replace(_group(0), suitable_target=False)
     deps = FakeDependencies((corrupted, *tuple(_group(i) for i in range(1, 100))))

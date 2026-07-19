@@ -1271,6 +1271,29 @@ def _validate_probe_contract(
                             "parser-invalid candidate must not claim semantic stability"
                         )
                     continue
+                if observation.semantic_probe_pending:
+                    raise ValueError(
+                        "structurally valid probe evidence cannot remain pending"
+                    )
+                if (
+                    observation.semantic_reference_cosine is None
+                    or observation.semantic_preservation_passed is None
+                ):
+                    raise ValueError(
+                        "structurally valid probe lacks a final semantic decision"
+                    )
+                if observation.semantic_preservation_passed is False:
+                    if (
+                        results
+                        or observation.lsh_by_key_id
+                        or observation.lsh_signature is not None
+                        or observation.stable_across_precision_modes
+                        or observation.stable_across_batch_modes
+                    ):
+                        raise ValueError(
+                            "semantic rejection must not contain keyed probe evidence"
+                        )
+                    continue
                 if set(results) != expected_keys:
                     raise ValueError(
                         "structurally valid probe evidence must cover exact 32/8 key banks"
