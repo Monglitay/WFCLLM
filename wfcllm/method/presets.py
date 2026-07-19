@@ -105,8 +105,8 @@ _GATED_SEMANTIC_WINDOW_V1 = WFCLLMMethodPreset(
             "temperature": 0.2,
             "top_p": 0.95,
             "max_new_tokens": 16,
-            "generation_attempts": 9,
-            "candidate_selection": "unique-key-blind-structural-fallback/v1",
+            "generation_attempts": 3,
+            "candidate_selection": "fixed-key-blind-abc-trajectory/v1",
         },
         "semantic": {
             "parent_descriptor_version": "python-statement-window/v1",

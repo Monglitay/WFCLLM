@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from dataclasses import replace
 from collections.abc import Mapping
 from pathlib import Path
+from contextlib import nullcontext
 
 import torch
 
@@ -20,6 +21,12 @@ class SemanticLshResult:
     lsh_signature: tuple[int, ...]
     min_margin: float
     in_valid_set: bool
+
+
+@dataclass(frozen=True)
+class SemanticLshModeResult(SemanticLshResult):
+    stable_across_precision_modes: bool
+    stable_across_batch_modes: bool
 
 
 @dataclass(frozen=True)
@@ -48,26 +55,135 @@ class CodeT5LshVerifier:
         self._encoder.eval()
 
     @torch.no_grad()
-    def verify(
-        self,
-        code_text: str,
-        valid_set: frozenset[tuple[int, ...]],
-        margin: float,
-    ) -> SemanticLshResult:
+    def embed(self, code_text: str) -> torch.Tensor:
+        """Return one public, key-independent normalized code embedding."""
+
+        if not isinstance(code_text, str) or not code_text.strip():
+            raise ValueError("code_text must be a non-empty string")
+        return self.embed_batch((code_text,))[0]
+
+    @torch.no_grad()
+    def embed_batch(
+        self, code_texts: tuple[str, ...], *, use_bfloat16: bool = False
+    ) -> torch.Tensor:
+        if (
+            not isinstance(code_texts, tuple)
+            or not code_texts
+            or any(not isinstance(text, str) or not text.strip() for text in code_texts)
+        ):
+            raise ValueError("code_texts must contain non-empty strings")
         encoded = self._tokenizer(
-            code_text,
+            list(code_texts),
             return_tensors="pt",
             truncation=True,
+            padding=True,
             max_length=self._max_length,
         )
         encoded = {
             name: tensor.to(self._device)
             for name, tensor in encoded.items()
         }
-        embedding = self._encoder(
-            input_ids=encoded["input_ids"],
-            attention_mask=encoded["attention_mask"],
+        device_type = str(self._device).split(":", 1)[0]
+        precision_context = (
+            torch.autocast(device_type=device_type, dtype=torch.bfloat16)
+            if use_bfloat16
+            else nullcontext()
+        )
+        with precision_context:
+            embeddings = self._encoder(
+                input_ids=encoded["input_ids"],
+                attention_mask=encoded["attention_mask"],
+            )
+        embeddings = embeddings.float()
+        if embeddings.ndim != 2 or not torch.isfinite(embeddings).all():
+            raise ValueError("semantic encoder returned an invalid embedding")
+        return embeddings
+
+    @torch.no_grad()
+    def signature_and_margin_modes(
+        self, code_text: str
+    ) -> tuple[tuple[int, ...], float, bool, bool]:
+        """Measure signature stability across real precision and batch modes."""
+
+        float_single = self.embed_batch((code_text,))[0]
+        bfloat_single = self.embed_batch(
+            (code_text,), use_bfloat16=True
         )[0]
+        float_batched = self.embed_batch((code_text, code_text))[0]
+        bfloat_batched = self.embed_batch(
+            (code_text, code_text), use_bfloat16=True
+        )[0]
+        signatures = tuple(
+            self._lsh_space.sign(embedding)
+            for embedding in (
+                float_single,
+                bfloat_single,
+                float_batched,
+                bfloat_batched,
+            )
+        )
+        margins = tuple(
+            float(self._lsh_space.min_margin(embedding))
+            for embedding in (
+                float_single,
+                bfloat_single,
+                float_batched,
+                bfloat_batched,
+            )
+        )
+        return (
+            signatures[0],
+            min(margins),
+            signatures[0] == signatures[1]
+            and signatures[2] == signatures[3],
+            signatures[0] == signatures[2]
+            and signatures[1] == signatures[3],
+        )
+
+    @torch.no_grad()
+    def verify_modes(
+        self,
+        code_text: str,
+        valid_set: frozenset[tuple[int, ...]],
+        margin: float,
+    ) -> SemanticLshModeResult:
+        signature, min_margin, precision_stable, batch_stable = (
+            self.signature_and_margin_modes(code_text)
+        )
+        stable = precision_stable and batch_stable
+        in_valid_set = signature in valid_set
+        return SemanticLshModeResult(
+            passed=stable and in_valid_set and min_margin > margin,
+            lsh_signature=signature,
+            min_margin=min_margin,
+            in_valid_set=in_valid_set,
+            stable_across_precision_modes=precision_stable,
+            stable_across_batch_modes=batch_stable,
+        )
+
+    @torch.no_grad()
+    def semantic_reference_cosine(
+        self, reference_text: str, candidate_text: str
+    ) -> float:
+        """Compare a candidate to its public original window without any key."""
+
+        reference = self.embed(reference_text)
+        candidate = self.embed(candidate_text)
+        if reference.shape != candidate.shape:
+            raise ValueError("semantic embeddings must have matching shapes")
+        cosine = torch.nn.functional.cosine_similarity(
+            reference.unsqueeze(0), candidate.unsqueeze(0), dim=1
+        )[0]
+        return float(cosine.clamp(-1.0, 1.0).item())
+
+    @torch.no_grad()
+    def verify(
+        self,
+        code_text: str,
+        valid_set: frozenset[tuple[int, ...]],
+        margin: float,
+    ) -> SemanticLshResult:
+        embedding = self.embed(code_text)
         signature = self._lsh_space.sign(embedding)
         min_margin = self._lsh_space.min_margin(embedding)
         in_valid_set = signature in valid_set
@@ -99,11 +215,16 @@ def resolve_checkpoint_encoder_config(
     if pooling not in {"first", "masked_mean"}:
         raise ValueError("checkpoint pooling must be first or masked_mean")
     updates: dict[str, object] = {"pooling": pooling}
-    for name in ("use_lora", "use_bf16"):
+    # LoRA changes the checkpoint architecture and must follow its metadata.
+    # Precision is a deployment execution mode: preserving ``base.use_bf16``
+    # lets formal verification load FP32 weights and measure a real BF16
+    # autocast path against them.
+    for name in ("use_lora",):
         value = metadata.get(name, getattr(base, name))
         if not isinstance(value, bool):
             raise ValueError(f"checkpoint {name} must be a bool")
         updates[name] = value
+    updates["use_bf16"] = base.use_bf16
     for name in ("lora_r", "lora_alpha"):
         value = metadata.get(name, getattr(base, name))
         if type(value) is not int or value <= 0:

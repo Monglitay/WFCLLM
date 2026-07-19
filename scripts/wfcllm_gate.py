@@ -210,6 +210,10 @@ def _fake_evidence(suitable: bool):
                 True, (0, 1), True, True,
                 {key_id: {"hit": results[key_id].hit, "stable": True, "margin": 1.0} for key_id in training_ids},
                 f"seed-{candidate_index}", "rewrite-v1", (1, 0),
+                semantic_reference_cosine=(
+                    1.0 if candidate_index == 0 else 0.95
+                ),
+                semantic_preservation_passed=True,
             ))
             probes.append(MappingProxyType(results))
         observations_by_length[str(length)] = tuple(observations)

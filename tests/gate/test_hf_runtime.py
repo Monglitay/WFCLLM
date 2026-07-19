@@ -93,12 +93,17 @@ class _Verifier:
     def __init__(self):
         self.calls = 0
 
-    def verify(self, code_text, valid_set, margin):
+    def semantic_reference_cosine(self, reference_text, candidate_text):
+        assert reference_text and candidate_text
+        return 1.0
+
+    def signature_and_margin_modes(self, code_text):
         self.calls += 1
-        return SimpleNamespace(lsh_signature=(1, 0, 1, 0), min_margin=0.75)
+        assert code_text == "x = 1"
+        return (1, 0, 1, 0), 0.75, True, True
 
 
-def test_local_semantic_runtime_requires_repeatable_signature() -> None:
+def test_local_semantic_runtime_requires_measured_mode_stability() -> None:
     verifier = _Verifier()
     runtime = LocalSemanticRuntime(verifier)
 
@@ -108,4 +113,4 @@ def test_local_semantic_runtime_requires_repeatable_signature() -> None:
     assert margin == 0.75
     assert precision_stable is True
     assert batch_stable is True
-    assert verifier.calls == 2
+    assert verifier.calls == 1

@@ -15,6 +15,17 @@ _REGION_ID_PATTERN = re.compile(
 )
 
 
+def canonical_semantic_window_text(window_text: str) -> str:
+    """Return the sole encoder input representation for a statement window."""
+
+    if not isinstance(window_text, str):
+        raise ValueError("semantic window text must be a string")
+    normalized = normalize_unit_text(window_text)
+    if not normalized:
+        raise ValueError("window_text is empty after semantic normalization")
+    return normalized
+
+
 class WindowVerifyResult(Protocol):
     min_margin: float
     lsh_signature: tuple[int, ...]
@@ -28,6 +39,10 @@ class WindowVerifier(Protocol):
         margin: float,
     ) -> WindowVerifyResult:
         ...
+
+    def semantic_reference_cosine(
+        self, reference_text: str, candidate_text: str
+    ) -> float: ...
 
 
 class DescriptorKeying(Protocol):
@@ -77,6 +92,23 @@ class SemanticWindowEvidence:
             raise ValueError("hit requires stable evidence")
 
 
+@dataclass(frozen=True)
+class SemanticPreservationEvidence:
+    """Key-independent evidence comparing one rewrite to its original window."""
+
+    cosine: float
+    threshold: float
+    passed: bool
+
+    def __post_init__(self) -> None:
+        _validate_cosine(self.cosine, field_name="cosine")
+        _validate_cosine(self.threshold, field_name="threshold")
+        if not isinstance(self.passed, bool):
+            raise ValueError("passed must be a bool")
+        if self.passed is not (self.cosine >= self.threshold):
+            raise ValueError("passed must equal cosine >= threshold")
+
+
 class SemanticWindowScorer:
     """Score one normalized, complete window against descriptor-derived regions."""
 
@@ -88,6 +120,7 @@ class SemanticWindowScorer:
         contract_version: str,
         k: int,
         margin: float,
+        semantic_preservation_threshold: float = 0.9,
     ) -> None:
         _validate_descriptor_component("contract_version", contract_version)
         if isinstance(k, bool) or not isinstance(k, int):
@@ -95,11 +128,36 @@ class SemanticWindowScorer:
         if k < 1:
             raise ValueError("k must be >= 1")
         _validate_margin(margin, field_name="margin")
+        _validate_cosine(
+            semantic_preservation_threshold,
+            field_name="semantic_preservation_threshold",
+        )
         self._verifier = verifier
         self._keying = keying
         self._contract_version = contract_version
         self._k = k
         self._margin = margin
+        self._semantic_preservation_threshold = float(
+            semantic_preservation_threshold
+        )
+
+    def compare_semantics(
+        self, *, reference_text: str, candidate_text: str
+    ) -> SemanticPreservationEvidence:
+        canonical_reference = canonical_semantic_window_text(reference_text)
+        canonical_candidate = canonical_semantic_window_text(candidate_text)
+        compare = getattr(self._verifier, "semantic_reference_cosine", None)
+        if not callable(compare):
+            raise ValueError(
+                "semantic verifier must expose semantic_reference_cosine"
+            )
+        cosine = compare(canonical_reference, canonical_candidate)
+        _validate_cosine(cosine, field_name="semantic reference cosine")
+        return SemanticPreservationEvidence(
+            cosine=float(cosine),
+            threshold=self._semantic_preservation_threshold,
+            passed=bool(cosine >= self._semantic_preservation_threshold),
+        )
 
     def score(
         self,
@@ -107,12 +165,8 @@ class SemanticWindowScorer:
         window_text: str,
         parent_descriptor: str,
     ) -> SemanticWindowEvidence:
-        if not isinstance(window_text, str):
-            raise ValueError("window_text must be a string")
         _validate_descriptor_component("parent_descriptor", parent_descriptor)
-        normalized_text = normalize_unit_text(window_text)
-        if not normalized_text:
-            raise ValueError("window_text is empty after normalization")
+        normalized_text = canonical_semantic_window_text(window_text)
 
         allowed = self._keying.derive_descriptor(
             contract_version=self._contract_version,
@@ -126,10 +180,15 @@ class SemanticWindowScorer:
             k=self._k,
             allowed=allowed,
         )
-        result = self._verifier.verify(
-            normalized_text,
-            allowed,
-            self._margin,
+        verify_modes = getattr(self._verifier, "verify_modes", None)
+        result = (
+            verify_modes(normalized_text, allowed, self._margin)
+            if callable(verify_modes)
+            else self._verifier.verify(
+                normalized_text,
+                allowed,
+                self._margin,
+            )
         )
 
         signature = _require_result_attribute(result, "lsh_signature")
@@ -147,7 +206,21 @@ class SemanticWindowScorer:
             if in_valid_set is not derived_membership:
                 raise ValueError("in_valid_set contradicts lsh_signature membership")
 
-        stable = min_margin > self._margin
+        precision_stable = _optional_result_attribute(
+            result, "stable_across_precision_modes"
+        )
+        batch_stable = _optional_result_attribute(
+            result, "stable_across_batch_modes"
+        )
+        if precision_stable is not None and not isinstance(precision_stable, bool):
+            raise ValueError("precision stability must be a bool")
+        if batch_stable is not None and not isinstance(batch_stable, bool):
+            raise ValueError("batch stability must be a bool")
+        stable = (
+            min_margin > self._margin
+            and precision_stable is not False
+            and batch_stable is not False
+        )
         hit = stable and derived_membership
         passed = _optional_result_attribute(result, "passed")
         if passed is not None:
@@ -179,6 +252,13 @@ def _validate_margin(value: object, *, field_name: str) -> None:
         raise ValueError(f"{field_name} must be finite")
     if value < 0:
         raise ValueError(f"{field_name} must be non-negative")
+
+
+def _validate_cosine(value: object, *, field_name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field_name} must be a finite number in [-1, 1]")
+    if not math.isfinite(value) or not -1.0 <= value <= 1.0:
+        raise ValueError(f"{field_name} must be in [-1, 1]")
 
 
 def _validate_allowed_set(

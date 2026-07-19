@@ -690,7 +690,11 @@ class GateDataBuilder:
             and 1 <= candidate.unit_count <= 3
             and candidate.same_parent_scope
         )
-        if structurally_valid:
+        if structurally_valid and getattr(
+            self._lsh_probe, "semantic_probe_pending", False
+        ):
+            results = MappingProxyType({})
+        elif structurally_valid:
             raw_results = self._lsh_probe.probe(
                 window_text=candidate.code,
                 parent_descriptor=parent_descriptor,
@@ -735,6 +739,7 @@ class GateDataBuilder:
             generation_seed_id=candidate.generation_seed_id,
             rewrite_config_id=candidate.rewrite_config_id,
             lsh_signature=lsh_signature,
+            semantic_probe_pending=True,
         )
         return observation
 
@@ -809,16 +814,8 @@ def _make_request(
     first = window[0]
     end_index = start_index + len(window)
     next_unit = units[end_index] if end_index < len(units) else None
-    hard_boundary_after = (
-        next_unit is None
-        or next_unit.hard_boundary
-        or not next_unit.eligible
-        or next_unit.compound_header
-        or next_unit.parent_path != first.parent_path
-        or next_unit.direct_parent_type != first.direct_parent_type
-        or next_unit.depth != first.depth
-        or len(window) == 3
-        or first.compound_header
+    hard_boundary_after = compute_hard_boundary_after(
+        units, start_index=start_index, window=window
     )
     boundary = StructuralBoundary(
         start_byte=first.start_byte,
@@ -850,6 +847,30 @@ def _make_request(
         window_start_unit_id=first.unit_id,
         window_length=len(window),
         structural_boundary=boundary,
+    )
+
+
+def compute_hard_boundary_after(
+    units: tuple[StatementUnit, ...] | list[StatementUnit],
+    *,
+    start_index: int,
+    window: tuple[StatementUnit, ...],
+) -> bool:
+    """Compute the public post-window boundary fact for all rewrite callers."""
+
+    first = window[0]
+    end_index = start_index + len(window)
+    next_unit = units[end_index] if end_index < len(units) else None
+    return (
+        next_unit is None
+        or next_unit.hard_boundary
+        or not next_unit.eligible
+        or next_unit.compound_header
+        or next_unit.parent_path != first.parent_path
+        or next_unit.direct_parent_type != first.direct_parent_type
+        or next_unit.depth != first.depth
+        or len(window) == 3
+        or first.compound_header
     )
 
 

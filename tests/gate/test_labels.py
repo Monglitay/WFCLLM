@@ -38,6 +38,11 @@ def observation_factory() -> Callable[..., CandidateObservation]:
         margin: float = 0.25,
     ) -> CandidateObservation:
         hits = frozenset(hit_keys)
+        structurally_usable = (
+            parse_status == "ok"
+            and 1 <= unit_count <= 3
+            and same_parent_scope
+        )
         return CandidateObservation(
             candidate_index=index,
             code=f"value_{index} = source",
@@ -45,8 +50,12 @@ def observation_factory() -> Callable[..., CandidateObservation]:
             unit_count=unit_count,
             same_parent_scope=same_parent_scope,
             boundary_span=(0, 16),
-            stable_across_precision_modes=precision_stable,
-            stable_across_batch_modes=batch_stable,
+            stable_across_precision_modes=(
+                precision_stable if structurally_usable else False
+            ),
+            stable_across_batch_modes=(
+                batch_stable if structurally_usable else False
+            ),
             lsh_by_key_id={
                 f"train-key-{key_index:03d}": {
                     "hit": key_index in hits,
@@ -54,10 +63,14 @@ def observation_factory() -> Callable[..., CandidateObservation]:
                     "stable": per_key_stable,
                 }
                 for key_index in range(TRAINING_KEY_COUNT)
-            },
+            } if structurally_usable else {},
             generation_seed_id=f"seed-v1:{index}",
             rewrite_config_id="rewrite-v1",
-            lsh_signature=(1, 0, 1, 0),
+            lsh_signature=(1, 0, 1, 0) if structurally_usable else None,
+            semantic_reference_cosine=(
+                1.0 if index == 0 else 0.95
+            ) if structurally_usable else None,
+            semantic_preservation_passed=(True if structurally_usable else None),
         )
 
     return make
@@ -220,6 +233,8 @@ def test_structurally_invalid_candidate_may_have_no_lsh_observations(
         lsh_signature=None,
         stable_across_precision_modes=False,
         stable_across_batch_modes=False,
+        semantic_reference_cosine=None,
+        semantic_preservation_passed=None,
     )
 
     labels = build_gate_labels(tuple(candidates), training_key_count=32)
@@ -235,14 +250,12 @@ def test_structurally_invalid_nonempty_lsh_map_is_still_strictly_validated(
     observation_factory: Callable[..., CandidateObservation],
 ) -> None:
     candidates = list(_trajectory(observation_factory))
-    candidates[1] = replace(
-        candidates[1],
-        parse_status="parse_error",
-        lsh_by_key_id={"train-key-000": {"hit": True}},
-    )
-
-    with pytest.raises(ValueError, match="training key IDs"):
-        build_gate_labels(tuple(candidates), training_key_count=32)
+    with pytest.raises(ValueError, match="structurally invalid"):
+        replace(
+            candidates[1],
+            parse_status="parse_error",
+            lsh_by_key_id={"train-key-000": {"hit": True}},
+        )
 
 
 def test_candidate_zero_must_be_structurally_valid_with_complete_evidence(
@@ -259,6 +272,8 @@ def test_candidate_zero_must_be_structurally_valid_with_complete_evidence(
         lsh_signature=None,
         stable_across_precision_modes=False,
         stable_across_batch_modes=False,
+        semantic_reference_cosine=None,
+        semantic_preservation_passed=None,
     )
     with pytest.raises(ValueError, match="candidate 0"):
         build_gate_labels(tuple(candidates), training_key_count=32)
@@ -270,6 +285,21 @@ def test_candidate_zero_blank_code_is_defensively_rejected(
     candidates = list(_trajectory(observation_factory))
     object.__setattr__(candidates[0], "code", "   \t")
     with pytest.raises(ValueError, match="candidate 0.*code"):
+        build_gate_labels(tuple(candidates), training_key_count=32)
+
+
+def test_labels_reject_pending_semantic_probe_even_with_keyed_evidence(
+    observation_factory: Callable[..., CandidateObservation],
+) -> None:
+    candidates = list(_trajectory(observation_factory))
+    candidates[1] = replace(
+        candidates[1],
+        semantic_probe_pending=True,
+        semantic_reference_cosine=None,
+        semantic_preservation_passed=None,
+    )
+
+    with pytest.raises(ValueError, match="semantic probe must be complete"):
         build_gate_labels(tuple(candidates), training_key_count=32)
 
 

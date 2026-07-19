@@ -8,6 +8,7 @@ __all__ = [
     "HashEmbeddingRule",
     "SemanticLshEmbeddingRule",
     "SemanticWindowEvidence",
+    "SemanticPreservationEvidence",
     "SemanticWindowScorer",
     "load_semantic_lsh_rule",
 ]
@@ -22,6 +23,10 @@ _EXPORTS = {
     "SemanticWindowEvidence": (
         "wfcllm.semantic.window_lsh",
         "SemanticWindowEvidence",
+    ),
+    "SemanticPreservationEvidence": (
+        "wfcllm.semantic.window_lsh",
+        "SemanticPreservationEvidence",
     ),
     "SemanticWindowScorer": (
         "wfcllm.semantic.window_lsh",

@@ -35,6 +35,8 @@ def _observation(index: int = 0) -> CandidateObservation:
         generation_seed_id="seed-plan-v1:000",
         rewrite_config_id="rewrite-v1",
         lsh_signature=(1, 0, 1, 0),
+        semantic_reference_cosine=1.0,
+        semantic_preservation_passed=True,
     )
 
 
@@ -79,6 +81,76 @@ def test_candidate_observation_serializes_one_canonical_lsh_signature() -> None:
     assert signed.lsh_signature == (1, 0, 1, 1)
     assert row["lsh_signature"] == [1, 0, 1, 1]
     json.dumps(row, allow_nan=False)
+
+
+def test_semantic_preservation_failure_is_retained_but_lsh_evidence_free() -> None:
+    observation = _observation()
+    rejected = CandidateObservation(
+        **{
+            **observation.__dict__,
+            "semantic_reference_cosine": 0.71,
+            "semantic_preservation_passed": False,
+            "stable_across_precision_modes": False,
+            "stable_across_batch_modes": False,
+            "lsh_by_key_id": {},
+            "lsh_signature": None,
+        }
+    )
+    row = rejected.to_dict()
+    assert row["semantic_reference_cosine"] == pytest.approx(0.71)
+    assert row["semantic_preservation_passed"] is False
+    assert row["lsh_by_key_id"] == {}
+
+    with pytest.raises(ValueError, match="semantic preservation"):
+        CandidateObservation(
+            **{
+                **observation.__dict__,
+                "semantic_reference_cosine": 0.71,
+                "semantic_preservation_passed": False,
+            }
+        )
+
+
+def test_final_structurally_usable_candidate_requires_semantic_probe_result() -> None:
+    observation = _observation()
+    with pytest.raises(ValueError, match="requires passed semantic preservation"):
+        CandidateObservation(
+            **{
+                **observation.__dict__,
+                "semantic_reference_cosine": None,
+                "semantic_preservation_passed": None,
+                "semantic_probe_pending": False,
+                "stable_across_precision_modes": False,
+                "stable_across_batch_modes": False,
+                "lsh_by_key_id": {},
+                "lsh_signature": None,
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("cosine", "passed"), [(0.89, True), (0.90, False)]
+)
+def test_semantic_preservation_decision_must_match_frozen_threshold(
+    cosine: float, passed: bool
+) -> None:
+    observation = _observation()
+    values = {
+        **observation.__dict__,
+        "semantic_reference_cosine": cosine,
+        "semantic_preservation_passed": passed,
+    }
+    if not passed:
+        values.update(
+            {
+                "stable_across_precision_modes": False,
+                "stable_across_batch_modes": False,
+                "lsh_by_key_id": {},
+                "lsh_signature": None,
+            }
+        )
+    with pytest.raises(ValueError, match="cosine >= 0.9"):
+        CandidateObservation(**values)
 
 
 @pytest.mark.parametrize("signature", [(), (1, 2), (True, 0), [1, 0]])
@@ -131,7 +203,7 @@ def test_candidate_observation_rejects_evidence_structure_contradictions(
     changes: dict[str, object],
 ) -> None:
     observation = _observation()
-    with pytest.raises(ValueError, match="evidence|signature|stability"):
+    with pytest.raises(ValueError, match="evidence|signature|stability|semantic"):
         CandidateObservation(**{**observation.__dict__, **changes})
 
 
@@ -148,9 +220,24 @@ def test_structurally_invalid_empty_observation_is_the_only_empty_form() -> None
             "lsh_signature": None,
             "stable_across_precision_modes": False,
             "stable_across_batch_modes": False,
+            "semantic_reference_cosine": None,
+            "semantic_preservation_passed": None,
         }
     )
     assert invalid.to_dict()["lsh_by_key_id"] == {}
+
+
+def test_keyed_evidence_cannot_omit_semantic_preservation_fields() -> None:
+    observation = _observation()
+
+    with pytest.raises(ValueError, match="requires passed semantic preservation"):
+        CandidateObservation(
+            **{
+                **observation.__dict__,
+                "semantic_reference_cosine": None,
+                "semantic_preservation_passed": None,
+            }
+        )
 
 
 def test_structurally_usable_observation_requires_nonempty_boundary_span() -> None:
@@ -225,6 +312,18 @@ def test_read_only_schema_fields_are_publicly_annotated_as_mappings() -> None:
 def test_parse_status_is_a_fixed_parser_fact_enum(parse_status: str) -> None:
     observation = _observation()
     values = {**observation.__dict__, "parse_status": parse_status}
+    if parse_status != "ok":
+        values.update(
+            {
+                "same_parent_scope": False,
+                "lsh_by_key_id": {},
+                "lsh_signature": None,
+                "stable_across_precision_modes": False,
+                "stable_across_batch_modes": False,
+                "semantic_reference_cosine": None,
+                "semantic_preservation_passed": None,
+            }
+        )
     assert CandidateObservation(**values).parse_status == parse_status
 
 

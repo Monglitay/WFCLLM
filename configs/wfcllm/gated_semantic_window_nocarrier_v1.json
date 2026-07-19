@@ -43,17 +43,21 @@
       "temperature": 0.2,
       "top_p": 0.95,
       "max_new_tokens": 16,
-      "generation_attempts": 9,
-      "candidate_selection": "unique-key-blind-structural-fallback/v1"
+      "generation_attempts": 3,
+      "candidate_selection": "fixed-key-blind-abc-trajectory/v1"
     },
     "semantic": {
       "parent_descriptor_version": "python-statement-window/v1",
       "encoder_id": "semantic-encoder-local-v1",
       "lsh": {
-        "d": 1,
-        "gamma": 0.5,
+        "d": 12,
+        "gamma": 0.25,
         "margin": 0.0,
         "key_derivation_version": "wfcllm-parent-key/v1"
+      },
+      "preservation": {
+        "rule": "codet5-cosine-to-original/v1",
+        "threshold": 0.9
       }
     }
   },
@@ -72,9 +76,9 @@
     "max_total_sampled_tokens": 32768
   },
   "semantic_lsh": {
-    "rule_name": "keyed_text_region",
-    "lsh_d": 1,
-    "lsh_gamma": 0.5,
+    "rule_name": "semantic_lsh",
+    "lsh_d": 12,
+    "lsh_gamma": 0.25,
     "semantic_margin": 0.0,
     "use_ordinal_keying": false
   },

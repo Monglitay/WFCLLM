@@ -15,6 +15,7 @@ from wfcllm.gate.data import (
     validate_key_blind_payload,
 )
 from wfcllm.gate.labels import LabelThresholds, build_gate_labels
+from wfcllm.gate.schema import CandidateObservation
 from wfcllm.windowing.contracts import StatementUnit
 
 
@@ -72,6 +73,31 @@ class RecordingRewriter:
             generation_seed_id=f"seed-v1:{candidate_index}",
             rewrite_config_id="rewrite-v1",
         )
+
+
+def _complete_semantic_probe(
+    trajectory: tuple[CandidateObservation, ...],
+) -> tuple[CandidateObservation, ...]:
+    completed = []
+    for candidate in trajectory:
+        structurally_usable = (
+            candidate.parse_status == "ok"
+            and candidate.same_parent_scope
+            and candidate.unit_count in {1, 2, 3}
+        )
+        completed.append(
+            replace(
+                candidate,
+                semantic_probe_pending=False,
+                semantic_reference_cosine=(
+                    1.0 if candidate.candidate_index == 0 else 0.95
+                ) if structurally_usable else None,
+                semantic_preservation_passed=(
+                    True if structurally_usable else None
+                ),
+            )
+        )
+    return tuple(completed)
 
 
 class RecordingProbe:
@@ -379,7 +405,7 @@ def test_builder_persists_raw_probe_facts_for_margin_relabeling() -> None:
         rewriter=RecordingRewriter(),
         lsh_probe=MarginProbe(),
     ).build([_unit(0)])[0]
-    trajectory = group.candidates_by_length["1"]
+    trajectory = _complete_semantic_probe(group.candidates_by_length["1"])
 
     low = build_gate_labels(
         trajectory,
@@ -443,7 +469,8 @@ def test_builder_invalid_rewrite_integrates_with_label_generation() -> None:
     ).build([_unit(0)])[0]
 
     labels = build_gate_labels(
-        group.candidates_by_length["1"], training_key_count=32
+        _complete_semantic_probe(group.candidates_by_length["1"]),
+        training_key_count=32,
     )
 
     assert labels.budgets[3].structural_valid_rate == 2 / 3

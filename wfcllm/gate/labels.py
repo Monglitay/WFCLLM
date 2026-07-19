@@ -203,11 +203,21 @@ def build_gate_labels(
     elif not isinstance(thresholds, LabelThresholds):
         raise ValueError("thresholds must be LabelThresholds")
     _validate_trajectory(candidates)
+    if any(candidate.semantic_probe_pending for candidate in candidates):
+        raise ValueError("semantic probe must be complete before label construction")
 
     key_ids = _CANONICAL_KEY_IDS
     candidate_zero = candidates[0]
     if (
         not _is_structurally_usable(candidate_zero)
+        or candidate_zero.semantic_preservation_passed is not True
+        or candidate_zero.semantic_reference_cosine is None
+        or not math.isclose(
+            float(candidate_zero.semantic_reference_cosine),
+            1.0,
+            rel_tol=0.0,
+            abs_tol=1e-6,
+        )
         or set(candidate_zero.lsh_by_key_id) != set(key_ids)
     ):
         raise ValueError(
@@ -217,7 +227,15 @@ def build_gate_labels(
         raise ValueError("candidate 0 code must be nonblank")
     for candidate in candidates:
         structurally_usable = _is_structurally_usable(candidate)
-        if not candidate.lsh_by_key_id and not structurally_usable:
+        if structurally_usable and (
+            candidate.semantic_reference_cosine is None
+            or candidate.semantic_preservation_passed is None
+        ):
+            raise ValueError(
+                "structurally usable candidate lacks completed semantic preservation evidence"
+            )
+        probe_usable = _is_probe_usable(candidate)
+        if not candidate.lsh_by_key_id and not probe_usable:
             continue
         if set(candidate.lsh_by_key_id) != set(key_ids):
             raise ValueError(
@@ -262,7 +280,7 @@ def build_gate_labels(
             for candidate in rewrite_prefix
         )
         unstable_count = sum(
-            _is_structurally_usable(candidate)
+            _is_probe_usable(candidate)
             and not _is_candidate_stable(candidate)
             for candidate in rewrite_prefix
         )
@@ -331,6 +349,13 @@ def _is_structurally_usable(candidate: CandidateObservation) -> bool:
     )
 
 
+def _is_probe_usable(candidate: CandidateObservation) -> bool:
+    return (
+        _is_structurally_usable(candidate)
+        and candidate.semantic_preservation_passed is True
+    )
+
+
 def _is_candidate_stable(candidate: CandidateObservation) -> bool:
     return (
         candidate.stable_across_precision_modes
@@ -345,7 +370,7 @@ def _is_reliable_hit(
     configured_margin: float,
 ) -> bool:
     return (
-        _is_structurally_usable(candidate)
+        _is_probe_usable(candidate)
         and _is_candidate_stable(candidate)
         and evidence["hit"] is True
         and evidence["stable"] is True

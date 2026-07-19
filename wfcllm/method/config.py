@@ -369,11 +369,11 @@ class WFCLLMMethodPreset:
             },
             "method.rewrite",
         )
-        self._require_exact_keys(
-            semantic,
-            {"parent_descriptor_version", "encoder_id", "lsh"},
-            "method.semantic",
-        )
+        formal_semantic_lsh = gate.get("require_validated") is True
+        semantic_keys = {"parent_descriptor_version", "encoder_id", "lsh"}
+        if formal_semantic_lsh:
+            semantic_keys.add("preservation")
+        self._require_exact_keys(semantic, semantic_keys, "method.semantic")
         semantic_lsh = self._required_mapping(semantic, "lsh")
         self._require_exact_keys(
             semantic_lsh,
@@ -451,7 +451,7 @@ class WFCLLMMethodPreset:
                 "max_attempts": 3,
                 "experiment_budgets": [1, 3],
                 "key_blind": True,
-                "candidate_selection": "unique-key-blind-structural-fallback/v1",
+                "candidate_selection": "fixed-key-blind-abc-trajectory/v1",
             },
             "method.rewrite",
         )
@@ -473,12 +473,9 @@ class WFCLLMMethodPreset:
         if type(rewrite_max_new_tokens) is not int or rewrite_max_new_tokens <= 0:
             raise ValueError("method.rewrite.max_new_tokens must be a positive integer")
         rewrite_generation_attempts = rewrite.get("generation_attempts")
-        if (
-            type(rewrite_generation_attempts) is not int
-            or rewrite_generation_attempts < 3
-        ):
+        if type(rewrite_generation_attempts) is not int or rewrite_generation_attempts != 3:
             raise ValueError(
-                "method.rewrite.generation_attempts must be an integer of at least 3"
+                "method.rewrite.generation_attempts must equal 3"
             )
 
         if semantic.get("parent_descriptor_version") != "python-statement-window/v1":
@@ -487,17 +484,31 @@ class WFCLLMMethodPreset:
             raise ValueError("method.semantic.encoder_id must match the v1 contract")
         if not isinstance(semantic.get("lsh"), Mapping):
             raise ValueError("method.semantic.lsh must be a dict")
-        formal_semantic_lsh = gate.get("require_validated") is True
         self._require_fixed_values(
             semantic_lsh,
             {
-                "d": 4 if formal_semantic_lsh else 1,
+                "d": 12 if formal_semantic_lsh else 1,
                 "gamma": 0.25 if formal_semantic_lsh else 0.5,
                 "margin": 0.0,
                 "key_derivation_version": "wfcllm-parent-key/v1",
             },
             "method.semantic.lsh",
         )
+        if formal_semantic_lsh:
+            preservation = self._required_mapping(semantic, "preservation")
+            self._require_exact_keys(
+                preservation,
+                {"rule", "threshold"},
+                "method.semantic.preservation",
+            )
+            self._require_fixed_values(
+                preservation,
+                {
+                    "rule": "codet5-cosine-to-original/v1",
+                    "threshold": 0.9,
+                },
+                "method.semantic.preservation",
+            )
 
         self._validate_reusable_sections()
         self._validate_gate_data()
@@ -552,7 +563,7 @@ class WFCLLMMethodPreset:
                 "rule_name": (
                     "semantic_lsh" if formal_semantic_lsh else "keyed_text_region"
                 ),
-                "lsh_d": 4 if formal_semantic_lsh else 1,
+                "lsh_d": 12 if formal_semantic_lsh else 1,
                 "lsh_gamma": 0.25 if formal_semantic_lsh else 0.5,
                 "semantic_margin": 0.0,
                 "use_ordinal_keying": False,

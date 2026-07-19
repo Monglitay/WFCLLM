@@ -88,6 +88,12 @@ def test_public_semantic_runtime_initialization_is_repeatable_and_rng_isolated(
                 lsh_signature=(self.bit, 0, 0, 0), min_margin=0.5
             )
 
+        def signature_and_margin_modes(self, _code):
+            return (self.bit, 0, 0, 0), 0.5, True, True
+
+        def semantic_reference_cosine(self, _reference, _candidate):
+            return 1.0
+
     def fake_load(**_kwargs):
         return SimpleNamespace(
             verifier=Verifier(int(torch.randint(0, 2, ()).item()))
@@ -107,6 +113,47 @@ def test_public_semantic_runtime_initialization_is_repeatable_and_rng_isolated(
         "x = 1"
     )[0]
     assert torch.equal(torch.random.get_rng_state(), before)
+
+
+def test_local_semantic_runtime_uses_real_mode_measurements() -> None:
+    class Verifier:
+        def verify(self, *_args):
+            raise AssertionError("repeat-only verify must not be used")
+
+        def signature_and_margin_modes(self, code_text):
+            assert code_text == "x = 1"
+            return (1, 0, 1), 0.12, False, True
+
+        def semantic_reference_cosine(self, _reference, _candidate):
+            return 1.0
+
+    runtime = gate_production.LocalSemanticRuntime(Verifier())
+
+    assert runtime.signature_and_margin("x = 1") == (
+        (1, 0, 1), 0.12, False, True
+    )
+
+
+def test_local_semantic_runtime_canonicalizes_all_encoder_inputs() -> None:
+    calls: list[tuple[str, ...]] = []
+
+    class Verifier:
+        def signature_and_margin_modes(self, code_text):
+            calls.append(("signature", code_text))
+            return (1, 0, 1), 0.25, True, True
+
+        def semantic_reference_cosine(self, reference_text, candidate_text):
+            calls.append(("cosine", reference_text, candidate_text))
+            return 1.0
+
+    runtime = gate_production.LocalSemanticRuntime(Verifier())
+    runtime.semantic_reference_cosine("x = 1\r\n", "x = 1   \n\n")
+    runtime.signature_and_margin("x = 1\n")
+
+    assert calls == [
+        ("cosine", "x = 1", "x = 1"),
+        ("signature", "x = 1"),
+    ]
 
 
 def test_source_catalog_streams_strict_records(tmp_path: Path) -> None:
@@ -239,10 +286,15 @@ def test_local_hf_backend_batches_r3_candidates_in_one_generate_call() -> None:
     import torch
 
     class Tokenizer:
-        def __call__(self, _text, **_kwargs):
+        def __init__(self):
+            self.instructions = None
+
+        def __call__(self, text, **_kwargs):
+            self.instructions = text
+            batch = len(text) if isinstance(text, list) else 1
             return {
-                "input_ids": torch.tensor([[10, 11]]),
-                "attention_mask": torch.tensor([[1, 1]]),
+                "input_ids": torch.tensor([[10, 11]] * batch),
+                "attention_mask": torch.tensor([[1, 1]] * batch),
             }
 
         def decode(self, ids, **_kwargs):
@@ -257,15 +309,16 @@ def test_local_hf_backend_batches_r3_candidates_in_one_generate_call() -> None:
         def generate(self, **kwargs):
             assert "generator" not in kwargs
             self.calls += 1
-            assert kwargs["num_return_sequences"] == 6
+            assert "num_return_sequences" not in kwargs
             return torch.tensor(
-                [[10, 11, index] for index in range(1, 7)]
+                [[10, 11, index] for index in range(1, 4)]
             )
 
     model = Model()
+    tokenizer = Tokenizer()
     backend = HFCausalRewriteBackend(
         model=model,
-        tokenizer=Tokenizer(),
+        tokenizer=tokenizer,
         device="cpu",
         max_new_tokens=16,
     )
@@ -274,18 +327,20 @@ def test_local_hf_backend_batches_r3_candidates_in_one_generate_call() -> None:
         prompt="",
         completed_prefix="",
         original_window="x = 0\n",
-        candidate_indices=(1, 2, 3, 4, 5, 6),
+        candidate_indices=(1, 2, 3),
         max_units=3,
     )
 
     assert model.calls == 1
+    assert isinstance(tokenizer.instructions, list)
+    assert len(tokenizer.instructions) == 3
+    assert "Conservative plan A" in tokenizer.instructions[0]
+    assert "Conservative plan B" in tokenizer.instructions[1]
+    assert "Conservative plan C" in tokenizer.instructions[2]
     assert [result.text for result in results] == [
         "x = 1\n",
         "x = 2\n",
         "x = 3\n",
-        "x = 4\n",
-        "x = 5\n",
-        "x = 6\n",
     ]
 
 
@@ -324,10 +379,11 @@ def test_hf_rewrite_normalization_preserves_nested_w3_parent_scope() -> None:
     import torch
 
     class Tokenizer:
-        def __call__(self, _text, **_kwargs):
+        def __call__(self, text, **_kwargs):
+            batch = len(text) if isinstance(text, list) else 1
             return {
-                "input_ids": torch.tensor([[10, 11]]),
-                "attention_mask": torch.tensor([[1, 1]]),
+                "input_ids": torch.tensor([[10, 11]] * batch),
+                "attention_mask": torch.tensor([[1, 1]] * batch),
             }
 
         def decode(self, _ids, **_kwargs):
@@ -345,7 +401,10 @@ def test_hf_rewrite_normalization_preserves_nested_w3_parent_scope() -> None:
 
         def generate(self, **kwargs):
             return torch.tensor(
-                [[10, 11, index] for index in range(1, kwargs["num_return_sequences"] + 1)]
+                [
+                    [10, 11, index]
+                    for index in range(1, kwargs["input_ids"].shape[0] + 1)
+                ]
             )
 
     completed_prefix = "def build(item):\n    "
@@ -565,7 +624,27 @@ class _Rewriter:
         )
 
 
+class _SemanticallyDivergentRewriter:
+    def rewrite(self, request, *, candidate_index):
+        return RewriteCandidate(
+            code=request.original_window.replace(" = ", "="),
+            parse_status="ok",
+            unit_count=request.window_length,
+            same_parent_scope=True,
+            boundary_span=(
+                request.structural_boundary.start_byte,
+                request.structural_boundary.end_byte,
+            ),
+            generation_seed_id=f"semantic-reject-seed-{candidate_index}",
+            rewrite_config_id="semantic-reject-test-rewriter/v1",
+        )
+
+
 class _SemanticRuntime:
+    def semantic_reference_cosine(self, reference_text: str, candidate_text: str):
+        assert reference_text and candidate_text
+        return 1.0 if reference_text == candidate_text else 0.5
+
     def signature_and_margin(self, window_text: str):
         assert window_text
         return (0, 0, 0, 0), 1.0, True, True
@@ -738,6 +817,57 @@ def test_local_hf_probe_keeps_parser_invalid_rewrites_evidence_free(
                 assert observation.stable_across_precision_modes is False
                 assert observation.stable_across_batch_modes is False
                 assert candidate_results == {}
+
+
+def test_local_hf_probe_keeps_semantically_rejected_rewrites_evidence_free(
+    tmp_path: Path,
+) -> None:
+    from wfcllm.gate.production import LocalHFProductionAdapter
+
+    options = replace(
+        _runtime_options(tmp_path), semantic_preservation_threshold=0.9
+    )
+    source_hash = __import__("hashlib").sha256(
+        options.source_catalog.read_bytes()
+    ).hexdigest()
+    adapter = LocalHFProductionAdapter(options)
+    adapter._rewriter = _SemanticallyDivergentRewriter()
+    adapter._semantic_runtime = _CountingSemanticRuntime()
+    adapter._gate_tokenizer = _GateTokenizer()
+    config = _pipeline_config(tmp_path)
+    parsed = adapter.parse_statement_units(
+        {
+            "schema_version": "wfcllm-gate-source-manifest/v1",
+            "catalog_sha256": source_hash,
+            "source_count": 1,
+        },
+        config,
+    )
+    generated = tuple(adapter.generate_candidate_trajectories(parsed, config))
+
+    probed = tuple(
+        adapter.run_multi_key_lsh_probe(
+            generated,
+            training_keys=_KeyView("train", 32),
+            holdout_keys=_KeyView("holdout", 8),
+            config=config,
+        )
+    )
+
+    for group in probed:
+        for length in (1, 2, 3):
+            observations = group.candidate_observations_by_length[str(length)]
+            assert observations[0].semantic_preservation_passed is True
+            for observation, results in zip(
+                observations[1:],
+                group.probe_results_by_length[str(length)][1:],
+                strict=True,
+            ):
+                assert observation.semantic_reference_cosine == pytest.approx(0.5)
+                assert observation.semantic_preservation_passed is False
+                assert observation.lsh_signature is None
+                assert not observation.lsh_by_key_id
+                assert results == {}
 
 
 def test_unvalidated_runtime_manifest_loads_hashed_single_statement_profile(

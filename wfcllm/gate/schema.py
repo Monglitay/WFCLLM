@@ -36,6 +36,9 @@ class CandidateObservation:
     generation_seed_id: str
     rewrite_config_id: str
     lsh_signature: tuple[int, ...] | None = None
+    semantic_reference_cosine: float | None = None
+    semantic_preservation_passed: bool | None = None
+    semantic_probe_pending: bool = False
 
     def __post_init__(self) -> None:
         _require_non_negative_int("candidate_index", self.candidate_index)
@@ -57,6 +60,11 @@ class CandidateObservation:
         _require_string("rewrite_config_id", self.rewrite_config_id)
         _validate_lsh_signature(self.lsh_signature)
         _validate_lsh_observations(self.lsh_by_key_id)
+        _validate_semantic_preservation(
+            self.semantic_reference_cosine,
+            self.semantic_preservation_passed,
+        )
+        _require_bool("semantic_probe_pending", self.semantic_probe_pending)
         structurally_usable = (
             self.parse_status == "ok"
             and self.same_parent_scope
@@ -67,12 +75,49 @@ class CandidateObservation:
                 "structurally usable candidate requires nonblank code"
             )
         has_evidence = bool(self.lsh_by_key_id)
+        if not structurally_usable and (has_evidence or self.lsh_signature is not None):
+            raise ValueError("structurally invalid candidate cannot carry LSH evidence")
+        if self.semantic_probe_pending:
+            if (
+                self.semantic_reference_cosine is not None
+                or self.semantic_preservation_passed is not None
+            ):
+                raise ValueError(
+                    "pending semantic probe cannot carry preservation evidence"
+                )
+        elif structurally_usable and (
+            self.semantic_reference_cosine is None
+            or self.semantic_preservation_passed is None
+        ):
+            raise ValueError(
+                "final structurally usable candidate requires passed semantic preservation evidence or an explicit rejection"
+            )
+        elif not structurally_usable:
+            if (
+                self.semantic_reference_cosine is not None
+                or self.semantic_preservation_passed is not None
+            ):
+                raise ValueError(
+                    "structurally invalid candidate cannot carry semantic evidence"
+                )
+        if (
+            not self.semantic_probe_pending
+            and has_evidence
+            and self.semantic_preservation_passed is not True
+        ):
+            raise ValueError(
+                "keyed LSH evidence requires passed semantic preservation"
+            )
         if has_evidence and self.lsh_signature is None:
             raise ValueError("non-empty LSH evidence requires lsh_signature")
         if not has_evidence:
-            if structurally_usable:
+            if (
+                not self.semantic_probe_pending
+                and structurally_usable
+                and self.semantic_preservation_passed is True
+            ):
                 raise ValueError(
-                    "structurally usable candidate requires LSH evidence"
+                    "passed semantic preservation requires LSH evidence"
                 )
             if self.lsh_signature is not None:
                 raise ValueError("empty LSH evidence requires signature=None")
@@ -115,6 +160,9 @@ class CandidateObservation:
                 if self.lsh_signature is not None
                 else None
             ),
+            "semantic_reference_cosine": self.semantic_reference_cosine,
+            "semantic_preservation_passed": self.semantic_preservation_passed,
+            "semantic_probe_pending": self.semantic_probe_pending,
         }
         reject_quality_proxy_fields(row)
         return row
@@ -342,6 +390,26 @@ def _validate_lsh_signature(value: object) -> None:
     ):
         raise ValueError(
             "lsh_signature must be None or a non-empty tuple of integer bits"
+        )
+
+
+def _validate_semantic_preservation(
+    cosine: object, passed: object
+) -> None:
+    if cosine is None or passed is None:
+        if cosine is not None or passed is not None:
+            raise ValueError(
+                "semantic preservation cosine and decision must both be present"
+            )
+        return
+    if isinstance(cosine, bool) or not isinstance(cosine, (int, float)):
+        raise ValueError("semantic reference cosine must be a finite number")
+    if not math.isfinite(cosine) or not -1.0 <= cosine <= 1.0:
+        raise ValueError("semantic reference cosine must be in [-1, 1]")
+    _require_bool("semantic_preservation_passed", passed)
+    if passed is not (float(cosine) >= 0.9):
+        raise ValueError(
+            "semantic preservation decision must equal cosine >= 0.9"
         )
 
 

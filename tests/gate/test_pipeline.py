@@ -136,6 +136,10 @@ def _evidence_templates(suitable: bool):
                 },
                 generation_seed_id=f"seed-{candidate_index}",
                 rewrite_config_id="rewrite-v1", lsh_signature=(1, 0),
+                semantic_reference_cosine=(
+                    1.0 if candidate_index == 0 else 0.95
+                ),
+                semantic_preservation_passed=True,
             ))
             probes.append(types.MappingProxyType(raw_results))
         observations_by_length[str(length)] = tuple(observations)
@@ -704,6 +708,8 @@ def test_audit_label_recompute_treats_invalid_candidate_empty_probe_as_no_holdou
         stable_across_batch_modes=False,
         lsh_by_key_id={},
         lsh_signature=None,
+        semantic_reference_cosine=None,
+        semantic_preservation_passed=None,
     )
     results[3][1] = types.MappingProxyType({})
 

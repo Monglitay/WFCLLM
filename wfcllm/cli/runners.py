@@ -1198,6 +1198,13 @@ def _local_hf_runtime_options(
     rewrite = method.get("rewrite") if isinstance(method, Mapping) else None
     semantic_lsh = config.get("semantic_lsh")
     gate = method.get("gate") if isinstance(method, Mapping) else None
+    semantic = method.get("semantic") if isinstance(method, Mapping) else None
+    method_semantic_lsh = (
+        semantic.get("lsh") if isinstance(semantic, Mapping) else None
+    )
+    preservation = (
+        semantic.get("preservation") if isinstance(semantic, Mapping) else None
+    )
     semantic_rule = (
         str(semantic_lsh.get("rule_name", "semantic_lsh"))
         if isinstance(semantic_lsh, Mapping)
@@ -1243,11 +1250,19 @@ def _local_hf_runtime_options(
         gate_device=getattr(args, "gate_device", "cuda"),
         cache_dir=Path(getattr(args, "gate_cache_dir", "data/gate-cache")),
         lsh_dimension=(
-            int(semantic_lsh.get("lsh_d", 4))
+            int(method_semantic_lsh.get("d", semantic_lsh.get("lsh_d", 4)))
+            if isinstance(method_semantic_lsh, Mapping)
+            and isinstance(semantic_lsh, Mapping)
+            else int(semantic_lsh.get("lsh_d", 4))
             if isinstance(semantic_lsh, Mapping)
             else 4
         ),
         semantic_evidence_rule=semantic_rule,
+        semantic_preservation_threshold=(
+            float(preservation.get("threshold", 0.9))
+            if isinstance(preservation, Mapping)
+            else 0.9
+        ),
         rewrite_max_new_tokens=(
             int(rewrite.get("max_new_tokens", 32))
             if isinstance(rewrite, Mapping)

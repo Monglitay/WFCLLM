@@ -260,7 +260,15 @@ class GatedGenerationPipeline:
                     }
                 )
                 audits.append(value)
-                candidates.append(dict(value))
+            for candidate in result.candidates:
+                value = asdict(candidate)
+                value.update(
+                    {
+                        "id": sample_id,
+                        "dataset": self._config.dataset,
+                    }
+                )
+                candidates.append(value)
 
         final_path = root / "inputs" / "final_code.jsonl"
         write_final_code_rows(final_path, final_rows)
@@ -310,6 +318,17 @@ class GatedGenerationPipeline:
                 ),
                 "secret_source_type": self._config.secret_source_type,
                 "sample_count": len(final_rows),
+                "candidate_attempt_count": len(candidates),
+                "candidate_evaluated_count": sum(
+                    row["evaluation_status"]
+                    != "generated_not_evaluated_after_accept"
+                    for row in candidates
+                ),
+                "candidate_not_evaluated_after_accept_count": sum(
+                    row["evaluation_status"]
+                    == "generated_not_evaluated_after_accept"
+                    for row in candidates
+                ),
                 "sample_failure_count": sum(
                     row.get("sample_generation_failed") is True for row in audits
                 ),

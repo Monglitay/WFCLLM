@@ -71,7 +71,7 @@ def test_region_training_group_selection_is_deterministic_and_cross_group_negati
     assert all(group["negative_source_id"] != group["source_id"] for group in first)
 
 
-def test_checkpoint_metadata_controls_pooling_and_lora_without_changing_model_path() -> None:
+def test_checkpoint_metadata_controls_architecture_but_not_runtime_precision() -> None:
     base = EncoderConfig(
         model_name="/models/codet5-base",
         embed_dim=128,
@@ -98,7 +98,7 @@ def test_checkpoint_metadata_controls_pooling_and_lora_without_changing_model_pa
     assert resolved.model_name == "/models/codet5-base"
     assert resolved.pooling == "masked_mean"
     assert resolved.use_lora is True
-    assert resolved.use_bf16 is True
+    assert resolved.use_bf16 is False
     assert resolved.lora_r == 8
 
 

@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import ast
-from collections import Counter
 from dataclasses import dataclass
 import hashlib
 import io
 import token
-import textwrap
 import tokenize
 from typing import Any, Protocol
 
@@ -97,9 +94,9 @@ class KeyBlindWhitespaceWindowRewriter:
 class CausalWindowRewriter:
     """Generate an entire window without observing gate or LSH outcomes.
 
-    The backend receives only the public causal prefix and original window.  A
-    fresh invocation is made for every requested candidate, which lets formal
-    gate-data collection always request all six candidates without early stop.
+    The backend receives only the public causal prefix and original window.
+    Formal collection and online generation both request the same public
+    A/B/C trajectory, with no hidden pool, filtering, or replacement.
     """
 
     def __init__(
@@ -108,22 +105,14 @@ class CausalWindowRewriter:
         *,
         extractor: PythonStatementUnitExtractor | None = None,
         generation_attempts: int = 3,
-        unique_structural_fallback: bool = False,
-        conservative_semantic_guard: bool = False,
     ) -> None:
         if not callable(getattr(backend, "generate_window", None)):
             raise ValueError("backend must define generate_window")
-        if type(generation_attempts) is not int or generation_attempts < 3:
-            raise ValueError("generation_attempts must be an integer of at least 3")
-        if not isinstance(unique_structural_fallback, bool):
-            raise ValueError("unique_structural_fallback must be a bool")
-        if not isinstance(conservative_semantic_guard, bool):
-            raise ValueError("conservative_semantic_guard must be a bool")
+        if type(generation_attempts) is not int or generation_attempts != 3:
+            raise ValueError("generation_attempts must equal the three public candidates")
         self._backend = backend
         self._extractor = extractor or PythonStatementUnitExtractor()
         self._generation_attempts = generation_attempts
-        self._unique_structural_fallback = unique_structural_fallback
-        self._conservative_semantic_guard = conservative_semantic_guard
 
     def rewrite_generation(
         self, request: RewriteRequest, *, candidate_index: int
@@ -164,125 +153,47 @@ class CausalWindowRewriter:
     ) -> tuple[RewriteCandidate, ...]:
         """Generate a trajectory in one backend call when batching is available."""
 
-        if (
-            not isinstance(candidate_indices, tuple)
-            or not candidate_indices
-            or len(set(candidate_indices)) != len(candidate_indices)
-        ):
-            raise ValueError("candidate_indices must be a non-empty unique tuple")
+        parsed = self.rewrite_windows(
+            request, candidate_indices=candidate_indices
+        )
+        return tuple(
+            self._candidate_from_parsed(request, value) for value in parsed
+        )
+
+    def rewrite_windows(
+        self,
+        request: RewriteRequest,
+        *,
+        candidate_indices: tuple[int, ...],
+    ) -> tuple[ParsedRewrite, ...]:
+        """Generate the one public A/B/C trajectory without replacement."""
+
+        if candidate_indices != (1, 2, 3):
+            raise ValueError("candidate_indices must equal the public trajectory (1, 2, 3)")
         for candidate_index in candidate_indices:
             _validate_call(request, candidate_index)
-        generation_indices = (
-            tuple(range(1, self._generation_attempts + 1))
-            if candidate_indices == (1, 2, 3) and self._generation_attempts > 3
-            else candidate_indices
-        )
         generate_many = getattr(self._backend, "generate_windows", None)
         if not callable(generate_many):
             generated = tuple(
                 self.rewrite_generation(request, candidate_index=index)
-                for index in generation_indices
+                for index in candidate_indices
             )
         else:
             generated = generate_many(
                 prompt=request.prompt,
                 completed_prefix=request.completed_prefix,
                 original_window=request.original_window,
-                candidate_indices=generation_indices,
+                candidate_indices=candidate_indices,
                 max_units=request.window_length,
             )
         if (
             not isinstance(generated, tuple)
-            or len(generated) != len(generation_indices)
+            or len(generated) != len(candidate_indices)
             or any(not isinstance(value, RewriteGeneration) for value in generated)
         ):
             raise ValueError("causal batch backend returned an invalid trajectory")
-        parsed = tuple(
-            self._parse_generation(request, generation) for generation in generated
-        )
-        if len(generation_indices) > len(candidate_indices):
-            structurally_valid = [
-                value
-                for value in parsed
-                if _is_usable(value, expected_unit_count=request.window_length)
-                and (
-                    not self._conservative_semantic_guard
-                    or _is_conservative_semantic_variant(
-                        request.original_window,
-                        value.text,
-                    )
-                )
-            ]
-            if self._unique_structural_fallback:
-                selected = _first_unique(
-                    structurally_valid,
-                    excluded={request.original_window},
-                    limit=len(candidate_indices),
-                )
-                if len(selected) < len(candidate_indices):
-                    selected.extend(
-                        self._structural_fallbacks(
-                            request,
-                            excluded={request.original_window, *(value.text for value in selected)},
-                            limit=len(candidate_indices) - len(selected),
-                        )
-                    )
-            else:
-                selected = structurally_valid[: len(candidate_indices)]
-            if len(selected) < len(candidate_indices):
-                original = self._parse_generation(
-                    request,
-                    RewriteGeneration(
-                        token_ids=(),
-                        text=request.original_window,
-                        generation_seed_id="public-noop-fallback/original-window",
-                        rewrite_config_id="public-noop-fallback/v1",
-                    ),
-                )
-                exact_pool = [
-                    value
-                    for value in (*structurally_valid, original)
-                    if _is_usable(
-                        value,
-                        expected_unit_count=request.window_length,
-                    )
-                ]
-                if not exact_pool:
-                    raise ValueError("rewriter could not preserve requested window length")
-                cursor = 0
-                while len(selected) < len(candidate_indices):
-                    selected.append(exact_pool[cursor % len(exact_pool)])
-                    cursor += 1
-            parsed = tuple(selected)
-        elif self._conservative_semantic_guard:
-            selected = [
-                value
-                for value in parsed
-                if _is_usable(value, expected_unit_count=request.window_length)
-                and _is_conservative_semantic_variant(
-                    request.original_window,
-                    value.text,
-                )
-            ]
-            original = self._parse_generation(
-                request,
-                RewriteGeneration(
-                    token_ids=(),
-                    text=request.original_window,
-                    generation_seed_id="public-noop-fallback/original-window",
-                    rewrite_config_id="public-noop-fallback/v1",
-                ),
-            )
-            selected = selected[: len(candidate_indices)]
-            while len(selected) < len(candidate_indices):
-                selected.append(original)
-            parsed = tuple(selected)
         return tuple(
-            self._candidate_from_parsed(
-                request,
-                value,
-            )
-            for value in parsed
+            self._parse_generation(request, generation) for generation in generated
         )
 
     def rewrite_window(
@@ -307,65 +218,6 @@ class CausalWindowRewriter:
             generation_seed_id=parsed.generation_seed_id,
             rewrite_config_id=parsed.rewrite_config_id,
         )
-
-    def _structural_fallbacks(
-        self,
-        request: RewriteRequest,
-        *,
-        excluded: set[str],
-        limit: int,
-    ) -> list[ParsedRewrite]:
-        """Generate key-blind, semantics-preserving unique public fallbacks."""
-
-        if limit <= 0:
-            return []
-        from wfcllm.lang.python.transform.engine import TransformEngine
-        from wfcllm.lang.python.transform.positive import get_all_positive_rules
-
-        original_lines = request.original_window.splitlines(keepends=True)
-        first_nonblank = next((line for line in original_lines if line.strip()), "")
-        indentation = first_nonblank[: len(first_nonblank) - len(first_nonblank.lstrip())]
-        dedented = textwrap.dedent(request.original_window)
-        engine = TransformEngine(
-            rules=get_all_positive_rules(),
-            max_perm_len=2,
-            max_variants=128,
-            mode="positive",
-        )
-        selected: list[ParsedRewrite] = []
-        seen = set(excluded)
-        for variant in engine.generate_variants(dedented):
-            transformed = str(variant["transformed_source"])
-            if indentation:
-                transformed = "".join(
-                    indentation + line if line.strip() else line
-                    for line in transformed.splitlines(keepends=True)
-                )
-            if transformed in seen:
-                continue
-            digest = hashlib.sha256(transformed.encode("utf-8")).hexdigest()[:16]
-            parsed = self._parse_generation(
-                request,
-                RewriteGeneration(
-                    token_ids=(),
-                    text=transformed,
-                    generation_seed_id=f"public-structural-fallback:{digest}",
-                    rewrite_config_id=(
-                        "public-structural-fallback/v1:"
-                        "positive-rules:max-perm-len=2:max-variants=128"
-                    ),
-                ),
-            )
-            if not _is_usable(
-                parsed,
-                expected_unit_count=request.window_length,
-            ):
-                continue
-            selected.append(parsed)
-            seen.add(transformed)
-            if len(selected) == limit:
-                break
-        return selected
 
     def _parse_generation(
         self,
@@ -475,80 +327,6 @@ def _same_parent(units: list[Any]) -> bool:
         and unit.direct_parent_type == first.direct_parent_type
         for unit in units
     )
-
-
-def _is_usable(
-    value: ParsedRewrite,
-    *,
-    expected_unit_count: int,
-) -> bool:
-    return (
-        value.parse_status == "ok"
-        and value.same_parent_scope
-        and value.unit_count == expected_unit_count
-    )
-
-
-def _is_conservative_semantic_variant(original: str, candidate: str) -> bool:
-    """Reject copies and obvious name/literal/operation-changing rewrites.
-
-    This is a static semantic-conservation guard, not a quality or test oracle.
-    It deliberately permits positional-to-keyword call spelling, a natural
-    source-level rewrite that adds only ``ast.keyword`` wrapper nodes.
-    """
-
-    try:
-        original_tree = ast.parse(original)
-        candidate_tree = ast.parse(candidate)
-    except SyntaxError:
-        return False
-    if ast.dump(original_tree, include_attributes=False) == ast.dump(
-        candidate_tree,
-        include_attributes=False,
-    ):
-        return False
-
-    ignored = (ast.expr_context, ast.keyword)
-
-    def facts(tree: ast.AST) -> tuple[object, ...]:
-        nodes = tuple(ast.walk(tree))
-        return (
-            Counter(
-                type(node).__name__
-                for node in nodes
-                if not isinstance(node, ignored)
-            ),
-            Counter(
-                (node.id, type(node.ctx).__name__)
-                for node in nodes
-                if isinstance(node, ast.Name)
-            ),
-            Counter(node.attr for node in nodes if isinstance(node, ast.Attribute)),
-            Counter(repr(node.value) for node in nodes if isinstance(node, ast.Constant)),
-            Counter(type(node).__name__ for node in nodes if isinstance(node, ast.operator)),
-            Counter(type(node).__name__ for node in nodes if isinstance(node, ast.boolop)),
-            Counter(type(node).__name__ for node in nodes if isinstance(node, ast.cmpop)),
-        )
-
-    return facts(original_tree) == facts(candidate_tree)
-
-
-def _first_unique(
-    values: list[ParsedRewrite],
-    *,
-    excluded: set[str],
-    limit: int,
-) -> list[ParsedRewrite]:
-    selected: list[ParsedRewrite] = []
-    seen = set(excluded)
-    for value in values:
-        if value.text in seen:
-            continue
-        selected.append(value)
-        seen.add(value.text)
-        if len(selected) == limit:
-            break
-    return selected
 
 
 def _descriptor(unit: Any) -> ParentDescriptor:

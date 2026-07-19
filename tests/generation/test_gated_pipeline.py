@@ -11,6 +11,7 @@ import pytest
 from wfcllm.generation.completion_finalizer import ProgramFinalizationResult
 from wfcllm.generation.gated_generator import (
     ByteSpan,
+    GatedCandidateAudit,
     GatedGenerationResult,
     GatedWindowAudit,
 )
@@ -62,6 +63,33 @@ class _Generator:
                     parent_descriptor="module|body|0|simple",
                     previous_statement_text_unchanged=True,
                     close_reason="end_of_input",
+                    semantic_reference_cosine=0.97,
+                    semantic_preservation_passed=True,
+                ),
+            ),
+            (
+                GatedCandidateAudit(
+                    window_index=0,
+                    candidate_index=1,
+                    requested_unit_count=1,
+                    text="x = 2\n",
+                    token_ids=(2,),
+                    generation_seed_id="seed-1",
+                    rewrite_config_id="cfg:strategy=a",
+                    parse_status="ok",
+                    unit_count=1,
+                    same_parent_scope=True,
+                    parser_spans=((0, 5),),
+                    structure_ok=True,
+                    semantic_reference_cosine=0.97,
+                    semantic_preservation_passed=True,
+                    keyed_lsh_scored=True,
+                    lsh_signature=(1, 0),
+                    semantic_hit=True,
+                    semantic_stable=True,
+                    semantic_margin=0.4,
+                    selected=True,
+                    evaluation_status="keyed_lsh_evaluated",
                 ),
             ),
         )
@@ -117,6 +145,12 @@ def test_generation_audit_is_sidecar_only(tmp_path: Path) -> None:
     assert audit[0]["audit_only"] is True
     assert audit[0]["not_detector_input"] is True
     assert audit[0]["selected_candidate_index"] == 1
+    assert audit[0]["semantic_reference_cosine"] == pytest.approx(0.97)
+    assert audit[0]["semantic_preservation_passed"] is True
+    candidates = _read_jsonl(tmp_path / "generation" / "candidate_sidecar.jsonl")
+    assert len(candidates) == 1
+    assert candidates[0]["candidate_index"] == 1
+    assert candidates[0]["keyed_lsh_scored"] is True
 
 
 def test_experimental_generation_is_marked_non_formal(tmp_path: Path) -> None:
@@ -241,6 +275,47 @@ def test_each_sample_generates_exactly_one_base_program(tmp_path: Path) -> None:
     ).run()
     assert base.calls == 1
     assert len(_read_jsonl(tmp_path / "inputs" / "final_code.jsonl")) == 1
+
+
+def test_candidate_audit_rejects_semantic_or_keyed_evidence_contradictions() -> None:
+    base = GatedCandidateAudit(
+        window_index=0,
+        candidate_index=1,
+        requested_unit_count=1,
+        text="x = 2\n",
+        token_ids=(2,),
+        generation_seed_id="seed-1",
+        rewrite_config_id="cfg:strategy=a",
+        parse_status="ok",
+        unit_count=1,
+        same_parent_scope=True,
+        parser_spans=((0, 5),),
+        structure_ok=True,
+        semantic_reference_cosine=0.91,
+        semantic_preservation_passed=True,
+        keyed_lsh_scored=True,
+        lsh_signature=(1, 0),
+        semantic_hit=True,
+        semantic_stable=True,
+        semantic_margin=0.4,
+        selected=True,
+        evaluation_status="keyed_lsh_evaluated",
+    )
+
+    with pytest.raises(ValueError, match="cosine >= 0.90"):
+        replace(
+            base,
+            semantic_reference_cosine=0.89,
+            semantic_preservation_passed=True,
+        )
+    with pytest.raises(ValueError, match="must not carry keyed"):
+        replace(base, keyed_lsh_scored=False)
+    with pytest.raises(ValueError, match="generation_seed_id"):
+        replace(base, generation_seed_id=None)
+    with pytest.raises(ValueError, match="rewrite_config_id"):
+        replace(base, rewrite_config_id=None)
+    with pytest.raises(ValueError, match="parser facts contradict structure_ok"):
+        replace(base, same_parent_scope=False)
 
 
 def test_finalizer_runs_before_watermark_generator(tmp_path: Path) -> None:

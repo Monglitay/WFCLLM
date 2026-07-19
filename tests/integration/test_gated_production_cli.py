@@ -74,7 +74,7 @@ def test_local_hf_runtime_options_prefer_explicit_training_overrides(
                     "temperature": 0.2,
                     "top_p": 0.95,
                     "max_new_tokens": 16,
-                    "generation_attempts": 9,
+                    "generation_attempts": 3,
                 }
             },
             "semantic_lsh": {
@@ -94,7 +94,7 @@ def test_local_hf_runtime_options_prefer_explicit_training_overrides(
     assert options.rewrite_temperature == 0.2
     assert options.rewrite_top_p == 0.95
     assert options.rewrite_max_new_tokens == 16
-    assert options.rewrite_generation_attempts == 9
+    assert options.rewrite_generation_attempts == 3
     assert options.lsh_dimension == 1
     assert options.semantic_evidence_rule == "keyed_text_region"
 
@@ -133,6 +133,48 @@ def test_formal_runtime_rejects_keyed_text_region_implicit_carrier(
             },
             "gate-data",
         )
+
+
+def test_formal_runtime_reads_d12_and_reference_cosine_threshold(
+    tmp_path: Path,
+) -> None:
+    source_catalog = tmp_path / "sources.jsonl"
+    source_catalog.write_text("", encoding="utf-8")
+    paths = [tmp_path / name for name in ("generator", "semantic", "gate-base", "cache")]
+    for path in paths:
+        path.mkdir()
+    args = build_parser().parse_args(
+        [
+            "--gate-source-catalog", str(source_catalog),
+            "--generation-model-path", str(paths[0]),
+            "--semantic-encoder-model-path", str(paths[1]),
+            "--gate-base-model-path", str(paths[2]),
+            "--gate-cache-dir", str(paths[3]),
+        ]
+    )
+
+    options = runners._local_hf_runtime_options(
+        args,
+        {
+            "method": {
+                "gate": {"require_validated": True},
+                "rewrite": {},
+                "semantic": {
+                    "lsh": {"d": 12},
+                    "preservation": {
+                        "rule": "codet5-cosine-to-original/v1",
+                        "threshold": 0.9,
+                    },
+                },
+            },
+            "semantic_lsh": {"lsh_d": 12, "rule_name": "semantic_lsh"},
+            "gate_train": {},
+        },
+        "gate-data",
+    )
+
+    assert options.lsh_dimension == 12
+    assert options.semantic_preservation_threshold == pytest.approx(0.9)
 
 
 def test_entry_uses_explicit_state_file(monkeypatch, tmp_path: Path) -> None:

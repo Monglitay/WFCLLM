@@ -202,6 +202,19 @@ def test_allowed_region_id_is_stable_opaque_and_descriptor_specific() -> None:
     assert first_descriptor not in first.allowed_region_id
 
 
+def test_semantic_inputs_use_one_canonical_text_across_layout_variants() -> None:
+    from wfcllm.semantic.window_lsh import canonical_semantic_window_text
+
+    variants = (
+        "x = 1",
+        "x = 1\n",
+        "x = 1\r\n",
+        "x = 1\n\n",
+        "x = 1   \n",
+    )
+    assert {canonical_semantic_window_text(value) for value in variants} == {"x = 1"}
+
+
 @dataclass
 class _MinimalVerifyResult:
     lsh_signature: tuple[int, ...]
@@ -398,3 +411,59 @@ def test_real_projection_verifier_protocol_remains_compatible() -> None:
     assert evidence.signature == min(allowed)
     assert evidence.hit is True
     assert evidence.stable is True
+
+
+def test_scorer_applies_fixed_key_independent_preservation_threshold() -> None:
+    result = _FakeVerifyResult(False, 0.4, (1, 0, 1, 0), False)
+    scorer, verifier, _keying = _scorer(result)
+    verifier.semantic_reference_cosine = lambda reference, candidate: 0.89
+    scorer = SemanticWindowScorer(
+        verifier=verifier,
+        keying=_FakeKeying(frozenset({(1, 0, 1, 0)})),
+        contract_version="python-statement-window/v1",
+        k=1,
+        margin=0.0,
+        semantic_preservation_threshold=0.9,
+    )
+
+    evidence = scorer.compare_semantics(
+        reference_text="x = y + 1", candidate_text="x = 1 + y"
+    )
+
+    assert evidence.cosine == pytest.approx(0.89)
+    assert evidence.threshold == pytest.approx(0.9)
+    assert evidence.passed is False
+
+
+def test_scorer_rejects_real_precision_or_batch_instability() -> None:
+    class ModeVerifier(_FakeVerifier):
+        def verify_modes(self, code_text, valid_set, margin):
+            self.calls.append((code_text, valid_set, margin))
+            return type(
+                "ModeResult",
+                (),
+                {
+                    "lsh_signature": (1, 0, 1, 0),
+                    "min_margin": 0.4,
+                    "in_valid_set": True,
+                    "passed": False,
+                    "stable_across_precision_modes": False,
+                    "stable_across_batch_modes": True,
+                },
+            )()
+
+    verifier = ModeVerifier(object())
+    scorer = SemanticWindowScorer(
+        verifier=verifier,
+        keying=_FakeKeying(frozenset({(1, 0, 1, 0)})),
+        contract_version="python-statement-window/v1",
+        k=1,
+        margin=0.0,
+    )
+
+    evidence = scorer.score(
+        window_text="x = 1", parent_descriptor="module/body"
+    )
+
+    assert evidence.stable is False
+    assert evidence.hit is False

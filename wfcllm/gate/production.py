@@ -29,6 +29,7 @@ from wfcllm.gate.pipeline import GatePipelineGroup, ValidationOutcome
 from wfcllm.gate.schema import CandidateObservation, GateTrainingGroup
 from wfcllm.gate.sources import GateSourceRecord, canonical_gate_source_identity
 from wfcllm.semantic.keying import WatermarkKeying
+from wfcllm.semantic.window_lsh import canonical_semantic_window_text
 from wfcllm.gate.input import GATE_INPUT_CONTRACT_VERSION
 from wfcllm.windowing import (
     WINDOW_CONTRACT_VERSION,
@@ -106,6 +107,7 @@ class LocalHFGateRuntimeOptions:
     semantic_embed_dim: int = 128
     lsh_dimension: int = 4
     semantic_evidence_rule: str = "semantic_lsh"
+    semantic_preservation_threshold: float = 0.9
     rewrite_max_new_tokens: int = 32
     rewrite_generation_attempts: int = 3
     rewrite_temperature: float = 0.8
@@ -145,6 +147,14 @@ class LocalHFGateRuntimeOptions:
             "keyed_text_region",
         }:
             raise ValueError("unsupported semantic evidence rule")
+        if (
+            isinstance(self.semantic_preservation_threshold, bool)
+            or not isinstance(self.semantic_preservation_threshold, (int, float))
+            or not 0.0 <= self.semantic_preservation_threshold <= 1.0
+        ):
+            raise ValueError(
+                "semantic_preservation_threshold must be in [0, 1]"
+            )
         for name in (
             "semantic_embed_dim",
             "lsh_dimension",
@@ -160,8 +170,8 @@ class LocalHFGateRuntimeOptions:
                 raise ValueError(f"{name} must be a positive integer")
         if self.gate_batch_size < 3:
             raise ValueError("gate_batch_size must be at least 3")
-        if self.rewrite_generation_attempts < 3:
-            raise ValueError("rewrite_generation_attempts must be at least 3")
+        if self.rewrite_generation_attempts != 3:
+            raise ValueError("rewrite_generation_attempts must equal 3")
         if (
             isinstance(self.rewrite_temperature, bool)
             or not isinstance(self.rewrite_temperature, (int, float))
@@ -440,12 +450,29 @@ class LocalHFProductionAdapter:
             parent = self._parent_by_group.get(group.group_id)
             if parent is None:
                 raise ValueError("semantic probe is missing the group parent descriptor")
+            allowed_by_key = {
+                key_id: WatermarkKeying(
+                    material, self.options.lsh_dimension
+                ).derive_descriptor(
+                    contract_version=config.parser_contract,
+                    parent_descriptor=parent,
+                    k=max(
+                        1,
+                        round(
+                            0.25 * (2 ** self.options.lsh_dimension)
+                        ),
+                    ),
+                )
+                for key_id, material in materials.items()
+            }
             observations_by_length: dict[str, tuple[CandidateObservation, ...]] = {}
             results_by_length: dict[str, tuple[Mapping[str, LshProbeResult], ...]] = {}
             for length in (1, 2, 3):
                 observations: list[CandidateObservation] = []
                 candidate_results: list[Mapping[str, LshProbeResult]] = []
-                for observation in group.candidate_observations_by_length[str(length)]:
+                trajectory = group.candidate_observations_by_length[str(length)]
+                reference_text = trajectory[0].code
+                for observation in trajectory:
                     exact_structural_candidate = (
                         observation.parse_status == "ok"
                         and observation.same_parent_scope
@@ -463,6 +490,33 @@ class LocalHFProductionAdapter:
                                 stable_across_batch_modes=False,
                                 lsh_by_key_id={},
                                 lsh_signature=None,
+                                semantic_reference_cosine=None,
+                                semantic_preservation_passed=None,
+                                semantic_probe_pending=False,
+                            )
+                        )
+                        candidate_results.append({})
+                        continue
+                    semantic_cosine = runtime.semantic_reference_cosine(
+                        reference_text, observation.code
+                    )
+                    semantic_preserved = bool(
+                        semantic_cosine
+                        >= self.options.semantic_preservation_threshold
+                    )
+                    if not semantic_preserved:
+                        observations.append(
+                            replace(
+                                observation,
+                                stable_across_precision_modes=False,
+                                stable_across_batch_modes=False,
+                                lsh_by_key_id={},
+                                lsh_signature=None,
+                                semantic_reference_cosine=float(
+                                    semantic_cosine
+                                ),
+                                semantic_preservation_passed=False,
+                                semantic_probe_pending=False,
                             )
                         )
                         candidate_results.append({})
@@ -470,14 +524,13 @@ class LocalHFProductionAdapter:
                     signature, margin, precision_stable, batch_stable = runtime.signature_and_margin(
                         observation.code
                     )
+                    if len(signature) != self.options.lsh_dimension:
+                        raise ValueError(
+                            "semantic signature dimension does not match runtime options"
+                        )
                     stable = bool(precision_stable and batch_stable)
                     results: dict[str, LshProbeResult] = {}
-                    for key_id, material in materials.items():
-                        allowed = WatermarkKeying(material, len(signature)).derive_descriptor(
-                            contract_version=config.parser_contract,
-                            parent_descriptor=parent,
-                            k=max(1, round(0.25 * (2 ** len(signature)))),
-                        )
+                    for key_id, allowed in allowed_by_key.items():
                         results[key_id] = LshProbeResult(
                             signature=signature,
                             margin=float(margin),
@@ -501,6 +554,9 @@ class LocalHFProductionAdapter:
                                 for key_id, result in training_results.items()
                             },
                             lsh_signature=signature,
+                            semantic_reference_cosine=float(semantic_cosine),
+                            semantic_preservation_passed=True,
+                            semantic_probe_pending=False,
                         )
                     )
                     candidate_results.append(results)
@@ -874,6 +930,7 @@ class HFCausalRewriteBackend:
             completed_prefix=completed_prefix,
             original_window=original_window,
             max_units=max_units,
+            candidate_index=candidate_index,
         )
         encoded = self.tokenizer(instruction, return_tensors="pt", truncation=True)
         inputs = {
@@ -915,6 +972,7 @@ class HFCausalRewriteBackend:
             generation_seed_id=f"local-hf-v1:{seed:016x}",
             rewrite_config_id=(
                 f"local-hf-v1:max-new-tokens={self.max_new_tokens}:"
+                f"strategy={_rewrite_strategy_id(candidate_index)}:"
                 f"temperature={self.temperature}:top-p={self.top_p}"
             ),
         )
@@ -936,13 +994,22 @@ class HFCausalRewriteBackend:
             range(1, len(candidate_indices) + 1)
         ):
             raise ValueError("batched candidate indices must be contiguous from 1")
-        instruction = self._render_instruction(
-            prompt=prompt,
-            completed_prefix=completed_prefix,
-            original_window=original_window,
-            max_units=max_units,
+        instructions = [
+            self._render_instruction(
+                prompt=prompt,
+                completed_prefix=completed_prefix,
+                original_window=original_window,
+                max_units=max_units,
+                candidate_index=candidate_index,
+            )
+            for candidate_index in candidate_indices
+        ]
+        encoded = self.tokenizer(
+            instructions,
+            return_tensors="pt",
+            truncation=True,
+            padding=True,
         )
-        encoded = self.tokenizer(instruction, return_tensors="pt", truncation=True)
         inputs = {
             name: value.to(self.device) if hasattr(value, "to") else value
             for name, value in dict(encoded).items()
@@ -958,7 +1025,6 @@ class HFCausalRewriteBackend:
             temperature=self.temperature,
             top_p=self.top_p,
             max_new_tokens=self.max_new_tokens,
-            num_return_sequences=len(candidate_indices),
         )
         if (
             not isinstance(generated, torch.Tensor)
@@ -993,6 +1059,7 @@ class HFCausalRewriteBackend:
                     generation_seed_id=f"local-hf-v1-batch:{seed:016x}:{candidate_index}",
                     rewrite_config_id=(
                         f"local-hf-v1-batch:count={len(candidate_indices)}:"
+                        f"strategy={_rewrite_strategy_id(candidate_index)}:"
                         f"max-new-tokens={self.max_new_tokens}:"
                         f"temperature={self.temperature}:top-p={self.top_p}"
                     ),
@@ -1007,9 +1074,11 @@ class HFCausalRewriteBackend:
         completed_prefix: str,
         original_window: str,
         max_units: int,
+        candidate_index: int,
     ) -> str:
         bounded_task = prompt[-2048:]
         bounded_prefix = completed_prefix[-4096:]
+        strategy = _rewrite_strategy_instruction(candidate_index)
         content = (
             "Task description (context only):\n"
             f"{bounded_task}\n\n"
@@ -1020,6 +1089,7 @@ class HFCausalRewriteBackend:
             "literal value, side effect, and control-flow outcome. Do not add imports, "
             "definitions, returns, raises, or calls. Do not rename anything. Use a natural "
             "behavior-preserving alternative only if one exists; otherwise copy the target. "
+            f"{strategy} "
             f"Return code only, with exactly {max_units} complete Python statements.\n\n"
             f"Target window:\n{original_window}"
         )
@@ -1031,6 +1101,31 @@ class HFCausalRewriteBackend:
                 add_generation_prompt=True,
             )
         return content
+
+
+def _rewrite_strategy_id(candidate_index: int) -> str:
+    if type(candidate_index) is not int or candidate_index <= 0:
+        raise ValueError("candidate_index must be a positive integer")
+    return ("a", "b", "c")[(candidate_index - 1) % 3]
+
+
+def _rewrite_strategy_instruction(candidate_index: int) -> str:
+    strategy = _rewrite_strategy_id(candidate_index)
+    instructions = {
+        "a": (
+            "Conservative plan A: make the smallest natural equivalent "
+            "expression-level rewrite while retaining evaluation order."
+        ),
+        "b": (
+            "Conservative plan B: use an independently phrased Python idiom "
+            "only when its runtime behavior is identical."
+        ),
+        "c": (
+            "Conservative plan C: re-derive the same statements from the "
+            "task and prefix, and copy any statement whose equivalence is uncertain."
+        ),
+    }
+    return instructions[strategy]
 
 
 def _extract_rewrite_code(
@@ -1082,23 +1177,54 @@ def _extract_rewrite_code(
 
 
 class LocalSemanticRuntime:
-    """Key-independent semantic signature runtime with a repeatability check."""
+    """Key-independent semantic runtime with measured mode stability."""
 
     def __init__(self, verifier: object) -> None:
-        if not callable(getattr(verifier, "verify", None)):
-            raise ValueError("semantic verifier must expose verify")
+        required = (
+            "semantic_reference_cosine",
+            "signature_and_margin_modes",
+        )
+        if any(not callable(getattr(verifier, name, None)) for name in required):
+            raise ValueError(
+                "semantic verifier must expose cosine and real mode measurements"
+            )
         self.verifier = verifier
 
+    def semantic_reference_cosine(
+        self, reference_text: str, candidate_text: str
+    ) -> float:
+        compare = getattr(self.verifier, "semantic_reference_cosine", None)
+        if not callable(compare):
+            raise ValueError(
+                "semantic verifier must expose semantic_reference_cosine"
+            )
+        cosine = compare(
+            canonical_semantic_window_text(reference_text),
+            canonical_semantic_window_text(candidate_text),
+        )
+        if (
+            isinstance(cosine, bool)
+            or not isinstance(cosine, (int, float))
+            or not -1.0 <= cosine <= 1.0
+        ):
+            raise ValueError("semantic reference cosine must be in [-1, 1]")
+        return float(cosine)
+
     def signature_and_margin(self, window_text: str):
-        sentinel = frozenset({(0, 0, 0, 0)})
-        first = self.verifier.verify(window_text, sentinel, 0.0)
-        second = self.verifier.verify(window_text, sentinel, 0.0)
-        first_signature = tuple(first.lsh_signature)
-        second_signature = tuple(second.lsh_signature)
-        first_margin = float(first.min_margin)
-        second_margin = float(second.min_margin)
-        stable = first_signature == second_signature and first_margin == second_margin
-        return first_signature, min(first_margin, second_margin), stable, stable
+        measure = getattr(self.verifier, "signature_and_margin_modes", None)
+        if not callable(measure):
+            raise ValueError(
+                "semantic verifier must expose real precision/batch mode measurements"
+            )
+        signature, margin, precision_stable, batch_stable = measure(
+            canonical_semantic_window_text(window_text)
+        )
+        return (
+            tuple(signature),
+            float(margin),
+            bool(precision_stable),
+            bool(batch_stable),
+        )
 
 
 @dataclass(frozen=True)
@@ -1664,6 +1790,9 @@ def build_local_semantic_window_scorer(
         contract_version="python-statement-window/v1",
         k=max(1, round(0.25 * (2 ** options.lsh_dimension))),
         margin=0.0,
+        semantic_preservation_threshold=(
+            options.semantic_preservation_threshold
+        ),
     )
 
 
@@ -1675,6 +1804,7 @@ def local_semantic_runtime_hash(options: LocalHFGateRuntimeOptions) -> str:
         + options.semantic_embed_dim.to_bytes(4, "big")
         + options.lsh_dimension.to_bytes(4, "big")
         + options.semantic_evidence_rule.encode("utf-8")
+        + repr(float(options.semantic_preservation_threshold)).encode("ascii")
         + b"\0"
     )
     for path in (
@@ -1956,6 +2086,8 @@ def _source_stratified_selection_summary(
 class _StructuralOnlyProbe:
     """Key-independent placeholder replaced before labels are computed."""
 
+    semantic_probe_pending = True
+
     def probe(self, *, window_text: str, parent_descriptor: str, key_ids: tuple[str, ...]):
         return {
             key_id: LshProbeResult((0, 0, 0, 0), 0.0, False, False, False, False)
@@ -2086,8 +2218,6 @@ def _load_causal_rewriter(options: LocalHFGateRuntimeOptions):
             top_p=options.rewrite_top_p,
         ),
         generation_attempts=options.rewrite_generation_attempts,
-        unique_structural_fallback=False,
-        conservative_semantic_guard=False,
     )
 
 
