@@ -450,16 +450,16 @@ def _diagnostic_quality_exemption(payload: Any) -> bool:
     present_diagnostic = diagnostic_fields & set(payload)
     if not present_backend and not present_diagnostic:
         return False
+    formal_values = {
+        "diagnostic_test_backend": False,
+        "formal_eligible": True,
+        "diagnostic_only": False,
+        "not_official_method": False,
+    }
+    present_identity = present_backend | present_diagnostic
+    if all(payload[field] is formal_values[field] for field in present_identity):
+        return False
     if present_backend and present_diagnostic:
-        if (
-            present_backend == backend_fields
-            and present_diagnostic == diagnostic_fields
-            and payload["diagnostic_test_backend"] is False
-            and payload["formal_eligible"] is True
-            and payload["diagnostic_only"] is False
-            and payload["not_official_method"] is False
-        ):
-            return False
         raise ValueError("diagnostic identity cannot mix marker families")
     if present_backend:
         if (

@@ -145,6 +145,23 @@ def test_incomplete_diagnostic_marker_cannot_bypass_formal_quality_audit(
 
 
 @pytest.mark.parametrize(
+    "formal_marker",
+    [
+        {"diagnostic_test_backend": False},
+        {"formal_eligible": True},
+        {"diagnostic_only": False},
+        {"not_official_method": False},
+    ],
+)
+def test_partial_formal_marker_does_not_claim_diagnostic_exemption(
+    formal_marker: dict[str, bool],
+) -> None:
+    audit_gate_artifact(formal_marker)
+    with pytest.raises(ValueError, match="formal quality proxy field"):
+        audit_gate_artifact({**formal_marker, "correctness_score": 0.5})
+
+
+@pytest.mark.parametrize(
     "payload",
     [
         {"diagnostic_test_backend": True, "formal_eligible": True},
