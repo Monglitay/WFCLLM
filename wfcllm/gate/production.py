@@ -882,7 +882,7 @@ class HFCausalRewriteBackend:
             raise ValueError("rewrite tokenizer decode must return text")
         return RewriteGeneration(
             token_ids=ids,
-            text=_extract_rewrite_code(text),
+            text=_extract_rewrite_code(text, original_window=original_window),
             generation_seed_id=f"local-hf-v1:{seed:016x}",
             rewrite_config_id=(
                 f"local-hf-v1:max-new-tokens={self.max_new_tokens}:"
@@ -956,7 +956,7 @@ class HFCausalRewriteBackend:
             results.append(
                 RewriteGeneration(
                     token_ids=ids,
-                    text=_extract_rewrite_code(text),
+                    text=_extract_rewrite_code(text, original_window=original_window),
                     generation_seed_id=f"local-hf-v1-batch:{seed:016x}:{candidate_index}",
                     rewrite_config_id=(
                         f"local-hf-v1-batch:count={len(candidate_indices)}:"
@@ -1000,21 +1000,30 @@ class HFCausalRewriteBackend:
         return content
 
 
-def _extract_rewrite_code(text: str) -> str:
-    """Remove only an outer Markdown code fence; retain all other model text."""
+def _extract_rewrite_code(text: str, *, original_window: str) -> str:
+    """Remove an outer code fence and restore the target's public base indent."""
 
     stripped = text.strip()
     fence = "`" * 3
-    if not stripped.startswith(fence):
-        return text
-    first_newline = stripped.find("\n")
-    if first_newline < 0:
-        return text
-    body = stripped[first_newline + 1 :]
-    closing = body.find(fence)
-    if closing >= 0:
-        body = body[:closing]
-    return body.strip() + ("\n" if body.strip() else "")
+    body = text
+    if stripped.startswith(fence):
+        first_newline = stripped.find("\n")
+        if first_newline >= 0:
+            body = stripped[first_newline + 1 :]
+            closing = body.find(fence)
+            if closing >= 0:
+                body = body[:closing]
+    body = textwrap.dedent(body.strip("\n"))
+    original_line = next(
+        (line for line in original_window.splitlines() if line.strip()),
+        "",
+    )
+    base_indent = original_line[: len(original_line) - len(original_line.lstrip())]
+    restored = "\n".join(
+        base_indent + line if line.strip() else line
+        for line in body.splitlines()
+    )
+    return restored + ("\n" if restored else "")
 
 
 class LocalSemanticRuntime:

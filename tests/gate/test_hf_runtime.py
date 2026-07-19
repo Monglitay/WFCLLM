@@ -54,7 +54,7 @@ def test_causal_rewrite_backend_decodes_only_new_tokens() -> None:
         max_units=3,
     )
 
-    assert result.text == "x = 1\ny = 2\n"
+    assert result.text == "    x = 1\n    y = 2\n"
     assert result.token_ids == (21, 22)
     assert result.generation_seed_id.startswith("local-hf-v1:")
     assert tokenizer.chat_messages[0]["role"] == "user"
@@ -62,6 +62,31 @@ def test_causal_rewrite_backend_decodes_only_new_tokens() -> None:
     assert "exactly 3 complete Python statements" in instruction
     assert "Preserve every referenced name" in instruction
     assert "do not output it" in instruction
+
+
+def test_causal_rewrite_backend_restores_public_window_indentation() -> None:
+    class FencedTokenizer(_Tokenizer):
+        def decode(self, token_ids, **kwargs):
+            return "```python\nx = 1\nif ready:\n    y = 2\n```"
+
+    backend = HFCausalRewriteBackend(
+        model=_Model(),
+        tokenizer=FencedTokenizer(),
+        device="cpu",
+        max_new_tokens=64,
+        temperature=0.2,
+        top_p=0.7,
+    )
+
+    result = backend.generate_window(
+        prompt="",
+        completed_prefix="def f():\n",
+        original_window="    x = 0\n    if ready:\n        y = 0\n",
+        candidate_index=1,
+        max_units=2,
+    )
+
+    assert result.text == "    x = 1\n    if ready:\n        y = 2\n"
 
 
 class _Verifier:
