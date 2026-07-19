@@ -178,7 +178,9 @@ def test_pipeline_rejects_invalid_or_mismatched_bundle(
         )
 
 
-def test_sample_failure_never_enters_detector_input(tmp_path: Path) -> None:
+def test_watermark_failure_retains_original_program_in_full_denominator(
+    tmp_path: Path,
+) -> None:
     class Broken:
         def generate(self, **_kwargs):
             raise SyntaxError("unrecoverable parser context")
@@ -189,9 +191,44 @@ def test_sample_failure_never_enters_detector_input(tmp_path: Path) -> None:
         generator=Broken(), data_adapter=lambda: [{"id": "bad", "prompt": "p"}],
         deployment_key=b"key",
     ).run()
-    assert (tmp_path / "inputs" / "final_code.jsonl").read_text() == ""
+    final_rows = _read_jsonl(tmp_path / "inputs" / "final_code.jsonl")
+    assert final_rows == [
+        {
+            "id": "bad",
+            "dataset": "humaneval",
+            "prompt": "p",
+            "final_code": "x = 1\n",
+        }
+    ]
     row = _read_jsonl(tmp_path / "generation" / "audit.jsonl")[0]
     assert row["sample_generation_failed"] is True
+
+
+def test_base_generation_failure_retains_empty_program_in_full_denominator(
+    tmp_path: Path,
+) -> None:
+    class BrokenBase:
+        def generate_program(self, **_kwargs):
+            raise RuntimeError("model generation failed")
+
+    GatedGenerationPipeline(
+        config=_config(tmp_path),
+        bundle_loader=lambda _p: _bundle(),
+        bundle_hasher=lambda _p: _digest("bundle"),
+        base_model=BrokenBase(),
+        generator=_Generator(),
+        data_adapter=lambda: [{"id": "bad", "prompt": "p"}],
+        deployment_key=b"key",
+    ).run()
+
+    final_rows = _read_jsonl(tmp_path / "inputs" / "final_code.jsonl")
+    assert final_rows[0]["id"] == "bad"
+    assert final_rows[0]["final_code"] == ""
+    manifest = json.loads(
+        (tmp_path / "generation" / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["sample_count"] == 1
+    assert manifest["sample_failure_count"] == 1
 
 
 def test_each_sample_generates_exactly_one_base_program(tmp_path: Path) -> None:

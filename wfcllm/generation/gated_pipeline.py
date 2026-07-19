@@ -182,6 +182,7 @@ class GatedGenerationPipeline:
         samples = self._data_adapter() if callable(self._data_adapter) else self._data_adapter
         for raw in samples:
             sample_id, prompt = self._sample_identity(raw)
+            original = ""
             try:
                 original = self._generate_base_program(prompt, sample_id)
                 if self._program_finalizer is not None:
@@ -230,6 +231,14 @@ class GatedGenerationPipeline:
                         "dataset": self._config.dataset,
                         "sample_generation_failed": True,
                         "reason": str(exc),
+                    }
+                )
+                final_rows.append(
+                    {
+                        "id": sample_id,
+                        "dataset": self._config.dataset,
+                        "prompt": prompt,
+                        "final_code": original,
                     }
                 )
                 continue
