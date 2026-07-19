@@ -61,6 +61,20 @@ def test_no_quality_gate_keeps_structural_status_fields() -> None:
     assert report == {"ok": True, "forbidden_path": None}
 
 
+def test_no_quality_gate_accepts_complete_official_marker_families() -> None:
+    report = audit_no_quality_gate_payload(
+        {
+            "diagnostic_test_backend": False,
+            "formal_eligible": True,
+            "diagnostic_only": False,
+            "not_official_method": False,
+            "accepted_hit_count": 2,
+        }
+    )
+
+    assert report == {"ok": True, "forbidden_path": None}
+
+
 def test_no_quality_gate_rejects_conflicting_diagnostic_identity() -> None:
     report = audit_no_quality_gate_payload(
         {
