@@ -29,7 +29,9 @@ from wfcllm.gate.production import (
     _statement_family,
     _source_stratified_selection_summary,
 )
-from wfcllm.gate.data import RewriteCandidate
+from wfcllm.gate.data import RewriteCandidate, RewriteRequest, StructuralBoundary
+from wfcllm.generation.window_rewriter import CausalWindowRewriter
+from wfcllm.windowing import ParentDescriptor, WINDOW_CONTRACT_VERSION
 from wfcllm.windowing.contracts import StatementUnit
 
 
@@ -285,6 +287,107 @@ def test_local_hf_backend_batches_r3_candidates_in_one_generate_call() -> None:
         "x = 5\n",
         "x = 6\n",
     ]
+
+
+def test_rewrite_code_extracts_all_fenced_blocks_after_explanatory_text() -> None:
+    text = (
+        "Here are the two equivalent statements:\n\n"
+        "```python\nleft = item.left\n```\n\n"
+        "and then:\n\n"
+        "```python\nright = item.right\n```\n"
+    )
+
+    assert gate_production._extract_rewrite_code(
+        text,
+        original_window="left = item.left\n    right = item.right\n",
+        completed_prefix="def build(item):\n    ",
+    ) == "left = item.left\n    right = item.right\n"
+
+
+def test_rewrite_code_restores_prefix_indent_after_first_generated_line() -> None:
+    assert gate_production._extract_rewrite_code(
+        "left = item.left\nright = item.right\nresult = left + right\n",
+        original_window=(
+            "left = item.left\n"
+            "    right = item.right\n"
+            "    result = left + right\n"
+        ),
+        completed_prefix="def build(item):\n    ",
+    ) == (
+        "left = item.left\n"
+        "    right = item.right\n"
+        "    result = left + right\n"
+    )
+
+
+def test_hf_rewrite_normalization_preserves_nested_w3_parent_scope() -> None:
+    import torch
+
+    class Tokenizer:
+        def __call__(self, _text, **_kwargs):
+            return {
+                "input_ids": torch.tensor([[10, 11]]),
+                "attention_mask": torch.tensor([[1, 1]]),
+            }
+
+        def decode(self, _ids, **_kwargs):
+            return (
+                "Here is the equivalent code:\n\n"
+                "```python\n"
+                "left = item.left\n"
+                "right = item.right\n"
+                "result = left + right\n"
+                "```\n"
+            )
+
+    class Model:
+        config = type("Config", (), {"is_encoder_decoder": False})()
+
+        def generate(self, **kwargs):
+            return torch.tensor(
+                [[10, 11, index] for index in range(1, kwargs["num_return_sequences"] + 1)]
+            )
+
+    completed_prefix = "def build(item):\n    "
+    original_window = (
+        "left = item.left\n"
+        "    right = item.right\n"
+        "    result = left + right\n"
+    )
+    parsed_units = gate_production.PythonStatementUnitExtractor().extract(
+        completed_prefix + original_window
+    )
+    first = next(unit for unit in parsed_units if "left = item.left" in unit.text)
+    canonical_parent = ParentDescriptor(
+        contract_version=WINDOW_CONTRACT_VERSION,
+        ancestor_node_types=first.parent_path[:-1],
+        direct_parent_type=first.direct_parent_type,
+        first_unit_ordinal=first.direct_child_ordinal,
+        compound_header_role="header" if first.compound_header else "body",
+    ).canonical
+    request = RewriteRequest(
+        prompt="",
+        completed_prefix=completed_prefix,
+        original_window=original_window,
+        canonical_parent=canonical_parent,
+        window_start_unit_id="unit-0",
+        window_length=3,
+        structural_boundary=StructuralBoundary(
+            21, 93, 1, "block", ("unit-0", "unit-1", "unit-2"), False, True
+        ),
+    )
+    backend = HFCausalRewriteBackend(
+        model=Model(), tokenizer=Tokenizer(), device="cpu", max_new_tokens=64
+    )
+
+    results = CausalWindowRewriter(backend).rewrite_many(
+        request, candidate_indices=(1, 2, 3)
+    )
+
+    assert [
+        (result.parse_status, result.unit_count, result.same_parent_scope)
+        for result in results
+    ] == [("ok", 3, True)] * 3
 
 
 def test_local_program_generation_uses_transformers_compatible_seed_state() -> None:

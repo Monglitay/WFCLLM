@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 from pathlib import Path
+import re
 import shutil
 import textwrap
 import unicodedata
@@ -906,7 +907,11 @@ class HFCausalRewriteBackend:
             raise ValueError("rewrite tokenizer decode must return text")
         return RewriteGeneration(
             token_ids=ids,
-            text=_extract_rewrite_code(text, original_window=original_window),
+            text=_extract_rewrite_code(
+                text,
+                original_window=original_window,
+                completed_prefix=completed_prefix,
+            ),
             generation_seed_id=f"local-hf-v1:{seed:016x}",
             rewrite_config_id=(
                 f"local-hf-v1:max-new-tokens={self.max_new_tokens}:"
@@ -980,7 +985,11 @@ class HFCausalRewriteBackend:
             results.append(
                 RewriteGeneration(
                     token_ids=ids,
-                    text=_extract_rewrite_code(text, original_window=original_window),
+                    text=_extract_rewrite_code(
+                        text,
+                        original_window=original_window,
+                        completed_prefix=completed_prefix,
+                    ),
                     generation_seed_id=f"local-hf-v1-batch:{seed:016x}:{candidate_index}",
                     rewrite_config_id=(
                         f"local-hf-v1-batch:count={len(candidate_indices)}:"
@@ -1024,29 +1033,51 @@ class HFCausalRewriteBackend:
         return content
 
 
-def _extract_rewrite_code(text: str, *, original_window: str) -> str:
-    """Remove an outer code fence and restore the target's public base indent."""
+def _extract_rewrite_code(
+    text: str,
+    *,
+    original_window: str,
+    completed_prefix: str,
+) -> str:
+    """Extract code blocks and restore indentation supplied by the prefix.
 
-    stripped = text.strip()
-    fence = "`" * 3
-    body = text
-    if stripped.startswith(fence):
-        first_newline = stripped.find("\n")
-        if first_newline >= 0:
-            body = stripped[first_newline + 1 :]
-            closing = body.find(fence)
-            if closing >= 0:
-                body = body[:closing]
+    The source slice starts at the first statement's AST byte, so the completed
+    prefix already contains indentation for the generated first line. Every
+    later physical line must receive that same public base indentation. Model
+    prose is discarded only when it explicitly encloses code in Markdown
+    fences; all fenced blocks are retained in their original order.
+    """
+
+    fenced_blocks = re.findall(
+        r"```(?:python|py)?[ \t]*\r?\n(.*?)```",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    body = (
+        "\n".join(block.strip("\r\n") for block in fenced_blocks)
+        if fenced_blocks
+        else text
+    )
     body = textwrap.dedent(body.strip("\n"))
+    prefix_tail = completed_prefix.rsplit("\n", 1)[-1]
+    prefix_supplies_indent = bool(prefix_tail) and not prefix_tail.strip()
     original_line = next(
         (line for line in original_window.splitlines() if line.strip()),
         "",
     )
-    base_indent = original_line[: len(original_line) - len(original_line.lstrip())]
-    restored = "\n".join(
-        base_indent + line if line.strip() else line
-        for line in body.splitlines()
+    original_indent = original_line[: len(original_line) - len(original_line.lstrip())]
+    base_indent = prefix_tail if prefix_supplies_indent else original_indent
+    lines = body.splitlines()
+    restored_lines = (
+        lines[:1]
+        if prefix_supplies_indent
+        else [base_indent + lines[0]] if lines else []
     )
+    restored_lines.extend(
+        base_indent + line if line.strip() else line
+        for line in lines[1:]
+    )
+    restored = "\n".join(restored_lines)
     return restored + ("\n" if restored else "")
 
 
