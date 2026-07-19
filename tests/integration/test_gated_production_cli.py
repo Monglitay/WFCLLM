@@ -99,6 +99,42 @@ def test_local_hf_runtime_options_prefer_explicit_training_overrides(
     assert options.semantic_evidence_rule == "keyed_text_region"
 
 
+def test_formal_runtime_rejects_keyed_text_region_implicit_carrier(
+    tmp_path: Path,
+) -> None:
+    source_catalog = tmp_path / "sources.jsonl"
+    source_catalog.write_text("", encoding="utf-8")
+    paths = [tmp_path / name for name in ("generator", "semantic", "gate-base", "cache")]
+    for path in paths:
+        path.mkdir()
+    args = build_parser().parse_args(
+        [
+            "--gate-source-catalog", str(source_catalog),
+            "--generation-model-path", str(paths[0]),
+            "--semantic-encoder-model-path", str(paths[1]),
+            "--gate-base-model-path", str(paths[2]),
+            "--gate-cache-dir", str(paths[3]),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="formal runtime requires semantic_lsh"):
+        runners._local_hf_runtime_options(
+            args,
+            {
+                "method": {
+                    "gate": {"require_validated": True},
+                    "rewrite": {},
+                },
+                "semantic_lsh": {
+                    "lsh_d": 1,
+                    "rule_name": "keyed_text_region",
+                },
+                "gate_train": {},
+            },
+            "gate-data",
+        )
+
+
 def test_entry_uses_explicit_state_file(monkeypatch, tmp_path: Path) -> None:
     captured = []
 

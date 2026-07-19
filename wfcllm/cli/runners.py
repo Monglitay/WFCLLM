@@ -1197,6 +1197,21 @@ def _local_hf_runtime_options(
     method = config.get("method")
     rewrite = method.get("rewrite") if isinstance(method, Mapping) else None
     semantic_lsh = config.get("semantic_lsh")
+    gate = method.get("gate") if isinstance(method, Mapping) else None
+    semantic_rule = (
+        str(semantic_lsh.get("rule_name", "semantic_lsh"))
+        if isinstance(semantic_lsh, Mapping)
+        else "semantic_lsh"
+    )
+    if (
+        isinstance(gate, Mapping)
+        and gate.get("require_validated") is True
+        and semantic_rule != "semantic_lsh"
+    ):
+        raise ValueError(
+            "formal runtime requires semantic_lsh; keyed text regions are "
+            "forbidden implicit carriers"
+        )
     base_model_id = gate_train.get("base_encoder_id") if isinstance(gate_train, Mapping) else None
     base_model_override = getattr(args, "gate_base_model_path", None)
     base_model_path = (
@@ -1232,11 +1247,7 @@ def _local_hf_runtime_options(
             if isinstance(semantic_lsh, Mapping)
             else 4
         ),
-        semantic_evidence_rule=(
-            str(semantic_lsh.get("rule_name", "semantic_lsh"))
-            if isinstance(semantic_lsh, Mapping)
-            else "semantic_lsh"
-        ),
+        semantic_evidence_rule=semantic_rule,
         rewrite_max_new_tokens=(
             int(rewrite.get("max_new_tokens", 32))
             if isinstance(rewrite, Mapping)
