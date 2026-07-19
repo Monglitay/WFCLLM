@@ -445,6 +445,27 @@ class LocalHFProductionAdapter:
                 observations: list[CandidateObservation] = []
                 candidate_results: list[Mapping[str, LshProbeResult]] = []
                 for observation in group.candidate_observations_by_length[str(length)]:
+                    exact_structural_candidate = (
+                        observation.parse_status == "ok"
+                        and observation.same_parent_scope
+                        and observation.unit_count == length
+                    )
+                    if observation.parse_status == "ok" and not exact_structural_candidate:
+                        raise ValueError(
+                            "ok candidate parser facts contradict requested window length/scope"
+                        )
+                    if not exact_structural_candidate:
+                        observations.append(
+                            replace(
+                                observation,
+                                stable_across_precision_modes=False,
+                                stable_across_batch_modes=False,
+                                lsh_by_key_id={},
+                                lsh_signature=None,
+                            )
+                        )
+                        candidate_results.append({})
+                        continue
                     signature, margin, precision_stable, batch_stable = runtime.signature_and_margin(
                         observation.code
                     )
@@ -489,7 +510,10 @@ class LocalHFProductionAdapter:
             r1, r3 = (selected.budgets[budget].success_rate for budget in (1, 3))
             holdout_hits = sum(
                 any(
-                    results_by_length["3"][candidate][key_id].is_reliable_hit(configured_margin=0.0)
+                    key_id in results_by_length["3"][candidate]
+                    and results_by_length["3"][candidate][key_id].is_reliable_hit(
+                        configured_margin=0.0
+                    )
                     for candidate in range(4)
                 )
                 for key_id in holdout_keys.key_ids

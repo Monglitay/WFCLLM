@@ -468,6 +468,28 @@ class _SemanticRuntime:
         return (0, 0, 0, 0), 1.0, True, True
 
 
+class _CountingSemanticRuntime(_SemanticRuntime):
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def signature_and_margin(self, window_text: str):
+        self.calls.append(window_text)
+        return super().signature_and_margin(window_text)
+
+
+class _ParseErrorRewriter:
+    def rewrite(self, request, *, candidate_index):
+        return RewriteCandidate(
+            code="unparseable rewrite",
+            parse_status="parse_error",
+            unit_count=0,
+            same_parent_scope=False,
+            boundary_span=(0, 0),
+            generation_seed_id=f"invalid-seed-{candidate_index}",
+            rewrite_config_id="invalid-test-rewriter/v1",
+        )
+
+
 class _GateTokenizer:
     def __call__(self, text, **kwargs):
         assert kwargs["truncation"] is False
@@ -560,6 +582,59 @@ def test_local_hf_adapter_builds_and_probes_real_pipeline_groups(tmp_path: Path)
             "config_hash": config.config_hash,
         },
     )
+
+
+def test_local_hf_probe_keeps_parser_invalid_rewrites_evidence_free(
+    tmp_path: Path,
+) -> None:
+    from wfcllm.gate.production import LocalHFProductionAdapter
+
+    options = _runtime_options(tmp_path)
+    source_hash = __import__("hashlib").sha256(
+        options.source_catalog.read_bytes()
+    ).hexdigest()
+    manifest = {
+        "schema_version": "wfcllm-gate-source-manifest/v1",
+        "catalog_sha256": source_hash,
+        "source_count": 1,
+    }
+    adapter = LocalHFProductionAdapter(options)
+    adapter._rewriter = _ParseErrorRewriter()
+    runtime = _CountingSemanticRuntime()
+    adapter._semantic_runtime = runtime
+    adapter._gate_tokenizer = _GateTokenizer()
+    config = _pipeline_config(tmp_path)
+
+    parsed = adapter.parse_statement_units(manifest, config)
+    generated = tuple(adapter.generate_candidate_trajectories(parsed, config))
+    training = _KeyView("train", 32)
+    holdout = _KeyView("holdout", 8)
+    probed = tuple(
+        adapter.run_multi_key_lsh_probe(
+            generated,
+            training_keys=training,
+            holdout_keys=holdout,
+            config=config,
+        )
+    )
+
+    assert len(runtime.calls) == len(generated) * 3
+    for group in probed:
+        for length in (1, 2, 3):
+            observations = group.candidate_observations_by_length[str(length)]
+            results = group.probe_results_by_length[str(length)]
+            assert observations[0].lsh_signature == (0, 0, 0, 0)
+            assert set(results[0]) == set((*training.key_ids, *holdout.key_ids))
+            for observation, candidate_results in zip(
+                observations[1:], results[1:], strict=True
+            ):
+                assert observation.parse_status == "parse_error"
+                assert observation.unit_count == 0
+                assert observation.lsh_signature is None
+                assert not observation.lsh_by_key_id
+                assert observation.stable_across_precision_modes is False
+                assert observation.stable_across_batch_modes is False
+                assert candidate_results == {}
 
 
 def test_unvalidated_runtime_manifest_loads_hashed_single_statement_profile(

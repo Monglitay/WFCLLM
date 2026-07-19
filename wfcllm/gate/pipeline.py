@@ -1244,8 +1244,37 @@ def _validate_probe_contract(
             for candidate_index, (observation, results) in enumerate(zip(observations, probes, strict=True)):
                 if not isinstance(observation, CandidateObservation) or observation.candidate_index != candidate_index:
                     raise ValueError("candidate observation identity/order mismatch")
-                if not isinstance(results, Mapping) or set(results) != expected_keys or any(not isinstance(result, LshProbeResult) for result in results.values()):
-                    raise ValueError("probe evidence must contain exact per-key LshProbeResult values")
+                exact_structural_candidate = (
+                    observation.parse_status == "ok"
+                    and observation.same_parent_scope
+                    and observation.unit_count == length
+                )
+                if observation.parse_status == "ok" and not exact_structural_candidate:
+                    raise ValueError(
+                        "ok candidate parser facts contradict requested window length/scope"
+                    )
+                if not isinstance(results, Mapping) or any(
+                    not isinstance(result, LshProbeResult)
+                    for result in results.values()
+                ):
+                    raise ValueError("probe evidence contains invalid LshProbeResult values")
+                if not exact_structural_candidate:
+                    if results or observation.lsh_by_key_id or observation.lsh_signature is not None:
+                        raise ValueError(
+                            "parser-invalid candidate must not contain semantic probe evidence"
+                        )
+                    if (
+                        observation.stable_across_precision_modes
+                        or observation.stable_across_batch_modes
+                    ):
+                        raise ValueError(
+                            "parser-invalid candidate must not claim semantic stability"
+                        )
+                    continue
+                if set(results) != expected_keys:
+                    raise ValueError(
+                        "structurally valid probe evidence must cover exact 32/8 key banks"
+                    )
                 training_results = {key: results[key] for key in training_bank.key_ids}
                 if set(observation.lsh_by_key_id) != set(training_bank.key_ids):
                     raise ValueError("CandidateObservation training evidence key coverage mismatch")
@@ -1289,7 +1318,10 @@ def _recompute_and_attest_labels(probed: ProbedGroup, group: GatePipelineGroup) 
     holdout_results = group.probe_results_by_length["3"]
     holdout_hit_count = sum(
         any(
-            holdout_results[candidate_index][key_id].is_reliable_hit(configured_margin=0.0)
+            key_id in holdout_results[candidate_index]
+            and holdout_results[candidate_index][key_id].is_reliable_hit(
+                configured_margin=0.0
+            )
             for candidate_index in range(4)
         )
         for key_id in holdout_ids
@@ -1627,8 +1659,10 @@ def _audit_candidate_attempts(
                 if hashlib.sha256(_canonical_bytes(payload)).hexdigest() != digest:
                     raise ValueError("probe evidence content digest mismatch")
                 observation, results = _deserialize_probe_evidence(payload)
-                if set(results) != expected_keys:
-                    raise ValueError("probe evidence does not cover exact 32/8 key banks")
+                if set(results) not in (set(), expected_keys):
+                    raise ValueError(
+                        "probe evidence must be empty or cover exact 32/8 key banks"
+                    )
                 _validate_observation_against_results(observation, results, tuple(training_ids))
                 evidence_cache[digest] = (observation, results)
                 evidence_cache.move_to_end(digest)
@@ -1660,8 +1694,7 @@ def _audit_candidate_attempts(
             evidence_cache.move_to_end(digest)
             observation, results = evidence_value
             if observation.candidate_index != row["candidate_index"] or (
-                observation.unit_count != row["window_length"]
-                and observation.parse_status != "unit_count_out_of_range"
+                bool(results) and observation.unit_count != row["window_length"]
             ):
                 raise ValueError("candidate attempt identity contradicts serialized observation")
             length = row["window_length"]
@@ -1819,6 +1852,23 @@ def _validate_observation_against_results(
     results: Mapping[str, LshProbeResult],
     training_ids: tuple[str, ...],
 ) -> None:
+    if not results:
+        if (
+            observation.lsh_by_key_id
+            or observation.lsh_signature is not None
+            or observation.stable_across_precision_modes
+            or observation.stable_across_batch_modes
+        ):
+            raise ValueError(
+                "evidence-free candidate contradicts serialized semantic observation"
+            )
+        if (
+            observation.parse_status == "ok"
+            and observation.same_parent_scope
+            and observation.unit_count in {1, 2, 3}
+        ):
+            raise ValueError("structurally usable candidate is missing semantic evidence")
+        return
     training_results = {key: results[key] for key in training_ids}
     if set(observation.lsh_by_key_id) != set(training_ids):
         raise ValueError("CandidateObservation training evidence key coverage mismatch")
