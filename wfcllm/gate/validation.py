@@ -494,25 +494,74 @@ def _fit_thresholds(
         (close_negative, close_positive, suitable_negative, suitable_positive)
     ):
         raise ValueError("threshold-fit subset must contain both labels for both heads")
-    close_negative_max = max(close_negative)
-    close_positive_min = min(close_positive)
-    if close_negative_max >= close_positive_min:
-        raise ValueError("threshold-fit close classes are not separable")
-    suitable_negative_max = max(suitable_negative)
-    suitable_positive_min = min(suitable_positive)
-    if suitable_negative_max >= suitable_positive_min:
-        raise ValueError("threshold-fit suitable classes are not separable")
-    close_gap = close_positive_min - close_negative_max
+    close_threshold = _fit_binary_threshold(
+        negatives=close_negative,
+        positives=close_positive,
+    )
+    suitable_threshold = _fit_binary_threshold(
+        negatives=suitable_negative,
+        positives=suitable_positive,
+    )
     thresholds = GateValidationThresholds(
-        close_low=close_negative_max + close_gap / 3.0,
-        close_high=close_positive_min - close_gap / 3.0,
-        suitable_accept=(suitable_negative_max + suitable_positive_min) / 2.0,
+        # The high threshold is the fitted close/continue decision boundary.
+        # A one-ULP band preserves the runtime's explicit uncertain state
+        # without imposing perfect score separation on the fit subset.
+        close_low=math.nextafter(close_threshold, 0.0),
+        close_high=close_threshold,
+        suitable_accept=suitable_threshold,
         max_probability_delta=min(1.0, max(1e-6, max_delta + 1e-6)),
         max_tokens=max_tokens,
         threshold_fit_group_digest=_group_digest(fit_groups),
     )
     thresholds.validate()
     return thresholds
+
+
+def _fit_binary_threshold(
+    *,
+    negatives: Sequence[float],
+    positives: Sequence[float],
+) -> float:
+    """Fit a deterministic non-degenerate threshold by balanced accuracy.
+
+    This uses only the isolated threshold-fit subset. Score overlap is a real
+    classification outcome and is therefore measured instead of rejected as
+    a schema error. Ties prefer a boundary near 0.5 and then the lower value.
+    """
+
+    if not negatives or not positives:
+        raise ValueError("binary threshold fitting requires both labels")
+    values = sorted(set((*negatives, *positives)))
+    if len(values) < 2:
+        raise ValueError("binary threshold fitting cannot produce both decisions")
+    candidates = tuple(
+        (left + right) / 2.0
+        for left, right in zip(values, values[1:])
+        if left < right
+    )
+    ranked: list[tuple[tuple[float, float, float], float]] = []
+    for threshold in candidates:
+        true_negative_rate = sum(value < threshold for value in negatives) / len(
+            negatives
+        )
+        true_positive_rate = sum(value >= threshold for value in positives) / len(
+            positives
+        )
+        predicted_positive = sum(
+            value >= threshold for value in (*negatives, *positives)
+        )
+        if predicted_positive in {0, len(negatives) + len(positives)}:
+            continue
+        balanced_accuracy = (true_negative_rate + true_positive_rate) / 2.0
+        ranked.append(
+            (
+                (balanced_accuracy, -abs(threshold - 0.5), -threshold),
+                threshold,
+            )
+        )
+    if not ranked:
+        raise ValueError("binary threshold fitting cannot produce both decisions")
+    return max(ranked)[1]
 
 
 def _run_mode_reloads(

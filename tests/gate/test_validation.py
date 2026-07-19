@@ -549,6 +549,20 @@ def test_suitable_false_positive_rate_is_a_hard_gate() -> None:
     assert summary.validated is False
 
 
+def test_binary_threshold_fit_allows_overlapping_classes() -> None:
+    """A real gate need not make the fit subset perfectly separable."""
+
+    threshold = validation_module._fit_binary_threshold(
+        negatives=[0.10, 0.40, 0.80],
+        positives=[0.30, 0.70, 0.90],
+    )
+
+    predictions = [score >= threshold for score in (0.10, 0.40, 0.80, 0.30, 0.70, 0.90)]
+    assert any(predictions)
+    assert not all(predictions)
+    assert 0.40 < threshold <= 0.70
+
+
 def test_threshold_fit_and_agreement_groups_must_be_disjoint_and_group_complete() -> None:
     validator = GateValidator(GateValidateConfig())
     overlap_fit = (
