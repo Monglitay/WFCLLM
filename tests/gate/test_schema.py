@@ -54,7 +54,7 @@ def _group() -> GateTrainingGroup:
         candidate_window_lengths=(1,),
         previous_units=("x = 0",),
         candidates_by_length={
-            "1": tuple(_observation(index) for index in range(7)),
+            "1": tuple(_observation(index) for index in range(4)),
         },
     )
 
@@ -253,15 +253,15 @@ def test_group_serializes_metadata_separately_from_candidate_attempts() -> None:
 
     assert "candidates_by_length" not in group_row
     assert "code" not in group_row
-    assert len(attempt_rows) == 7
+    assert len(attempt_rows) == 4
     assert {row["group_id"] for row in attempt_rows} == {group.group_id}
     assert {row["window_length"] for row in attempt_rows} == {1}
-    assert [row["candidate_index"] for row in attempt_rows] == list(range(7))
+    assert [row["candidate_index"] for row in attempt_rows] == list(range(4))
     assert all("previous_units" not in row for row in attempt_rows)
 
 
 def test_group_deeply_snapshots_trajectory_mapping() -> None:
-    candidates = tuple(_observation(index) for index in range(7))
+    candidates = tuple(_observation(index) for index in range(4))
     source = {"1": candidates}
     group = _group()
     values = {**group.__dict__, "candidates_by_length": source}
@@ -272,7 +272,7 @@ def test_group_deeply_snapshots_trajectory_mapping() -> None:
 
     assert tuple(
         row["candidate_index"] for row in frozen.iter_candidate_attempts()
-    ) == tuple(range(7))
+    ) == tuple(range(4))
     with pytest.raises(TypeError):
         frozen.candidates_by_length["2"] = candidates  # type: ignore[index]
 
@@ -410,7 +410,7 @@ def test_group_requires_one_complete_ordered_trajectory_per_window_length() -> N
         **group.__dict__,
         "candidates_by_length": {"1": (_observation(0), _observation(2))},
     }
-    with pytest.raises(ValueError, match="indices 0 through 6"):
+    with pytest.raises(ValueError, match="indices 0 through 3"):
         GateTrainingGroup(**values)
 
 
@@ -494,8 +494,8 @@ def test_gate_configs_use_the_frozen_first_version_contract() -> None:
         data.holdout_key_count,
         data.rewrite_count,
         data.rewrite_budgets,
-    ) == (32, 8, 6, (1, 3, 6))
-    assert train.max_tokens == 512
+    ) == (32, 8, 3, (1, 3))
+    assert train.max_tokens == 256
     assert train.base_model_path == Path("data/models/codet5-base")
     assert (
         validate.decision_agreement_min,
@@ -503,7 +503,7 @@ def test_gate_configs_use_the_frozen_first_version_contract() -> None:
         validate.formal_accepted_span_consensus_min,
         validate.suitable_false_positive_rate_max,
         validate.batch_sizes,
-    ) == (0.999, 0.999, 1.0, 0.05, (1, 2, 4, 8))
+    ) == (0.999, 0.999, 1.0, 0.05, (1,))
 
 
 @pytest.mark.parametrize(
@@ -512,9 +512,9 @@ def test_gate_configs_use_the_frozen_first_version_contract() -> None:
         (GateDataConfig, "training_key_count", 31),
         (GateDataConfig, "training_key_count", 32.0),
         (GateDataConfig, "holdout_key_count", 7),
-        (GateDataConfig, "rewrite_count", 5),
-        (GateDataConfig, "rewrite_budgets", (1, 2, 6)),
-        (GateTrainConfig, "max_tokens", 511),
+        (GateDataConfig, "rewrite_count", 6),
+        (GateDataConfig, "rewrite_budgets", (1, 2)),
+        (GateTrainConfig, "max_tokens", 513),
         (GateTrainConfig, "max_tokens", 512.0),
         (GateValidateConfig, "decision_agreement_min", 0.998),
         (GateValidateConfig, "decision_agreement_min", Decimal("0.999")),

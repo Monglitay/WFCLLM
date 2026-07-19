@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace
+from collections.abc import Mapping
 from pathlib import Path
 
 import torch
@@ -77,6 +79,49 @@ class CodeT5LshVerifier:
         )
 
 
+def resolve_checkpoint_encoder_config(
+    base: EncoderConfig,
+    checkpoint: object,
+) -> EncoderConfig:
+    """Bind architecture metadata while preserving the deployed model path."""
+
+    if not isinstance(base, EncoderConfig):
+        raise ValueError("base must be an EncoderConfig")
+    if not isinstance(checkpoint, Mapping):
+        return base
+    metadata = checkpoint.get("config")
+    if not isinstance(metadata, Mapping):
+        return base
+    embed_dim = metadata.get("embed_dim", base.embed_dim)
+    if type(embed_dim) is not int or embed_dim != base.embed_dim:
+        raise ValueError("checkpoint embed_dim does not match runtime embed_dim")
+    pooling = metadata.get("pooling", base.pooling)
+    if pooling not in {"first", "masked_mean"}:
+        raise ValueError("checkpoint pooling must be first or masked_mean")
+    updates: dict[str, object] = {"pooling": pooling}
+    for name in ("use_lora", "use_bf16"):
+        value = metadata.get(name, getattr(base, name))
+        if not isinstance(value, bool):
+            raise ValueError(f"checkpoint {name} must be a bool")
+        updates[name] = value
+    for name in ("lora_r", "lora_alpha"):
+        value = metadata.get(name, getattr(base, name))
+        if type(value) is not int or value <= 0:
+            raise ValueError(f"checkpoint {name} must be a positive integer")
+        updates[name] = value
+    dropout = metadata.get("lora_dropout", base.lora_dropout)
+    if isinstance(dropout, bool) or not isinstance(dropout, (int, float)) or not 0 <= dropout < 1:
+        raise ValueError("checkpoint lora_dropout must be in [0, 1)")
+    updates["lora_dropout"] = float(dropout)
+    targets = metadata.get("lora_target_modules", base.lora_target_modules)
+    if not isinstance(targets, (list, tuple)) or not targets or any(
+        not isinstance(value, str) or not value for value in targets
+    ):
+        raise ValueError("checkpoint lora_target_modules must be non-empty strings")
+    updates["lora_target_modules"] = list(targets)
+    return replace(base, **updates)
+
+
 def load_semantic_lsh_components(
     *,
     encoder_model_path: str,
@@ -109,9 +154,19 @@ def load_semantic_lsh_components(
         use_lora=use_lora,
         use_bf16=use_bf16,
     )
-    encoder = SemanticEncoder(config=encoder_config)
+    checkpoint = None
     if encoder_checkpoint_path is not None:
-        checkpoint = torch.load(encoder_checkpoint_path, map_location="cpu")
+        checkpoint = torch.load(
+            encoder_checkpoint_path,
+            map_location="cpu",
+            weights_only=False,
+        )
+        encoder_config = resolve_checkpoint_encoder_config(
+            encoder_config,
+            checkpoint,
+        )
+    encoder = SemanticEncoder(config=encoder_config)
+    if checkpoint is not None:
         state_dict = (
             checkpoint["model_state_dict"]
             if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint

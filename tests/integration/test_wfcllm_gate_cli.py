@@ -45,7 +45,7 @@ def test_fake_data_runs_offline_and_marks_diagnostic(tmp_path: Path) -> None:
         "lsh_config_hash": "3" * 64,
         "training_key_source": str(tmp_path / "training.json"),
         "holdout_key_source": str(tmp_path / "holdout.json"),
-        "fake_group_count": 2_000,
+        "fake_group_count": 100,
         "feasibility_contract_version": "gate-data-feasibility/v1",
         "feasibility_thresholds": _thresholds(),
     }, {"method": "diagnostic-single"})
@@ -128,19 +128,13 @@ def test_fake_backend_completes_data_train_validate_offline_without_formal_publi
         "feasibility_contract_version": "gate-data-feasibility/v1",
         "feasibility_thresholds": _thresholds(),
     }
-    pilot_root = tmp_path / "pilot"
-    pilot_config = tmp_path / "pilot.json"
-    pilot_config.write_text(json.dumps({**common, "output_root": str(pilot_root), "scale": "pilot", "fake_group_count": 2_000}), encoding="utf-8")
-    assert _run("data", "--backend", "fake", "--config", str(pilot_config)).returncode == 0
-
     full_root = tmp_path / "full"
     full_config = tmp_path / "full.json"
-    pilot_summary = pilot_root / "gate-data" / "feasibility_summary.json"
-    full_config.write_text(json.dumps({**common, "output_root": str(full_root), "scale": "full", "fake_group_count": 20_000, "pilot_feasibility_path": str(pilot_summary)}), encoding="utf-8")
+    full_config.write_text(json.dumps({**common, "output_root": str(full_root), "scale": "full", "fake_group_count": 300}), encoding="utf-8")
     assert _run("data", "--backend", "fake", "--config", str(full_config)).returncode == 0
 
     train_config = tmp_path / "train.json"
-    train_config.write_text(json.dumps({"output_root": str(full_root), "data_dir": str(full_root / "gate-data"), "pilot_feasibility_path": str(pilot_summary), "resolved_config": resolved, "config_hash": config_hash}), encoding="utf-8")
+    train_config.write_text(json.dumps({"output_root": str(full_root), "data_dir": str(full_root / "gate-data"), "resolved_config": resolved, "config_hash": config_hash}), encoding="utf-8")
     trained = _run("train", "--backend", "fake", "--config", str(train_config))
     assert trained.returncode == 0, trained.stderr
     train_manifest = json.loads((full_root / "gate-train" / "candidate_bundle_manifest.json").read_text())

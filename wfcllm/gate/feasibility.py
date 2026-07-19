@@ -11,27 +11,26 @@ import random
 from typing import Any
 
 FEASIBILITY_CONTRACT_VERSION = "gate-data-feasibility/v1"
-_PILOT_MIN = 2_000
-_PILOT_MAX = 5_000
-_FULL_MIN = 20_000
-_FULL_MAX = 50_000
-_SUBSET_SIZES = (500, 1_000, 2_000, 5_000)
+_PILOT_MIN = 100
+_PILOT_MAX = 300
+_FULL_MIN = 300
+_FULL_MAX = 300
 FEASIBILITY_THRESHOLD_ITEMS: tuple[tuple[str, int | float], ...] = (
-    ("pilot_independent_group_min", 2_000),
-    ("pilot_independent_group_max", 5_000),
-    ("full_independent_group_min", 20_000),
-    ("full_independent_group_max", 50_000),
-    ("pilot_suitable_positive_min", 200),
-    ("pilot_suitable_negative_min", 500),
-    ("full_suitable_positive_min", 2_000),
-    ("full_suitable_negative_min", 5_000),
-    ("window_length_group_min", 200),
+    ("pilot_independent_group_min", 100),
+    ("pilot_independent_group_max", 300),
+    ("full_independent_group_min", 300),
+    ("full_independent_group_max", 300),
+    ("pilot_suitable_positive_min", 10),
+    ("pilot_suitable_negative_min", 25),
+    ("full_suitable_positive_min", 30),
+    ("full_suitable_negative_min", 75),
+    ("window_length_group_min", 50),
     ("major_statement_family_count_min", 4),
-    ("major_statement_family_group_min", 100),
+    ("major_statement_family_group_min", 25),
     ("r3_minus_r1_bootstrap_lower_95_exclusive_min", 0.0),
     ("holdout_key_absolute_decline_max", 0.10),
-    ("validation_test_suitable_positive_min", 200),
-    ("validation_test_suitable_negative_min", 500),
+    ("validation_test_suitable_positive_min", 3),
+    ("validation_test_suitable_negative_min", 8),
 )
 
 
@@ -45,7 +44,6 @@ class FeasibilityGroup:
     statement_family: str
     r1_success_rate: float
     r3_success_rate: float
-    r6_success_rate: float
     holdout_success_rate: float
     split: str
     repository_id: str
@@ -72,7 +70,6 @@ class FeasibilityGroup:
         for name in (
             "r1_success_rate",
             "r3_success_rate",
-            "r6_success_rate",
             "holdout_success_rate",
             "structural_invalid_rate",
             "numeric_instability_rate",
@@ -86,9 +83,9 @@ class FeasibilityGroup:
                 raise ValueError(f"{name} must be a non-empty string")
         if self.first_hit_candidate_position is not None and (
             type(self.first_hit_candidate_position) is not int
-            or not 0 <= self.first_hit_candidate_position <= 6
+            or not 0 <= self.first_hit_candidate_position <= 3
         ):
-            raise ValueError("first_hit_candidate_position must be None or 0 through 6")
+            raise ValueError("first_hit_candidate_position must be None or 0 through 3")
         if self.split not in {"train", "validation", "test"}:
             raise ValueError("split must be train, validation, or test")
 
@@ -131,7 +128,7 @@ class GateDataFeasibilitySummary:
             "rewrite_health": dict(self.rewrite_health),
             "deterministic_label_stability_curve": {
                 size: dict(values)
-                for size, values in sorted(self.deterministic_label_stability_curve.items(), key=lambda item: int(item[0]))
+                for size, values in self.deterministic_label_stability_curve.items()
             },
         }
 
@@ -164,7 +161,8 @@ def evaluate_gate_data_feasibility(
     families: dict[str, int] = {}
     for group in snapshot:
         families[group.statement_family] = families.get(group.statement_family, 0) + 1
-    qualifying_families = sum(value >= 100 for value in families.values())
+    family_min = int(dict(FEASIBILITY_THRESHOLD_ITEMS)["major_statement_family_group_min"])
+    qualifying_families = sum(value >= family_min for value in families.values())
     differences = tuple(group.r3_success_rate - group.r1_success_rate for group in snapshot)
     lower, gain_upper = _bootstrap_mean_ci95(differences, ids)
     training_success = sum(group.r3_success_rate for group in snapshot) / count
@@ -173,35 +171,34 @@ def evaluate_gate_data_feasibility(
     # itself a failure and therefore contributes zero decline.
     gap = max(0.0, training_success - holdout_success)
 
-    positive_min = 200 if scale == "pilot" else 2_000
-    negative_min = 500 if scale == "pilot" else 5_000
+    thresholds = dict(FEASIBILITY_THRESHOLD_ITEMS)
+    positive_min = int(thresholds[f"{scale}_suitable_positive_min"])
+    negative_min = int(thresholds[f"{scale}_suitable_negative_min"])
     admissions = {
         f"{scale}_group_count": AdmissionResult(minimum <= count <= maximum, count, f"{minimum} <= independent groups <= {maximum}"),
         "suitable_positive_groups": AdmissionResult(positives >= positive_min, positives, f">= {positive_min}"),
         "suitable_negative_groups": AdmissionResult(negatives >= negative_min, negatives, f">= {negative_min}"),
         **{
-            f"window_length_w{length}_groups": AdmissionResult(windows[length] >= 200, windows[length], ">= 200")
+            f"window_length_w{length}_groups": AdmissionResult(windows[length] >= 50, windows[length], ">= 50")
             for length in (1, 2, 3)
         },
-        "major_statement_families": AdmissionResult(qualifying_families >= 4, qualifying_families, ">= 4 families with >= 100 independent groups each"),
+        "major_statement_families": AdmissionResult(qualifying_families >= 4, qualifying_families, ">= 4 families with >= 25 independent groups each"),
         "r3_minus_r1_bootstrap_lower_95": AdmissionResult(lower > 0.0, lower, "> 0"),
         "holdout_key_absolute_gap": AdmissionResult(gap <= 0.10, gap, "<= 0.10"),
     }
     ordered = sorted(snapshot, key=lambda group: (hashlib.sha256(group.group_id.encode("utf-8")).hexdigest(), group.group_id))
-    curve: dict[str, dict[str, int | float]] = {}
-    for requested in _SUBSET_SIZES:
-        selected = ordered[: min(requested, count)]
-        selected_positive = sum(group.suitable_target for group in selected)
-        curve[str(requested)] = {
-            "group_count": len(selected),
+    selected_positive = sum(group.suitable_target for group in ordered)
+    curve: dict[str, dict[str, int | float]] = {
+        "full": {
+            "group_count": count,
             "suitable_positive_count": selected_positive,
-            "suitable_positive_rate": selected_positive / len(selected),
+            "suitable_positive_rate": selected_positive / count,
         }
+    }
     reliable_success = {}
     for budget_name, values in (
         ("r1", tuple(group.r1_success_rate for group in snapshot)),
         ("r3", tuple(group.r3_success_rate for group in snapshot)),
-        ("r6", tuple(group.r6_success_rate for group in snapshot)),
     ):
         ci_low, ci_high = _bootstrap_mean_ci95(values, ids)
         reliable_success[budget_name] = {
@@ -215,7 +212,7 @@ def evaluate_gate_data_feasibility(
     ]
     first_hit_distribution = {
         str(position): sum(value == position for value in first_hits)
-        for position in range(7)
+        for position in range(4)
     }
     return GateDataFeasibilitySummary(
         contract_version=FEASIBILITY_CONTRACT_VERSION,

@@ -10,6 +10,21 @@ from transformers import T5EncoderModel
 from wfcllm.encoder.config import EncoderConfig
 
 
+def masked_mean_pool(
+    last_hidden_state: torch.Tensor,
+    attention_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Mean-pool non-padding token states without changing their dtype."""
+
+    if last_hidden_state.ndim != 3 or attention_mask.ndim != 2:
+        raise ValueError("hidden states and attention mask must be rank 3 and 2")
+    if last_hidden_state.shape[:2] != attention_mask.shape:
+        raise ValueError("attention mask must match hidden-state batch and sequence axes")
+    weights = attention_mask.to(dtype=last_hidden_state.dtype).unsqueeze(-1)
+    denominator = weights.sum(dim=1).clamp_min(1.0)
+    return (last_hidden_state * weights).sum(dim=1) / denominator
+
+
 class SemanticEncoder(nn.Module):
     """CodeT5 encoder with projection head for contrastive learning.
 
@@ -66,9 +81,15 @@ class SemanticEncoder(nn.Module):
         encoder_output = self.encoder(
             input_ids=input_ids, attention_mask=attention_mask
         )
-        # Use first token ([CLS] equivalent) as sequence representation
-        cls_hidden = encoder_output.last_hidden_state[:, 0, :]
+        if self.config.pooling == "first":
+            pooled_hidden = encoder_output.last_hidden_state[:, 0, :]
+        elif self.config.pooling == "masked_mean":
+            pooled_hidden = masked_mean_pool(
+                encoder_output.last_hidden_state,
+                attention_mask,
+            )
+        else:
+            raise ValueError("pooling must be first or masked_mean")
         # Cast to float32 before projection for numerical stability
-        cls_hidden = cls_hidden.float()
-        projected = self.projection(cls_hidden)
+        projected = self.projection(pooled_hidden.float())
         return F.normalize(projected, p=2, dim=1)

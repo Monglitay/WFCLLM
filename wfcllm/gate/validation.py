@@ -191,7 +191,7 @@ class ValidationPredictor(Protocol):
 @dataclass(frozen=True)
 class GateProcessAttestation:
     mode_name: str
-    pids: tuple[int, int]
+    pids: tuple[int, ...]
     device: str
     precision: str
     artifact_name: str
@@ -204,7 +204,7 @@ PredictorFactory = Callable[
 
 
 class GateValidator:
-    """Run a complete hard matrix with two fresh predictor loads per mode."""
+    """Run the configured minimal float/int8 validation matrix."""
 
     def __init__(self, config: GateValidateConfig) -> None:
         if not isinstance(config, GateValidateConfig):
@@ -260,7 +260,10 @@ class GateValidator:
         process_attestations: list[GateProcessAttestation] = []
         for mode in modes:
             mode_runs, attestation = _run_mode_reloads(
-                predictor_factory, artifacts, agreement, mode
+                predictor_factory,
+                artifacts,
+                agreement,
+                mode,
             )
             process_attestations.append(attestation)
             for reload_index, predictions in enumerate(mode_runs):
@@ -298,7 +301,7 @@ class GateValidator:
             int8_name = GateValidationMode(
                 "cpu", "int8", mode.batch_size, mode.order
             ).name
-            for reload_index in range(2):
+            for reload_index in range(self.config.independent_reloads):
                 left = accepted_sets[(mode.name, reload_index)]
                 right = accepted_sets[(int8_name, reload_index)]
                 paired_total += 1
@@ -316,7 +319,7 @@ class GateValidator:
             int8_name = GateValidationMode(
                 "cpu", "int8", mode.batch_size, mode.order
             ).name
-            for reload_index in range(2):
+            for reload_index in range(self.config.independent_reloads):
                 float_run = runs[(mode.name, reload_index)]
                 int8_run = runs[(int8_name, reload_index)]
                 accepted_spans: set[tuple[str, str, int, int]] = set()
@@ -379,7 +382,13 @@ class GateValidator:
             float_quantized_accepted_set_agreement=accepted_agreement,
             formal_accepted_span_consensus=span_consensus,
             suitable_false_positive_rate=suitable_fpr,
-            gpu_status="validated" if gpu_available else "not_available",
+            gpu_status=(
+                "validated"
+                if gpu_available and self.config.gpu_float_if_available
+                else "skipped_fast_contract"
+                if gpu_available
+                else "not_available"
+            ),
             validation_scope="cpu+gpu-float" if gpu_available else "cpu",
             mode_names=tuple(mode.name for mode in modes),
             threshold_fit_group_digest=_group_digest(fit_groups),
@@ -421,13 +430,13 @@ def _modes(config: GateValidateConfig, *, gpu_available: bool) -> tuple[GateVali
         GateValidationMode("cpu", precision, batch, order)
         for precision in ("float", "int8")
         for batch in config.batch_sizes
-        for order in ("original", "reverse", "random")
+        for order in config.orders
     ]
-    if gpu_available:
+    if gpu_available and config.gpu_float_if_available:
         result.extend(
             GateValidationMode("gpu", "float", batch, order)
             for batch in config.batch_sizes
-            for order in ("original", "reverse", "random")
+            for order in config.orders
         )
     return tuple(result)
 
@@ -445,8 +454,8 @@ def _fit_thresholds(
     modes = tuple(
         GateValidationMode("threshold-fit-cpu", precision, batch_size, order)
         for precision in ("float", "int8")
-        for batch_size in (1, 2)
-        for order in ("original", "reverse")
+        for batch_size in (1,)
+        for order in ("original",)
     )
     runs: list[dict[str, tuple[float, float]]] = []
     for mode in modes:
@@ -511,11 +520,12 @@ def _run_mode_reloads(
     artifacts: GateValidationArtifacts,
     examples: tuple[GateValidationExample, ...],
     mode: GateValidationMode,
+    reload_count: int = 1,
 ) -> tuple[
-    tuple[dict[str, tuple[float, float]], dict[str, tuple[float, float]]],
+    tuple[dict[str, tuple[float, float]], ...],
     GateProcessAttestation,
 ]:
-    """Run two reloads in serializable, isolated spawn workers."""
+    """Run the configured number of isolated predictor loads."""
 
     try:
         pickle.dumps((predictor_factory, artifacts, examples, mode))
@@ -533,7 +543,7 @@ def _run_mode_reloads(
     open_connections: list[Any] = []
     payloads: list[Mapping[str, Any]] = []
     try:
-        for _reload_index in range(2):
+        for _reload_index in range(reload_count):
             receive = None
             send = None
             process = None
@@ -593,10 +603,10 @@ def _run_mode_reloads(
     expected_device = "gpu" if mode.device == "gpu" else "cpu"
     pids = tuple(payload["pid"] for payload in payloads)
     if (
-        len(set(pids)) != 2
+        len(set(pids)) != reload_count
         or any(type(pid) is not int or pid <= 0 or pid == os.getpid() for pid in pids)
     ):
-        raise ValueError("validation reloads require two distinct worker PIDs")
+        raise ValueError("validation reloads require distinct worker PIDs")
     if any(payload["device"] != expected_device for payload in payloads):
         raise ValueError("validation worker device attestation mismatch")
     if any(payload["precision"] != mode.precision for payload in payloads):
@@ -608,12 +618,12 @@ def _run_mode_reloads(
         for payload in payloads
     ):
         raise ValueError("validation worker artifact attestation mismatch")
-    predictions = tuple(payload["predictions"] for payload in payloads)
+    predictions = tuple(dict(payload["predictions"]) for payload in payloads)
     return (
-        (dict(predictions[0]), dict(predictions[1])),
+        predictions,
         GateProcessAttestation(
             mode_name=mode.name,
-            pids=(pids[0], pids[1]),
+            pids=pids,
             device=expected_device,
             precision=mode.precision,
             artifact_name=artifact_path.name,

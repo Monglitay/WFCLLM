@@ -15,7 +15,7 @@ GATE_DATA_SCHEMA_VERSION = "wfcllm-gate-data/v1"
 PARSE_STATUSES = frozenset(
     {"ok", "parse_error", "scope_changed", "unit_count_out_of_range"}
 )
-_CANDIDATES_PER_TRAJECTORY = 7
+_CANDIDATES_PER_TRAJECTORY = 4
 _MAX_CANDIDATE_CODE_BYTES = 256 * 1024
 _OPAQUE_KEY_ID_RE = re.compile(r"(?:train|holdout)-key-[0-9]{3}\Z", re.ASCII)
 
@@ -369,7 +369,7 @@ def _validate_trajectories(
         indices = tuple(candidate.candidate_index for candidate in candidates)
         if indices != expected_indices:
             raise ValueError(
-                "each candidate trajectory must contain ordered indices 0 through 6"
+                "each candidate trajectory must contain ordered indices 0 through 3"
             )
 
 

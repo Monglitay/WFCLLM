@@ -155,6 +155,49 @@ def test_unvalidated_or_contract_and_hash_mismatched_bundle_is_rejected(
         GatedWindowExtractor(bundle, _config(tmp_path))
 
 
+def test_explicit_experimental_mode_accepts_marked_unvalidated_bundle(
+    tmp_path: Path,
+) -> None:
+    bundle = _ValidatedFakeBundle(root=tmp_path / "bundle")
+    bundle.validation_summary = {
+        "validated": False,
+        "experimental_only": True,
+        "diagnostic_only": True,
+        "not_official_method": True,
+    }
+    bundle.experimental_only = True
+
+    extractor = GatedWindowExtractor(
+        bundle,
+        _config(tmp_path),
+        allow_experimental=True,
+    )
+
+    assert extractor.extract("x = 1\n").windows
+
+
+def test_explicit_unvalidated_mode_accepts_non_diagnostic_candidate(
+    tmp_path: Path,
+) -> None:
+    bundle = _ValidatedFakeBundle(root=tmp_path / "bundle")
+    bundle.validation_summary = {
+        "validated": False,
+        "validation_skipped_by_protocol": True,
+        "unvalidated_candidate": True,
+        "diagnostic_only": False,
+        "not_official_method": False,
+    }
+    bundle.unvalidated_candidate = True
+
+    extractor = GatedWindowExtractor(
+        bundle,
+        _config(tmp_path),
+        allow_unvalidated=True,
+    )
+
+    assert extractor.extract("x = 1\n").windows
+
+
 def test_token_overflow_is_closed_and_skipped(tmp_path: Path) -> None:
     result = _extract(tmp_path, "value = '" + ("λ" * 300) + "'\n")
 

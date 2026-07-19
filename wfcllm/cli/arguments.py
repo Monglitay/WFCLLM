@@ -153,6 +153,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--detector-device", default="cpu")
     parser.add_argument("--gate-cache-dir", default="data/gate-cache")
     parser.add_argument("--gate-batch-size", type=int, default=9)
+    parser.add_argument("--gate-epochs", type=int, default=None)
+    parser.add_argument("--gate-early-stopping-patience", type=int, default=None)
     parser.add_argument("--gate-resume-checkpoint", default=None)
     parser.add_argument("--lm-model-path", default=None, help="legacy watermark 阶段使用：代码生成 LLM 路径")
     parser.add_argument(

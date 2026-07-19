@@ -108,7 +108,7 @@ def _builder() -> tuple[GateDataBuilder, RecordingRewriter, RecordingProbe]:
     )
 
 
-def test_w1_w2_w3_each_get_candidate_zero_plus_six_ordered_rewrites() -> None:
+def test_w1_w2_w3_each_get_candidate_zero_plus_three_ordered_rewrites() -> None:
     builder, rewriter, _ = _builder()
     groups = builder.build([_unit(0), _unit(1), _unit(2)])
 
@@ -118,13 +118,25 @@ def test_w1_w2_w3_each_get_candidate_zero_plus_six_ordered_rewrites() -> None:
         assert [
             item.candidate_index
             for item in first.candidates_by_length[str(length)]
-        ] == list(range(7))
+        ] == list(range(4))
         assert first.candidates_by_length[str(length)][0].code == "\n".join(
             unit.text for unit in [_unit(0), _unit(1), _unit(2)][:length]
         )
-    assert [call[2] for call in rewriter.calls[:18]] == list(range(1, 7)) * 3
-    assert all(call[0] == first.window_start_unit_id for call in rewriter.calls[:18])
-    assert len(rewriter.calls) == (3 + 2 + 1) * 6
+    assert [call[2] for call in rewriter.calls[:9]] == list(range(1, 4)) * 3
+    assert all(call[0] == first.window_start_unit_id for call in rewriter.calls[:9])
+    assert len(rewriter.calls) == (3 + 2 + 1) * 3
+
+
+def test_builder_rewrites_only_explicitly_selected_window_starts() -> None:
+    builder, rewriter, _ = _builder()
+
+    groups = builder.build(
+        tuple(_unit(index) for index in range(5)),
+        selected_start_unit_ids=("unit-2",),
+    )
+
+    assert [group.window_start_unit_id for group in groups] == ["unit-2"]
+    assert len(rewriter.calls) == 3 * 3
 
 
 def test_formal_builder_default_uses_all_32_canonical_training_key_ids() -> None:
@@ -214,11 +226,11 @@ def test_context_and_budget_views_reuse_one_immutable_candidate_trajectory() -> 
 
     variants = group.expand_contexts_and_budgets()
 
-    assert len(variants) == 9
+    assert len(variants) == 6
     assert {(item.context_length, item.rewrite_budget) for item in variants} == {
         (context_length, budget)
         for context_length in (1, 2, 3)
-        for budget in (1, 3, 6)
+        for budget in (1, 3)
     }
     assert all(
         item.candidates_by_length is group.candidates_by_length for item in variants
@@ -251,7 +263,7 @@ def test_structurally_invalid_rewrite_is_never_probed() -> None:
 
     group = builder.build([_unit(0)])[0]
 
-    assert len(probe.calls) == 6  # candidate 0 plus five valid rewrites
+    assert len(probe.calls) == 3  # candidate 0 plus two valid rewrites
     invalid = group.candidates_by_length["1"][2]
     assert invalid.lsh_by_key_id == {}
     assert invalid.parse_status == "scope_changed"
@@ -281,7 +293,7 @@ def test_empty_parse_error_candidate_is_recorded_without_probe() -> None:
         test_only_allow_key_subset=True,
     ).build([_unit(0)])[0]
 
-    assert len(probe.calls) == 6
+    assert len(probe.calls) == 3
     assert group.candidates_by_length["1"][1].code == ""
     assert group.candidates_by_length["1"][1].lsh_by_key_id == {}
 

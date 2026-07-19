@@ -26,6 +26,8 @@ def test_parser_exposes_single_gpu_gated_runtime_paths(tmp_path: Path) -> None:
             "--detector-device", "cpu",
             "--gate-cache-dir", str(tmp_path / "cache"),
             "--gate-batch-size", "12",
+            "--gate-epochs", "10",
+            "--gate-early-stopping-patience", "10",
             "--gate-resume-checkpoint", str(tmp_path / "checkpoint.pt"),
         ]
     )
@@ -37,6 +39,64 @@ def test_parser_exposes_single_gpu_gated_runtime_paths(tmp_path: Path) -> None:
     assert args.semantic_encoder_model_path == str(tmp_path / "semantic")
     assert args.gate_base_model_path == str(tmp_path / "gate-base")
     assert args.gate_batch_size == 12
+    assert args.gate_epochs == 10
+    assert args.gate_early_stopping_patience == 10
+
+
+def test_local_hf_runtime_options_prefer_explicit_training_overrides(
+    tmp_path: Path,
+) -> None:
+    source_catalog = tmp_path / "sources.jsonl"
+    source_catalog.write_text("", encoding="utf-8")
+    generation_model = tmp_path / "generator"
+    semantic_model = tmp_path / "semantic"
+    gate_model = tmp_path / "gate-base"
+    cache_dir = tmp_path / "cache"
+    for path in (generation_model, semantic_model, gate_model, cache_dir):
+        path.mkdir()
+    args = build_parser().parse_args(
+        [
+            "--gate-source-catalog", str(source_catalog),
+            "--generation-model-path", str(generation_model),
+            "--semantic-encoder-model-path", str(semantic_model),
+            "--gate-base-model-path", str(gate_model),
+            "--gate-cache-dir", str(cache_dir),
+            "--gate-epochs", "10",
+            "--gate-early-stopping-patience", "10",
+        ]
+    )
+
+    options = runners._local_hf_runtime_options(
+        args,
+        {
+            "method": {
+                "rewrite": {
+                    "temperature": 0.2,
+                    "top_p": 0.95,
+                    "max_new_tokens": 16,
+                    "generation_attempts": 9,
+                }
+            },
+            "semantic_lsh": {
+                "lsh_d": 1,
+                "rule_name": "keyed_text_region",
+            },
+            "gate_train": {
+                "max_epochs": 4,
+                "early_stopping_patience": 1,
+            }
+        },
+        "gate-train",
+    )
+
+    assert options.gate_epochs == 10
+    assert options.gate_early_stopping_patience == 10
+    assert options.rewrite_temperature == 0.2
+    assert options.rewrite_top_p == 0.95
+    assert options.rewrite_max_new_tokens == 16
+    assert options.rewrite_generation_attempts == 9
+    assert options.lsh_dimension == 1
+    assert options.semantic_evidence_rule == "keyed_text_region"
 
 
 def test_entry_uses_explicit_state_file(monkeypatch, tmp_path: Path) -> None:

@@ -246,6 +246,12 @@ class LocalGateDependencies:
             config,
         )
 
+    def gate_data_selection_summary(self):
+        summary = getattr(self._adapter, "gate_data_selection_summary", None)
+        if not callable(summary):
+            return None
+        return summary()
+
     def run_multi_key_lsh_probe(self, groups, **kwargs):
         try:
             training = self._private_banks["training"]

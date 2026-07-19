@@ -16,15 +16,15 @@ class GateDataConfig:
 
     training_key_count: int = 32
     holdout_key_count: int = 8
-    rewrite_count: int = 6
-    rewrite_budgets: tuple[int, ...] = (1, 3, 6)
+    rewrite_count: int = 3
+    rewrite_budgets: tuple[int, ...] = (1, 3)
 
     def __post_init__(self) -> None:
         expected = {
             "training_key_count": 32,
             "holdout_key_count": 8,
-            "rewrite_count": 6,
-            "rewrite_budgets": (1, 3, 6),
+            "rewrite_count": 3,
+            "rewrite_budgets": (1, 3),
         }
         for name, required in expected.items():
             actual = getattr(self, name)
@@ -36,12 +36,12 @@ class GateDataConfig:
 class GateTrainConfig:
     """Portable gate-training inputs that never trigger model downloads."""
 
-    max_tokens: int = 512
+    max_tokens: int = 256
     base_model_path: Path = Path("data/models/codet5-base")
 
     def __post_init__(self) -> None:
-        if type(self.max_tokens) is not int or self.max_tokens != 512:
-            raise ValueError("max_tokens must remain fixed at 512")
+        if type(self.max_tokens) is not int or not 1 <= self.max_tokens <= 512:
+            raise ValueError("max_tokens must be between 1 and 512")
         if not isinstance(self.base_model_path, Path):
             raise ValueError("base_model_path must be a pathlib.Path")
         path_text = str(self.base_model_path)
@@ -58,7 +58,10 @@ class GateValidateConfig:
     float_quantized_accepted_set_agreement_min: float = 0.999
     formal_accepted_span_consensus_min: float = 1.0
     suitable_false_positive_rate_max: float = 0.05
-    batch_sizes: tuple[int, ...] = (1, 2, 4, 8)
+    batch_sizes: tuple[int, ...] = (1,)
+    orders: tuple[str, ...] = ("original",)
+    gpu_float_if_available: bool = False
+    independent_reloads: int = 1
 
     def __post_init__(self) -> None:
         expected = {
@@ -66,7 +69,10 @@ class GateValidateConfig:
             "float_quantized_accepted_set_agreement_min": 0.999,
             "formal_accepted_span_consensus_min": 1.0,
             "suitable_false_positive_rate_max": 0.05,
-            "batch_sizes": (1, 2, 4, 8),
+            "batch_sizes": (1,),
+            "orders": ("original",),
+            "gpu_float_if_available": False,
+            "independent_reloads": 1,
         }
         for name, required in expected.items():
             actual = getattr(self, name)

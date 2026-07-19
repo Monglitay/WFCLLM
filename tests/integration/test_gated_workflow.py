@@ -1,4 +1,4 @@
-"""Offline wiring tests for the experimental gated eight-phase workflow.
+"""Offline wiring tests for the experimental gated fast workflow.
 
 The fake backend in this module is deliberately test-only and always marks its
 artifacts diagnostic.  It verifies phase order and artifact boundaries without
@@ -16,7 +16,11 @@ from types import SimpleNamespace
 import pytest
 
 from wfcllm.audit.detector_input_integrity import audit_detector_input_file
-from wfcllm.cli.runners import run_audit, run_report
+from wfcllm.cli.runners import (
+    _gated_report_metrics_from_artifacts,
+    run_audit,
+    run_report,
+)
 from wfcllm.method.artifacts import RunPaths, build_run_paths
 from wfcllm.method.presets import (
     EVIDENCE_RETRY_SEED7X3_NAME,
@@ -34,7 +38,14 @@ GATED_PHASES = [
     "calibrate",
     "detect",
     "report",
-    "audit",
+]
+FAST_EXPERIMENT_PHASES = [
+    "gate-data",
+    "gate-train",
+    "generate",
+    "calibrate",
+    "detect",
+    "report",
 ]
 
 
@@ -237,7 +248,7 @@ def test_external_validated_bundle_skips_gate_phases(
     tmp_path: Path, cli_runner: _FakeGatedCliRunner, fake_bundle: Path
 ) -> None:
     result = cli_runner.run_gated(tmp_path, bundle=fake_bundle, start_phase="generate")
-    assert result.phase_order == ["generate", "calibrate", "detect", "report", "audit"]
+    assert result.phase_order == ["generate", "calibrate", "detect", "report"]
 
 
 def test_fake_workflow_resume_skips_completed_phases(
@@ -277,13 +288,13 @@ def test_old_preset_keeps_five_phase_contract() -> None:
 
 def test_gated_config_captures_complete_offline_contract_without_secrets() -> None:
     config = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME).to_dict()
-    assert config["runtime"]["default_phases"] == GATED_PHASES
+    assert config["runtime"]["default_phases"] == FAST_EXPERIMENT_PHASES
     assert config["method"]["windowing"]["max_units"] == 3
     assert config["method"]["rewrite"]["candidate_zero"] == "original_window"
-    assert config["method"]["rewrite"]["experiment_budgets"] == [1, 3, 6]
+    assert config["method"]["rewrite"]["experiment_budgets"] == [1, 3]
     assert config["gate_data"]["training_key_count"] == 32
     assert config["gate_data"]["holdout_key_count"] == 8
-    assert config["method"]["gate"]["max_input_tokens"] == 512
+    assert config["method"]["gate"]["max_input_tokens"] == 256
     assert config["gate_validate"]["formal_quantization"] == "torch-dynamic-qint8-linear"
     assert config["detector"]["target_fpr"] == 0.05
     assert (
@@ -356,6 +367,35 @@ def test_gated_report_records_required_metrics_and_posthoc_marker(tmp_path: Path
     assert state.get("report", "gate_coverage") == 0.75
     assert state.get("report", "hit_count") == 3
     assert state.get("report", "posthoc_pass_report")["posthoc_only"] is True
+
+
+def test_gated_report_counts_selected_rewrites_without_claiming_unknown_attempts(
+    tmp_path: Path,
+) -> None:
+    detection = tmp_path / "detection"
+    generation = tmp_path / "generation"
+    detection.mkdir()
+    generation.mkdir()
+    (detection / "positive_details.jsonl").write_text(
+        json.dumps({"hit_count": 3, "miss_count": 1, "abstain_count": 0}) + "\n",
+        encoding="utf-8",
+    )
+    (generation / "audit.jsonl").write_text(
+        "".join(
+            json.dumps({"selected_candidate_index": value}) + "\n"
+            for value in (0, 1, 2, 0)
+        ),
+        encoding="utf-8",
+    )
+
+    metrics = _gated_report_metrics_from_artifacts(tmp_path, {})
+
+    assert metrics["rewrite_cost"] == {
+        "attempts": None,
+        "attempts_lower_bound": 3,
+        "selected_rewrite_count": 2,
+        "selected_candidate_index_counts": {"0": 2, "1": 1, "2": 1},
+    }
 
 
 def test_run_audit_dispatches_detector_and_gate_checks(tmp_path: Path) -> None:

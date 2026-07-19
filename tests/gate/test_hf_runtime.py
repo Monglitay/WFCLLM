@@ -22,12 +22,19 @@ class _Model:
 
     def generate(self, **kwargs):
         assert kwargs["max_new_tokens"] == 64
+        assert kwargs["temperature"] == 0.2
+        assert kwargs["top_p"] == 0.7
         return torch.tensor([[10, 11, 21, 22]])
 
 
 def test_causal_rewrite_backend_decodes_only_new_tokens() -> None:
     backend = HFCausalRewriteBackend(
-        model=_Model(), tokenizer=_Tokenizer(), device="cpu", max_new_tokens=64
+        model=_Model(),
+        tokenizer=_Tokenizer(),
+        device="cpu",
+        max_new_tokens=64,
+        temperature=0.2,
+        top_p=0.7,
     )
 
     result = backend.generate_window(

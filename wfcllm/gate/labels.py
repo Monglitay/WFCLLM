@@ -12,7 +12,7 @@ from wfcllm.gate.schema import CandidateObservation
 from wfcllm.method.contracts import reject_quality_proxy_fields
 
 _TRAINING_KEY_COUNT = 32
-_REWRITE_BUDGETS = (1, 3, 6)
+_REWRITE_BUDGETS = (1, 3)
 _CANONICAL_KEY_IDS = tuple(
     f"train-key-{key_index:03d}"
     for key_index in range(_TRAINING_KEY_COUNT)
@@ -56,7 +56,7 @@ class BudgetOutcome:
 
     def __post_init__(self) -> None:
         if type(self.budget) is not int or self.budget not in _REWRITE_BUDGETS:
-            raise ValueError("budget must be one of 1, 3, or 6")
+            raise ValueError("budget must be 1 or 3")
         expected_indices = tuple(range(self.budget + 1))
         if (
             not isinstance(self.candidate_indices, tuple)
@@ -149,7 +149,7 @@ class GateLabels:
             any(type(budget) is not int for budget in self.budgets)
             or set(self.budgets) != set(_REWRITE_BUDGETS)
         ):
-            raise ValueError("budgets must contain exactly outcomes for 1, 3, and 6")
+            raise ValueError("budgets must contain exactly outcomes for 1 and 3")
         budgets = {budget: self.budgets[budget] for budget in _REWRITE_BUDGETS}
         for budget, outcome in budgets.items():
             if not isinstance(outcome, BudgetOutcome) or outcome.budget != budget:
@@ -180,7 +180,7 @@ def build_gate_labels(
     thresholds: LabelThresholds | None = None,
     hard_boundary: bool = False,
 ) -> GateLabels:
-    """Build causal labels from candidate 0 and ordered rewrites 1 through 6.
+    """Build causal labels from candidate 0 and ordered rewrites 1 through 3.
 
     All budgets are prefixes of ``candidates``. Candidate 0 participates in
     reliable semantic success, but only candidates 1..R contribute to rewrite
@@ -299,9 +299,9 @@ def _validate_trajectory(candidates: object) -> None:
         raise ValueError("candidates must be a tuple")
     if any(not isinstance(candidate, CandidateObservation) for candidate in candidates):
         raise ValueError("candidates must contain only CandidateObservation instances")
-    if tuple(candidate.candidate_index for candidate in candidates) != tuple(range(7)):
+    if tuple(candidate.candidate_index for candidate in candidates) != tuple(range(4)):
         raise ValueError(
-            "candidate trajectory must contain ordered indices 0 through 6"
+            "candidate trajectory must contain ordered indices 0 through 3"
         )
 
 
@@ -393,7 +393,7 @@ def _validate_first_hit_prefixes(
     for key_id in _CANONICAL_KEY_IDS:
         previous_budget = 1
         previous_hit = budgets[previous_budget].first_hit_by_key_id[key_id]
-        for budget in (3, 6):
+        for budget in _REWRITE_BUDGETS[1:]:
             current_hit = budgets[budget].first_hit_by_key_id[key_id]
             if previous_hit is not None:
                 if current_hit != previous_hit:

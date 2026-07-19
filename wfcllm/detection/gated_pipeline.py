@@ -23,6 +23,7 @@ from wfcllm.windowing.contracts import WINDOW_CONTRACT_VERSION
 GATED_METHOD_NAME = "gated_semantic_window_v1"
 GATED_CALIBRATION_SCHEMA_VERSION = "wfcllm-gated-calibration/v1"
 EMPIRICAL_P_VALUE_RULE = "right_tail_plus_one/v1"
+BINOMIAL_P_VALUE_RULE = "pooled_negative_binomial_right_tail/v1"
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -88,7 +89,10 @@ class GatedCalibrationArtifact:
             gate_input_contract_version=self.gate_input_contract_version,
             detector_mode=self.detector_mode,
         )
-        if self.empirical_p_value_rule != EMPIRICAL_P_VALUE_RULE:
+        if self.empirical_p_value_rule not in {
+            EMPIRICAL_P_VALUE_RULE,
+            BINOMIAL_P_VALUE_RULE,
+        }:
             raise ValueError("empirical p-value rule mismatch")
         if not isinstance(self.target_fpr, (int, float)) or not 0 < self.target_fpr < 1:
             raise ValueError("target_fpr must be in (0, 1)")
@@ -168,6 +172,7 @@ class GatedDetectionPipeline:
         scorer: GatedWindowScorer,
         bindings: GatedDetectionBindings,
         target_fpr: float = 0.05,
+        calibration_group_by: str = "reliable_window_count",
     ) -> None:
         if not callable(getattr(extractor, "extract", None)):
             raise ValueError("extractor must expose final-code extract")
@@ -177,10 +182,17 @@ class GatedDetectionPipeline:
             raise ValueError("bindings must be GatedDetectionBindings")
         if isinstance(target_fpr, bool) or not isinstance(target_fpr, (int, float)) or not 0 < target_fpr < 1:
             raise ValueError("target_fpr must be in (0, 1)")
+        if calibration_group_by not in {
+            "reliable_window_count",
+            "pooled_reliable_hit_rate",
+            "pooled_binomial_tail",
+        }:
+            raise ValueError("unsupported gated calibration grouping")
         self._extractor = extractor
         self._scorer = scorer
         self._bindings = bindings
         self._target_fpr = float(target_fpr)
+        self._calibration_group_by = calibration_group_by
 
     def calibrate(
         self,
@@ -194,7 +206,18 @@ class GatedDetectionPipeline:
             score = self._score_record(record)
             if score.reliable_window_count < self._scorer.minimum_reliable_windows:
                 continue
-            buckets.setdefault(str(score.reliable_window_count), []).append(score.hit_rate)
+            if self._calibration_group_by == "pooled_binomial_tail":
+                bucket = str(self._scorer.minimum_reliable_windows)
+                buckets.setdefault(bucket, []).extend(
+                    [1.0] * score.hit_count + [0.0] * score.miss_count
+                )
+            else:
+                bucket = (
+                    str(self._scorer.minimum_reliable_windows)
+                    if self._calibration_group_by == "pooled_reliable_hit_rate"
+                    else str(score.reliable_window_count)
+                )
+                buckets.setdefault(bucket, []).append(score.hit_rate)
         if not buckets:
             raise ValueError("calibration has no samples with enough reliable windows")
         frozen_buckets = {key: tuple(values) for key, values in sorted(buckets.items(), key=lambda x: int(x[0]))}
@@ -209,14 +232,22 @@ class GatedDetectionPipeline:
             lsh_config_sha256=self._bindings.lsh_config_sha256,
             key_identifier_sha256=self._bindings.key_identifier_sha256,
             negative_corpus_manifest_sha256=self._bindings.negative_corpus_manifest_sha256,
-            empirical_p_value_rule=EMPIRICAL_P_VALUE_RULE,
+            empirical_p_value_rule=(
+                BINOMIAL_P_VALUE_RULE
+                if self._calibration_group_by == "pooled_binomial_tail"
+                else EMPIRICAL_P_VALUE_RULE
+            ),
             target_fpr=self._target_fpr,
             minimum_reliable_windows=self._scorer.minimum_reliable_windows,
             reliable_window_count_buckets=frozen_buckets,
-            thresholds_by_reliable_window_count={
-                key: _empirical_threshold(values, self._target_fpr)
-                for key, values in frozen_buckets.items()
-            },
+            thresholds_by_reliable_window_count=(
+                {key: self._target_fpr for key in frozen_buckets}
+                if self._calibration_group_by == "pooled_binomial_tail"
+                else {
+                    key: _empirical_threshold(values, self._target_fpr)
+                    for key, values in frozen_buckets.items()
+                }
+            ),
         )
         if output_path is not None:
             write_gated_calibration_artifact(output_path, artifact)
@@ -270,7 +301,22 @@ class GatedDetectionPipeline:
             decision = "insufficient_evidence"
         else:
             background, threshold = _select_bucket(artifact, score.reliable_window_count)
-            p_value = empirical_right_tail_plus_one(score.hit_rate, background)
+            if artifact.empirical_p_value_rule == BINOMIAL_P_VALUE_RULE:
+                null_hit_probability = (sum(background) + 1.0) / (
+                    len(background) + 2.0
+                )
+                p_value = binomial_right_tail(
+                    score.hit_count,
+                    score.reliable_window_count,
+                    null_hit_probability,
+                )
+                threshold = _binomial_hit_rate_threshold(
+                    score.reliable_window_count,
+                    null_hit_probability,
+                    artifact.target_fpr,
+                )
+            else:
+                p_value = empirical_right_tail_plus_one(score.hit_rate, background)
             decision = (
                 "watermarked"
                 if p_value <= artifact.target_fpr and score.hit_rate >= threshold
@@ -316,6 +362,28 @@ def empirical_right_tail_plus_one(value: float, background: Sequence[float]) -> 
     if not background:
         raise ValueError("empirical background must not be empty")
     return (1 + sum(item >= value for item in background)) / (len(background) + 1)
+
+
+def binomial_right_tail(hits: int, trials: int, hit_probability: float) -> float:
+    if type(hits) is not int or type(trials) is not int or not 0 <= hits <= trials:
+        raise ValueError("binomial counts are invalid")
+    if not 0.0 < hit_probability < 1.0:
+        raise ValueError("binomial hit probability must be in (0, 1)")
+    return sum(
+        math.comb(trials, count)
+        * hit_probability**count
+        * (1.0 - hit_probability) ** (trials - count)
+        for count in range(hits, trials + 1)
+    )
+
+
+def _binomial_hit_rate_threshold(
+    trials: int, hit_probability: float, target_fpr: float
+) -> float:
+    for hits in range(trials + 1):
+        if binomial_right_tail(hits, trials, hit_probability) <= target_fpr:
+            return hits / trials
+    return 1.0
 
 
 def _empirical_threshold(values: Sequence[float], target_fpr: float) -> float:
@@ -393,6 +461,7 @@ def calibrate_gated_detector(
 
 
 __all__ = [
+    "BINOMIAL_P_VALUE_RULE",
     "EMPIRICAL_P_VALUE_RULE",
     "GATED_CALIBRATION_SCHEMA_VERSION",
     "GATED_METHOD_NAME",
@@ -401,6 +470,7 @@ __all__ = [
     "GatedDetectionPipeline",
     "GatedDetectionResult",
     "calibrate_gated_detector",
+    "binomial_right_tail",
     "empirical_right_tail_plus_one",
     "hash_negative_corpus_manifest",
     "load_gated_calibration_artifact",

@@ -61,7 +61,7 @@ def test_runtime_config_resolver_expands_and_validates_gated_preset():
 
     assert resolved["method"]["name"] == GATED_SEMANTIC_WINDOW_V1_NAME
     assert resolved["runtime"]["default_phases"][:3] == [
-        "gate-data", "gate-train", "gate-validate"
+        "gate-data", "gate-train", "generate"
     ]
 
 
@@ -130,7 +130,10 @@ def test_gate_data_runner_persists_config_input_and_output_hashes(tmp_path, monk
             "schema_version": "wfcllm-gate-data-manifest/v1",
             "config_hash": config.config_hash,
             "diagnostic_test_backend": False,
-            "formal_eligible": True,
+                "experimental_only": False,
+                "diagnostic_only": False,
+                "not_official_method": False,
+                "formal_eligible": True,
         }
         path = output / "manifest.json"
         path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -159,7 +162,15 @@ def test_gate_data_runner_rejects_input_mutation_during_pipeline(tmp_path, monke
         source.write_text('{"changed":true}\n')
         output = config.output_root / "gate-data"
         output.mkdir(parents=True)
-        manifest = {"schema_version": "wfcllm-gate-data-manifest/v1", "config_hash": config.config_hash, "diagnostic_test_backend": False, "formal_eligible": True}
+        manifest = {
+            "schema_version": "wfcllm-gate-data-manifest/v1",
+            "config_hash": config.config_hash,
+            "diagnostic_test_backend": False,
+                "experimental_only": False,
+                "diagnostic_only": False,
+                "not_official_method": False,
+                "formal_eligible": True,
+        }
         path = output / "manifest.json"
         path.write_text(json.dumps(manifest), encoding="utf-8")
         return SimpleNamespace(manifest=manifest, manifest_path=path, output_dir=output)
@@ -345,6 +356,9 @@ def test_entry_main_requires_production_runtime_for_each_gate_phase(
     (data / "manifest.json").write_text(json.dumps({
         "schema_version": "wfcllm-gate-data-manifest/v1",
         "diagnostic_test_backend": False,
+        "experimental_only": False,
+        "diagnostic_only": False,
+        "not_official_method": False,
         "formal_eligible": True,
     }))
     (data / "feasibility_summary.json").write_text("{}")

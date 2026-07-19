@@ -247,6 +247,8 @@ class _UnitBuilder:
     ) -> None:
         start_byte = node.start_byte
         end_byte = _header_end_byte(node) if compound_header else node.end_byte
+        if end_byte <= start_byte:
+            return
         ordinal_key = (owner.start_byte, owner.end_byte, owner.type)
         ordinal = self._next_ordinal[ordinal_key]
         self._next_ordinal[ordinal_key] += 1

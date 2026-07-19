@@ -47,10 +47,10 @@ class GateModel(nn.Module):
 
         from transformers import AutoModel
 
-        encoder = AutoModel.from_pretrained(
+        backbone = AutoModel.from_pretrained(
             str(config.base_model_path), local_files_only=True
         )
-        encoder_config = getattr(encoder, "config", None)
+        encoder_config = getattr(backbone, "config", None)
         hidden_size = None
         for name in ("hidden_size", "d_model", "dim"):
             candidate = getattr(encoder_config, name, None)
@@ -59,6 +59,14 @@ class GateModel(nn.Module):
                 break
         if hidden_size is None:
             raise ValueError("local encoder config must declare a positive hidden size")
+        encoder = backbone
+        if bool(getattr(encoder_config, "is_encoder_decoder", False)):
+            get_encoder = getattr(backbone, "get_encoder", None)
+            if not callable(get_encoder):
+                raise ValueError("encoder-decoder backbone must expose get_encoder")
+            encoder = get_encoder()
+            if not isinstance(encoder, nn.Module):
+                raise ValueError("encoder-decoder get_encoder must return a torch.nn.Module")
         return cls(encoder=encoder, hidden_size=hidden_size)
 
     def forward(

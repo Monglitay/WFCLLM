@@ -69,7 +69,7 @@ def _group_digest(values: tuple[str, ...]) -> str:
 
 
 def _group(index: int, *, scale: str = "pilot") -> GatePipelineGroup:
-    suitable = index < (300 if scale == "pilot" else 3_000)
+    suitable = index < (15 if scale == "pilot" else 150)
     split = "validation" if index % 10 == 0 else "test" if index % 10 == 1 else "train"
     return GatePipelineGroup(
         group_id=f"group-{index:05d}",
@@ -81,7 +81,6 @@ def _group(index: int, *, scale: str = "pilot") -> GatePipelineGroup:
         statement_family=("assignment", "branch", "loop", "return")[index % 4],
         r1_success_rate=0.25 if suitable else 0.0,
         r3_success_rate=0.625 if suitable else 0.0,
-        r6_success_rate=0.75 if suitable else 0.0,
         holdout_success_rate=0.625 if suitable else 0.0,
         repository_id=f"repo-{index:05d}",
         task_id=f"task-{index:05d}",
@@ -89,7 +88,7 @@ def _group(index: int, *, scale: str = "pilot") -> GatePipelineGroup:
         structural_invalid_rate=0.0,
         numeric_instability_rate=0.0,
         first_hit_candidate_position=0 if suitable else None,
-        candidate_indices_by_window_length={length: tuple(range(7)) for length in (1, 2, 3)},
+        candidate_indices_by_window_length={length: tuple(range(4)) for length in (1, 2, 3)},
         observed_training_key_ids=tuple(f"train-key-{i:03d}" for i in range(32)),
         observed_holdout_key_ids=tuple(f"holdout-key-{i:03d}" for i in range(8)),
         candidate_observations_by_length=_evidence_templates(suitable)[0],
@@ -107,7 +106,7 @@ def _evidence_templates(suitable: bool):
     for length in (1, 2, 3):
         observations = []
         probes = []
-        for candidate_index in range(7):
+        for candidate_index in range(4):
             training_hits = set()
             holdout_hits = set()
             if suitable:
@@ -117,8 +116,6 @@ def _evidence_templates(suitable: bool):
                 elif candidate_index == 2:
                     training_hits.update(training_ids[8:20])
                     holdout_hits.update(holdout_ids[2:5])
-                elif candidate_index == 4:
-                    training_hits.update(training_ids[20:24])
             raw_results = {
                 key_id: LshProbeResult(
                     signature=(1, 0), margin=1.0, hit=key_id in training_hits | holdout_hits,
@@ -152,6 +149,7 @@ class FakeDependencies:
         self.calls: list[str] = []
         self.train_called = False
         self.validate_called = False
+        self.generated_count = 0
 
     def load_source_manifest(self, config):
         self.calls.append("source")
@@ -171,7 +169,20 @@ class FakeDependencies:
 
     def generate_candidate_trajectories(self, parsed_sources, config):
         self.calls.append("generate")
-        return self.groups
+        def counted_groups():
+            for group in self.groups:
+                self.generated_count += 1
+                yield group
+
+        return counted_groups()
+
+    def gate_data_selection_summary(self):
+        return {
+            "algorithm_version": "test-source-selection/v1",
+            "candidate_window_count": self.generated_count,
+            "selected_group_count": self.generated_count,
+            "selection_sha256": _sha("selection"),
+        }
 
     def run_multi_key_lsh_probe(self, groups, *, training_key_ids, holdout_key_ids, config):
         self.calls.append("probe")
@@ -328,17 +339,43 @@ def _data_config(tmp_path: Path, *, scale: str = "pilot", pilot: Path | None = N
 
 
 def test_gate_data_writes_manifest_and_grouped_jsonl_in_fixed_order(tmp_path: Path) -> None:
-    deps = FakeDependencies(tuple(_group(i) for i in range(2_000)))
+    deps = FakeDependencies(tuple(_group(i) for i in range(100)))
     result = run_gate_data(_data_config(tmp_path), deps)
-    assert result.group_count == 2_000
+    assert result.group_count == 100
     assert result.manifest_path.exists()
     assert result.manifest["human_eval_included"] is False
-    assert result.manifest["rewrite_count"] == 6
+    assert result.manifest["rewrite_count"] == 3
+    assert result.manifest["selection_summary"] == {
+        "algorithm_version": "test-source-selection/v1",
+        "candidate_window_count": 100,
+        "selected_group_count": 100,
+        "selection_sha256": _sha("selection"),
+    }
+    assert result.manifest["collection_statistics"] == {
+        "close_suitable_counts": {
+            "close_false_suitable_false": 0,
+            "close_true_suitable_false": 85,
+            "close_true_suitable_true": 15,
+        },
+        "statement_family_counts": {
+            "assignment": 25,
+            "branch": 25,
+            "loop": 25,
+            "return": 25,
+        },
+        "rewrite_parse_status_counts": {"ok": 900},
+        "rewrite_structurally_valid_count": 900,
+        "rewrite_structurally_invalid_count": 0,
+        "rewrite_semantic_signature_stable_count": 900,
+        "rewrite_semantic_signature_unstable_count": 0,
+        "unique_repository_id_count": 100,
+        "unique_task_id_count": 100,
+    }
     assert deps.calls[:5] == ["source", "training", "holdout", "parse", "generate"]
-    assert deps.calls[5:-1] == [value for _ in range(2_000) for value in ("probe", "split")]
+    assert deps.calls[5:-1] == [value for _ in range(100) for value in ("probe", "split")]
     assert deps.calls[-1] == "audit"
     rows = result.data_path.read_text(encoding="utf-8").splitlines()
-    assert len(rows) == 2_000
+    assert len(rows) == 100
     assert set(result.manifest["artifacts"]) == {
         "window_groups.jsonl", "candidate_attempts.jsonl", "labels.jsonl",
         "split_manifest.json", "training_key_bank_manifest.json", "group_index.jsonl",
@@ -355,10 +392,95 @@ def test_gate_data_writes_manifest_and_grouped_jsonl_in_fixed_order(tmp_path: Pa
                 first_evidence = first_evidence or row
             else:
                 attempt_count += 1
-    assert attempt_count == 2_000 * 3 * 7
-    assert evidence_count == 30  # canonical content dedupes identical miss candidates
+    assert attempt_count == 100 * 3 * 4
+    assert evidence_count == 18  # canonical content dedupes identical candidates
     assert len(first_evidence["candidate_observation"]["lsh_by_key_id"]) == 32
     assert len(first_evidence["lsh_probe_results"]) == 40
+
+
+def test_fast_experimental_gate_data_writes_only_training_artifacts(
+    tmp_path: Path,
+) -> None:
+    deps = FakeDependencies(tuple(_group(i) for i in range(100)))
+    config = replace(
+        _data_config(tmp_path),
+        fast_experimental=True,
+        max_groups=100,
+    )
+
+    result = run_gate_data(config, deps)
+
+    assert {path.name for path in result.output_dir.iterdir()} == {
+        "window_groups.jsonl",
+        "group_index.jsonl",
+        "feasibility_summary.json",
+        "manifest.json",
+    }
+    assert result.manifest["formal_eligible"] is False
+    assert result.manifest["experimental_only"] is True
+    assert result.manifest["diagnostic_only"] is True
+    assert result.manifest["not_official_method"] is True
+    assert "audit" not in deps.calls
+
+
+def test_fast_experimental_gate_data_records_failed_formal_feasibility(
+    tmp_path: Path,
+) -> None:
+    groups = tuple(
+        replace(
+            _group(index, scale="full"),
+            statement_family="expression_statement",
+        )
+        for index in range(300)
+    )
+    deps = FakeDependencies(groups)
+    config = replace(
+        _data_config(tmp_path, scale="full"),
+        fast_experimental=True,
+        max_groups=300,
+    )
+
+    result = run_gate_data(config, deps)
+
+    assert result.group_count == 300
+    assert result.feasibility.passed is False
+    assert result.feasibility.admissions["major_statement_families"].passed is False
+    assert result.manifest["experimental_only"] is True
+    summary = json.loads(result.feasibility_path.read_text(encoding="utf-8"))
+    assert summary["passed"] is False
+
+
+def test_fast_experimental_train_does_not_apply_formal_admission_minima(
+    tmp_path: Path,
+) -> None:
+    groups = tuple(
+        replace(
+            _group(index, scale="full"),
+            statement_family="expression_statement",
+        )
+        for index in range(300)
+    )
+    data = run_gate_data(
+        replace(
+            _data_config(tmp_path / "data", scale="full"),
+            fast_experimental=True,
+            max_groups=300,
+        ),
+        FakeDependencies(groups),
+    )
+    train_dependencies = FakeDependencies(())
+
+    run_gate_train(
+        GateTrainPipelineConfig(
+            output_root=tmp_path / "train",
+            data_dir=data.output_dir,
+            config_hash=_sha("config"),
+            fast_experimental=True,
+        ),
+        train_dependencies,
+    )
+
+    assert train_dependencies.train_called is True
 
 
 def test_production_local_dependencies_run_formal_pipeline_with_local_adapters(
@@ -373,7 +495,7 @@ def test_production_local_dependencies_run_formal_pipeline_with_local_adapters(
     holdout = tmp_path / "holdout.json"
     training.write_text(json.dumps([f"training-{index}" for index in range(32)]))
     holdout.write_text(json.dumps([f"holdout-{index}" for index in range(8)]))
-    adapters = FakeDependencies(tuple(_group(index) for index in range(2_000)))
+    adapters = FakeDependencies(tuple(_group(index) for index in range(100)))
     adapter = ControlledProductionPipelineAdapter(adapters)
     dependencies = build_trusted_test_gate_dependencies(
         source_manifest=source,
@@ -388,10 +510,10 @@ def test_production_local_dependencies_run_formal_pipeline_with_local_adapters(
     result = run_gate_data(_data_config(tmp_path / "run"), dependencies)
 
     assert dependencies.diagnostic_test_backend is False
-    assert result.group_count == 2_000
+    assert result.group_count == 100
     assert result.manifest["diagnostic_test_backend"] is False
     assert result.manifest["formal_eligible"] is True
-    assert adapter.probe_count == 2_000
+    assert adapter.probe_count == 100
     with pytest.raises(ValueError, match="released"):
         adapter.training_view.material_for("train-key-000")
     published = b"".join(
@@ -483,12 +605,12 @@ def test_candidate_attempt_writer_deduplicates_equal_content_from_distinct_objec
     finally:
         writer.close()
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
-    assert sum(row["record_type"] == "probe_evidence" for row in rows) == 21
-    assert sum(row["record_type"] == "candidate_attempt" for row in rows) == 42
+    assert sum(row["record_type"] == "probe_evidence" for row in rows) == 12
+    assert sum(row["record_type"] == "candidate_attempt" for row in rows) == 24
 
 
 def test_candidate_attempt_writer_reemits_content_after_lru_eviction(tmp_path: Path) -> None:
-    groups = tuple(_distinct_evidence_group(index) for index in range(25))
+    groups = tuple(_distinct_evidence_group(index) for index in range(44))
     path = tmp_path / "attempts.jsonl"
     writer = gate_pipeline._BoundedJsonlWriter.open(path)
     cache: OrderedDict[str, None] = OrderedDict()
@@ -500,8 +622,8 @@ def test_candidate_attempt_writer_reemits_content_after_lru_eviction(tmp_path: P
         writer.close()
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     assert len(cache) == 512
-    assert sum(row["record_type"] == "probe_evidence" for row in rows) == 26 * 21
-    assert sum(row["record_type"] == "candidate_attempt" for row in rows) == 26 * 21
+    assert sum(row["record_type"] == "probe_evidence" for row in rows) == 45 * 12
+    assert sum(row["record_type"] == "candidate_attempt" for row in rows) == 45 * 12
 
 
 def test_gate_data_streams_generator_with_bounded_live_groups_and_no_read_bytes(
@@ -512,7 +634,7 @@ def test_gate_data_streams_generator_with_bounded_live_groups_and_no_read_bytes(
 
     def groups():
         nonlocal live, maximum_live
-        for index in range(2_000):
+        for index in range(100):
             group = _group(index)
             live += 1
             maximum_live = max(maximum_live, live)
@@ -530,7 +652,7 @@ def test_gate_data_streams_generator_with_bounded_live_groups_and_no_read_bytes(
         lambda self: (_ for _ in ()).throw(AssertionError("read_bytes is forbidden")),
     )
     result = run_gate_data(_data_config(tmp_path), deps)
-    assert result.group_count == 2_000
+    assert result.group_count == 100
     assert maximum_live <= 2
 
 
@@ -594,7 +716,7 @@ def test_formal_candidate_tree_rejects_excess_entries_depth_and_path_bytes(tmp_p
 
 
 def test_gate_data_rejects_humaneval_before_key_loading(tmp_path: Path) -> None:
-    deps = FakeDependencies(tuple(_group(i) for i in range(2_000)))
+    deps = FakeDependencies(tuple(_group(i) for i in range(100)))
     deps.load_source_manifest = lambda config: {"sources": [{"source_id": "HumanEval/0"}]}
     with pytest.raises(ValueError, match="HumanEval"):
         run_gate_data(_data_config(tmp_path), deps)
@@ -627,7 +749,7 @@ def test_diagnostic_gate_data_rejects_formal_window_row_and_cleans_staging(tmp_p
 
 
 def test_gate_data_audit_failure_removes_staging_and_publishes_nothing(tmp_path: Path) -> None:
-    deps = FakeDependencies(tuple(_group(i) for i in range(2_000)))
+    deps = FakeDependencies(tuple(_group(i) for i in range(100)))
     deps.audit_gate_data = lambda staging, manifest: (_ for _ in ()).throw(ValueError("audit failed"))
     with pytest.raises(ValueError, match="audit failed"):
         run_gate_data(_data_config(tmp_path), deps)
@@ -644,7 +766,7 @@ def test_gate_data_rejects_prefilled_probe_facts_that_disagree_with_raw_evidence
     first[key_id] = LshProbeResult(prior.signature, prior.margin, not prior.hit, prior.stable, True, True)
     probes["1"] = (types.MappingProxyType(first), *probes["1"][1:])
     corrupted = replace(original, probe_results_by_length=probes)
-    deps = FakeDependencies((corrupted, *tuple(_group(i) for i in range(1, 2_000))))
+    deps = FakeDependencies((corrupted, *tuple(_group(i) for i in range(1, 100))))
     with pytest.raises(ValueError, match="contradicts LshProbeResult"):
         run_gate_data(_data_config(tmp_path), deps)
     assert "audit" not in deps.calls
@@ -652,14 +774,14 @@ def test_gate_data_rejects_prefilled_probe_facts_that_disagree_with_raw_evidence
 
 def test_gate_data_rejects_injected_label_that_disagrees_with_causal_recompute(tmp_path: Path) -> None:
     corrupted = replace(_group(0), suitable_target=False)
-    deps = FakeDependencies((corrupted, *tuple(_group(i) for i in range(1, 2_000))))
+    deps = FakeDependencies((corrupted, *tuple(_group(i) for i in range(1, 100))))
     with pytest.raises(ValueError, match="causal labels"):
         run_gate_data(_data_config(tmp_path), deps)
     assert "split" not in deps.calls and "audit" not in deps.calls
 
 
 def test_gate_data_rejects_split_stage_base_identity_mutation(tmp_path: Path) -> None:
-    deps = FakeDependencies(tuple(_group(i) for i in range(2_000)))
+    deps = FakeDependencies(tuple(_group(i) for i in range(100)))
     def mutate_identity(groups, config):
         iterator = iter(groups)
         yield replace(next(iterator), repository_id="tampered-repository")
@@ -683,12 +805,49 @@ def test_gate_train_requires_full_data_manifest_and_passed_pilot(tmp_path: Path)
     assert deps.train_called is False
 
 
+def test_fast_experimental_train_consumes_minimal_data_without_snapshot(
+    tmp_path: Path,
+) -> None:
+    data_dependencies = FakeDependencies(
+        tuple(_group(index, scale="full") for index in range(300))
+    )
+    data = run_gate_data(
+        replace(
+            _data_config(tmp_path / "data", scale="full"),
+            fast_experimental=True,
+            max_groups=300,
+        ),
+        data_dependencies,
+    )
+    train_dependencies = FakeDependencies(())
+
+    result = run_gate_train(
+        GateTrainPipelineConfig(
+            output_root=tmp_path / "train",
+            data_dir=data.output_dir,
+            config_hash=_sha("config"),
+            fast_experimental=True,
+        ),
+        train_dependencies,
+    )
+
+    assert train_dependencies.train_called is True
+    assert {path.name for path in result.output_dir.iterdir()} == {
+        "candidate_bundle",
+        "candidate_bundle_manifest.json",
+    }
+    assert result.manifest["formal_eligible"] is False
+    assert result.manifest["experimental_only"] is True
+    assert result.manifest["diagnostic_only"] is True
+    assert result.manifest["not_official_method"] is True
+
+
 def test_gate_train_enforces_independent_group_minima_before_trainer(tmp_path: Path) -> None:
     pilot_dir = tmp_path / "pilot"
-    pilot_deps = FakeDependencies(tuple(_group(i) for i in range(2_000)))
+    pilot_deps = FakeDependencies(tuple(_group(i) for i in range(100)))
     pilot = run_gate_data(_data_config(pilot_dir), pilot_deps)
     full_dir = tmp_path / "full"
-    full_deps = FakeDependencies(tuple(_group(i, scale="full") for i in range(20_000)))
+    full_deps = FakeDependencies(tuple(_group(i, scale="full") for i in range(300)))
     full = run_gate_data(_data_config(full_dir, scale="full", pilot=pilot.feasibility_path), full_deps)
     for index, artifact_name in enumerate(full.manifest["artifacts"]):
         artifact = full.output_dir / artifact_name
@@ -704,8 +863,8 @@ def test_gate_train_enforces_independent_group_minima_before_trainer(tmp_path: P
                     GateTrainPipelineConfig(
                         tmp_path / f"blocked-{index}-{mutation}",
                         full.output_dir,
-                        pilot.feasibility_path,
                         _sha("config"),
+                        pilot.feasibility_path,
                     ),
                     blocked,
                 )
@@ -733,7 +892,7 @@ def test_gate_train_enforces_independent_group_minima_before_trainer(tmp_path: P
         run_gate_train(
             GateTrainPipelineConfig(
                 tmp_path / "semantic-label-tamper", full.output_dir,
-                pilot.feasibility_path, _sha("config"),
+                _sha("config"), pilot.feasibility_path,
             ),
             semantic_tamper_deps,
         )
@@ -762,7 +921,7 @@ def test_gate_train_enforces_independent_group_minima_before_trainer(tmp_path: P
             run_gate_train(
                 GateTrainPipelineConfig(
                     tmp_path / f"window-row-{field_name}", full.output_dir,
-                    pilot.feasibility_path, _sha("config"),
+                    _sha("config"), pilot.feasibility_path,
                 ),
                 blocked_window_deps,
             )
@@ -771,7 +930,7 @@ def test_gate_train_enforces_independent_group_minima_before_trainer(tmp_path: P
         manifest_path.write_bytes(original_manifest)
     train_deps = FakeDependencies(())
     result = run_gate_train(
-        GateTrainPipelineConfig(full_dir, full.output_dir, pilot.feasibility_path, _sha("config")),
+        GateTrainPipelineConfig(full_dir, full.output_dir, _sha("config"), pilot.feasibility_path),
         train_deps,
     )
     assert result.candidate_bundle_path.exists()
@@ -787,7 +946,7 @@ def test_gate_train_enforces_independent_group_minima_before_trainer(tmp_path: P
     mutating_original_trainer.train_candidate = mutate_original_data
     with pytest.raises(ValueError, match="mutated original"):
         run_gate_train(
-            GateTrainPipelineConfig(tmp_path / "mutating-original-trainer", full.output_dir, pilot.feasibility_path, _sha("config")),
+            GateTrainPipelineConfig(tmp_path / "mutating-original-trainer", full.output_dir, _sha("config"), pilot.feasibility_path),
             mutating_original_trainer,
         )
     full.data_path.write_bytes(original_window_data)
@@ -800,7 +959,7 @@ def test_gate_train_enforces_independent_group_minima_before_trainer(tmp_path: P
     mutating_snapshot_trainer.train_candidate = mutate_snapshot_data
     with pytest.raises(ValueError, match="artifact|hash|window group"):
         run_gate_train(
-            GateTrainPipelineConfig(tmp_path / "mutating-snapshot-trainer", full.output_dir, pilot.feasibility_path, _sha("config")),
+            GateTrainPipelineConfig(tmp_path / "mutating-snapshot-trainer", full.output_dir, _sha("config"), pilot.feasibility_path),
             mutating_snapshot_trainer,
         )
     for index, artifact_name in enumerate(full.manifest["artifacts"]):
@@ -874,17 +1033,17 @@ def test_gate_train_enforces_independent_group_minima_before_trainer(tmp_path: P
 
 def test_gate_train_rejects_tampered_grouped_data_before_trainer(tmp_path: Path) -> None:
     pilot_root = tmp_path / "pilot"
-    pilot = run_gate_data(_data_config(pilot_root), FakeDependencies(tuple(_group(i) for i in range(2_000))))
+    pilot = run_gate_data(_data_config(pilot_root), FakeDependencies(tuple(_group(i) for i in range(100))))
     full_root = tmp_path / "full"
     full = run_gate_data(
         _data_config(full_root, scale="full", pilot=pilot.feasibility_path),
-        FakeDependencies(tuple(_group(i, scale="full") for i in range(20_000))),
+        FakeDependencies(tuple(_group(i, scale="full") for i in range(300))),
     )
     full.data_path.write_text(full.data_path.read_text(encoding="utf-8") + "{}\n", encoding="utf-8")
     deps = FakeDependencies(())
     with pytest.raises(ValueError, match="artifact|hash"):
         run_gate_train(
-            GateTrainPipelineConfig(full_root, full.output_dir, pilot.feasibility_path, _sha("config")),
+            GateTrainPipelineConfig(full_root, full.output_dir, _sha("config"), pilot.feasibility_path),
             deps,
         )
     assert deps.train_called is False

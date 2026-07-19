@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -9,10 +10,39 @@ from wfcllm.windowing import (
     PythonStatementUnitExtractor,
     StatementUnit,
 )
+from wfcllm.windowing.python import _UnitBuilder
 
 
 def texts(source: str) -> list[str]:
     return [unit.text for unit in PythonStatementUnitExtractor().extract(source)]
+
+
+def test_parser_skips_zero_length_error_nodes() -> None:
+    builder = _UnitBuilder(b"x = 1\n")
+    owner = SimpleNamespace(start_byte=0, end_byte=6, type="module")
+    node = SimpleNamespace(
+        start_byte=6,
+        end_byte=6,
+        type="ERROR",
+        start_point=(1, 0),
+        end_point=(1, 0),
+        children=(),
+        named_children=(),
+        parent=owner,
+        has_error=True,
+        is_error=True,
+        is_missing=False,
+    )
+
+    builder._append_unit(
+        node,
+        owner=owner,
+        parent_path=("module",),
+        depth=0,
+        compound_header=False,
+    )
+
+    assert builder.units == []
 
 
 def test_semicolon_and_inline_if_are_parser_units() -> None:

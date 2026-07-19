@@ -84,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
             config = GateTrainPipelineConfig(
                 output_root=_required_path(raw, "output_root"),
                 data_dir=_required_path(raw, "data_dir"),
-                pilot_feasibility_path=_required_path(raw, "pilot_feasibility_path"),
+                pilot_feasibility_path=_optional_path(raw, "pilot_feasibility_path"),
                 config_hash=_digest_value(raw, "config_hash"),
             )
             result = run_gate_train(config, dependencies)
@@ -130,10 +130,10 @@ class _FakeDependencies:
         return ("diagnostic",)
 
     def generate_candidate_trajectories(self, parsed_sources, config):
-        count = self.raw.get("fake_group_count", 2_000 if config.scale == "pilot" else 20_000)
+        count = self.raw.get("fake_group_count", 100 if config.scale == "pilot" else 1_000)
         if type(count) is not int or count <= 0:
             raise ValueError("fake_group_count must be a positive integer")
-        positive_count = 300 if config.scale == "pilot" else 3_000
+        positive_count = 15 if config.scale == "pilot" else 150
         for index in range(count):
             split = "validation" if index % 10 == 0 else "test" if index % 10 == 1 else "train"
             suitable = index < positive_count
@@ -148,7 +148,6 @@ class _FakeDependencies:
                     statement_family=("assignment", "branch", "loop", "return")[index % 4],
                     r1_success_rate=0.25 if suitable else 0.0,
                     r3_success_rate=0.625 if suitable else 0.0,
-                    r6_success_rate=0.75 if suitable else 0.0,
                     holdout_success_rate=0.625 if suitable else 0.0,
                     repository_id=f"diagnostic-repo-{index:05d}",
                     task_id=f"diagnostic-task-{index:05d}",
@@ -156,7 +155,7 @@ class _FakeDependencies:
                     structural_invalid_rate=0.0,
                     numeric_instability_rate=0.0,
                     first_hit_candidate_position=0 if suitable else None,
-                    candidate_indices_by_window_length={length: tuple(range(7)) for length in (1, 2, 3)},
+                    candidate_indices_by_window_length={length: tuple(range(4)) for length in (1, 2, 3)},
                     observed_training_key_ids=tuple(f"train-key-{key_index:03d}" for key_index in range(32)),
                     observed_holdout_key_ids=tuple(f"holdout-key-{key_index:03d}" for key_index in range(8)),
                     candidate_observations_by_length=_fake_evidence(suitable)[0],
@@ -195,15 +194,13 @@ def _fake_evidence(suitable: bool):
     for length in (1, 2, 3):
         observations = []
         probes = []
-        for candidate_index in range(7):
+        for candidate_index in range(4):
             hit_ids: set[str] = set()
             if suitable:
                 if candidate_index == 0:
                     hit_ids.update((*training_ids[:8], *holdout_ids[:2]))
                 elif candidate_index == 2:
                     hit_ids.update((*training_ids[8:20], *holdout_ids[2:5]))
-                elif candidate_index == 4:
-                    hit_ids.update(training_ids[20:24])
             results = {
                 key_id: LshProbeResult((1, 0), 1.0, key_id in hit_ids, True, True, True)
                 for key_id in (*training_ids, *holdout_ids)

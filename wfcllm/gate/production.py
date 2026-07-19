@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+import ast
+from collections import Counter, defaultdict
+from collections.abc import Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
 import hashlib
+import hmac
 import json
 from pathlib import Path
 import shutil
+import textwrap
 import unicodedata
 from typing import Any
 
@@ -16,14 +20,21 @@ from wfcllm.gate.data import (
     GateBuildContext,
     GateDataBuilder,
     LshProbeResult,
+    complete_w1_w2_w3_start_unit_ids,
 )
 from wfcllm.generation.window_rewriter import CausalWindowRewriter, RewriteGeneration
 from wfcllm.gate.labels import build_gate_labels
 from wfcllm.gate.pipeline import GatePipelineGroup, ValidationOutcome
 from wfcllm.gate.schema import CandidateObservation, GateTrainingGroup
-from wfcllm.gate.sources import GateSourceRecord
+from wfcllm.gate.sources import GateSourceRecord, canonical_gate_source_identity
 from wfcllm.semantic.keying import WatermarkKeying
-from wfcllm.windowing import PythonStatementUnitExtractor
+from wfcllm.gate.input import GATE_INPUT_CONTRACT_VERSION
+from wfcllm.windowing import (
+    WINDOW_CONTRACT_VERSION,
+    GateScores,
+    GateThresholds,
+    PythonStatementUnitExtractor,
+)
 from wfcllm.windowing.normalization import WINDOW_NORMALIZATION_VERSION, normalize_unit_text
 
 LOCAL_HF_ADAPTER_NAME = "local-hf-v1"
@@ -40,6 +51,11 @@ _CATALOG_FIELDS = {
     "prompt",
 }
 _MAX_CATALOG_LINE_BYTES = 2 * 1024 * 1024
+_PUBLIC_SEMANTIC_RUNTIME_VERSION = "wfcllm-public-semantic-runtime/v2"
+_PUBLIC_SEMANTIC_INITIALIZATION_SEED = int.from_bytes(
+    hashlib.sha256(_PUBLIC_SEMANTIC_RUNTIME_VERSION.encode("utf-8")).digest()[:8],
+    "big",
+)
 
 
 @dataclass(frozen=True)
@@ -88,11 +104,16 @@ class LocalHFGateRuntimeOptions:
     cache_dir: Path = Path("data/gate-cache")
     semantic_embed_dim: int = 128
     lsh_dimension: int = 4
-    rewrite_max_new_tokens: int = 128
+    semantic_evidence_rule: str = "semantic_lsh"
+    rewrite_max_new_tokens: int = 32
+    rewrite_generation_attempts: int = 3
+    rewrite_temperature: float = 0.8
+    rewrite_top_p: float = 0.95
     gate_batch_size: int = 9
-    gate_epochs: int = 20
+    gate_epochs: int = 4
+    gate_max_tokens: int = 256
     gate_learning_rate: float = 2e-5
-    gate_early_stopping_patience: int = 3
+    gate_early_stopping_patience: int = 1
     gate_resume_checkpoint: Path | None = None
 
     def __post_init__(self) -> None:
@@ -118,12 +139,19 @@ class LocalHFGateRuntimeOptions:
             value = getattr(self, name)
             if not isinstance(value, str) or not value:
                 raise ValueError(f"{name} must be a non-empty string")
+        if self.semantic_evidence_rule not in {
+            "semantic_lsh",
+            "keyed_text_region",
+        }:
+            raise ValueError("unsupported semantic evidence rule")
         for name in (
             "semantic_embed_dim",
             "lsh_dimension",
             "rewrite_max_new_tokens",
+            "rewrite_generation_attempts",
             "gate_batch_size",
             "gate_epochs",
+            "gate_max_tokens",
             "gate_early_stopping_patience",
         ):
             value = getattr(self, name)
@@ -131,6 +159,20 @@ class LocalHFGateRuntimeOptions:
                 raise ValueError(f"{name} must be a positive integer")
         if self.gate_batch_size < 3:
             raise ValueError("gate_batch_size must be at least 3")
+        if self.rewrite_generation_attempts < 3:
+            raise ValueError("rewrite_generation_attempts must be at least 3")
+        if (
+            isinstance(self.rewrite_temperature, bool)
+            or not isinstance(self.rewrite_temperature, (int, float))
+            or self.rewrite_temperature <= 0
+        ):
+            raise ValueError("rewrite_temperature must be positive")
+        if (
+            isinstance(self.rewrite_top_p, bool)
+            or not isinstance(self.rewrite_top_p, (int, float))
+            or not 0 < self.rewrite_top_p <= 1
+        ):
+            raise ValueError("rewrite_top_p must be in (0, 1]")
         if not isinstance(self.gate_learning_rate, (int, float)) or self.gate_learning_rate <= 0:
             raise ValueError("gate_learning_rate must be positive")
         required = (
@@ -234,6 +276,7 @@ class LocalHFProductionAdapter:
         self._unit_metadata_by_group: dict[str, dict[str, Any]] = {}
         self._gate_tokenizer: object | None = None
         self._cache_config_hash: str | None = None
+        self._selection_summary: dict[str, Any] | None = None
 
     def parse_statement_units(self, source_manifest, config):
         if not isinstance(source_manifest, Mapping):
@@ -265,7 +308,32 @@ class LocalHFProductionAdapter:
         cache_path = self._training_cache_path(config.config_hash)
         cache_path.unlink(missing_ok=True)
         self._cache_config_hash = config.config_hash
-        for parsed in parsed_units:
+        max_groups = config.max_groups
+        selected_starts = _select_source_stratified_starts(
+            parsed_units,
+            max_groups=max_groups,
+        )
+        split_assignments = _balanced_split_assignments(
+            tuple(
+                _record_split_group_id(selected.parsed.record)
+                for selected in selected_starts
+            )
+        )
+        self._selection_summary = _source_stratified_selection_summary(
+            parsed_units,
+            selected_starts,
+            max_groups=max_groups,
+        )
+        starts_by_source: dict[str, list[str]] = defaultdict(list)
+        parsed_by_source: dict[str, _ParsedCatalogSource] = {}
+        for selected in selected_starts:
+            source_id = selected.parsed.record.source_id
+            parsed_by_source[source_id] = selected.parsed
+            starts_by_source[source_id].append(selected.start_unit_id)
+        for source_id in dict.fromkeys(
+            selected.parsed.record.source_id for selected in selected_starts
+        ):
+            parsed = parsed_by_source[source_id]
             record = parsed.record
             start_by_id = {unit.unit_id: unit for unit in parsed.units}
             groups = builder.build(
@@ -280,6 +348,7 @@ class LocalHFProductionAdapter:
                     parser_contract_version=config.parser_contract,
                 ),
                 source_text=record.code,
+                selected_start_unit_ids=tuple(starts_by_source[source_id]),
             )
             for built in groups:
                 candidates = built.candidates_by_length
@@ -292,7 +361,7 @@ class LocalHFProductionAdapter:
                     for index, unit in enumerate(parsed.units)
                     if unit.unit_id == training_group.window_start_unit_id
                 )
-                split = _split_for(built.split_group_id)
+                split = split_assignments[built.split_group_id]
                 self._parent_by_group[built.group_id] = training_group.parent_descriptor
                 self._training_group_by_group[built.group_id] = training_group
                 self._unit_metadata_by_group[built.group_id] = {
@@ -321,10 +390,9 @@ class LocalHFProductionAdapter:
                     suitable_target=False,
                     close_target=False,
                     window_lengths=(1, 2, 3),
-                    statement_family=start.node_type,
+                    statement_family=_statement_family(start.text),
                     r1_success_rate=0.0,
                     r3_success_rate=0.0,
-                    r6_success_rate=0.0,
                     holdout_success_rate=0.0,
                     repository_id=record.repository_id or record.task_id or record.function_id or record.source_id,
                     task_id=record.task_id or record.function_id or record.source_id,
@@ -336,17 +404,22 @@ class LocalHFProductionAdapter:
                     structural_invalid_rate=0.0,
                     numeric_instability_rate=0.0,
                     first_hit_candidate_position=None,
-                    candidate_indices_by_window_length={length: tuple(range(7)) for length in (1, 2, 3)},
+                    candidate_indices_by_window_length={length: tuple(range(4)) for length in (1, 2, 3)},
                     observed_training_key_ids=(),
                     observed_holdout_key_ids=(),
                     candidate_observations_by_length=candidates,
-                    probe_results_by_length={str(length): tuple({} for _ in range(7)) for length in (1, 2, 3)},
+                    probe_results_by_length={str(length): tuple({} for _ in range(4)) for length in (1, 2, 3)},
                     row={
                         "schema_version": "wfcllm-gate-data/v1",
                         "group_id": built.group_id,
                         "split": split,
                     },
                 )
+
+    def gate_data_selection_summary(self) -> dict[str, Any]:
+        if self._selection_summary is None:
+            raise ValueError("gate-data selection has not been computed")
+        return deepcopy(self._selection_summary)
 
     def run_multi_key_lsh_probe(self, groups, *, training_keys, holdout_keys, config):
         runtime = self._semantic_runtime
@@ -413,7 +486,7 @@ class LocalHFProductionAdapter:
                 results_by_length[str(length)] = tuple(candidate_results)
 
             selected = build_gate_labels(observations_by_length["3"], training_key_count=32)
-            r1, r3, r6 = (selected.budgets[budget].success_rate for budget in (1, 3, 6))
+            r1, r3 = (selected.budgets[budget].success_rate for budget in (1, 3))
             holdout_hits = sum(
                 any(
                     results_by_length["3"][candidate][key_id].is_reliable_hit(configured_margin=0.0)
@@ -422,7 +495,7 @@ class LocalHFProductionAdapter:
                 for key_id in holdout_keys.key_ids
             )
             first_hits = [
-                value for value in selected.budgets[6].first_hit_by_key_id.values() if value is not None
+                value for value in selected.budgets[3].first_hit_by_key_id.values() if value is not None
             ]
             result = replace(
                 group,
@@ -430,10 +503,9 @@ class LocalHFProductionAdapter:
                 close_target=selected.close_target,
                 r1_success_rate=r1,
                 r3_success_rate=r3,
-                r6_success_rate=r6,
                 holdout_success_rate=holdout_hits / len(holdout_keys.key_ids),
-                structural_invalid_rate=1.0 - selected.budgets[6].structural_valid_rate,
-                numeric_instability_rate=selected.budgets[6].unstable_rate,
+                structural_invalid_rate=1.0 - selected.budgets[3].structural_valid_rate,
+                numeric_instability_rate=selected.budgets[3].unstable_rate,
                 first_hit_candidate_position=min(first_hits) if first_hits else None,
                 observed_training_key_ids=tuple(training_keys.key_ids),
                 observed_holdout_key_ids=tuple(holdout_keys.key_ids),
@@ -464,6 +536,7 @@ class LocalHFProductionAdapter:
         from transformers import AutoTokenizer
 
         from wfcllm.gate.config import GateTrainConfig
+        from wfcllm.gate.losses import GateLoss, GateLossWeights
         from wfcllm.gate.model import GateModel
         from wfcllm.gate.trainer import GateTrainer, GateTrainerConfig, seed_gate_training
 
@@ -471,13 +544,10 @@ class LocalHFProductionAdapter:
         cache_rows = self._load_training_cache(config.config_hash)
         _validate_cache_against_data(cache_rows, data_jsonl.parent)
         examples = tuple(_gate_example_from_cache(row) for row in cache_rows)
-        training = tuple(
-            example for example, row in zip(examples, cache_rows, strict=True)
-            if row["split"] == "train"
-        )
-        validation = tuple(
-            example for example, row in zip(examples, cache_rows, strict=True)
-            if row["split"] == "validation"
+        training, validation, validation_role = _partition_training_examples(
+            examples,
+            cache_rows,
+            fast_experimental=config.fast_experimental,
         )
         if not training or not validation:
             raise ValueError("gate training requires non-empty train and validation examples")
@@ -486,7 +556,10 @@ class LocalHFProductionAdapter:
             str(self.options.gate_base_model_path), local_files_only=True
         )
         model = GateModel.from_local_pretrained(
-            GateTrainConfig(base_model_path=self.options.gate_base_model_path)
+            GateTrainConfig(
+                max_tokens=self.options.gate_max_tokens,
+                base_model_path=self.options.gate_base_model_path,
+            )
         )
         work = output_dir.parent / "_training_work"
         if work.exists():
@@ -502,6 +575,16 @@ class LocalHFProductionAdapter:
                 batch_size=self.options.gate_batch_size,
                 learning_rate=float(self.options.gate_learning_rate),
                 early_stopping_patience=self.options.gate_early_stopping_patience,
+                max_tokens=self.options.gate_max_tokens,
+                enable_consistency=False,
+                save_checkpoints=not config.fast_experimental,
+            ),
+            loss_fn=GateLoss(
+                GateLossWeights(
+                    context_consistency=0.0,
+                    batch_consistency=0.0,
+                    quantization_consistency=0.0,
+                )
             ),
             device=self.options.gate_device,
         )
@@ -510,10 +593,18 @@ class LocalHFProductionAdapter:
             validation,
             resume_from=self.options.gate_resume_checkpoint,
         )
-        checkpoint = torch.load(
-            work / "checkpoints" / "best.pt", map_location="cpu", weights_only=True
-        )
-        state = checkpoint.get("model_state")
+        if config.fast_experimental:
+            state = {
+                name: tensor.detach().cpu()
+                for name, tensor in model.state_dict().items()
+            }
+        else:
+            checkpoint = torch.load(
+                work / "checkpoints" / "best.pt",
+                map_location="cpu",
+                weights_only=True,
+            )
+            state = checkpoint.get("model_state")
         if not isinstance(state, Mapping) or not state:
             raise ValueError("best gate checkpoint does not contain model state")
         output_dir.mkdir(parents=True, exist_ok=False)
@@ -526,6 +617,7 @@ class LocalHFProductionAdapter:
             "epochs_completed": summary["epochs_completed"],
             "training_example_count": len(training),
             "validation_example_count": len(validation),
+            "validation_split_role": validation_role,
             "candidate_sha256": _sha256_file(output_dir / "gate_float.pt"),
         }
 
@@ -557,12 +649,12 @@ class LocalHFProductionAdapter:
         fit = tuple(
             _validation_example_from_cache(row, "threshold_fit")
             for row in rows
-            if row["group_id"] in fit_ids and row["context_length"] == 3 and row["budget"] == 3
+            if row["group_id"] in fit_ids and row["budget"] == 3
         )
         agreement = tuple(
             _validation_example_from_cache(row, "agreement")
             for row in rows
-            if row["group_id"] in agreement_ids and row["context_length"] == 3 and row["budget"] == 3
+            if row["group_id"] in agreement_ids and row["budget"] == 3
         )
         if not fit or not agreement:
             raise ValueError("gate validation cache does not cover both holdout subsets")
@@ -647,7 +739,7 @@ class LocalHFProductionAdapter:
                 current_unit_count=length,
                 current_token_count=token_count,
             )
-            for budget in (1, 3, 6):
+            for budget in (3,):
                 rows.append(
                     {
                         "contract_version": "wfcllm-local-gate-cache/v1",
@@ -704,7 +796,16 @@ class LocalHFProductionAdapter:
 class HFCausalRewriteBackend:
     """Key-blind whole-window generation backed by one local HF model."""
 
-    def __init__(self, *, model: object, tokenizer: object, device: str, max_new_tokens: int) -> None:
+    def __init__(
+        self,
+        *,
+        model: object,
+        tokenizer: object,
+        device: str,
+        max_new_tokens: int,
+        temperature: float = 0.8,
+        top_p: float = 0.95,
+    ) -> None:
         if not callable(getattr(model, "generate", None)):
             raise ValueError("rewrite model must expose generate")
         if not callable(tokenizer) or not callable(getattr(tokenizer, "decode", None)):
@@ -713,10 +814,24 @@ class HFCausalRewriteBackend:
             raise ValueError("rewrite device must be non-empty")
         if type(max_new_tokens) is not int or max_new_tokens <= 0:
             raise ValueError("rewrite max_new_tokens must be positive")
+        if (
+            isinstance(temperature, bool)
+            or not isinstance(temperature, (int, float))
+            or temperature <= 0
+        ):
+            raise ValueError("rewrite temperature must be positive")
+        if (
+            isinstance(top_p, bool)
+            or not isinstance(top_p, (int, float))
+            or not 0 < top_p <= 1
+        ):
+            raise ValueError("rewrite top_p must be in (0, 1]")
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
         self.max_new_tokens = max_new_tokens
+        self.temperature = float(temperature)
+        self.top_p = float(top_p)
 
     def generate_window(
         self,
@@ -744,15 +859,13 @@ class HFCausalRewriteBackend:
             f"local-hf-v1\0{candidate_index}\0{prompt}\0{completed_prefix}\0{original_window}"
         ).encode("utf-8")
         seed = int.from_bytes(hashlib.sha256(seed_payload).digest()[:8], "big")
-        generator_device = self.device if self.device.startswith("cuda") else "cpu"
-        generator = torch.Generator(device=generator_device).manual_seed(seed)
+        torch.manual_seed(seed)
         generated = self.model.generate(
             **inputs,
             do_sample=True,
-            temperature=0.8,
-            top_p=0.95,
+            temperature=self.temperature,
+            top_p=self.top_p,
             max_new_tokens=self.max_new_tokens,
-            generator=generator,
         )
         if not isinstance(generated, torch.Tensor) or generated.ndim != 2 or generated.shape[0] != 1:
             raise ValueError("rewrite model must return one token sequence")
@@ -771,8 +884,88 @@ class HFCausalRewriteBackend:
             token_ids=ids,
             text=text,
             generation_seed_id=f"local-hf-v1:{seed:016x}",
-            rewrite_config_id=f"local-hf-v1:max-new-tokens={self.max_new_tokens}",
+            rewrite_config_id=(
+                f"local-hf-v1:max-new-tokens={self.max_new_tokens}:"
+                f"temperature={self.temperature}:top-p={self.top_p}"
+            ),
         )
+
+    def generate_windows(
+        self,
+        *,
+        prompt: str,
+        completed_prefix: str,
+        original_window: str,
+        candidate_indices: tuple[int, ...],
+        max_units: int,
+    ) -> tuple[RewriteGeneration, ...]:
+        """Sample one contiguous candidate trajectory in one generate call."""
+
+        import torch
+
+        if not candidate_indices or candidate_indices != tuple(
+            range(1, len(candidate_indices) + 1)
+        ):
+            raise ValueError("batched candidate indices must be contiguous from 1")
+        instruction = (
+            "Rewrite the Python window below using at most "
+            f"{max_units} complete statements. Return Python code only.\n"
+            f"Task prompt:\n{prompt}\nCompleted prefix:\n{completed_prefix}\n"
+            f"Original window:\n{original_window}\nRewritten window:\n"
+        )
+        encoded = self.tokenizer(instruction, return_tensors="pt", truncation=True)
+        inputs = {
+            name: value.to(self.device) if hasattr(value, "to") else value
+            for name, value in dict(encoded).items()
+        }
+        seed_payload = (
+            f"local-hf-v1-batch\0{prompt}\0{completed_prefix}\0{original_window}"
+        ).encode("utf-8")
+        seed = int.from_bytes(hashlib.sha256(seed_payload).digest()[:8], "big")
+        torch.manual_seed(seed)
+        generated = self.model.generate(
+            **inputs,
+            do_sample=True,
+            temperature=self.temperature,
+            top_p=self.top_p,
+            max_new_tokens=self.max_new_tokens,
+            num_return_sequences=len(candidate_indices),
+        )
+        if (
+            not isinstance(generated, torch.Tensor)
+            or generated.ndim != 2
+            or generated.shape[0] != len(candidate_indices)
+        ):
+            raise ValueError("rewrite model must return one sequence per candidate")
+        is_encoder_decoder = bool(
+            getattr(getattr(self.model, "config", None), "is_encoder_decoder", False)
+        )
+        prompt_length = inputs["input_ids"].shape[1]
+        results: list[RewriteGeneration] = []
+        for candidate_index, token_ids in zip(
+            candidate_indices,
+            generated,
+            strict=True,
+        ):
+            if not is_encoder_decoder:
+                token_ids = token_ids[prompt_length:]
+            ids = tuple(int(value) for value in token_ids.detach().cpu().tolist())
+            text = self.tokenizer.decode(ids, skip_special_tokens=True)
+            if not isinstance(text, str):
+                raise ValueError("rewrite tokenizer decode must return text")
+            results.append(
+                RewriteGeneration(
+                    token_ids=ids,
+                    text=text,
+                    generation_seed_id=f"local-hf-v1-batch:{seed:016x}:{candidate_index}",
+                    rewrite_config_id=(
+                        f"local-hf-v1-batch:count={len(candidate_indices)}:"
+                        f"max-new-tokens={self.max_new_tokens}:"
+                        f"temperature={self.temperature}:top-p={self.top_p}"
+                    ),
+                )
+            )
+        return tuple(results)
 
 
 class LocalSemanticRuntime:
@@ -996,6 +1189,209 @@ class LocalRuntimeGateBundle:
         return _token_count(self._tokenizer, text)
 
 
+@dataclass(frozen=True)
+class _ExperimentalGateManifest:
+    window_contract_version: str
+    gate_input_contract_version: str
+    tokenizer_sha256: str
+    close_low_threshold: float
+    close_high_threshold: float
+    suitable_accept_threshold: float
+    max_tokens: int
+    max_units: int
+    runtime_profile: str
+
+
+_UNVALIDATED_RUNTIME_SCHEMA = "wfcllm-unvalidated-runtime-thresholds/v1"
+_UNVALIDATED_RUNTIME_FIELDS = {
+    "schema_version",
+    "runtime_profile",
+    "close_low_threshold",
+    "close_high_threshold",
+    "suitable_accept_threshold",
+    "max_units",
+}
+
+
+def _load_unvalidated_runtime_manifest(
+    root: Path,
+    *,
+    tokenizer_sha256: str,
+    max_tokens: int,
+) -> tuple[_ExperimentalGateManifest, str | None]:
+    """Load an optional runtime profile whose bytes are bound by the bundle hash."""
+
+    defaults = _ExperimentalGateManifest(
+        window_contract_version=WINDOW_CONTRACT_VERSION,
+        gate_input_contract_version=GATE_INPUT_CONTRACT_VERSION,
+        tokenizer_sha256=tokenizer_sha256,
+        close_low_threshold=0.45,
+        close_high_threshold=0.55,
+        suitable_accept_threshold=0.5,
+        max_tokens=max_tokens,
+        max_units=3,
+        runtime_profile="learned-gate-default/v1",
+    )
+    path = root / "runtime_thresholds.json"
+    if not path.is_file():
+        return defaults, None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("unvalidated runtime threshold artifact is invalid") from exc
+    if (
+        not isinstance(payload, Mapping)
+        or set(payload) != _UNVALIDATED_RUNTIME_FIELDS
+        or payload.get("schema_version") != _UNVALIDATED_RUNTIME_SCHEMA
+    ):
+        raise ValueError("unvalidated runtime threshold schema mismatch")
+    profile = payload.get("runtime_profile")
+    if not isinstance(profile, str) or not profile.strip():
+        raise ValueError("unvalidated runtime profile must be non-empty")
+    thresholds = GateThresholds(
+        close_low=payload.get("close_low_threshold"),
+        close_high=payload.get("close_high_threshold"),
+        suitable_accept=payload.get("suitable_accept_threshold"),
+        max_units=payload.get("max_units"),
+        max_input_tokens=max_tokens,
+    )
+    return (
+        replace(
+            defaults,
+            close_low_threshold=thresholds.close_low,
+            close_high_threshold=thresholds.close_high,
+            suitable_accept_threshold=thresholds.suitable_accept,
+            max_units=thresholds.max_units,
+            runtime_profile=profile,
+        ),
+        _sha256_file(path),
+    )
+
+
+class _ExperimentalFloatGatePredictor:
+    def __init__(self, *, model: object, tokenizer: object, max_tokens: int) -> None:
+        self.model = model
+        self.tokenizer = tokenizer
+        self.max_tokens = max_tokens
+
+    def predict(self, serialized_input: str) -> GateScores:
+        import torch
+
+        if not isinstance(serialized_input, str) or not serialized_input:
+            raise ValueError("serialized_input must be a non-empty string")
+        encoded = self.tokenizer(
+            serialized_input,
+            truncation=True,
+            max_length=self.max_tokens,
+            return_tensors="pt",
+        )
+        with torch.inference_mode():
+            output = self.model(
+                input_ids=encoded["input_ids"].cpu(),
+                attention_mask=encoded["attention_mask"].cpu(),
+            )
+        close = float(torch.sigmoid(output.close_logits)[0].cpu())
+        suitable = float(torch.sigmoid(output.suitable_logits)[0].cpu())
+        return GateScores(
+            close_probability=close,
+            suitable_probability=suitable,
+            stable=True,
+            precision_delta=0.0,
+            decision_agreement=True,
+        )
+
+
+class LocalExperimentalRuntimeGateBundle:
+    """Float-only diagnostic gate candidate; never a formal gate bundle."""
+
+    experimental_only = True
+
+    def __init__(
+        self,
+        *,
+        root: Path,
+        base_model_path: Path,
+        bundle_sha256: str,
+        max_tokens: int = 256,
+    ) -> None:
+        import torch
+        from transformers import AutoTokenizer
+
+        from wfcllm.gate.bundle import sha256_directory
+        from wfcllm.gate.config import GateTrainConfig
+        from wfcllm.gate.model import GateModel
+
+        float_path = root / "gate_float.pt"
+        tokenizer_path = root / "tokenizer"
+        if not float_path.is_file() or not tokenizer_path.is_dir():
+            raise ValueError("experimental gate candidate is incomplete")
+        state = torch.load(float_path, map_location="cpu", weights_only=True)
+        model = GateModel.from_local_pretrained(
+            GateTrainConfig(max_tokens=max_tokens, base_model_path=base_model_path)
+        ).cpu().eval()
+        model.load_state_dict(state, strict=True)
+        tokenizer = AutoTokenizer.from_pretrained(
+            str(tokenizer_path), local_files_only=True
+        )
+        tokenizer_hash = sha256_directory(tokenizer_path)
+        self.root = root
+        self.bundle_sha256 = bundle_sha256
+        self.tokenizer_sha256 = tokenizer_hash
+        self.validation_summary = {
+            "validated": False,
+            "experimental_only": True,
+            "diagnostic_only": True,
+            "not_official_method": True,
+        }
+        self.manifest = _ExperimentalGateManifest(
+            window_contract_version=WINDOW_CONTRACT_VERSION,
+            gate_input_contract_version=GATE_INPUT_CONTRACT_VERSION,
+            tokenizer_sha256=tokenizer_hash,
+            close_low_threshold=0.45,
+            close_high_threshold=0.55,
+            suitable_accept_threshold=0.5,
+            max_tokens=max_tokens,
+            max_units=3,
+            runtime_profile="learned-gate-default/v1",
+        )
+        self.runtime_thresholds_sha256 = None
+        self.stable_gate_predictor = _ExperimentalFloatGatePredictor(
+            model=model,
+            tokenizer=tokenizer,
+            max_tokens=max_tokens,
+        )
+        self._tokenizer = tokenizer
+
+    def tokenizer_counter(self, text: str) -> int:
+        return _token_count(self._tokenizer, text)
+
+
+class LocalUnvalidatedRuntimeGateBundle(LocalExperimentalRuntimeGateBundle):
+    """Formal float candidate used when validation is explicitly out of scope."""
+
+    experimental_only = False
+    unvalidated_candidate = True
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.manifest, self.runtime_thresholds_sha256 = (
+            _load_unvalidated_runtime_manifest(
+                self.root,
+                tokenizer_sha256=self.tokenizer_sha256,
+                max_tokens=self.manifest.max_tokens,
+            )
+        )
+        self.validation_summary = {
+            "validated": False,
+            "validation_skipped_by_protocol": True,
+            "unvalidated_candidate": True,
+            "diagnostic_only": False,
+            "not_official_method": False,
+            "runtime_profile": self.manifest.runtime_profile,
+            "runtime_thresholds_sha256": self.runtime_thresholds_sha256,
+        }
+
+
 class LocalHFProgramGenerator:
     """One local HF model shared by base generation and window rewrites."""
 
@@ -1009,6 +1405,9 @@ class LocalHFProgramGenerator:
         top_p: float,
         seed: int,
         rewrite_max_new_tokens: int,
+        rewrite_generation_attempts: int = 3,
+        rewrite_temperature: float = 0.8,
+        rewrite_top_p: float = 0.95,
         load_in_4bit: bool = False,
         torch_dtype: str = "bf16",
     ) -> None:
@@ -1066,7 +1465,10 @@ class LocalHFProgramGenerator:
                 tokenizer=self.tokenizer,
                 device=device,
                 max_new_tokens=rewrite_max_new_tokens,
-            )
+                temperature=rewrite_temperature,
+                top_p=rewrite_top_p,
+            ),
+            generation_attempts=rewrite_generation_attempts,
         )
 
     def generate_program(self, *, prompt: str, sample_id: str) -> str:
@@ -1078,17 +1480,13 @@ class LocalHFProgramGenerator:
             for name, value in dict(encoded).items()
         }
         digest = hashlib.sha256(f"{self.seed}\0{sample_id}\0{prompt}".encode("utf-8")).digest()
-        generator_device = self.device if self.device.startswith("cuda") else "cpu"
-        generator = torch.Generator(device=generator_device).manual_seed(
-            int.from_bytes(digest[:8], "big")
-        )
+        torch.manual_seed(int.from_bytes(digest[:8], "big"))
         generated = self.model.generate(
             **inputs,
             do_sample=self.temperature > 0,
             temperature=max(self.temperature, 1e-6),
             top_p=self.top_p,
             max_new_tokens=self.max_new_tokens,
-            generator=generator,
         )
         token_ids = generated[0]
         if not self.is_encoder_decoder:
@@ -1099,31 +1497,54 @@ class LocalHFProgramGenerator:
         return completion if self.is_encoder_decoder else prompt + completion
 
 
+class KeyedTextRegionWindowScorer:
+    """One keyed text region for structurally valid statement rewrites."""
+
+    def __init__(self, deployment_key: bytes) -> None:
+        if not isinstance(deployment_key, bytes) or not deployment_key:
+            raise ValueError("deployment_key must be non-empty bytes")
+        self._key = deployment_key
+
+    def score(self, *, window_text: str, parent_descriptor: str):
+        from wfcllm.semantic.window_lsh import SemanticWindowEvidence
+
+        if not isinstance(window_text, str) or not window_text.strip():
+            raise ValueError("window_text must be non-empty")
+        if not isinstance(parent_descriptor, str) or not parent_descriptor:
+            raise ValueError("parent_descriptor must be non-empty")
+        normalized = normalize_unit_text(window_text)
+        payload = (
+            b"wfcllm-keyed-text-region/v1\0"
+            + parent_descriptor.encode("utf-8")
+            + b"\0"
+            + normalized.encode("utf-8")
+        )
+        digest = hmac.new(self._key, payload, hashlib.sha256).digest()
+        bit = int(digest[0] & 1)
+        region_digest = hmac.new(
+            self._key,
+            b"wfcllm-keyed-text-region-id/v1\0" + parent_descriptor.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return SemanticWindowEvidence(
+            signature=(bit,),
+            allowed_region_id=(
+                "semantic-window-region/v1:hmac-sha256:" + region_digest
+            ),
+            hit=bit == 0,
+            margin=1.0,
+            stable=True,
+        )
+
+
 def build_local_semantic_window_scorer(
     options: LocalHFGateRuntimeOptions, deployment_key: bytes
 ):
-    from wfcllm.semantic.lsh import load_semantic_lsh_components
+    if options.semantic_evidence_rule == "keyed_text_region":
+        return KeyedTextRegionWindowScorer(deployment_key)
     from wfcllm.semantic.window_lsh import SemanticWindowScorer
 
-    components = load_semantic_lsh_components(
-        encoder_model_path=str(options.semantic_encoder_model_path),
-        encoder_checkpoint_path=(
-            None
-            if options.semantic_encoder_checkpoint_path is None
-            else str(options.semantic_encoder_checkpoint_path)
-        ),
-        embed_dim=options.semantic_embed_dim,
-        device=options.model_device,
-        use_lora=False,
-        use_bf16=False,
-        secret_key="wfcllm-public-window-plane/v1",
-        lsh_d=options.lsh_dimension,
-        whitening_path=(
-            None
-            if options.semantic_whitening_path is None
-            else str(options.semantic_whitening_path)
-        ),
-    )
+    components = _load_public_semantic_components(options)
     return SemanticWindowScorer(
         verifier=components.verifier,
         keying=WatermarkKeying(deployment_key.hex(), options.lsh_dimension),
@@ -1134,7 +1555,15 @@ def build_local_semantic_window_scorer(
 
 
 def local_semantic_runtime_hash(options: LocalHFGateRuntimeOptions) -> str:
-    digest = hashlib.sha256(b"wfcllm-local-semantic-runtime/v1\0")
+    digest = hashlib.sha256(
+        b"wfcllm-local-semantic-runtime/v2\0"
+        + _PUBLIC_SEMANTIC_RUNTIME_VERSION.encode("utf-8")
+        + _PUBLIC_SEMANTIC_INITIALIZATION_SEED.to_bytes(8, "big")
+        + options.semantic_embed_dim.to_bytes(4, "big")
+        + options.lsh_dimension.to_bytes(4, "big")
+        + options.semantic_evidence_rule.encode("utf-8")
+        + b"\0"
+    )
     for path in (
         options.semantic_encoder_model_path,
         options.semantic_encoder_checkpoint_path,
@@ -1193,14 +1622,222 @@ def _validate_cache_against_data(
             or row.get("suitable_target") != index.get("suitable_target")
         ):
             raise ValueError("local gate cache label contradicts formal gate data")
-    if any(count != 9 for count in counts.values()):
-        raise ValueError("local gate cache must contain nine variants per group")
+    if any(count != 3 for count in counts.values()):
+        raise ValueError("local gate cache must contain three variants per group")
+
+
+def _partition_training_examples(
+    examples: tuple[Any, ...],
+    cache_rows: list[dict[str, Any]],
+    *,
+    fast_experimental: bool,
+) -> tuple[tuple[Any, ...], tuple[Any, ...], str]:
+    if len(examples) != len(cache_rows):
+        raise ValueError("gate examples and cache rows must have equal length")
+    paired = tuple(zip(examples, cache_rows, strict=True))
+    training = tuple(
+        example for example, row in paired if row.get("split") == "train"
+    )
+    validation = tuple(
+        example for example, row in paired if row.get("split") == "validation"
+    )
+    validation_role = "validation"
+    if fast_experimental and not validation:
+        validation = tuple(
+            example for example, row in paired if row.get("split") == "test"
+        )
+        validation_role = "test_fallback"
+    return training, validation, validation_role
 
 
 @dataclass(frozen=True)
 class _ParsedCatalogSource:
     record: GateSourceCatalogRecord
     units: tuple[Any, ...]
+
+
+@dataclass(frozen=True)
+class _CatalogWindowStart:
+    parsed: _ParsedCatalogSource
+    start_unit_id: str
+
+
+def _select_source_stratified_starts(
+    parsed_sources: Sequence[_ParsedCatalogSource],
+    *,
+    max_groups: int | None,
+) -> tuple[_CatalogWindowStart, ...]:
+    """Select legal W1/W2/W3 starts with deterministic source/repo coverage."""
+
+    if not isinstance(parsed_sources, Sequence) or any(
+        not isinstance(parsed, _ParsedCatalogSource) for parsed in parsed_sources
+    ):
+        raise ValueError("parsed source catalog has an invalid runtime shape")
+    if max_groups is not None and (type(max_groups) is not int or max_groups <= 0):
+        raise ValueError("max_groups must be a positive integer or None")
+
+    source_queues: list[tuple[_ParsedCatalogSource, tuple[str, ...]]] = []
+    for parsed in parsed_sources:
+        legal = complete_w1_w2_w3_start_unit_ids(parsed.units)
+        if not legal:
+            continue
+        ordered = tuple(
+            sorted(
+                legal,
+                key=lambda unit_id: _selection_order_key(
+                    "window", parsed.record.source_id, unit_id
+                ),
+            )
+        )
+        source_queues.append((parsed, ordered))
+
+    by_repository: dict[
+        str, list[tuple[_ParsedCatalogSource, tuple[str, ...]]]
+    ] = defaultdict(list)
+    for parsed, starts in source_queues:
+        record = parsed.record
+        repository = (
+            record.repository_id
+            or record.task_id
+            or record.function_id
+            or record.source_id
+        )
+        by_repository[repository].append((parsed, starts))
+    for repository, sources in by_repository.items():
+        sources.sort(
+            key=lambda item: _selection_order_key(
+                "source", repository, item[0].record.source_id
+            )
+        )
+
+    repositories = sorted(
+        by_repository,
+        key=lambda repository: _selection_order_key("repository", repository),
+    )
+    balanced_sources: list[tuple[_ParsedCatalogSource, tuple[str, ...]]] = []
+    max_sources_per_repository = max(
+        (len(by_repository[repository]) for repository in repositories),
+        default=0,
+    )
+    for source_offset in range(max_sources_per_repository):
+        for repository in repositories:
+            sources = by_repository[repository]
+            if source_offset < len(sources):
+                balanced_sources.append(sources[source_offset])
+
+    limit = sum(len(starts) for _parsed, starts in balanced_sources)
+    if max_groups is not None:
+        limit = min(limit, max_groups)
+    selected: list[_CatalogWindowStart] = []
+    max_starts_per_source = max(
+        (len(starts) for _parsed, starts in balanced_sources),
+        default=0,
+    )
+    for start_offset in range(max_starts_per_source):
+        for parsed, starts in balanced_sources:
+            if start_offset < len(starts):
+                selected.append(_CatalogWindowStart(parsed, starts[start_offset]))
+                if len(selected) == limit:
+                    return tuple(selected)
+    return tuple(selected)
+
+
+def _selection_order_key(*parts: str) -> bytes:
+    digest = hashlib.sha256(b"wfcllm-source-stratified-window-selection/v2\0")
+    for part in parts:
+        digest.update(part.encode("utf-8") + b"\0")
+    return digest.digest()
+
+
+def _source_stratified_selection_summary(
+    parsed_sources: Sequence[_ParsedCatalogSource],
+    selected: Sequence[_CatalogWindowStart],
+    *,
+    max_groups: int | None,
+) -> dict[str, Any]:
+    candidate_sources: set[str] = set()
+    candidate_repositories: set[str] = set()
+    candidate_window_count = 0
+    for parsed in parsed_sources:
+        count = len(complete_w1_w2_w3_start_unit_ids(parsed.units))
+        if not count:
+            continue
+        candidate_window_count += count
+        record = parsed.record
+        candidate_sources.add(record.source_id)
+        candidate_repositories.add(
+            record.repository_id
+            or record.task_id
+            or record.function_id
+            or record.source_id
+        )
+
+    selected_sources = {item.parsed.record.source_id for item in selected}
+    selected_repositories = {
+        item.parsed.record.repository_id
+        or item.parsed.record.task_id
+        or item.parsed.record.function_id
+        or item.parsed.record.source_id
+        for item in selected
+    }
+    selected_tasks = {
+        item.parsed.record.task_id
+        for item in selected
+        if item.parsed.record.task_id is not None
+    }
+    selected_functions = {
+        item.parsed.record.function_id
+        for item in selected
+        if item.parsed.record.function_id is not None
+    }
+    per_source = Counter(item.parsed.record.source_id for item in selected)
+    statement_families: Counter[str] = Counter()
+    selection_records: list[dict[str, str]] = []
+    for item in selected:
+        unit_by_id = {unit.unit_id: unit for unit in item.parsed.units}
+        statement_families[
+            _statement_family(unit_by_id[item.start_unit_id].text)
+        ] += 1
+        record = item.parsed.record
+        selection_records.append(
+            {
+                "source_id": record.source_id,
+                "repository_id": record.repository_id or "",
+                "task_id": record.task_id or "",
+                "function_id": record.function_id or "",
+                "start_unit_id": item.start_unit_id,
+            }
+        )
+    algorithm_version = "wfcllm-source-stratified-window-selection/v2"
+    selection_sha256 = hashlib.sha256(
+        json.dumps(
+            selection_records,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    selection_config_sha256 = _canonical_hash(
+        {
+            "algorithm_version": algorithm_version,
+            "max_groups": max_groups,
+        }
+    )
+    return {
+        "algorithm_version": algorithm_version,
+        "selection_config_sha256": selection_config_sha256,
+        "selection_sha256": selection_sha256,
+        "candidate_window_count": candidate_window_count,
+        "candidate_source_count": len(candidate_sources),
+        "candidate_repository_count": len(candidate_repositories),
+        "selected_group_count": len(selected),
+        "selected_source_count": len(selected_sources),
+        "selected_repository_count": len(selected_repositories),
+        "selected_task_count": len(selected_tasks),
+        "selected_function_count": len(selected_functions),
+        "max_selected_per_source": max(per_source.values(), default=0),
+        "statement_family_counts": dict(sorted(statement_families.items())),
+    }
 
 
 class _StructuralOnlyProbe:
@@ -1211,6 +1848,91 @@ class _StructuralOnlyProbe:
             key_id: LshProbeResult((0, 0, 0, 0), 0.0, False, False, False, False)
             for key_id in key_ids
         }
+
+
+def _statement_family(text: str) -> str:
+    """Classify a public Python statement without consulting labels or keys."""
+
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("statement text must be a non-empty string")
+    try:
+        statement = ast.parse(textwrap.dedent(text).strip()).body[0]
+    except (IndentationError, SyntaxError, IndexError):
+        return "other"
+    if isinstance(statement, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+        value = getattr(statement, "value", None)
+        if isinstance(value, ast.Await):
+            value = value.value
+        if isinstance(value, ast.Call):
+            return "assignment_call"
+        if isinstance(value, (ast.Name, ast.Attribute, ast.Subscript)):
+            return "assignment_reference"
+        if isinstance(
+            value,
+            (ast.Constant, ast.List, ast.Tuple, ast.Set, ast.Dict),
+        ):
+            return "assignment_literal"
+        return "assignment_expression"
+    if isinstance(statement, ast.Expr):
+        value = statement.value
+        if isinstance(value, ast.Await):
+            value = value.value
+        if isinstance(value, ast.Call):
+            return "call"
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            return "docstring"
+        return "expression"
+    if isinstance(statement, (ast.If, ast.Match)):
+        return "branch"
+    if isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
+        return "loop"
+    if isinstance(statement, ast.Return):
+        return "return"
+    if isinstance(statement, (ast.Import, ast.ImportFrom)):
+        return "import"
+    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return "definition"
+    if isinstance(statement, ast.Raise):
+        return "raise"
+    return "control"
+
+
+def _record_split_group_id(record: GateSourceCatalogRecord) -> str:
+    if record.repository_id is not None:
+        return "repository:" + canonical_gate_source_identity(record.repository_id)
+    if record.task_id is not None:
+        return "task:" + canonical_gate_source_identity(record.task_id)
+    if record.function_id is not None:
+        return "function:" + canonical_gate_source_identity(record.function_id)
+    raise ValueError("source catalog record has no split identity")
+
+
+def _balanced_split_assignments(group_ids: Sequence[str]) -> dict[str, str]:
+    """Assign whole source groups with deterministic 60/20/20 coverage."""
+
+    unique = set(group_ids)
+    if any(not isinstance(group_id, str) or not group_id for group_id in unique):
+        raise ValueError("split group IDs must be non-empty strings")
+    ordered = sorted(
+        unique,
+        key=lambda group_id: _selection_order_key("split", group_id),
+    )
+    if len(ordered) < 3:
+        return {group_id: "train" for group_id in ordered}
+    holdout_count = max(1, (len(ordered) + 4) // 5)
+    holdout_count = min(holdout_count, (len(ordered) - 1) // 2)
+    validation = set(ordered[:holdout_count])
+    test = set(ordered[holdout_count : 2 * holdout_count])
+    return {
+        group_id: (
+            "validation"
+            if group_id in validation
+            else "test"
+            if group_id in test
+            else "train"
+        )
+        for group_id in ordered
+    }
 
 
 def _split_for(group_id: str) -> str:
@@ -1242,31 +1964,45 @@ def _load_causal_rewriter(options: LocalHFGateRuntimeOptions):
             tokenizer=tokenizer,
             device=options.model_device,
             max_new_tokens=options.rewrite_max_new_tokens,
-        )
+            temperature=options.rewrite_temperature,
+            top_p=options.rewrite_top_p,
+        ),
+        generation_attempts=options.rewrite_generation_attempts,
+        unique_structural_fallback=True,
     )
 
 
 def _load_semantic_runtime(options: LocalHFGateRuntimeOptions):
+    components = _load_public_semantic_components(options)
+    return LocalSemanticRuntime(components.verifier)
+
+
+def _load_public_semantic_components(options: LocalHFGateRuntimeOptions):
+    import torch
+
     from wfcllm.semantic.lsh import load_semantic_lsh_components
 
-    components = load_semantic_lsh_components(
-        encoder_model_path=str(options.semantic_encoder_model_path),
-        encoder_checkpoint_path=(
-            None
-            if options.semantic_encoder_checkpoint_path is None
-            else str(options.semantic_encoder_checkpoint_path)
-        ),
-        embed_dim=options.semantic_embed_dim,
-        device=options.model_device,
-        use_lora=False,
-        use_bf16=False,
-        secret_key="wfcllm-public-window-plane/v1",
-        lsh_d=options.lsh_dimension,
-        whitening_path=(
-            None if options.semantic_whitening_path is None else str(options.semantic_whitening_path)
-        ),
-    )
-    return LocalSemanticRuntime(components.verifier)
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(_PUBLIC_SEMANTIC_INITIALIZATION_SEED)
+        return load_semantic_lsh_components(
+            encoder_model_path=str(options.semantic_encoder_model_path),
+            encoder_checkpoint_path=(
+                None
+                if options.semantic_encoder_checkpoint_path is None
+                else str(options.semantic_encoder_checkpoint_path)
+            ),
+            embed_dim=options.semantic_embed_dim,
+            device=options.model_device,
+            use_lora=False,
+            use_bf16=False,
+            secret_key="wfcllm-public-window-plane/v1",
+            lsh_d=options.lsh_dimension,
+            whitening_path=(
+                None
+                if options.semantic_whitening_path is None
+                else str(options.semantic_whitening_path)
+            ),
+        )
 
 
 __all__ = [
@@ -1277,7 +2013,10 @@ __all__ = [
     "HFCausalRewriteBackend",
     "LocalHFProgramGenerator",
     "LocalRuntimeGateBundle",
+    "LocalExperimentalRuntimeGateBundle",
+    "LocalUnvalidatedRuntimeGateBundle",
     "LocalSemanticRuntime",
+    "KeyedTextRegionWindowScorer",
     "build_local_semantic_window_scorer",
     "experiment_contract_hash",
     "load_source_catalog",

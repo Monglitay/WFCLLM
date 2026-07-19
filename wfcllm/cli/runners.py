@@ -154,6 +154,7 @@ def run_generate(args: argparse.Namespace, state: RunStateManager) -> int:
             method=_GATED_METHOD,
             gate_bundle_sha256=bundle_hash,
             output_path=(str(output_path) if output_path is not None else None),
+            **_unvalidated_artifact_markers(config),
         )
     else:
         state.mark_done("generate", method=EVIDENCE_RETRY_SEED7X3_NAME)
@@ -205,6 +206,7 @@ def run_calibrate(args: argparse.Namespace, state: RunStateManager) -> int:
             detector_mode="wfcllm-gated-semantic-window/v1",
             gate_bundle_sha256=bundle_hash,
             calibration_path=(str(calibration_path) if calibration_path else None),
+            **_unvalidated_artifact_markers(config),
         )
     else:
         state.mark_done("calibrate")
@@ -250,6 +252,7 @@ def run_detect(args: argparse.Namespace, state: RunStateManager) -> int:
             detector_mode="wfcllm-gated-semantic-window/v1",
             gate_bundle_sha256=bundle_hash,
             details_path=(str(details_path) if details_path else None),
+            **_unvalidated_artifact_markers(config),
         )
     else:
         state.mark_done("detect")
@@ -302,6 +305,7 @@ def run_report(args: argparse.Namespace, state: RunStateManager) -> int:
                 {
                     "method": _GATED_METHOD,
                     "detector_mode": "wfcllm-gated-semantic-window/v1",
+                    **_unvalidated_artifact_markers(config),
                     **report_fields,
                 },
             )
@@ -309,6 +313,7 @@ def run_report(args: argparse.Namespace, state: RunStateManager) -> int:
             "report",
             method=_GATED_METHOD,
             detector_mode="wfcllm-gated-semantic-window/v1",
+            **_unvalidated_artifact_markers(config),
             **report_fields,
         )
     else:
@@ -480,13 +485,26 @@ def _gated_report_metrics_from_artifacts(
         )
 
     rewrite_attempts = 0
+    explicit_rewrite_attempts = False
+    rewrite_attempts_lower_bound = 0
+    selected_rewrite_count = 0
+    selected_candidate_index_counts: dict[str, int] = {}
     generation_audit = run_dir / "generation" / "audit.jsonl"
     if generation_audit.exists():
         for row in _read_public_json_artifacts(generation_audit):
             if isinstance(row, dict):
-                value = row.get("rewrite_attempts", row.get("attempt_count", 0))
+                value = row.get("rewrite_attempts", row.get("attempt_count"))
                 if type(value) is int and value >= 0:
+                    explicit_rewrite_attempts = True
                     rewrite_attempts += value
+                selected_index = row.get("selected_candidate_index")
+                if type(selected_index) is int and selected_index >= 0:
+                    label = str(selected_index)
+                    selected_candidate_index_counts[label] = (
+                        selected_candidate_index_counts.get(label, 0) + 1
+                    )
+                    rewrite_attempts_lower_bound += selected_index
+                    selected_rewrite_count += int(selected_index > 0)
 
     calibration_path = run_dir / "calibration" / "reference_calibration.json"
     calibration: object = None
@@ -503,7 +521,17 @@ def _gated_report_metrics_from_artifacts(
         "hit_count": hit_count,
         "miss_count": miss_count,
         "abstain_count": abstain_count,
-        "rewrite_cost": {"attempts": rewrite_attempts},
+        "rewrite_cost": {
+            "attempts": rewrite_attempts if explicit_rewrite_attempts else None,
+            "attempts_lower_bound": rewrite_attempts_lower_bound,
+            "selected_rewrite_count": selected_rewrite_count,
+            "selected_candidate_index_counts": dict(
+                sorted(
+                    selected_candidate_index_counts.items(),
+                    key=lambda item: int(item[0]),
+                )
+            ),
+        },
         "detection_curve": detection_curve,
         "calibration": calibration,
     }
@@ -536,6 +564,8 @@ def run_gate_data(args: argparse.Namespace, state: RunStateManager) -> int:
         feasibility_contract=gate_data["feasibility_contract_version"],
         feasibility_thresholds=thresholds,
         pilot_feasibility_path=_optional_runtime_path(args, "pilot_feasibility"),
+        max_groups=int(gate_data["full_independent_group_max"]),
+        fast_experimental=False,
     )
     input_hash = compute_phase_input_hash(args, "gate-data")
     result = pipeline(pipeline_config, dependencies)
@@ -568,13 +598,20 @@ def run_gate_train(args: argparse.Namespace, state: RunStateManager) -> int:
     data_dir = run_dir / "gate-data"
     _load_formal_json(data_dir / "manifest.json", "gate-data")
     pilot = _optional_runtime_path(args, "pilot_feasibility")
-    if pilot is None:
-        pilot = data_dir / "feasibility_summary.json"
     from wfcllm.gate.production import experiment_contract_hash
 
     resolved_hash = experiment_contract_hash(config)
     input_hash = compute_phase_input_hash(args, "gate-train")
-    result = pipeline(GateTrainPipelineConfig(run_dir, data_dir, pilot, resolved_hash), dependencies)
+    result = pipeline(
+        GateTrainPipelineConfig(
+            output_root=run_dir,
+            data_dir=data_dir,
+            config_hash=resolved_hash,
+            pilot_feasibility_path=pilot,
+            fast_experimental=False,
+        ),
+        dependencies,
+    )
     expected_output, expected_manifest = _require_expected_gate_result_paths(
         args, "gate-train", result.output_dir, result.manifest_path
     )
@@ -668,6 +705,24 @@ def compute_phase_input_hash(args: argparse.Namespace, phase: str) -> str:
         parts.append(bytes.fromhex(_safe_tree_hash(run_dir / "gate-data")))
         pilot = _optional_runtime_path(args, "pilot_feasibility") or run_dir / "gate-data" / "feasibility_summary.json"
         parts.append(bytes.fromhex(_safe_file_hash(pilot)))
+        parts.append(
+            bytes.fromhex(
+                _canonical_hash(
+                    {
+                        "gate_epochs": _gate_training_runtime_int(
+                            args, config, "gate_epochs", "max_epochs", 4
+                        ),
+                        "gate_early_stopping_patience": _gate_training_runtime_int(
+                            args,
+                            config,
+                            "gate_early_stopping_patience",
+                            "early_stopping_patience",
+                            1,
+                        ),
+                    }
+                )
+            )
+        )
     elif phase == "gate-validate":
         parts.append(bytes.fromhex(_safe_tree_hash(run_dir / "gate-data")))
         parts.append(bytes.fromhex(_safe_tree_hash(run_dir / "gate-train" / "candidate_bundle")))
@@ -682,8 +737,41 @@ def compute_phase_input_hash(args: argparse.Namespace, phase: str) -> str:
     return hashlib.sha256(b"wfcllm-phase-input/v1\0" + b"".join(parts)).hexdigest()
 
 
+def _unvalidated_candidate_config_hash_matches(
+    expected_hash: object,
+    config: Mapping[str, object],
+) -> bool:
+    """Accept the frozen generation-only upgrade without weakening gate checks."""
+
+    from wfcllm.gate.production import experiment_contract_hash
+
+    if not isinstance(expected_hash, str):
+        return False
+    if expected_hash == experiment_contract_hash(config):
+        return True
+
+    generation_value = config.get("generation")
+    if not isinstance(generation_value, Mapping):
+        return False
+    if (
+        generation_value.get("max_new_tokens") != 512
+        or generation_value.get("temperature") != 0.0
+        or generation_value.get("program_finalizer")
+        != "humaneval_target_function_v1"
+    ):
+        return False
+
+    legacy_config = dict(config)
+    legacy_generation = dict(generation_value)
+    legacy_generation["max_new_tokens"] = 256
+    legacy_generation["temperature"] = 0.25
+    legacy_generation.pop("program_finalizer", None)
+    legacy_config["generation"] = legacy_generation
+    return expected_hash == experiment_contract_hash(legacy_config)
+
+
 def resolve_validated_gate_bundle(args: argparse.Namespace) -> tuple[Path, str]:
-    """Resolve and fully verify the sole formal bundle used by the mainline."""
+    """Resolve a formal bundle or the explicitly enabled experimental candidate."""
 
     config = _require_gated_config(args)
     gate = config["method"]["gate"]
@@ -702,6 +790,23 @@ def resolve_validated_gate_bundle(args: argparse.Namespace) -> tuple[Path, str]:
         if _safe_tree_hash(path) != actual:
             raise ValueError("validated gate bundle changed while loading")
         return path, actual
+
+    if gate.get("require_validated") is False:
+        run_dir = _gate_run_dir(args, config)
+        candidate = run_dir / "gate-train" / "candidate_bundle"
+        publication = _load_json_object(
+            run_dir / "gate-train" / "candidate_bundle_manifest.json"
+        )
+        _require_formal_manifest(publication, "gate-train")
+        if not _unvalidated_candidate_config_hash_matches(
+            publication.get("config_hash"), config
+        ):
+            raise ValueError("unvalidated gate candidate config hash mismatch")
+        expected = publication.get("candidate_bundle_sha256")
+        actual = _safe_tree_hash(candidate)
+        if expected != actual:
+            raise ValueError("unvalidated gate candidate hash mismatch")
+        return candidate, actual
 
     run_dir = _gate_run_dir(args, config)
     publication = _load_formal_json(
@@ -749,6 +854,27 @@ def _is_gated(config: object) -> bool:
     )
 
 
+def _uses_unvalidated_gate_candidate(config: Mapping[str, object]) -> bool:
+    method = config.get("method")
+    gate = method.get("gate") if isinstance(method, Mapping) else None
+    return (
+        isinstance(gate, Mapping)
+        and gate.get("require_validated") is False
+        and gate.get("bundle_path") is None
+    )
+
+
+def _unvalidated_artifact_markers(
+    config: Mapping[str, object],
+) -> dict[str, bool]:
+    if not _uses_unvalidated_gate_candidate(config):
+        return {}
+    return {
+        "gate_validation_skipped": True,
+        "unvalidated_gate_candidate": True,
+    }
+
+
 def _require_gated_detection_pipeline(args: argparse.Namespace):
     """Return the runtime-wired pipeline supplied by the orchestration layer.
 
@@ -764,11 +890,27 @@ def _require_gated_detection_pipeline(args: argparse.Namespace):
             pipeline = factory(args)
     if pipeline is None and getattr(args, "semantic_encoder_model_path", None):
         pipeline = _build_local_gated_detection_pipeline(args)
+        setattr(args, "_gated_detection_pipeline", pipeline)
     if not callable(getattr(pipeline, "calibrate_jsonl", None)) or not callable(
         getattr(pipeline, "detect_jsonl", None)
     ):
         raise ValueError("gated detection runtime pipeline is not configured")
     return pipeline
+
+
+def _resolve_program_finalizer(
+    generation: Mapping[str, object],
+):
+    name = str(generation.get("program_finalizer", "none"))
+    if name == "none":
+        return None, name
+    if name == "humaneval_target_function_v1":
+        from wfcllm.generation.completion_finalizer import (
+            finalize_humaneval_program,
+        )
+
+        return finalize_humaneval_program, name
+    raise ValueError(f"unsupported generation program_finalizer: {name}")
 
 
 def _build_local_gated_generation_pipeline(args: argparse.Namespace):
@@ -777,6 +919,7 @@ def _build_local_gated_generation_pipeline(args: argparse.Namespace):
     from wfcllm.gate.production import (
         LocalHFProgramGenerator,
         LocalRuntimeGateBundle,
+        LocalUnvalidatedRuntimeGateBundle,
         build_local_semantic_window_scorer,
         load_local_causal_rewriter,
         local_semantic_runtime_hash,
@@ -786,19 +929,28 @@ def _build_local_gated_generation_pipeline(args: argparse.Namespace):
         GatedGenerationPipeline,
         GatedGenerationPipelineConfig,
     )
+    from wfcllm.generation.window_rewriter import KeyBlindWhitespaceWindowRewriter
 
     config = _require_gated_config(args)
     options = _local_hf_runtime_options(args, config, "generate")
     bundle_path, bundle_hash = resolve_validated_gate_bundle(args)
     deployment_key = _runtime_secret(args, "deployment")
-    runtime_bundle = LocalRuntimeGateBundle(
+    unvalidated = _uses_unvalidated_gate_candidate(config)
+    runtime_type = (
+        LocalUnvalidatedRuntimeGateBundle if unvalidated else LocalRuntimeGateBundle
+    )
+    runtime_bundle = runtime_type(
         root=bundle_path,
         base_model_path=options.gate_base_model_path,
         bundle_sha256=bundle_hash,
+        **({"max_tokens": int(config["method"]["gate"]["max_input_tokens"])} if unvalidated else {}),
     )
     generation = config.get("generation")
     if not isinstance(generation, Mapping):
         raise ValueError("gated generation config is missing")
+    program_finalizer, program_finalizer_name = _resolve_program_finalizer(
+        generation
+    )
     program = LocalHFProgramGenerator(
         model_path=options.generation_model_path,
         device=options.model_device,
@@ -807,18 +959,28 @@ def _build_local_gated_generation_pipeline(args: argparse.Namespace):
         top_p=float(generation.get("top_p", 0.95)),
         seed=int(generation.get("seed", 7)),
         rewrite_max_new_tokens=options.rewrite_max_new_tokens,
+        rewrite_generation_attempts=options.rewrite_generation_attempts,
+        rewrite_temperature=options.rewrite_temperature,
+        rewrite_top_p=options.rewrite_top_p,
         load_in_4bit=bool(generation.get("load_in_4bit", False)),
         torch_dtype=str(generation.get("torch_dtype", "bf16")),
     )
     semantic_scorer = build_local_semantic_window_scorer(options, deployment_key)
-    extractor = GatedWindowExtractor(runtime_bundle)
+    extractor = GatedWindowExtractor(
+        runtime_bundle,
+        allow_unvalidated=unvalidated,
+    )
     generator = GatedGenerator(
         partitioner=extractor.partitioner,
         scorer=semantic_scorer,
         rewriter=(
-            program.rewriter
-            if options.effective_rewrite_model_path == options.generation_model_path
-            else load_local_causal_rewriter(options)
+            KeyBlindWhitespaceWindowRewriter()
+            if options.semantic_evidence_rule == "keyed_text_region"
+            else (
+                program.rewriter
+                if options.effective_rewrite_model_path == options.generation_model_path
+                else load_local_causal_rewriter(options)
+            )
         ),
         max_rewrites=int(config["method"]["rewrite"]["max_attempts"]),
     )
@@ -847,11 +1009,15 @@ def _build_local_gated_generation_pipeline(args: argparse.Namespace):
             secret_source_type=(
                 "file" if getattr(args, "secret_key_file", None) else "environment"
             ),
+            unvalidated_gate_candidate=unvalidated,
         ),
         base_model=program,
         generator=generator,
         data_adapter=samples,
         deployment_key=deployment_key,
+        program_finalizer=program_finalizer,
+        program_finalizer_name=program_finalizer_name,
+        bundle_loader=(lambda _path: runtime_bundle) if unvalidated else None,
     )
 
 
@@ -864,6 +1030,7 @@ def _build_local_gated_detection_pipeline(args: argparse.Namespace):
     from wfcllm.detection.scoring import GatedWindowScorer
     from wfcllm.gate.production import (
         LocalRuntimeGateBundle,
+        LocalUnvalidatedRuntimeGateBundle,
         build_local_semantic_window_scorer,
         local_semantic_runtime_hash,
     )
@@ -872,10 +1039,15 @@ def _build_local_gated_detection_pipeline(args: argparse.Namespace):
     options = _local_hf_runtime_options(args, config, "detect")
     bundle_path, bundle_hash = resolve_validated_gate_bundle(args)
     deployment_key = _runtime_secret(args, "deployment")
-    runtime_bundle = LocalRuntimeGateBundle(
+    unvalidated = _uses_unvalidated_gate_candidate(config)
+    runtime_type = (
+        LocalUnvalidatedRuntimeGateBundle if unvalidated else LocalRuntimeGateBundle
+    )
+    runtime_bundle = runtime_type(
         root=bundle_path,
         base_model_path=options.gate_base_model_path,
         bundle_sha256=bundle_hash,
+        **({"max_tokens": int(config["method"]["gate"]["max_input_tokens"])} if unvalidated else {}),
     )
     negative_hash = getattr(args, "_gated_negative_corpus_hash", None)
     if not isinstance(negative_hash, str) or _DIGEST.fullmatch(negative_hash) is None:
@@ -886,9 +1058,15 @@ def _build_local_gated_detection_pipeline(args: argparse.Namespace):
     detector = config.get("detector")
     if not isinstance(detector, Mapping):
         raise ValueError("gated detector config is missing")
+    calibration = config.get("calibration")
+    if not isinstance(calibration, Mapping):
+        raise ValueError("gated calibration config is missing")
     semantic_hash = local_semantic_runtime_hash(options)
     return GatedDetectionPipeline(
-        extractor=GatedWindowExtractor(runtime_bundle),
+        extractor=GatedWindowExtractor(
+            runtime_bundle,
+            allow_unvalidated=unvalidated,
+        ),
         scorer=GatedWindowScorer(
             semantic_scorer=build_local_semantic_window_scorer(options, deployment_key),
             minimum_reliable_windows=int(detector.get("minimum_reliable_windows", 2)),
@@ -901,6 +1079,9 @@ def _build_local_gated_detection_pipeline(args: argparse.Namespace):
             negative_corpus_manifest_sha256=negative_hash,
         ),
         target_fpr=float(detector.get("target_fpr", 0.05)),
+        calibration_group_by=str(
+            calibration.get("group_by", "reliable_window_count")
+        ),
     )
 
 
@@ -1013,6 +1194,9 @@ def _local_hf_runtime_options(
     args: argparse.Namespace, config: Mapping[str, object], phase: str
 ):
     gate_train = config.get("gate_train")
+    method = config.get("method")
+    rewrite = method.get("rewrite") if isinstance(method, Mapping) else None
+    semantic_lsh = config.get("semantic_lsh")
     base_model_id = gate_train.get("base_encoder_id") if isinstance(gate_train, Mapping) else None
     base_model_override = getattr(args, "gate_base_model_path", None)
     base_model_path = (
@@ -1043,24 +1227,80 @@ def _local_hf_runtime_options(
         model_device=getattr(args, "model_device", "cuda"),
         gate_device=getattr(args, "gate_device", "cuda"),
         cache_dir=Path(getattr(args, "gate_cache_dir", "data/gate-cache")),
+        lsh_dimension=(
+            int(semantic_lsh.get("lsh_d", 4))
+            if isinstance(semantic_lsh, Mapping)
+            else 4
+        ),
+        semantic_evidence_rule=(
+            str(semantic_lsh.get("rule_name", "semantic_lsh"))
+            if isinstance(semantic_lsh, Mapping)
+            else "semantic_lsh"
+        ),
+        rewrite_max_new_tokens=(
+            int(rewrite.get("max_new_tokens", 32))
+            if isinstance(rewrite, Mapping)
+            else 32
+        ),
+        rewrite_generation_attempts=(
+            int(rewrite.get("generation_attempts", 3))
+            if isinstance(rewrite, Mapping)
+            else 3
+        ),
+        rewrite_temperature=(
+            float(rewrite.get("temperature", 0.8))
+            if isinstance(rewrite, Mapping)
+            else 0.8
+        ),
+        rewrite_top_p=(
+            float(rewrite.get("top_p", 0.95))
+            if isinstance(rewrite, Mapping)
+            else 0.95
+        ),
         gate_batch_size=getattr(args, "gate_batch_size", 9),
-        gate_epochs=(
-            int(gate_train.get("max_epochs", 20))
+        gate_epochs=_gate_training_runtime_int(
+            args, config, "gate_epochs", "max_epochs", 4
+        ),
+        gate_max_tokens=(
+            int(gate_train.get("max_tokens", 256))
             if isinstance(gate_train, Mapping)
-            else 20
+            else 256
         ),
         gate_learning_rate=(
             float(gate_train.get("learning_rate", 2e-5))
             if isinstance(gate_train, Mapping)
             else 2e-5
         ),
-        gate_early_stopping_patience=(
-            int(gate_train.get("early_stopping_patience", 3))
-            if isinstance(gate_train, Mapping)
-            else 3
+        gate_early_stopping_patience=_gate_training_runtime_int(
+            args,
+            config,
+            "gate_early_stopping_patience",
+            "early_stopping_patience",
+            1,
         ),
         gate_resume_checkpoint=_optional_runtime_path(args, "gate_resume_checkpoint"),
     )
+
+
+def _gate_training_runtime_int(
+    args: argparse.Namespace,
+    config: Mapping[str, object],
+    argument_name: str,
+    config_name: str,
+    default: int,
+) -> int:
+    override = getattr(args, argument_name, None)
+    gate_train = config.get("gate_train")
+    value = (
+        override
+        if override is not None
+        else gate_train.get(config_name, default)
+        if isinstance(gate_train, Mapping)
+        else default
+    )
+    if type(value) is not int or value <= 0:
+        raise ValueError(f"{argument_name} must be a positive integer")
+    return value
 
 
 def _runtime_secret(
@@ -1245,6 +1485,25 @@ def _require_formal_manifest(manifest: Mapping[str, object], name: str) -> None:
             raise ValueError(f"{name} manifest is not formal eligible")
     elif "formal_eligible" in manifest and manifest.get("formal_eligible") is not True:
         raise ValueError(f"{name} manifest is not formal eligible")
+
+
+def _require_experimental_manifest(
+    manifest: Mapping[str, object], name: str
+) -> None:
+    expected_schemas = {
+        "gate-data": "wfcllm-gate-data-manifest/v1",
+        "gate-train": "wfcllm-gate-train-candidate/v1",
+    }
+    if name in expected_schemas and manifest.get("schema_version") != expected_schemas[name]:
+        raise ValueError(f"{name} experimental manifest schema is incompatible")
+    expected = {
+        "experimental_only": True,
+        "diagnostic_only": True,
+        "not_official_method": True,
+        "formal_eligible": False,
+    }
+    if any(manifest.get(field) is not value for field, value in expected.items()):
+        raise ValueError(f"{name} is not an explicitly experimental artifact")
 
 
 def _safe_read_file(path: Path, *, max_bytes: int) -> bytes:

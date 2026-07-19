@@ -434,12 +434,12 @@ def test_group_sampler_packs_budget_cohorts_without_splitting() -> None:
             budget=budget,
             variant_id=f"one-{budget}-{context}",
         )
-        for budget in (1, 3, 6)
+        for budget in (1, 3)
         for context in (1, 2, 3)
     ]
     batches = list(GroupConsistencyBatchSampler(items, batch_size=6, seed=4))
-    assert [len(batch) for batch in batches] == [6, 3]
-    for budget in (1, 3, 6):
+    assert [len(batch) for batch in batches] == [6]
+    for budget in (1, 3):
         matching_batches = [
             batch
             for batch in batches
@@ -451,11 +451,11 @@ def test_group_sampler_packs_budget_cohorts_without_splitting() -> None:
             for index in matching_batches[0]
             if items[index].budget == budget
         } == {1, 2, 3}
-    assert sorted(index for batch in batches for index in batch) == list(range(9))
+    assert sorted(index for batch in batches for index in batch) == list(range(6))
     three_at_a_time = list(
         GroupConsistencyBatchSampler(items, batch_size=3, seed=4)
     )
-    assert [len(batch) for batch in three_at_a_time] == [3, 3, 3]
+    assert [len(batch) for batch in three_at_a_time] == [3, 3]
     assert all(
         len({items[index].budget for index in batch}) == 1
         for batch in three_at_a_time

@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 from typing import Any, Callable, Iterable, Mapping
 
+from wfcllm.generation.completion_finalizer import ProgramFinalizationResult
 from wfcllm.generation.gated_generator import GatedGenerationResult
 from wfcllm.generation.outputs import (
     write_final_code_rows,
@@ -32,6 +33,8 @@ class GatedGenerationPipelineConfig:
     generation_config_sha256: str
     secret_source_type: str
     fail_fast: bool = False
+    experimental_only: bool = False
+    unvalidated_gate_candidate: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.output_dir, Path) or not isinstance(self.bundle_path, Path):
@@ -54,6 +57,14 @@ class GatedGenerationPipelineConfig:
             raise ValueError("secret_source_type must be file or environment")
         if type(self.fail_fast) is not bool:
             raise ValueError("fail_fast must be boolean")
+        if type(self.experimental_only) is not bool:
+            raise ValueError("experimental_only must be boolean")
+        if type(self.unvalidated_gate_candidate) is not bool:
+            raise ValueError("unvalidated_gate_candidate must be boolean")
+        if self.experimental_only and self.unvalidated_gate_candidate:
+            raise ValueError(
+                "experimental_only and unvalidated_gate_candidate are exclusive"
+            )
 
 
 class GatedGenerationPipeline:
@@ -73,6 +84,8 @@ class GatedGenerationPipeline:
         generator: Any,
         data_adapter: Callable[[], Iterable[Mapping[str, Any]]] | Iterable[Mapping[str, Any]],
         deployment_key: bytes,
+        program_finalizer: Callable[[str, str], ProgramFinalizationResult] | None = None,
+        program_finalizer_name: str = "none",
         bundle_loader: Callable[[Path], Any] | None = None,
         bundle_hasher: Callable[[Path], str] | None = None,
     ) -> None:
@@ -84,6 +97,12 @@ class GatedGenerationPipeline:
             raise ValueError("gated generator must define generate")
         if not callable(data_adapter) and not hasattr(data_adapter, "__iter__"):
             raise ValueError("data adapter must be callable or iterable")
+        if program_finalizer is not None and not callable(program_finalizer):
+            raise ValueError("program_finalizer must be callable or None")
+        if not isinstance(program_finalizer_name, str) or not program_finalizer_name:
+            raise ValueError("program_finalizer_name must be a non-empty string")
+        if (program_finalizer is None) != (program_finalizer_name == "none"):
+            raise ValueError("program_finalizer and name must be configured together")
         if not (
             callable(base_model)
             or callable(getattr(base_model, "generate_program", None))
@@ -109,11 +128,36 @@ class GatedGenerationPipeline:
         self._generator = generator
         self._data_adapter = data_adapter
         self._deployment_key = deployment_key
+        self._program_finalizer = program_finalizer
+        self._program_finalizer_name = program_finalizer_name
 
     @staticmethod
     def _validate_bundle(bundle: Any, config: GatedGenerationPipelineConfig) -> None:
         summary = getattr(bundle, "validation_summary", None)
-        if not isinstance(summary, Mapping) or summary.get("validated") is not True:
+        experimental = (
+            config.experimental_only
+            and getattr(bundle, "experimental_only", False) is True
+            and isinstance(summary, Mapping)
+            and summary.get("validated") is False
+            and summary.get("experimental_only") is True
+            and summary.get("diagnostic_only") is True
+            and summary.get("not_official_method") is True
+        )
+        unvalidated = (
+            config.unvalidated_gate_candidate
+            and getattr(bundle, "unvalidated_candidate", False) is True
+            and isinstance(summary, Mapping)
+            and summary.get("validated") is False
+            and summary.get("validation_skipped_by_protocol") is True
+            and summary.get("unvalidated_candidate") is True
+            and summary.get("diagnostic_only") is False
+            and summary.get("not_official_method") is False
+        )
+        if not isinstance(summary, Mapping) or (
+            summary.get("validated") is not True
+            and not experimental
+            and not unvalidated
+        ):
             raise ValueError("gate bundle must be validated")
         manifest = getattr(bundle, "manifest", None)
         if getattr(manifest, "window_contract_version", None) != config.parser_contract:
@@ -128,11 +172,36 @@ class GatedGenerationPipeline:
         final_rows: list[dict[str, str]] = []
         audits: list[dict[str, Any]] = []
         candidates: list[dict[str, Any]] = []
+        finalizer_rows: list[dict[str, Any]] = []
         samples = self._data_adapter() if callable(self._data_adapter) else self._data_adapter
         for raw in samples:
             sample_id, prompt = self._sample_identity(raw)
             try:
                 original = self._generate_base_program(prompt, sample_id)
+                if self._program_finalizer is not None:
+                    before = original
+                    finalized = self._program_finalizer(prompt, before)
+                    if not isinstance(finalized, ProgramFinalizationResult):
+                        raise ValueError(
+                            "program_finalizer must return ProgramFinalizationResult"
+                        )
+                    original = finalized.code
+                    finalizer_rows.append(
+                        {
+                            "id": sample_id,
+                            "dataset": self._config.dataset,
+                            "applied": finalized.applied,
+                            "reason": finalized.reason,
+                            "before_sha256": hashlib.sha256(
+                                before.encode("utf-8")
+                            ).hexdigest(),
+                            "after_sha256": hashlib.sha256(
+                                original.encode("utf-8")
+                            ).hexdigest(),
+                            "before_character_count": len(before),
+                            "after_character_count": len(original),
+                        }
+                    )
                 result = self._generator.generate(prompt=prompt, original=original)
                 if not isinstance(result, GatedGenerationResult):
                     raise ValueError("gated generator returned an invalid result")
@@ -174,11 +243,23 @@ class GatedGenerationPipeline:
         write_generation_sidecar_rows(
             root / "generation" / "candidate_sidecar.jsonl", candidates
         )
+        if self._program_finalizer is not None:
+            write_generation_sidecar_rows(
+                root / "generation" / "finalizer.jsonl", finalizer_rows
+            )
         write_generation_manifest(
             root / "generation" / "manifest.json",
             {
                 "schema_version": "wfcllm-gated-generation-manifest/v1",
-                "formal": True,
+                "formal": not (
+                    self._config.experimental_only
+                    or self._config.unvalidated_gate_candidate
+                ),
+                "experimental_only": self._config.experimental_only,
+                "diagnostic_only": self._config.experimental_only,
+                "not_official_method": self._config.experimental_only,
+                "gate_validation_skipped": self._config.unvalidated_gate_candidate,
+                "unvalidated_gate_candidate": self._config.unvalidated_gate_candidate,
                 "gate_bundle_sha256": self._config.bundle_sha256,
                 "parser_contract": self._config.parser_contract,
                 "gate_input_contract": self._config.gate_input_contract,
@@ -186,6 +267,13 @@ class GatedGenerationPipeline:
                 "semantic_encoder_sha256": self._config.semantic_encoder_sha256,
                 "lsh_config_sha256": self._config.lsh_config_sha256,
                 "generation_config_sha256": self._config.generation_config_sha256,
+                "program_finalizer": self._program_finalizer_name,
+                "finalizer_applied_count": sum(
+                    row["applied"] is True for row in finalizer_rows
+                ),
+                "finalizer_fallback_count": sum(
+                    row["applied"] is False for row in finalizer_rows
+                ),
                 "secret_source_type": self._config.secret_source_type,
                 "sample_count": len(final_rows),
                 "sample_failure_count": sum(

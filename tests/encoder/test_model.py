@@ -4,11 +4,25 @@ import pytest
 import torch
 from transformers import AutoTokenizer
 
-from wfcllm.encoder.model import SemanticEncoder
+from wfcllm.encoder.model import SemanticEncoder, masked_mean_pool
 from wfcllm.encoder.config import EncoderConfig
 
 # 使用本地离线模型，避免 HF Hub 访问
 LOCAL_MODEL = "data/models/codet5-base"
+
+
+def test_masked_mean_pool_ignores_padding_tokens() -> None:
+    hidden = torch.tensor(
+        [
+            [[1.0, 2.0], [3.0, 4.0], [100.0, 200.0]],
+            [[5.0, 7.0], [9.0, 11.0], [13.0, 15.0]],
+        ]
+    )
+    mask = torch.tensor([[1, 1, 0], [1, 0, 0]])
+
+    pooled = masked_mean_pool(hidden, mask)
+
+    assert torch.equal(pooled, torch.tensor([[2.0, 3.0], [5.0, 7.0]]))
 
 
 @pytest.fixture

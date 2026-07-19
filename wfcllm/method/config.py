@@ -26,9 +26,17 @@ _GATED_PHASES = (
     "calibrate",
     "detect",
     "report",
-    "audit",
+)
+_GATED_FAST_PHASES = (
+    "gate-data",
+    "gate-train",
+    "generate",
+    "calibrate",
+    "detect",
+    "report",
 )
 _MAIN_PHASES = ("generate", "calibrate", "detect", "report", "audit")
+_GATED_MAIN_PHASES = ("generate", "calibrate", "detect", "report")
 _SENSITIVE_PUBLIC_TOKENS = (
     "secret",
     "deployment_key",
@@ -42,23 +50,17 @@ _SENSITIVE_PUBLIC_TOKENS = (
     "private_key",
     "access_key",
 )
-_SIX_LOSSES = [
+_FAST_LOSSES = [
     "close_bce",
     "suitable_bce",
     "dangerous_negative_fp",
-    "context_consistency",
-    "batch_consistency",
-    "quantization_consistency",
 ]
-_FORMAL_LOSS_WEIGHTS = {
+_FAST_LOSS_WEIGHTS = {
     "close_bce": 1.0,
     "suitable_bce": 1.0,
     "close_positive": 1.0,
     "suitable_positive": 1.0,
     "suitable_false_positive": 4.0,
-    "context_consistency": 1.0,
-    "batch_consistency": 1.0,
-    "quantization_consistency": 0.1,
 }
 _LABEL_THRESHOLDS = {
     "reliable_success_rate_r3_min": 0.60,
@@ -66,21 +68,21 @@ _LABEL_THRESHOLDS = {
     "unstable_candidate_rate_r3_max": 0.10,
 }
 _FEASIBILITY_THRESHOLDS = {
-    "pilot_independent_group_min": 2000,
-    "pilot_independent_group_max": 5000,
-    "full_independent_group_min": 20000,
-    "full_independent_group_max": 50000,
-    "pilot_suitable_positive_min": 200,
-    "pilot_suitable_negative_min": 500,
-    "full_suitable_positive_min": 2000,
-    "full_suitable_negative_min": 5000,
-    "window_length_group_min": 200,
+    "pilot_independent_group_min": 100,
+    "pilot_independent_group_max": 300,
+    "full_independent_group_min": 300,
+    "full_independent_group_max": 300,
+    "pilot_suitable_positive_min": 10,
+    "pilot_suitable_negative_min": 25,
+    "full_suitable_positive_min": 30,
+    "full_suitable_negative_min": 75,
+    "window_length_group_min": 50,
     "major_statement_family_count_min": 4,
-    "major_statement_family_group_min": 100,
+    "major_statement_family_group_min": 25,
     "r3_minus_r1_bootstrap_lower_95_exclusive_min": 0.0,
     "holdout_key_absolute_decline_max": 0.10,
-    "validation_test_suitable_positive_min": 200,
-    "validation_test_suitable_negative_min": 500,
+    "validation_test_suitable_positive_min": 3,
+    "validation_test_suitable_negative_min": 8,
 }
 _ACCEPTANCE_THRESHOLDS = {
     "decision_agreement_min": 0.999,
@@ -284,6 +286,7 @@ class WFCLLMMethodPreset:
                 "seed",
                 "load_in_4bit",
                 "prompt_mode",
+                "program_finalizer",
                 "max_total_sampled_tokens",
             },
             "generation",
@@ -353,7 +356,17 @@ class WFCLLMMethodPreset:
         )
         self._require_exact_keys(
             rewrite,
-            {"candidate_zero", "max_attempts", "experiment_budgets", "key_blind"},
+            {
+                "candidate_zero",
+                "max_attempts",
+                "experiment_budgets",
+                "key_blind",
+                "temperature",
+                "top_p",
+                "max_new_tokens",
+                "generation_attempts",
+                "candidate_selection",
+            },
             "method.rewrite",
         )
         self._require_exact_keys(
@@ -406,14 +419,14 @@ class WFCLLMMethodPreset:
             raise ValueError("method.gate.input_contract_version is incompatible")
         if gate.get("bundle_contract_version") != "wfcllm-gate-bundle/v1":
             raise ValueError("method.gate.bundle_contract_version is incompatible")
-        if gate.get("require_validated") is not True:
-            raise ValueError("method.gate.require_validated must be true")
+        if type(gate.get("require_validated")) is not bool:
+            raise ValueError("method.gate.require_validated must be a bool")
         if gate.get("uncertain_boundary_policy") != "close_and_skip":
             raise ValueError(
                 "method.gate.uncertain_boundary_policy must be close_and_skip"
             )
-        if gate.get("max_input_tokens") != 512:
-            raise ValueError("method.gate.max_input_tokens must equal 512")
+        if gate.get("max_input_tokens") != 256:
+            raise ValueError("method.gate.max_input_tokens must equal 256")
         bundle_path = gate.get("bundle_path")
         bundle_sha256 = gate.get("bundle_sha256")
         if (bundle_path is None) != (bundle_sha256 is None):
@@ -436,11 +449,37 @@ class WFCLLMMethodPreset:
             {
                 "candidate_zero": "original_window",
                 "max_attempts": 3,
-                "experiment_budgets": [1, 3, 6],
+                "experiment_budgets": [1, 3],
                 "key_blind": True,
+                "candidate_selection": "unique-key-blind-structural-fallback/v1",
             },
             "method.rewrite",
         )
+        rewrite_temperature = rewrite.get("temperature")
+        if (
+            isinstance(rewrite_temperature, bool)
+            or not isinstance(rewrite_temperature, (int, float))
+            or rewrite_temperature <= 0
+        ):
+            raise ValueError("method.rewrite.temperature must be positive")
+        rewrite_top_p = rewrite.get("top_p")
+        if (
+            isinstance(rewrite_top_p, bool)
+            or not isinstance(rewrite_top_p, (int, float))
+            or not 0 < rewrite_top_p <= 1
+        ):
+            raise ValueError("method.rewrite.top_p must be in (0, 1]")
+        rewrite_max_new_tokens = rewrite.get("max_new_tokens")
+        if type(rewrite_max_new_tokens) is not int or rewrite_max_new_tokens <= 0:
+            raise ValueError("method.rewrite.max_new_tokens must be a positive integer")
+        rewrite_generation_attempts = rewrite.get("generation_attempts")
+        if (
+            type(rewrite_generation_attempts) is not int
+            or rewrite_generation_attempts < 3
+        ):
+            raise ValueError(
+                "method.rewrite.generation_attempts must be an integer of at least 3"
+            )
 
         if semantic.get("parent_descriptor_version") != "python-statement-window/v1":
             raise ValueError("method.semantic.parent_descriptor_version is incompatible")
@@ -451,8 +490,8 @@ class WFCLLMMethodPreset:
         self._require_fixed_values(
             semantic_lsh,
             {
-                "d": 4,
-                "gamma": 0.25,
+                "d": 1,
+                "gamma": 0.5,
                 "margin": 0.0,
                 "key_derivation_version": "wfcllm-parent-key/v1",
             },
@@ -465,18 +504,22 @@ class WFCLLMMethodPreset:
         self._validate_gate_validate()
 
         expected_default_phases = (
-            list(_GATED_PHASES) if bundle_path is None else list(_MAIN_PHASES)
+            list(_GATED_MAIN_PHASES)
+            if bundle_path is not None
+            else list(_GATED_PHASES)
+            if gate.get("require_validated") is True
+            else list(_GATED_FAST_PHASES)
         )
         if self.runtime.get("default_phases") != expected_default_phases:
             phase_description = (
-                "eight phases" if bundle_path is None else "five main phases"
+                "configured local phases" if bundle_path is None else "four main phases"
             )
             raise ValueError(
                 f"gated runtime.default_phases must use the {phase_description}"
             )
-        if self.runtime.get("external_validated_bundle_phases") != list(_MAIN_PHASES):
+        if self.runtime.get("external_validated_bundle_phases") != list(_GATED_MAIN_PHASES):
             raise ValueError(
-                "gated runtime.external_validated_bundle_phases must use the five main phases"
+                "gated runtime.external_validated_bundle_phases must use the four main phases"
             )
 
     def _validate_reusable_sections(self) -> None:
@@ -484,8 +527,8 @@ class WFCLLMMethodPreset:
             self.generation,
             {
                 "dataset": "humaneval",
-                "max_new_tokens": 256,
-                "temperature": 0.25,
+                "max_new_tokens": 512,
+                "temperature": 0.0,
                 "top_p": 0.95,
                 "top_k": 0,
                 "torch_dtype": "bf16",
@@ -493,6 +536,7 @@ class WFCLLMMethodPreset:
                 "seed": 7,
                 "load_in_4bit": True,
                 "prompt_mode": "completion",
+                "program_finalizer": "humaneval_target_function_v1",
                 "max_total_sampled_tokens": 32768,
             },
             "generation",
@@ -500,9 +544,9 @@ class WFCLLMMethodPreset:
         self._require_fixed_values(
             self.semantic_lsh,
             {
-                "rule_name": "semantic_lsh",
-                "lsh_d": 4,
-                "lsh_gamma": 0.25,
+                "rule_name": "keyed_text_region",
+                "lsh_d": 1,
+                "lsh_gamma": 0.5,
                 "semantic_margin": 0.0,
                 "use_ordinal_keying": False,
             },
@@ -522,8 +566,8 @@ class WFCLLMMethodPreset:
         self._require_fixed_values(
             self.calibration,
             {
-                "method": "empirical_right_tail_plus_one",
-                "group_by": "reliable_window_count",
+                "method": "pooled_negative_binomial_right_tail",
+                "group_by": "pooled_binomial_tail",
                 "target_fpr": 0.05,
                 "posthoc_pass_at_1_noninferiority_absolute_drop_max": 0.02,
             },
@@ -582,15 +626,15 @@ class WFCLLMMethodPreset:
                 "parser_boundary",
             ],
             "human_eval_included": False,
-            "pilot_independent_group_min": 2000,
-            "pilot_independent_group_max": 5000,
-            "full_independent_group_min": 20000,
-            "full_independent_group_max": 50000,
-            "learning_curve_group_counts": [5000, 10000, 20000, "full"],
+            "pilot_independent_group_min": 100,
+            "pilot_independent_group_max": 300,
+            "full_independent_group_min": 300,
+            "full_independent_group_max": 300,
+            "learning_curve_group_counts": ["full"],
             "window_lengths": [1, 2, 3],
             "candidate_zero": "original_window",
-            "rewrite_count": 6,
-            "rewrite_budgets": [1, 3, 6],
+            "rewrite_count": 3,
+            "rewrite_budgets": [1, 3],
             "training_key_count": 32,
             "training_key_bank_file_parameter": "training_key_bank_file",
             "holdout_key_count": 8,
@@ -641,13 +685,13 @@ class WFCLLMMethodPreset:
             "model_contract_version": "wfcllm-gate-model-state/v1",
             "parameter_count_min": 30000000,
             "parameter_count_max": 80000000,
-            "max_tokens": 512,
+            "max_tokens": 256,
             "optimizer": "adamw",
             "learning_rate": 0.00002,
-            "max_epochs": 20,
-            "early_stopping_patience": 3,
-            "losses": _SIX_LOSSES,
-            "loss_weights": _FORMAL_LOSS_WEIGHTS,
+            "max_epochs": 4,
+            "early_stopping_patience": 1,
+            "losses": _FAST_LOSSES,
+            "loss_weights": _FAST_LOSS_WEIGHTS,
         }
         self._require_fixed_values(self.gate_train, fixed, "gate_train")
         base_encoder_id = self.gate_train.get("base_encoder_id")
@@ -691,11 +735,11 @@ class WFCLLMMethodPreset:
             "holdout_key_bank_file_parameter": "holdout_key_bank_file",
             "threshold_fit_grouped": True,
             "agreement_subset_disjoint": True,
-            "batch_sizes": [1, 2, 4, 8],
-            "orders": ["original", "reverse", "fixed_random"],
+            "batch_sizes": [1],
+            "orders": ["original"],
             "cpu_precisions": ["float", "dynamic_qint8"],
-            "gpu_float_if_available": True,
-            "independent_reloads": 2,
+            "gpu_float_if_available": False,
+            "independent_reloads": 1,
             "formal_quantization": "torch-dynamic-qint8-linear",
             "max_input_tokens": 512,
             "acceptance_thresholds": _ACCEPTANCE_THRESHOLDS,

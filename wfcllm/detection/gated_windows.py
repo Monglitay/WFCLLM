@@ -97,10 +97,19 @@ class GatedWindowExtractor:
         self,
         bundle: object,
         config: GatedDetectionConfig | None = None,
+        *,
+        allow_experimental: bool = False,
+        allow_unvalidated: bool = False,
     ) -> None:
         self._bundle = bundle
         self._config = config
-        manifest = _validate_bundle(bundle, config)
+        if type(allow_experimental) is not bool:
+            raise ValueError("allow_experimental must be a bool")
+        if type(allow_unvalidated) is not bool:
+            raise ValueError("allow_unvalidated must be a bool")
+        manifest = _validate_bundle(
+            bundle, config, allow_experimental, allow_unvalidated
+        )
         predictor = _bound_stable_predictor(bundle)
         tokenizer_counter = _tokenizer_counter(bundle)
         self.unit_extractor = PythonStatementUnitExtractor()
@@ -110,7 +119,7 @@ class GatedWindowExtractor:
                 close_low=manifest.close_low_threshold,
                 close_high=manifest.close_high_threshold,
                 suitable_accept=manifest.suitable_accept_threshold,
-                max_units=3,
+                max_units=getattr(manifest, "max_units", 3),
                 max_input_tokens=manifest.max_tokens,
             ),
             tokenizer_counter=tokenizer_counter,
@@ -157,9 +166,37 @@ def gate_bundle_tree_sha256(root: Path) -> str:
     return digest.hexdigest()
 
 
-def _validate_bundle(bundle: object, config: GatedDetectionConfig | None) -> Any:
+def _validate_bundle(
+    bundle: object,
+    config: GatedDetectionConfig | None,
+    allow_experimental: bool,
+    allow_unvalidated: bool,
+) -> Any:
     summary = getattr(bundle, "validation_summary", None)
-    if not isinstance(summary, Mapping) or summary.get("validated") is not True:
+    experimental = (
+        allow_experimental
+        and getattr(bundle, "experimental_only", False) is True
+        and isinstance(summary, Mapping)
+        and summary.get("validated") is False
+        and summary.get("experimental_only") is True
+        and summary.get("diagnostic_only") is True
+        and summary.get("not_official_method") is True
+    )
+    unvalidated = (
+        allow_unvalidated
+        and getattr(bundle, "unvalidated_candidate", False) is True
+        and isinstance(summary, Mapping)
+        and summary.get("validated") is False
+        and summary.get("validation_skipped_by_protocol") is True
+        and summary.get("unvalidated_candidate") is True
+        and summary.get("diagnostic_only") is False
+        and summary.get("not_official_method") is False
+    )
+    if not isinstance(summary, Mapping) or (
+        summary.get("validated") is not True
+        and not experimental
+        and not unvalidated
+    ):
         raise ValueError("gated extraction requires a validated gate bundle")
     manifest = getattr(bundle, "manifest", None)
     if manifest is None:

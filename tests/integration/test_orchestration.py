@@ -386,7 +386,7 @@ def test_gate_phases_are_allowed_without_changing_legacy_main_phase_constant():
     assert all(phase in ALL_PHASES for phase in GATE_PHASES)
 
 
-def test_gated_method_uses_configured_eight_phase_sequence(tmp_path):
+def test_gated_method_uses_configured_fast_phase_sequence(tmp_path):
     from wfcllm.method.presets import GATED_SEMANTIC_WINDOW_V1_NAME, load_method_preset
 
     state = RunStateManager(tmp_path / "state.json")
@@ -398,8 +398,8 @@ def test_gated_method_uses_configured_eight_phase_sequence(tmp_path):
     )
 
     assert orchestrator.resolve_phase_sequence() == [
-        "gate-data", "gate-train", "gate-validate", "generate",
-        "calibrate", "detect", "report", "audit",
+        "gate-data", "gate-train", "generate",
+        "calibrate", "detect", "report",
     ]
 
 

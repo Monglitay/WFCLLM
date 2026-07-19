@@ -158,6 +158,29 @@ def test_fit_one_fake_epoch_writes_only_safe_formal_artifacts(tmp_path: Path) ->
     }
 
 
+def test_fast_fit_skips_epoch_checkpoints(tmp_path: Path) -> None:
+    train, validation = _examples()
+    output_dir = tmp_path / "fast"
+    trainer = GateTrainer(
+        model=GateModel(encoder=TinyEncoder(), hidden_size=6),
+        tokenizer=TinyTokenizer(),
+        output_dir=output_dir,
+        config_hash=_sha("config"),
+        dataset_manifest_hash=_sha("dataset"),
+        config=GateTrainerConfig(
+            epochs=1,
+            batch_size=6,
+            save_checkpoints=False,
+        ),
+    )
+
+    trainer.fit(train, validation)
+
+    assert list((output_dir / "checkpoints").iterdir()) == []
+    assert (output_dir / "training_metrics.jsonl").is_file()
+    assert (output_dir / "development_summary.json").is_file()
+
+
 @pytest.mark.parametrize(
     "config_value,dataset_value,message",
     [

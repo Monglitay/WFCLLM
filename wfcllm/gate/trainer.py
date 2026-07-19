@@ -136,6 +136,8 @@ class GateTrainerConfig:
     early_stopping_patience: int = 3
     decision_threshold: float = 0.5
     max_tokens: int = 512
+    enable_consistency: bool = True
+    save_checkpoints: bool = True
 
     def __post_init__(self) -> None:
         for name in ("epochs", "batch_size", "early_stopping_patience", "max_tokens"):
@@ -144,6 +146,10 @@ class GateTrainerConfig:
                 raise ValueError(f"{name} must be a positive integer")
         if self.batch_size < 3:
             raise ValueError("batch_size must fit one three-context cohort")
+        if type(self.enable_consistency) is not bool:
+            raise ValueError("enable_consistency must be a bool")
+        if type(self.save_checkpoints) is not bool:
+            raise ValueError("save_checkpoints must be a bool")
         if self.max_tokens > 512:
             raise ValueError("max_tokens must not exceed 512")
         if type(self.seed) is not int:
@@ -255,6 +261,8 @@ class GateTrainer:
         patience = 0
         optimizer_steps = 0
         existing_metric_rows: list[dict[str, Any]] = []
+        if resume_from is not None and not self.config.save_checkpoints:
+            raise ValueError("checkpoint resume requires save_checkpoints=true")
         if resume_from is None:
             self._validate_fresh_output()
         else:
@@ -351,15 +359,16 @@ class GateTrainer:
 
         # Audit every actual training layout across every configured epoch and
         # every validation batch before the first optimizer mutation.
-        self._audit_all_batches(
-            training,
-            validation,
-            train_batches,
-            validation_batches,
-            collator,
-            training_neighbors,
-            validation_neighbors,
-        )
+        if self.config.enable_consistency:
+            self._audit_all_batches(
+                training,
+                validation,
+                train_batches,
+                validation_batches,
+                collator,
+                training_neighbors,
+                validation_neighbors,
+            )
 
         if resume_from is None:
             self._create_output_layout()
@@ -395,7 +404,11 @@ class GateTrainer:
                     attention_mask=batch["attention_mask"],
                 )
                 _validate_model_output(output, batch["input_ids"].shape[0])
-                pair = self._fixed_consistency_pair(batch, training_neighbors)
+                pair = (
+                    self._fixed_consistency_pair(batch, training_neighbors)
+                    if self.config.enable_consistency
+                    else None
+                )
                 if pair is None:
                     reference = _AlignedGateOutput(
                         output.close_logits, output.suitable_logits
@@ -508,19 +521,20 @@ class GateTrainer:
             }
             _validate_metric_row(row, expected_epoch=epoch)
             _atomic_append_json_line(self._metrics_path, row)
-            checkpoint = self._checkpoint_payload(
-                epoch, validation_metrics, training_state
-            )
-            self._save_checkpoint(self._last_checkpoint, checkpoint)
-            if improved:
-                best_training_state = dict(training_state)
-                # External controlled interruption is a run-level condition,
-                # not an intrinsic property of this epoch's best snapshot.
-                best_training_state["status"] = epoch_status
-                best_checkpoint = self._checkpoint_payload(
-                    epoch, validation_metrics, best_training_state
+            if self.config.save_checkpoints:
+                checkpoint = self._checkpoint_payload(
+                    epoch, validation_metrics, training_state
                 )
-                self._save_checkpoint(self._best_checkpoint, best_checkpoint)
+                self._save_checkpoint(self._last_checkpoint, checkpoint)
+                if improved:
+                    best_training_state = dict(training_state)
+                    # External controlled interruption is a run-level condition,
+                    # not an intrinsic property of this epoch's best snapshot.
+                    best_training_state["status"] = epoch_status
+                    best_checkpoint = self._checkpoint_payload(
+                        epoch, validation_metrics, best_training_state
+                    )
+                    self._save_checkpoint(self._best_checkpoint, best_checkpoint)
             if status in {"early_stopped", "interrupted", "completed"}:
                 break
 

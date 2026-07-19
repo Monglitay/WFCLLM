@@ -16,7 +16,7 @@ from wfcllm.method.presets import (
 )
 
 
-EIGHT_PHASES = [
+SEVEN_PHASES = [
     "gate-data",
     "gate-train",
     "gate-validate",
@@ -24,9 +24,17 @@ EIGHT_PHASES = [
     "calibrate",
     "detect",
     "report",
-    "audit",
+]
+FAST_PHASES = [
+    "gate-data",
+    "gate-train",
+    "generate",
+    "calibrate",
+    "detect",
+    "report",
 ]
 FIVE_PHASES = ["generate", "calibrate", "detect", "report", "audit"]
+FOUR_PHASES = ["generate", "calibrate", "detect", "report"]
 
 
 def _replace_section(
@@ -43,11 +51,11 @@ def test_gated_preset_has_full_phase_sequence_and_no_secret() -> None:
     preset = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME)
 
     assert preset.method["name"] == GATED_SEMANTIC_WINDOW_V1_NAME
-    assert preset.runtime["default_phases"] == EIGHT_PHASES
-    assert preset.runtime["external_validated_bundle_phases"] == FIVE_PHASES
+    assert preset.runtime["default_phases"] == FAST_PHASES
+    assert preset.runtime["external_validated_bundle_phases"] == FOUR_PHASES
     assert preset.method["windowing"]["max_units"] == 3
-    assert preset.method["gate"]["max_input_tokens"] == 512
-    assert preset.method["gate"]["require_validated"] is True
+    assert preset.method["gate"]["max_input_tokens"] == 256
+    assert preset.method["gate"]["require_validated"] is False
     assert preset.gate_data["training_key_count"] == 32
     assert preset.gate_validate["holdout_key_count"] == 8
     assert "secret" not in json.dumps(preset.to_dict(), sort_keys=True).lower()
@@ -63,8 +71,13 @@ def test_gated_preset_contains_frozen_contracts_and_thresholds() -> None:
     assert preset.method["rewrite"] == {
         "candidate_zero": "original_window",
         "max_attempts": 3,
-        "experiment_budgets": [1, 3, 6],
+        "experiment_budgets": [1, 3],
         "key_blind": True,
+        "temperature": 0.2,
+        "top_p": 0.95,
+        "max_new_tokens": 16,
+        "generation_attempts": 9,
+        "candidate_selection": "unique-key-blind-structural-fallback/v1",
     }
     assert preset.gate_data["label_thresholds"] == {
         "reliable_success_rate_r3_min": 0.60,
@@ -98,7 +111,7 @@ def test_gated_preset_is_deep_copied_between_loads() -> None:
     assert first.method is not second.method
     assert first.method["windowing"] is not second.method["windowing"]
     assert "made_up" not in second.method["windowing"]["excluded_statement_types"]
-    assert second.runtime["default_phases"] == EIGHT_PHASES
+    assert second.runtime["default_phases"] == FAST_PHASES
     assert isinstance(payload["method"], dict)
     assert isinstance(payload["runtime"]["default_phases"], list)
 
@@ -133,7 +146,7 @@ def test_gated_preset_rejects_invalid_method_specific_contract() -> None:
         )
 
 
-def test_gated_preset_supports_external_validated_bundle_five_phase_mode() -> None:
+def test_gated_preset_supports_external_validated_bundle_four_phase_mode() -> None:
     preset = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME)
     external = replace(
         preset,
@@ -147,12 +160,12 @@ def test_gated_preset_supports_external_validated_bundle_five_phase_mode() -> No
         },
         runtime={
             **preset.runtime,
-            "default_phases": FIVE_PHASES,
+            "default_phases": FOUR_PHASES,
         },
     )
 
-    assert external.runtime["default_phases"] == FIVE_PHASES
-    assert external.method["gate"]["require_validated"] is True
+    assert external.runtime["default_phases"] == FOUR_PHASES
+    assert external.method["gate"]["require_validated"] is False
 
 
 def test_gated_preset_allows_local_paths_containing_secrets_word() -> None:
@@ -172,18 +185,18 @@ def test_gated_preset_allows_local_paths_containing_secrets_word() -> None:
             **preset.gate_train,
             "base_encoder_id": "data/models/secrets/apiKey=value",
         },
-        runtime={**preset.runtime, "default_phases": FIVE_PHASES},
+        runtime={**preset.runtime, "default_phases": FOUR_PHASES},
     )
     assert external.method["gate"]["bundle_path"] == "local/secrets/gate-v1"
     assert json.loads(json.dumps(external.to_dict())) == external.to_dict()
 
 
-def test_gated_preset_rejects_five_phase_mode_without_bundle() -> None:
+def test_gated_preset_rejects_four_phase_mode_without_bundle() -> None:
     preset = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME)
-    with pytest.raises(ValueError, match="eight phases"):
+    with pytest.raises(ValueError, match="configured local phases"):
         replace(
             preset,
-            runtime={**preset.runtime, "default_phases": FIVE_PHASES},
+            runtime={**preset.runtime, "default_phases": FOUR_PHASES},
         )
 
 
@@ -200,7 +213,7 @@ def test_gated_preset_rejects_path_traversal_bundle() -> None:
                     "bundle_sha256": "a" * 64,
                 },
             },
-            runtime={**preset.runtime, "default_phases": FIVE_PHASES},
+            runtime={**preset.runtime, "default_phases": FOUR_PHASES},
         )
 
 
@@ -222,7 +235,7 @@ def test_gated_preset_requires_experimental_true_and_typed_rewrite_budgets() -> 
                 **preset.method,
                 "rewrite": {
                     **preset.method["rewrite"],
-                    "experiment_budgets": [True, 3, 6],
+                    "experiment_budgets": [True, 3],
                 },
             },
         )
@@ -243,7 +256,7 @@ def test_gated_preset_requires_experimental_true_and_typed_rewrite_budgets() -> 
         _replace_section(
             preset,
             "gate_data",
-            lambda value: value.__setitem__("rewrite_budgets", [True, 3, 6]),
+            lambda value: value.__setitem__("rewrite_budgets", [True, 3]),
         )
 
     with pytest.raises(ValueError, match="rewrite_count"):
@@ -342,9 +355,6 @@ def test_gate_train_records_exact_formal_loss_weights() -> None:
         "close_positive": 1.0,
         "suitable_positive": 1.0,
         "suitable_false_positive": 4.0,
-        "context_consistency": 1.0,
-        "batch_consistency": 1.0,
-        "quantization_consistency": 0.1,
     }
 
 
@@ -354,19 +364,19 @@ def test_gate_train_records_exact_formal_loss_weights() -> None:
         ("gate_data", lambda value: value.pop("schema_version"), "missing fields"),
         ("gate_data", lambda value: value.__setitem__("junk", True), "unknown fields"),
         ("gate_data", lambda value: value.__setitem__("training_key_count", 31), "training_key_count"),
-        ("gate_data", lambda value: value.__setitem__("rewrite_budgets", [1, 6]), "rewrite_budgets"),
+        ("gate_data", lambda value: value.__setitem__("rewrite_budgets", [1]), "rewrite_budgets"),
         ("gate_data", lambda value: value["label_thresholds"].__setitem__("unstable_candidate_rate_r3_max", 0.2), "label_thresholds"),
-        ("gate_data", lambda value: value["feasibility_thresholds"].__setitem__("pilot_suitable_positive_min", 199), "feasibility_thresholds"),
+        ("gate_data", lambda value: value["feasibility_thresholds"].__setitem__("pilot_suitable_positive_min", 9), "feasibility_thresholds"),
         ("gate_train", lambda value: value.pop("optimizer"), "missing fields"),
         ("gate_train", lambda value: value.__setitem__("junk", True), "unknown fields"),
         ("gate_train", lambda value: value["losses"].append("made_up"), "losses"),
-        ("gate_train", lambda value: value["loss_weights"].__setitem__("quantization_consistency", 0.2), "loss_weights"),
+        ("gate_train", lambda value: value["loss_weights"].__setitem__("made_up", 0.2), "loss_weights"),
         ("gate_train", lambda value: value["loss_weights"].__setitem__("close_bce", True), "loss_weights"),
         ("gate_validate", lambda value: value.pop("batch_sizes"), "missing fields"),
         ("gate_validate", lambda value: value.__setitem__("junk", True), "unknown fields"),
         ("gate_validate", lambda value: value.__setitem__("batch_sizes", [1, 8]), "batch_sizes"),
-        ("gate_validate", lambda value: value.__setitem__("orders", ["original"]), "orders"),
-        ("gate_validate", lambda value: value.__setitem__("independent_reloads", 1), "independent_reloads"),
+        ("gate_validate", lambda value: value.__setitem__("orders", ["reverse"]), "orders"),
+        ("gate_validate", lambda value: value.__setitem__("independent_reloads", 2), "independent_reloads"),
         ("gate_validate", lambda value: value["acceptance_thresholds"].__setitem__("decision_agreement_min", 0.9), "acceptance_thresholds"),
         ("gate_validate", lambda value: value["acceptance_thresholds"].__setitem__("formal_accepted_span_consensus_min", True), "acceptance_thresholds"),
     ],

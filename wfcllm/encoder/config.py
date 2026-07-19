@@ -12,6 +12,7 @@ class EncoderConfig:
     # Model
     model_name: str = "Salesforce/codet5-base"
     embed_dim: int = 128
+    pooling: str = "first"
 
     # LoRA (optional, default on)
     use_lora: bool = True

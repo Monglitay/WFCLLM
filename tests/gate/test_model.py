@@ -108,6 +108,48 @@ def test_transformers_is_lazy_and_local_loader_forces_offline(monkeypatch: pytes
     assert calls == [(str(tmp_path / "local-model"), {"local_files_only": True})]
 
 
+def test_local_loader_uses_only_encoder_for_encoder_decoder_backbone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    encoder = FakeEncoder(hidden_size=9)
+
+    class EncoderDecoderBackbone(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.config = types.SimpleNamespace(
+                is_encoder_decoder=True,
+                d_model=9,
+            )
+
+        def get_encoder(self) -> nn.Module:
+            return encoder
+
+        def forward(self, **_: object) -> object:
+            raise ValueError(
+                "You have to specify either decoder_input_ids or decoder_inputs_embeds"
+            )
+
+    backbone = EncoderDecoderBackbone()
+
+    class AutoModel:
+        @staticmethod
+        def from_pretrained(path: str, **kwargs: object) -> nn.Module:
+            del path, kwargs
+            return backbone
+
+    monkeypatch.setitem(sys.modules, "transformers", types.SimpleNamespace(AutoModel=AutoModel))
+    model = GateModel.from_local_pretrained(
+        GateTrainConfig(base_model_path=tmp_path / "local-model")
+    )
+
+    assert model.encoder is encoder
+    output = model(
+        input_ids=torch.ones((2, 3), dtype=torch.long),
+        attention_mask=torch.ones((2, 3), dtype=torch.long),
+    )
+    assert output.close_logits.shape == (2,)
+
+
 def test_importing_model_module_does_not_import_transformers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

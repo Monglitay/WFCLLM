@@ -17,7 +17,7 @@ from wfcllm.gate.input import (
 from wfcllm.method.contracts import reject_quality_proxy_fields
 
 _ALLOWED_CONTEXT_LENGTHS = frozenset({1, 2, 3})
-_ALLOWED_BUDGETS = frozenset({1, 3, 6})
+_ALLOWED_BUDGETS = frozenset({1, 3})
 _FORMAL_MAX_TOKENS = 512
 
 
@@ -53,7 +53,7 @@ class GateExample:
         ):
             raise ValueError("context_length must be an integer in {1, 2, 3}")
         if type(self.budget) is not int or self.budget not in _ALLOWED_BUDGETS:
-            raise ValueError("budget must be an integer in {1, 3, 6}")
+            raise ValueError("budget must be an integer in {1, 3}")
         _require_nonempty_string("serialized_gate_input", self.serialized_gate_input)
         for name in ("close_target", "suitable_target", "dangerous_negative"):
             if type(getattr(self, name)) is not bool:

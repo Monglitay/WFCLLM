@@ -76,11 +76,11 @@ def _trajectory(
             hit_keys=hits_by_index.get(index, ()),
             unit_count=unit_count,
         )
-        for index in range(7)
+        for index in range(4)
     )
 
 
-def test_r1_r3_r6_are_prefixes_of_one_candidate_trajectory(
+def test_r1_and_r3_are_prefixes_of_one_candidate_trajectory(
     observation_factory: Callable[..., CandidateObservation],
 ) -> None:
     candidates = tuple(
@@ -88,7 +88,7 @@ def test_r1_r3_r6_are_prefixes_of_one_candidate_trajectory(
             index=index,
             hit_keys=range(20) if index in {1, 3} else range(4),
         )
-        for index in range(7)
+        for index in range(4)
     )
 
     labels = build_gate_labels(
@@ -103,7 +103,6 @@ def test_r1_r3_r6_are_prefixes_of_one_candidate_trajectory(
 
     assert labels.budgets[1].candidate_indices == (0, 1)
     assert labels.budgets[3].candidate_indices == (0, 1, 2, 3)
-    assert labels.budgets[6].candidate_indices == (0, 1, 2, 3, 4, 5, 6)
     assert labels.suitable_target is True
 
 
@@ -113,7 +112,7 @@ def test_candidate_zero_is_checked_but_not_counted_as_rewrite(
     candidates = (
         observation_factory(index=0, hit_keys=range(TRAINING_KEY_COUNT)),
     ) + tuple(
-        observation_factory(index=index, hit_keys=()) for index in range(1, 7)
+        observation_factory(index=index, hit_keys=()) for index in range(1, 4)
     )
 
     labels = build_gate_labels(candidates, training_key_count=TRAINING_KEY_COUNT)
@@ -296,12 +295,6 @@ def test_reliable_hit_requires_structure_stability_and_configured_margin(
         precision_stable=False,
         margin=0.5,
     )
-    candidates[4] = observation_factory(
-        index=4,
-        hit_keys=(4,),
-        parse_status="parse_error",
-        margin=0.5,
-    )
 
     labels = build_gate_labels(
         tuple(candidates),
@@ -314,7 +307,6 @@ def test_reliable_hit_requires_structure_stability_and_configured_margin(
     assert first_hits["train-key-001"] is None
     assert first_hits["train-key-002"] is None
     assert first_hits["train-key-003"] is None
-    assert labels.budgets[6].first_hit_by_key_id["train-key-004"] is None
     assert labels.budgets[3].success_rate == 1 / 32
 
 
@@ -323,7 +315,7 @@ def test_first_hit_indices_are_budget_prefix_specific(
 ) -> None:
     candidates = _trajectory(
         observation_factory,
-        hits_by_index={0: (0,), 2: (1,), 6: (2,)},
+        hits_by_index={0: (0,), 2: (1,)},
     )
 
     labels = build_gate_labels(candidates, training_key_count=32)
@@ -332,8 +324,6 @@ def test_first_hit_indices_are_budget_prefix_specific(
     assert labels.budgets[1].first_hit_by_key_id["train-key-001"] is None
     assert labels.budgets[3].first_hit_by_key_id["train-key-001"] == 2
     assert labels.budgets[3].first_hit_by_key_id["train-key-002"] is None
-    assert labels.budgets[6].first_hit_by_key_id["train-key-002"] == 6
-    assert labels.budgets[6].first_hit_by_key_id["train-key-031"] is None
 
 
 def test_close_target_is_true_for_a_hard_boundary(
@@ -377,23 +367,6 @@ def test_close_target_is_true_when_the_current_window_is_suitable(
     assert labels.close_target is True
 
 
-def test_close_target_does_not_peek_beyond_the_r3_training_prefix(
-    observation_factory: Callable[..., CandidateObservation],
-) -> None:
-    candidates = _trajectory(
-        observation_factory,
-        hits_by_index={4: range(TRAINING_KEY_COUNT)},
-        unit_count=1,
-    )
-
-    labels = build_gate_labels(candidates, training_key_count=32)
-
-    assert labels.budgets[3].success_rate == 0.0
-    assert labels.budgets[6].success_rate == 1.0
-    assert labels.suitable_target is False
-    assert labels.close_target is False
-
-
 def test_outcomes_are_deeply_immutable_and_budget_objects_are_independent(
     observation_factory: Callable[..., CandidateObservation],
 ) -> None:
@@ -403,7 +376,6 @@ def test_outcomes_are_deeply_immutable_and_budget_objects_are_independent(
     )
 
     assert labels.budgets[1] is not labels.budgets[3]
-    assert labels.budgets[3] is not labels.budgets[6]
     with pytest.raises(TypeError):
         labels.budgets[1] = labels.budgets[3]  # type: ignore[index]
     with pytest.raises(TypeError):
@@ -438,12 +410,12 @@ def test_labels_are_json_safe_and_fit_the_flattened_label_row(
     ("candidates_transform", "message"),
     [
         (lambda candidates: list(candidates), "tuple"),
-        (lambda candidates: candidates[:-1], "0 through 6"),
+        (lambda candidates: candidates[:-1], "0 through 3"),
         (
             lambda candidates: candidates[:2]
             + (replace(candidates[2], candidate_index=4),)
             + candidates[3:],
-            "0 through 6",
+            "0 through 3",
         ),
         (
             lambda candidates: candidates[:3] + (object(),) + candidates[4:],
@@ -736,12 +708,12 @@ def test_budget_outcome_rejects_boolean_integer_aliases(
 
 
 def test_gate_labels_canonicalizes_and_snapshots_budget_mapping() -> None:
-    source = {6: _outcome(6), 1: _outcome(1), 3: _outcome(3)}
+    source = {3: _outcome(3), 1: _outcome(1)}
     labels = GateLabels(close_target=False, suitable_target=False, budgets=source)
 
     source[1] = _outcome(1, first_hits={"train-key-000": 1})
 
-    assert tuple(labels.budgets) == (1, 3, 6)
+    assert tuple(labels.budgets) == (1, 3)
     assert labels.budgets[1].first_hit_by_key_id["train-key-000"] is None
 
 
@@ -750,15 +722,15 @@ def test_gate_labels_rejects_suitable_without_close() -> None:
         GateLabels(
             close_target=False,
             suitable_target=True,
-            budgets={1: _outcome(1), 3: _outcome(3), 6: _outcome(6)},
+            budgets={1: _outcome(1), 3: _outcome(3)},
         )
 
 
 @pytest.mark.parametrize(
     "budgets",
     [
-        {1: _outcome(1), 3: _outcome(3)},
-        {1: _outcome(1), 3: _outcome(3), 6: _outcome(6), 7: _outcome(6)},
+        {1: _outcome(1)},
+        {1: _outcome(1), 3: _outcome(3), 7: _outcome(3)},
     ],
 )
 def test_gate_labels_requires_exact_budget_set(
@@ -773,7 +745,7 @@ def test_gate_labels_rejects_boolean_budget_key_alias() -> None:
         GateLabels(
             close_target=False,
             suitable_target=False,
-            budgets={True: _outcome(1), 3: _outcome(3), 6: _outcome(6)},
+            budgets={True: _outcome(1), 3: _outcome(3)},
         )
 
 
@@ -783,17 +755,10 @@ def test_gate_labels_rejects_boolean_budget_key_alias() -> None:
         {
             1: _outcome(1, first_hits={"train-key-000": 1}),
             3: _outcome(3, first_hits={"train-key-000": 2}),
-            6: _outcome(6, first_hits={"train-key-000": 2}),
         },
         {
             1: _outcome(1),
             3: _outcome(3, first_hits={"train-key-000": 0}),
-            6: _outcome(6, first_hits={"train-key-000": 0}),
-        },
-        {
-            1: _outcome(1),
-            3: _outcome(3),
-            6: _outcome(6, first_hits={"train-key-000": 3}),
         },
     ],
 )
@@ -812,7 +777,6 @@ def test_gate_labels_rejects_too_many_new_structural_rewrites() -> None:
             budgets={
                 1: _outcome(1, structural_valid_rate=0.0),
                 3: _outcome(3, structural_valid_rate=1.0),
-                6: _outcome(6, structural_valid_rate=1.0),
             },
         )
 
@@ -830,11 +794,6 @@ def test_gate_labels_rejects_decreasing_unstable_rewrite_count() -> None:
                 ),
                 3: _outcome(
                     3,
-                    structural_valid_rate=1.0,
-                    unstable_rate=0.0,
-                ),
-                6: _outcome(
-                    6,
                     structural_valid_rate=1.0,
                     unstable_rate=0.0,
                 ),
@@ -856,11 +815,6 @@ def test_gate_labels_accepts_legal_structural_and_unstable_prefix_growth() -> No
                 3,
                 structural_valid_rate=1.0,
                 unstable_rate=2 / 3,
-            ),
-            6: _outcome(
-                6,
-                structural_valid_rate=1.0,
-                unstable_rate=3 / 6,
             ),
         },
     )
@@ -889,9 +843,9 @@ def test_aggregate_to_dict_outputs_remain_strict_json() -> None:
     labels = GateLabels(
         close_target=False,
         suitable_target=False,
-        budgets={6: _outcome(6), 3: _outcome(3), 1: _outcome(1)},
+        budgets={3: _outcome(3), 1: _outcome(1)},
     )
 
     serialized = json.dumps(labels.to_dict(), allow_nan=False)
 
-    assert tuple(json.loads(serialized)["budgets"]) == ("1", "3", "6")
+    assert tuple(json.loads(serialized)["budgets"]) == ("1", "3")

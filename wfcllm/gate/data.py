@@ -33,7 +33,7 @@ from wfcllm.windowing.contracts import (
     StatementUnit,
 )
 
-_REWRITE_INDICES = tuple(range(1, 7))
+_REWRITE_INDICES = tuple(range(1, 4))
 _CANONICAL_TRAINING_KEY_IDS = tuple(
     f"train-key-{index:03d}" for index in range(32)
 )
@@ -335,8 +335,8 @@ class GateDataVariant:
             raise ValueError("group must be a GateDataGroup")
         if type(self.context_length) is not int or self.context_length not in {1, 2, 3}:
             raise ValueError("context_length must be 1, 2, or 3")
-        if type(self.rewrite_budget) is not int or self.rewrite_budget not in {1, 3, 6}:
-            raise ValueError("rewrite_budget must be 1, 3, or 6")
+        if type(self.rewrite_budget) is not int or self.rewrite_budget not in {1, 3}:
+            raise ValueError("rewrite_budget must be 1 or 3")
         if (
             not isinstance(self.previous_units, tuple)
             or len(self.previous_units) > self.context_length
@@ -463,7 +463,7 @@ class GateDataGroup:
                 previous_units=self.training_group.previous_units[-context_length:],
             )
             for context_length in (1, 2, 3)
-            for budget in (1, 3, 6)
+            for budget in (1, 3)
         )
 
     def to_training_group(self, *, split: str) -> GateTrainingGroup:
@@ -512,6 +512,7 @@ class GateDataBuilder:
         *,
         context: GateBuildContext | None = None,
         source_text: str | None = None,
+        selected_start_unit_ids: tuple[str, ...] | None = None,
     ) -> tuple[GateDataGroup, ...]:
         """Build candidate trajectories.
 
@@ -546,9 +547,25 @@ class GateDataBuilder:
         build_context = context if context is not None else GateBuildContext()
         if not isinstance(build_context, GateBuildContext):
             raise ValueError("context must be a GateBuildContext")
+        selected_ids: frozenset[str] | None = None
+        if selected_start_unit_ids is not None:
+            if (
+                not isinstance(selected_start_unit_ids, tuple)
+                or any(
+                    not isinstance(unit_id, str) or not unit_id
+                    for unit_id in selected_start_unit_ids
+                )
+                or len(set(selected_start_unit_ids)) != len(selected_start_unit_ids)
+            ):
+                raise ValueError(
+                    "selected_start_unit_ids must be a tuple of unique strings"
+                )
+            selected_ids = frozenset(selected_start_unit_ids)
 
         groups: list[GateDataGroup] = []
         for start_index, start in enumerate(unit_tuple):
+            if selected_ids is not None and start.unit_id not in selected_ids:
+                continue
             if not start.eligible or start.hard_boundary:
                 continue
             windows = _enumerate_windows(unit_tuple, start_index)
@@ -581,10 +598,24 @@ class GateDataBuilder:
                     parent_descriptor=request.canonical_parent,
                 )
                 observations.append(observation)
-                for candidate_index in _REWRITE_INDICES:
-                    candidate = self._rewriter.rewrite(
-                        request, candidate_index=candidate_index
+                rewrite_many = getattr(self._rewriter, "rewrite_many", None)
+                if callable(rewrite_many):
+                    rewritten = rewrite_many(
+                        request,
+                        candidate_indices=_REWRITE_INDICES,
                     )
+                else:
+                    rewritten = tuple(
+                        self._rewriter.rewrite(request, candidate_index=index)
+                        for index in _REWRITE_INDICES
+                    )
+                if len(rewritten) != len(_REWRITE_INDICES):
+                    raise ValueError("rewriter trajectory length mismatch")
+                for candidate_index, candidate in zip(
+                    _REWRITE_INDICES,
+                    rewritten,
+                    strict=True,
+                ):
                     if not isinstance(candidate, RewriteCandidate):
                         raise ValueError("rewriter must return RewriteCandidate")
                     observation = self._observe(
@@ -639,6 +670,12 @@ class GateDataBuilder:
                     function_id=build_context.function_id,
                 )
             )
+        if selected_ids is not None:
+            built_ids = {group.window_start_unit_id for group in groups}
+            if built_ids != selected_ids:
+                raise ValueError(
+                    "selected_start_unit_ids contains an ineligible or missing start"
+                )
         return tuple(groups)
 
     def _observe(
@@ -700,6 +737,30 @@ class GateDataBuilder:
             lsh_signature=lsh_signature,
         )
         return observation
+
+
+def complete_w1_w2_w3_start_unit_ids(
+    units: Sequence[StatementUnit],
+) -> tuple[str, ...]:
+    """Return starts that satisfy the exact shared W1/W2/W3 contract."""
+
+    if (
+        isinstance(units, (str, bytes, bytearray))
+        or not isinstance(units, Sequence)
+        or any(not isinstance(unit, StatementUnit) for unit in units)
+    ):
+        raise ValueError("units must be a sequence of StatementUnit instances")
+    unit_tuple = tuple(units)
+    return tuple(
+        start.unit_id
+        for start_index, start in enumerate(unit_tuple)
+        if start.eligible
+        and not start.hard_boundary
+        and tuple(
+            len(window) for window in _enumerate_windows(unit_tuple, start_index)
+        )
+        == (1, 2, 3)
+    )
 
 
 def validate_key_blind_payload(value: object) -> None:
