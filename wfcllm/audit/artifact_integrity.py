@@ -268,6 +268,7 @@ def reject_secret_key_leak(payload: Any) -> None:
         budget=_ArtifactBudget(),
         reject_secrets=True,
         reject_quality=False,
+        feasibility_metadata=False,
         checkpoint_metadata_only=False,
         enforce_checkpoint_schema=False,
     )
@@ -292,6 +293,7 @@ def audit_gate_artifact(payload: Any) -> None:
         budget=_ArtifactBudget(),
         reject_secrets=True,
         reject_quality=not diagnostic,
+        feasibility_metadata=_is_feasibility_metadata_artifact(payload),
         checkpoint_metadata_only=_is_checkpoint_metadata_artifact(payload),
         enforce_checkpoint_schema=True,
     )
@@ -311,6 +313,7 @@ def reject_formal_quality_proxy_fields(payload: Any) -> None:
         budget=_ArtifactBudget(),
         reject_secrets=False,
         reject_quality=not diagnostic,
+        feasibility_metadata=_is_feasibility_metadata_artifact(payload),
         checkpoint_metadata_only=_is_checkpoint_metadata_artifact(payload),
         enforce_checkpoint_schema=True,
     )
@@ -325,6 +328,7 @@ def _walk_gate_artifact(
     budget: _ArtifactBudget,
     reject_secrets: bool,
     reject_quality: bool,
+    feasibility_metadata: bool,
     checkpoint_metadata_only: bool,
     enforce_checkpoint_schema: bool,
 ) -> None:
@@ -353,7 +357,19 @@ def _walk_gate_artifact(
                         "secret material is forbidden in public gate artifact: "
                         f"{_render_path(child_path)}"
                     )
-                if reject_quality and is_forbidden_formal_quality_proxy_field(key):
+                feasibility_status = feasibility_metadata and (
+                    child_path == ("passed",)
+                    or (
+                        len(child_path) == 3
+                        and child_path[0] == "admissions"
+                        and child_path[2] == "passed"
+                    )
+                )
+                if (
+                    reject_quality
+                    and not feasibility_status
+                    and is_forbidden_formal_quality_proxy_field(key)
+                ):
                     raise ValueError(
                         "formal quality proxy field is forbidden: "
                         f"{_render_path(child_path)}"
@@ -386,6 +402,7 @@ def _walk_gate_artifact(
                     budget=budget,
                     reject_secrets=reject_secrets,
                     reject_quality=reject_quality,
+                    feasibility_metadata=feasibility_metadata,
                     checkpoint_metadata_only=(
                         checkpoint_metadata_only or opens_checkpoint_context
                     ),
@@ -411,6 +428,7 @@ def _walk_gate_artifact(
                     budget=budget,
                     reject_secrets=reject_secrets,
                     reject_quality=reject_quality,
+                    feasibility_metadata=feasibility_metadata,
                     checkpoint_metadata_only=checkpoint_metadata_only,
                     enforce_checkpoint_schema=enforce_checkpoint_schema,
                 )
@@ -534,6 +552,13 @@ def _reject_diagnostic_formal_identity(payload: dict[str, Any]) -> None:
             raise ValueError(
                 f"diagnostic identity contradicts formal {marker_name}"
             )
+
+
+def _is_feasibility_metadata_artifact(payload: Any) -> bool:
+    return (
+        isinstance(payload, dict)
+        and payload.get("contract_version") == "gate-data-feasibility/v1"
+    )
 
 
 def _is_checkpoint_metadata_artifact(payload: Any) -> bool:

@@ -81,6 +81,29 @@ def test_formal_gate_data_allows_semantic_preservation_evidence() -> None:
     )
 
 
+def test_feasibility_admission_status_is_not_a_code_quality_proxy() -> None:
+    payload = {
+        "contract_version": "gate-data-feasibility/v1",
+        "passed": True,
+        "admissions": {
+            "full_group_count": {
+                "observed": 300,
+                "passed": True,
+                "requirement": "300 <= independent groups <= 300",
+            }
+        },
+    }
+    audit_gate_artifact(payload)
+
+    with pytest.raises(ValueError, match="formal quality proxy field"):
+        audit_gate_artifact(
+            {
+                **payload,
+                "candidate_observation": {"passed": True},
+            }
+        )
+
+
 @pytest.mark.parametrize(
     "markers",
     [
