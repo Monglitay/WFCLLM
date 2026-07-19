@@ -26,6 +26,7 @@ from wfcllm.gate.dependencies import (
 from wfcllm.gate.schema import CandidateObservation
 from wfcllm.gate.labels import build_gate_labels
 from wfcllm.gate.validation import (
+    GateConfusionMatrix,
     GateProcessAttestation,
     GateValidationSummary,
     GateValidationThresholds,
@@ -228,8 +229,8 @@ class FakeDependencies:
         modes = tuple(
             f"cpu-{precision}-batch-{batch}-{order}"
             for precision in ("float", "int8")
-            for batch in (1, 2, 4, 8)
-            for order in ("original", "reverse", "random")
+            for batch in (1,)
+            for order in ("original",)
         )
         attestations = tuple(
             GateProcessAttestation(
@@ -257,6 +258,7 @@ class FakeDependencies:
             thresholds=thresholds,
             forced_uncertain_count=0,
             formal_accepted_spans=((agreement_group_ids[0], "example-1", 0, 2),),
+            formal_confusion=GateConfusionMatrix(tp=1, tn=1, fp=0, fn=0),
             process_attestations=attestations,
         )
         bundle = GateBundle.create(

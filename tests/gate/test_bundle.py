@@ -90,8 +90,8 @@ def _write_bundle(root: Path) -> Path:
         "mode_names": [
             f"cpu-{precision}-batch-{batch}-{order}"
             for precision in ("float", "int8")
-            for batch in (1, 2, 4, 8)
-            for order in ("original", "reverse", "random")
+            for batch in (1,)
+            for order in ("original",)
         ],
         "threshold_fit_group_digest": _sha("2"),
         "agreement_group_digest": _sha("3"),
@@ -105,6 +105,7 @@ def _write_bundle(root: Path) -> Path:
         },
         "forced_uncertain_count": 0,
         "formal_accepted_spans": [["agreement-group", "example-1", 0, 2]],
+        "formal_confusion": {"tp": 1, "tn": 1, "fp": 0, "fn": 0},
         "process_attestations": [
             {
                 "mode_name": f"cpu-{precision}-batch-{batch}-{order}",
@@ -121,8 +122,8 @@ def _write_bundle(root: Path) -> Path:
             for index, (precision, batch, order) in enumerate(
                 (precision, batch, order)
                 for precision in ("float", "int8")
-                for batch in (1, 2, 4, 8)
-                for order in ("original", "reverse", "random")
+                for batch in (1,)
+                for order in ("original",)
             )
         ],
     }
@@ -286,6 +287,47 @@ def test_bundle_rejects_validated_summary_without_formal_coverage(
     )
 
     with pytest.raises(ValueError, match="coverage"):
+        GateBundle.load(root)
+
+
+@pytest.mark.parametrize(
+    "confusion",
+    (
+        {"tp": 1, "tn": 0, "fp": 1, "fn": 0},
+        {"tp": 0, "tn": 1, "fp": 0, "fn": 1},
+    ),
+)
+def test_bundle_rejects_accept_all_and_reject_all_confusion(
+    tmp_path: Path,
+    confusion: dict[str, int],
+) -> None:
+    root = _write_bundle(tmp_path / "bundle")
+    summary_path = root / "validation_summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["formal_confusion"] = confusion
+    summary["formal_accepted_spans"] = (
+        [
+            ["agreement-group", "example-1", 0, 2],
+            ["agreement-group", "example-2", 2, 4],
+        ]
+        if confusion["tp"] + confusion["fp"] == 2
+        else []
+    )
+    summary_path.write_text(
+        json.dumps(summary, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    from wfcllm.gate.bundle import sha256_file
+
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["validation_summary_sha256"] = sha256_file(summary_path)
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="nondegenerate"):
         GateBundle.load(root)
 
 

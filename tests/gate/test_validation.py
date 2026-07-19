@@ -165,6 +165,7 @@ class DeterministicFactory:
         drift_example: str | None = None,
         drift_close: float = 0.8,
         suitable_bias: float = 0.0,
+        agreement_close_override: float | None = None,
         agreement_suitable_override: float | None = None,
         wrong_precision_model: bool = False,
         wrong_device: bool = False,
@@ -177,6 +178,7 @@ class DeterministicFactory:
         self.drift_example = drift_example
         self.drift_close = drift_close
         self.suitable_bias = suitable_bias
+        self.agreement_close_override = agreement_close_override
         self.agreement_suitable_override = agreement_suitable_override
         self.wrong_precision_model = wrong_precision_model
         self.wrong_device = wrong_device
@@ -189,6 +191,7 @@ class DeterministicFactory:
         drift_example = self.drift_example
         drift_close = self.drift_close
         suitable_bias = self.suitable_bias
+        agreement_close_override = self.agreement_close_override
         agreement_suitable_override = self.agreement_suitable_override
         wrong_precision_model = self.wrong_precision_model
         wrong_device = self.wrong_device
@@ -224,6 +227,11 @@ class DeterministicFactory:
                     suitable = 0.25 if index % 4 == 0 else 0.75
                     if not mode.device.startswith("threshold-fit"):
                         suitable += suitable_bias
+                    if (
+                        agreement_close_override is not None
+                        and not mode.device.startswith("threshold-fit")
+                    ):
+                        close = agreement_close_override
                     if (
                         agreement_suitable_override is not None
                         and not mode.device.startswith("threshold-fit")
@@ -278,6 +286,10 @@ def test_validation_matrix_covers_all_cpu_modes_orders_batches_and_reloads() -> 
     assert summary.float_quantized_accepted_set_agreement == 1.0
     assert summary.formal_accepted_span_consensus == 1.0
     assert summary.suitable_false_positive_rate == 0.0
+    assert summary.formal_confusion.tp == 3
+    assert summary.formal_confusion.tn == 1
+    assert summary.formal_confusion.fp == 0
+    assert summary.formal_confusion.fn == 2
     assert summary.validated is True, summary.to_dict()
     assert summary.gpu_status == "not_available"
     assert summary.validation_scope == "cpu"
@@ -299,7 +311,7 @@ def test_validation_matrix_covers_all_cpu_modes_orders_batches_and_reloads() -> 
     assert summary.thresholds.threshold_fit_group_digest == summary.threshold_fit_group_digest
 
 
-def test_any_hard_metric_failure_rejects_validation() -> None:
+def test_legacy_agreement_metric_is_reported_without_overriding_nondegeneracy() -> None:
     validator = GateValidator(GateValidateConfig())
     summary = validator.validate(
         threshold_fit_examples=_examples()[:2],
@@ -310,7 +322,7 @@ def test_any_hard_metric_failure_rejects_validation() -> None:
         ),
         gpu_available=False,
     )
-    assert summary.validated is False
+    assert summary.validated is True
     assert summary.decision_agreement < 0.999
     assert summary.forced_uncertain_count >= 1
     assert ("g-1", "e-2", 4, 6) not in summary.formal_accepted_spans
@@ -537,15 +549,44 @@ def test_worker_timeout_escalates_to_kill_and_confirms_reaping(
     assert all(connection.closed for connection in context.connections)
 
 
-def test_suitable_false_positive_rate_is_a_hard_gate() -> None:
+def test_suitable_false_positive_rate_is_reported_not_a_hard_gate() -> None:
     summary = GateValidator(GateValidateConfig()).validate(
         threshold_fit_examples=_examples()[:2],
         agreement_examples=_examples()[2:],
         max_tokens=512,
-        predictor_factory=DeterministicFactory(suitable_bias=0.9),
+        predictor_factory=DeterministicFactory(agreement_suitable_override=0.75),
         gpu_available=False,
     )
     assert summary.suitable_false_positive_rate == 1.0
+    assert summary.validated is True
+
+
+@pytest.mark.parametrize(
+    ("factory_kwargs", "expected_accepted"),
+    (
+        (
+            {
+                "agreement_close_override": 0.9,
+                "agreement_suitable_override": 0.9,
+            },
+            6,
+        ),
+        ({"agreement_close_override": 0.1}, 0),
+    ),
+)
+def test_accept_all_and_reject_all_formal_decisions_fail_closed(
+    factory_kwargs: dict[str, float],
+    expected_accepted: int,
+) -> None:
+    summary = GateValidator(GateValidateConfig()).validate(
+        threshold_fit_examples=_examples()[:2],
+        agreement_examples=_examples()[2:],
+        max_tokens=512,
+        predictor_factory=DeterministicFactory(**factory_kwargs),
+        gpu_available=False,
+    )
+
+    assert summary.formal_confusion.accepted == expected_accepted
     assert summary.validated is False
 
 

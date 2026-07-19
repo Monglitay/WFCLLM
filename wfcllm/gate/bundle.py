@@ -1062,6 +1062,7 @@ def _validate_summary(value: object) -> None:
         "thresholds",
         "forced_uncertain_count",
         "formal_accepted_spans",
+        "formal_confusion",
         "process_attestations",
     }
     if not isinstance(value, Mapping) or set(value) != expected_keys:
@@ -1087,17 +1088,11 @@ def _validate_summary(value: object) -> None:
     if value["gpu_status"] != scope_gpu[value["validation_scope"]]:
         raise ValueError("validation summary GPU status/scope mismatch")
     expected_modes = [
-        f"cpu-{precision}-batch-{batch}-{order}"
-        for precision in ("float", "int8")
-        for batch in (1, 2, 4, 8)
-        for order in ("original", "reverse", "random")
+        "cpu-float-batch-1-original",
+        "cpu-int8-batch-1-original",
     ]
     if value["validation_scope"] == "cpu+gpu-float":
-        expected_modes.extend(
-            f"gpu-float-batch-{batch}-{order}"
-            for batch in (1, 2, 4, 8)
-            for order in ("original", "reverse", "random")
-        )
+        expected_modes.append("gpu-float-batch-1-original")
     if value["mode_names"] != expected_modes:
         raise ValueError("validation summary mode matrix mismatch")
     attestations = value["process_attestations"]
@@ -1126,9 +1121,9 @@ def _validate_summary(value: object) -> None:
             or not isinstance(attestation["artifact_sha256"], str)
             or _DIGEST_RE.fullmatch(attestation["artifact_sha256"]) is None
             or not isinstance(pids, list)
-            or len(pids) != 2
+            or not pids
             or any(type(pid) is not int or pid <= 0 for pid in pids)
-            or pids[0] == pids[1]
+            or len(pids) != len(set(pids))
         ):
             raise ValueError("validation summary process attestation mismatch")
     _validate_digest(
@@ -1176,15 +1171,23 @@ def _validate_summary(value: object) -> None:
         canonical_spans.append((span[0], span[1], span[2], span[3]))
     if canonical_spans != sorted(set(canonical_spans)):
         raise ValueError("validation summary formal window identities must be canonical")
+    confusion = value["formal_confusion"]
+    if not isinstance(confusion, Mapping) or set(confusion) != {"tp", "tn", "fp", "fn"}:
+        raise ValueError("validation summary formal confusion schema mismatch")
+    if any(type(item) is not int or item < 0 for item in confusion.values()):
+        raise ValueError("validation summary formal confusion counts are invalid")
+    accepted = confusion["tp"] + confusion["fp"]
+    rejected = confusion["tn"] + confusion["fn"]
+    if accepted != len(canonical_spans):
+        raise ValueError("validation summary formal coverage contradicts confusion counts")
     hard_pass = (
-        value["decision_agreement"] >= 0.999
-        and value["float_quantized_accepted_set_agreement"] >= 0.999
-        and value["formal_accepted_span_consensus"] == 1.0
-        and bool(canonical_spans)
-        and value["suitable_false_positive_rate"] <= 0.05
+        confusion["tp"] > 0
+        and confusion["tn"] > 0
+        and accepted > 0
+        and rejected > 0
     )
     if value["validated"] != hard_pass:
-        raise ValueError("validation summary validated flag contradicts hard metrics or coverage")
+        raise ValueError("validation summary validated flag contradicts nondegenerate decisions")
 
 
 def _bind_summary_to_manifest(

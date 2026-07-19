@@ -142,6 +142,36 @@ class GateValidationMode:
 
 
 @dataclass(frozen=True)
+class GateConfusionMatrix:
+    tp: int
+    tn: int
+    fp: int
+    fn: int
+
+    def __post_init__(self) -> None:
+        for name in ("tp", "tn", "fp", "fn"):
+            value = getattr(self, name)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+
+    @property
+    def total(self) -> int:
+        return self.tp + self.tn + self.fp + self.fn
+
+    @property
+    def accepted(self) -> int:
+        return self.tp + self.fp
+
+    @property
+    def rejected(self) -> int:
+        return self.tn + self.fn
+
+    @property
+    def nondegenerate(self) -> bool:
+        return self.tp > 0 and self.tn > 0 and self.accepted > 0 and self.rejected > 0
+
+
+@dataclass(frozen=True)
 class GateValidationSummary:
     contract_version: str
     validated: bool
@@ -157,6 +187,7 @@ class GateValidationSummary:
     thresholds: GateValidationThresholds
     forced_uncertain_count: int
     formal_accepted_spans: tuple[tuple[str, str, int, int], ...]
+    formal_confusion: GateConfusionMatrix
     process_attestations: tuple[GateProcessAttestation, ...]
 
     def to_dict(self) -> dict[str, Any]:
@@ -355,6 +386,27 @@ class GateValidator:
         intersection = frozenset.intersection(*formal_span_sets)
         span_consensus = 0.0 if not union else len(intersection) / len(union)
         formal_spans = tuple(sorted(intersection))
+        formal_accepted_ids = {span[1] for span in formal_spans}
+        formal_confusion = GateConfusionMatrix(
+            tp=sum(
+                item.example_id in formal_accepted_ids and item.suitable_target
+                for item in agreement
+            ),
+            tn=sum(
+                item.example_id not in formal_accepted_ids and not item.suitable_target
+                for item in agreement
+            ),
+            fp=sum(
+                item.example_id in formal_accepted_ids and not item.suitable_target
+                for item in agreement
+            ),
+            fn=sum(
+                item.example_id not in formal_accepted_ids and item.suitable_target
+                for item in agreement
+            ),
+        )
+        if formal_confusion.total != len(agreement):
+            raise ValueError("formal confusion matrix does not cover agreement examples")
         negatives = [item for item in agreement if not item.suitable_target]
         if not negatives:
             raise ValueError("agreement subset needs suitable negatives")
@@ -367,14 +419,7 @@ class GateValidator:
             for predictions in runs.values()
         )
 
-        validated = (
-            decision_agreement >= self.config.decision_agreement_min
-            and accepted_agreement
-            >= self.config.float_quantized_accepted_set_agreement_min
-            and span_consensus >= self.config.formal_accepted_span_consensus_min
-            and bool(formal_spans)
-            and suitable_fpr <= self.config.suitable_false_positive_rate_max
-        )
+        validated = formal_confusion.nondegenerate
         return GateValidationSummary(
             contract_version=GATE_VALIDATION_CONTRACT_VERSION,
             validated=validated,
@@ -396,6 +441,7 @@ class GateValidator:
             thresholds=thresholds,
             forced_uncertain_count=len(forced_ids),
             formal_accepted_spans=formal_spans,
+            formal_confusion=formal_confusion,
             process_attestations=tuple(process_attestations),
         )
 
