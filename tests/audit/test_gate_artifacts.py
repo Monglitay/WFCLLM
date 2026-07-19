@@ -67,6 +67,20 @@ def test_formal_gate_data_rejects_quality_proxy_fields_and_aliases(
         audit_gate_artifact({"groups": [{field: True}]})
 
 
+def test_formal_gate_data_allows_semantic_preservation_evidence() -> None:
+    assert (
+        audit_gate_artifact(
+            {
+                "candidate_observation": {
+                    "semantic_reference_cosine": 0.97,
+                    "semantic_preservation_passed": True,
+                }
+            }
+        )
+        is None
+    )
+
+
 @pytest.mark.parametrize(
     "markers",
     [

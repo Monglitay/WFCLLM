@@ -202,6 +202,8 @@ def is_forbidden_secret_field(field: str) -> bool:
 
 
 def is_forbidden_formal_quality_proxy_field(field: str) -> bool:
+    if canonical_artifact_field_name(field) == "semantic_preservation_passed":
+        return False
     if _matches_named_field(field, _FORBIDDEN_QUALITY_COMPACTS):
         return True
     tokens = set(artifact_field_tokens_and_compact(field)[0])
