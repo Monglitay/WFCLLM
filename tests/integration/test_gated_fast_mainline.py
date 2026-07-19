@@ -16,7 +16,7 @@ from scripts.wfcllm_fast_postprocess import _summarize_window_details
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "configs" / "wfcllm" / "gated_semantic_window_v1.json"
-RUNNER_PATH = ROOT / "scripts" / "run_gated_single_gpu.sh"
+RUNNER_PATH = ROOT / "scripts" / "run_gated_fast_experimental.sh"
 
 
 def _config() -> dict:

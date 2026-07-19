@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_gated_wrapper_requires_separate_pilot_and_full_catalogs() -> None:
     script = (
-        Path(__file__).resolve().parents[2]
-        / "scripts"
-        / "run_gated_single_gpu.sh"
+        ROOT / "scripts" / "run_gated_single_gpu.sh"
     ).read_text(encoding="utf-8")
 
     assert 'PILOT_SOURCE_CATALOG:?set PILOT_SOURCE_CATALOG' in script
@@ -15,3 +17,24 @@ def test_gated_wrapper_requires_separate_pilot_and_full_catalogs() -> None:
     assert '--gate-source-catalog "${PILOT_SOURCE_CATALOG}"' in script
     assert '--gate-source-catalog "${FULL_SOURCE_CATALOG}"' in script
     assert 'CONDA_ENVS_PATH="${CONDA_ENVS_PATH:-/root/autodl-tmp/conda/envs}"' in script
+    assert '--phase gate-validate' in script
+    assert 'SAMPLE_LIMIT="${SAMPLE_LIMIT:-164}"' in script
+    assert "wfcllm_fast_postprocess.py" not in script
+
+
+def test_official_no_carrier_config_requires_formal_gate_validation() -> None:
+    config = json.loads(
+        (ROOT / "configs" / "wfcllm" / "gated_semantic_window_nocarrier_v1.json")
+        .read_text(encoding="utf-8")
+    )
+
+    assert config["method"]["gate"]["require_validated"] is True
+    assert config["runtime"]["default_phases"] == [
+        "gate-data",
+        "gate-train",
+        "gate-validate",
+        "generate",
+        "calibrate",
+        "detect",
+        "report",
+    ]

@@ -46,7 +46,7 @@ def test_pilot_feasibility_counts_independent_groups_not_derived_rows() -> None:
     assert summary.passed is True
     assert summary.suitable_groups["positive_rate"] == 0.15
     assert summary.coverage["generation_model_count"] == 4
-    assert summary.reliable_success["r3"]["mean"] == 0.4
+    assert summary.reliable_success["r3"]["mean"] == pytest.approx(0.4)
     assert summary.rewrite_health["structural_invalid_rate"] == pytest.approx(0.1)
     assert summary.rewrite_health["numeric_instability_rate"] == pytest.approx(0.02)
     assert sum(summary.rewrite_health["first_hit_candidate_position_distribution"].values()) == 100

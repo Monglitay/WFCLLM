@@ -272,6 +272,11 @@ def test_finalizer_provenance_and_manifest_counts(tmp_path: Path) -> None:
     assert [row["applied"] for row in rows] == [True, False]
     assert all(len(str(row["before_sha256"])) == 64 for row in rows)
     assert all(len(str(row["after_sha256"])) == 64 for row in rows)
+    assert all(row["input_source"] == "x = 1\n" for row in rows)
+    assert all(row["output_source"] == "x = 1\n" for row in rows)
+    assert all(row["carrier_count"] == 0 for row in rows)
+    assert all(row["added_ast_statement_count"] == 0 for row in rows)
+    assert all(row["statement_provenance_verified"] is True for row in rows)
     assert all(row["audit_only"] is True for row in rows)
     assert all(row["not_detector_input"] is True for row in rows)
     manifest = json.loads(
@@ -280,6 +285,33 @@ def test_finalizer_provenance_and_manifest_counts(tmp_path: Path) -> None:
     assert manifest["program_finalizer"] == "humaneval_target_function_v1"
     assert manifest["finalizer_applied_count"] == 1
     assert manifest["finalizer_fallback_count"] == 1
+    assert manifest["carrier_count"] == 0
+    assert manifest["finalizer_added_ast_statement_count"] == 0
+    assert manifest["finalizer_provenance_verified_count"] == 2
+
+
+def test_finalizer_that_adds_an_ast_statement_fails_closed(tmp_path: Path) -> None:
+    def finalizer(_prompt: str, source: str) -> ProgramFinalizationResult:
+        return ProgramFinalizationResult(
+            code=source + "y = 2\n",
+            applied=True,
+            reason="invalid_statement_injection",
+        )
+
+    pipeline = GatedGenerationPipeline(
+        config=_config(tmp_path),
+        bundle_loader=lambda _p: _bundle(),
+        bundle_hasher=lambda _p: _digest("bundle"),
+        base_model=_BaseModel("x = 1\n"),
+        generator=_Generator(),
+        data_adapter=[{"id": "HumanEval/0", "prompt": "p"}],
+        deployment_key=b"key",
+        program_finalizer=finalizer,
+        program_finalizer_name="humaneval_target_function_v1",
+    )
+
+    with pytest.raises(RuntimeError, match="introduced AST statements"):
+        pipeline.run()
 
 
 def test_finalizer_fallback_keeps_sample_and_strict_schema(tmp_path: Path) -> None:

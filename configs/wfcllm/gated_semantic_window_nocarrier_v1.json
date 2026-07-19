@@ -1,0 +1,212 @@
+{
+  "method": {
+    "name": "gated_semantic_window_v1",
+    "strict_no_quality_gate": true,
+    "strict_code_only_detector": true,
+    "experimental": true,
+    "windowing": {
+      "enabled": true,
+      "contract_version": "python-statement-window/v1",
+      "max_units": 3,
+      "max_preceding_units": 3,
+      "excluded_statement_types": [
+        "pass",
+        "break",
+        "continue",
+        "raise",
+        "import",
+        "import_from",
+        "global",
+        "nonlocal",
+        "delete",
+        "assert",
+        "function_definition_header",
+        "class_definition_header",
+        "parser_recovery"
+      ],
+      "compound_header_singleton": true
+    },
+    "gate": {
+      "input_contract_version": "wfcllm-gate-input/v1",
+      "bundle_contract_version": "wfcllm-gate-bundle/v1",
+      "bundle_path": null,
+      "bundle_sha256": null,
+      "require_validated": true,
+      "uncertain_boundary_policy": "close_and_skip",
+      "max_input_tokens": 256
+    },
+    "rewrite": {
+      "candidate_zero": "original_window",
+      "max_attempts": 3,
+      "experiment_budgets": [1, 3],
+      "key_blind": true,
+      "temperature": 0.2,
+      "top_p": 0.95,
+      "max_new_tokens": 16,
+      "generation_attempts": 9,
+      "candidate_selection": "unique-key-blind-structural-fallback/v1"
+    },
+    "semantic": {
+      "parent_descriptor_version": "python-statement-window/v1",
+      "encoder_id": "semantic-encoder-local-v1",
+      "lsh": {
+        "d": 1,
+        "gamma": 0.5,
+        "margin": 0.0,
+        "key_derivation_version": "wfcllm-parent-key/v1"
+      }
+    }
+  },
+  "generation": {
+    "dataset": "humaneval",
+    "max_new_tokens": 512,
+    "temperature": 0.0,
+    "top_p": 0.95,
+    "top_k": 0,
+    "torch_dtype": "bf16",
+    "device": "cuda",
+    "seed": 7,
+    "load_in_4bit": true,
+    "prompt_mode": "completion",
+    "program_finalizer": "humaneval_target_function_v1",
+    "max_total_sampled_tokens": 32768
+  },
+  "semantic_lsh": {
+    "rule_name": "keyed_text_region",
+    "lsh_d": 1,
+    "lsh_gamma": 0.5,
+    "semantic_margin": 0.0,
+    "use_ordinal_keying": false
+  },
+  "detector": {
+    "mode": "wfcllm-gated-semantic-window/v1",
+    "target_fpr": 0.05,
+    "minimum_reliable_windows": 2,
+    "statistic": "reliable_window_hit_rate",
+    "abstain_policy": "exclude_from_denominator"
+  },
+  "calibration": {
+    "method": "pooled_negative_binomial_right_tail",
+    "group_by": "pooled_binomial_tail",
+    "target_fpr": 0.05,
+    "posthoc_pass_at_1_noninferiority_absolute_drop_max": 0.02
+  },
+  "gate_data": {
+    "schema_version": "wfcllm-gate-data/v1",
+    "source_manifest_version": "wfcllm-gate-source-manifest/v1",
+    "split_contract_version": "wfcllm-gate-split/v1",
+    "sources": [
+      "main_generation",
+      "mbpp_train",
+      "mbpp_validation",
+      "oss_python",
+      "parser_boundary"
+    ],
+    "human_eval_included": false,
+    "scale": "full",
+    "pilot_independent_group_min": 100,
+    "pilot_independent_group_max": 300,
+    "full_independent_group_min": 300,
+    "full_independent_group_max": 300,
+    "learning_curve_group_counts": ["full"],
+    "window_lengths": [1, 2, 3],
+    "candidate_zero": "original_window",
+    "rewrite_count": 3,
+    "rewrite_budgets": [1, 3],
+    "training_key_count": 32,
+    "training_key_bank_file_parameter": "training_key_bank_file",
+    "training_key_bank_manifest_sha256": null,
+    "training_key_bank_id": null,
+    "holdout_key_count": 8,
+    "holdout_key_bank_file_parameter": "holdout_key_bank_file",
+    "holdout_key_bank_manifest_sha256": null,
+    "holdout_key_bank_id": null,
+    "label_contract_version": "wfcllm-gate-label/v1",
+    "label_thresholds": {
+      "reliable_success_rate_r3_min": 0.6,
+      "structurally_valid_rewrite_rate_r3_min": 0.6666666666666666,
+      "unstable_candidate_rate_r3_max": 0.1
+    },
+    "feasibility_contract_version": "gate-data-feasibility/v1",
+    "feasibility_thresholds": {
+      "pilot_independent_group_min": 100,
+      "pilot_independent_group_max": 300,
+      "full_independent_group_min": 300,
+      "full_independent_group_max": 300,
+      "pilot_suitable_positive_min": 10,
+      "pilot_suitable_negative_min": 25,
+      "full_suitable_positive_min": 30,
+      "full_suitable_negative_min": 75,
+      "window_length_group_min": 50,
+      "major_statement_family_count_min": 4,
+      "major_statement_family_group_min": 25,
+      "r3_minus_r1_bootstrap_lower_95_exclusive_min": 0.0,
+      "holdout_key_absolute_decline_max": 0.1,
+      "validation_test_suitable_positive_min": 3,
+      "validation_test_suitable_negative_min": 8
+    }
+  },
+  "gate_train": {
+    "model_contract_version": "wfcllm-gate-model-state/v1",
+    "base_encoder_id": "data/models/codet5-small",
+    "parameter_count_min": 30000000,
+    "parameter_count_max": 80000000,
+    "max_tokens": 256,
+    "optimizer": "adamw",
+    "learning_rate": 0.00002,
+    "max_epochs": 4,
+    "early_stopping_patience": 1,
+    "losses": [
+      "close_bce",
+      "suitable_bce",
+      "dangerous_negative_fp"
+    ],
+    "loss_weights": {
+      "close_bce": 1.0,
+      "suitable_bce": 1.0,
+      "close_positive": 1.0,
+      "suitable_positive": 1.0,
+      "suitable_false_positive": 4.0
+    }
+  },
+  "gate_validate": {
+    "contract_version": "wfcllm-gate-validation/v1",
+    "holdout_key_count": 8,
+    "holdout_key_bank_file_parameter": "holdout_key_bank_file",
+    "threshold_fit_grouped": true,
+    "agreement_subset_disjoint": true,
+    "batch_sizes": [1],
+    "orders": ["original"],
+    "cpu_precisions": ["float", "dynamic_qint8"],
+    "gpu_float_if_available": false,
+    "independent_reloads": 1,
+    "formal_quantization": "torch-dynamic-qint8-linear",
+    "max_input_tokens": 512,
+    "acceptance_thresholds": {
+      "decision_agreement_min": 0.999,
+      "float_quantized_accepted_set_agreement_min": 0.999,
+      "formal_accepted_span_consensus_min": 1.0,
+      "suitable_false_positive_rate_max": 0.05
+    }
+  },
+  "artifacts": {
+    "run_root": "data/runs"
+  },
+  "runtime": {
+    "default_phases": [
+      "gate-data",
+      "gate-train",
+      "gate-validate",
+      "generate",
+      "calibrate",
+      "detect",
+      "report"
+    ],
+    "external_validated_bundle_phases": [
+      "generate",
+      "calibrate",
+      "detect",
+      "report"
+    ]
+  }
+}

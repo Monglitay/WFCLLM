@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+from collections import Counter
 import hashlib
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -17,6 +19,10 @@ from wfcllm.generation.outputs import (
 )
 
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
+
+
+class FinalizerIntegrityError(RuntimeError):
+    """Raised when finalizer output cannot be traced to input AST statements."""
 
 
 @dataclass(frozen=True)
@@ -186,6 +192,10 @@ class GatedGenerationPipeline:
                             "program_finalizer must return ProgramFinalizationResult"
                         )
                     original = finalized.code
+                    provenance = _verify_finalizer_statement_provenance(
+                        before=before,
+                        after=original,
+                    )
                     finalizer_rows.append(
                         {
                             "id": sample_id,
@@ -200,11 +210,17 @@ class GatedGenerationPipeline:
                             ).hexdigest(),
                             "before_character_count": len(before),
                             "after_character_count": len(original),
+                            "input_source": before,
+                            "output_source": original,
+                            "carrier_count": 0,
+                            **provenance,
                         }
                     )
                 result = self._generator.generate(prompt=prompt, original=original)
                 if not isinstance(result, GatedGenerationResult):
                     raise ValueError("gated generator returned an invalid result")
+            except FinalizerIntegrityError:
+                raise
             except Exception as exc:
                 if self._config.fail_fast:
                     raise
@@ -274,6 +290,15 @@ class GatedGenerationPipeline:
                 "finalizer_fallback_count": sum(
                     row["applied"] is False for row in finalizer_rows
                 ),
+                "carrier_count": 0,
+                "finalizer_added_ast_statement_count": sum(
+                    int(row["added_ast_statement_count"])
+                    for row in finalizer_rows
+                ),
+                "finalizer_provenance_verified_count": sum(
+                    row["statement_provenance_verified"] is True
+                    for row in finalizer_rows
+                ),
                 "secret_source_type": self._config.secret_source_type,
                 "sample_count": len(final_rows),
                 "sample_failure_count": sum(
@@ -305,6 +330,80 @@ class GatedGenerationPipeline:
         if not isinstance(value, str):
             raise ValueError("base model must return one complete program string")
         return value
+
+
+def _verify_finalizer_statement_provenance(
+    *, before: str, after: str
+) -> dict[str, Any]:
+    """Prove every output statement already occurs in a parseable input prefix."""
+
+    if before == after:
+        statement_count = _statement_count_if_parseable(after)
+        return {
+            "statement_provenance_verified": True,
+            "provenance_mode": "byte_identical",
+            "input_ast_statement_count": statement_count,
+            "output_ast_statement_count": statement_count,
+            "added_ast_statement_count": 0,
+        }
+
+    try:
+        output_tree = ast.parse(after)
+    except SyntaxError as exc:
+        raise FinalizerIntegrityError(
+            "non-identical finalizer output must be parseable for AST provenance"
+        ) from exc
+
+    output_statements = _statement_fingerprints(output_tree)
+    smallest_deficit = sum(output_statements.values())
+    matched_input_count: int | None = None
+    for input_tree in _parseable_line_prefix_trees(before):
+        input_statements = _statement_fingerprints(input_tree)
+        deficit = output_statements - input_statements
+        deficit_count = sum(deficit.values())
+        smallest_deficit = min(smallest_deficit, deficit_count)
+        if deficit_count == 0:
+            matched_input_count = sum(input_statements.values())
+            break
+
+    if matched_input_count is None:
+        raise FinalizerIntegrityError(
+            "finalizer introduced AST statements: "
+            f"at least {smallest_deficit} output statements lack input provenance"
+        )
+
+    return {
+        "statement_provenance_verified": True,
+        "provenance_mode": "ast_statement_multiset_subset",
+        "input_ast_statement_count": matched_input_count,
+        "output_ast_statement_count": sum(output_statements.values()),
+        "added_ast_statement_count": 0,
+    }
+
+
+def _statement_count_if_parseable(source: str) -> int | None:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    return sum(_statement_fingerprints(tree).values())
+
+
+def _statement_fingerprints(tree: ast.AST) -> Counter[str]:
+    return Counter(
+        ast.dump(node, annotate_fields=True, include_attributes=False)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.stmt)
+    )
+
+
+def _parseable_line_prefix_trees(source: str) -> Iterable[ast.Module]:
+    lines = source.splitlines(keepends=True)
+    for end in range(len(lines), 0, -1):
+        try:
+            yield ast.parse("".join(lines[:end]))
+        except SyntaxError:
+            continue
 
 
 def _hash_tree(root: Path) -> str:
