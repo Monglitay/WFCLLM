@@ -2023,7 +2023,7 @@ def _load_causal_rewriter(options: LocalHFGateRuntimeOptions):
         ),
         generation_attempts=options.rewrite_generation_attempts,
         unique_structural_fallback=False,
-        conservative_semantic_guard=True,
+        conservative_semantic_guard=False,
     )
 
 
