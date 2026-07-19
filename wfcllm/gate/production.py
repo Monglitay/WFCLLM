@@ -722,13 +722,16 @@ class LocalHFProductionAdapter:
     ):
         import torch
 
-        from wfcllm.gate.bundle import GateBundle, quantize_gate_model_dynamic
+        from wfcllm.gate.bundle import (
+            GateBundle,
+            quantize_gate_model_dynamic,
+            sha256_file,
+        )
         from wfcllm.gate.config import GateTrainConfig, GateValidateConfig
         from wfcllm.gate.model import GateModel
         from wfcllm.gate.validation import (
             GateValidationArtifacts,
             GateValidator,
-            sha256_file,
         )
 
         rows = self._load_training_cache(config.config_hash)

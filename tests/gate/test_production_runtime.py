@@ -106,6 +106,34 @@ def test_deployment_scorer_and_runtime_hash_bind_lsh_gamma(
     )
 
 
+def test_validate_candidate_resolves_hash_helper_before_loading_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class CacheLoaded(RuntimeError):
+        pass
+
+    adapter = object.__new__(gate_production.LocalHFProductionAdapter)
+
+    def stop_after_imports(_self, _config_hash):
+        raise CacheLoaded
+
+    monkeypatch.setattr(
+        gate_production.LocalHFProductionAdapter,
+        "_load_training_cache",
+        stop_after_imports,
+    )
+
+    with pytest.raises(CacheLoaded):
+        adapter.validate_candidate(
+            config=SimpleNamespace(config_hash="config"),
+            candidate_bundle=Path("candidate"),
+            data_manifest={},
+            threshold_fit_group_ids=(),
+            agreement_group_ids=(),
+            output_dir=Path("output"),
+        )
+
+
 def test_public_semantic_runtime_initialization_is_repeatable_and_rng_isolated(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
