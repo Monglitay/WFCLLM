@@ -685,6 +685,37 @@ def test_progressive_stage_records_are_frozen_and_keep_one_identity_digest() -> 
         identity.group_id = "changed"
 
 
+def test_audit_label_recompute_treats_invalid_candidate_empty_probe_as_no_holdout_hit() -> None:
+    observations_template, probes_template = _evidence_templates(True)
+    observations = {
+        length: list(observations_template[str(length)])
+        for length in (1, 2, 3)
+    }
+    results = {
+        length: list(probes_template[str(length)])
+        for length in (1, 2, 3)
+    }
+    observations[3][1] = replace(
+        observations[3][1],
+        parse_status="parse_error",
+        unit_count=0,
+        same_parent_scope=False,
+        stable_across_precision_modes=False,
+        stable_across_batch_modes=False,
+        lsh_by_key_id={},
+        lsh_signature=None,
+    )
+    results[3][1] = types.MappingProxyType({})
+
+    payload = gate_pipeline._derived_label_payload(
+        observations,
+        results,
+        holdout_ids=tuple(f"holdout-key-{index:03d}" for index in range(8)),
+    )
+
+    assert payload["holdout_success_rate"] == pytest.approx(5 / 8)
+
+
 def test_formal_candidate_tree_rejects_excess_entries_depth_and_path_bytes(tmp_path: Path) -> None:
     def candidate(name: str) -> Path:
         root = tmp_path / name

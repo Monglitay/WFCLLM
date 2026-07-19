@@ -1760,7 +1760,8 @@ def _derived_label_payload(
     selected = labels[3]
     holdout_success_rate = sum(
         any(
-            results[3][candidate_index][key_id].is_reliable_hit(configured_margin=0.0)
+            (probe := results[3][candidate_index].get(key_id)) is not None
+            and probe.is_reliable_hit(configured_margin=0.0)
             for candidate_index in range(4)
         )
         for key_id in holdout_ids
