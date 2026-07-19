@@ -26,6 +26,7 @@ from wfcllm.orchestration.state import RunStateManager
 
 _GATED_METHOD = "gated_semantic_window_v1"
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
+_MAX_PUBLIC_AUDIT_ARTIFACT_BYTES = 32 * 1024 * 1024
 
 # ---------------------------------------------------------------------------
 # Compare-only mode flag names
@@ -424,7 +425,7 @@ def _read_public_json_artifacts(path: Path) -> list[object]:
     """Read a bounded JSON/JSONL public artifact for the audit runner."""
 
     raw = path.read_text(encoding="utf-8")
-    if len(raw.encode("utf-8")) > 16 * 1024 * 1024:
+    if len(raw.encode("utf-8")) > _MAX_PUBLIC_AUDIT_ARTIFACT_BYTES:
         raise ValueError("public audit artifact exceeds size limit")
     if path.suffix == ".jsonl":
         try:
