@@ -146,6 +146,39 @@ def test_gated_preset_rejects_invalid_method_specific_contract() -> None:
         )
 
 
+def test_formal_gated_preset_requires_genuine_four_bit_semantic_lsh() -> None:
+    preset = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME)
+    formal = replace(
+        preset,
+        method={
+            **preset.method,
+            "gate": {
+                **preset.method["gate"],
+                "require_validated": True,
+            },
+            "semantic": {
+                **preset.method["semantic"],
+                "lsh": {
+                    **preset.method["semantic"]["lsh"],
+                    "d": 4,
+                    "gamma": 0.25,
+                },
+            },
+        },
+        semantic_lsh={
+            **preset.semantic_lsh,
+            "rule_name": "semantic_lsh",
+            "lsh_d": 4,
+            "lsh_gamma": 0.25,
+        },
+        runtime={**preset.runtime, "default_phases": SEVEN_PHASES},
+    )
+
+    assert formal.method["semantic"]["lsh"]["d"] == 4
+    assert formal.semantic_lsh["rule_name"] == "semantic_lsh"
+    assert formal.semantic_lsh["lsh_d"] == 4
+
+
 def test_gated_preset_supports_external_validated_bundle_four_phase_mode() -> None:
     preset = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME)
     external = replace(

@@ -487,11 +487,12 @@ class WFCLLMMethodPreset:
             raise ValueError("method.semantic.encoder_id must match the v1 contract")
         if not isinstance(semantic.get("lsh"), Mapping):
             raise ValueError("method.semantic.lsh must be a dict")
+        formal_semantic_lsh = gate.get("require_validated") is True
         self._require_fixed_values(
             semantic_lsh,
             {
-                "d": 1,
-                "gamma": 0.5,
+                "d": 4 if formal_semantic_lsh else 1,
+                "gamma": 0.25 if formal_semantic_lsh else 0.5,
                 "margin": 0.0,
                 "key_derivation_version": "wfcllm-parent-key/v1",
             },
@@ -541,12 +542,18 @@ class WFCLLMMethodPreset:
             },
             "generation",
         )
+        formal_semantic_lsh = (
+            isinstance(self.method.get("gate"), Mapping)
+            and self.method["gate"].get("require_validated") is True
+        )
         self._require_fixed_values(
             self.semantic_lsh,
             {
-                "rule_name": "keyed_text_region",
-                "lsh_d": 1,
-                "lsh_gamma": 0.5,
+                "rule_name": (
+                    "semantic_lsh" if formal_semantic_lsh else "keyed_text_region"
+                ),
+                "lsh_d": 4 if formal_semantic_lsh else 1,
+                "lsh_gamma": 0.25 if formal_semantic_lsh else 0.5,
                 "semantic_margin": 0.0,
                 "use_ordinal_keying": False,
             },
