@@ -844,11 +844,11 @@ class HFCausalRewriteBackend:
     ) -> RewriteGeneration:
         import torch
 
-        instruction = (
-            "Rewrite the Python window below using at most "
-            f"{max_units} complete statements. Return Python code only.\n"
-            f"Task prompt:\n{prompt}\nCompleted prefix:\n{completed_prefix}\n"
-            f"Original window:\n{original_window}\nRewritten window:\n"
+        instruction = self._render_instruction(
+            prompt=prompt,
+            completed_prefix=completed_prefix,
+            original_window=original_window,
+            max_units=max_units,
         )
         encoded = self.tokenizer(instruction, return_tensors="pt", truncation=True)
         inputs = {
@@ -882,7 +882,7 @@ class HFCausalRewriteBackend:
             raise ValueError("rewrite tokenizer decode must return text")
         return RewriteGeneration(
             token_ids=ids,
-            text=text,
+            text=_extract_rewrite_code(text),
             generation_seed_id=f"local-hf-v1:{seed:016x}",
             rewrite_config_id=(
                 f"local-hf-v1:max-new-tokens={self.max_new_tokens}:"
@@ -907,11 +907,11 @@ class HFCausalRewriteBackend:
             range(1, len(candidate_indices) + 1)
         ):
             raise ValueError("batched candidate indices must be contiguous from 1")
-        instruction = (
-            "Rewrite the Python window below using at most "
-            f"{max_units} complete statements. Return Python code only.\n"
-            f"Task prompt:\n{prompt}\nCompleted prefix:\n{completed_prefix}\n"
-            f"Original window:\n{original_window}\nRewritten window:\n"
+        instruction = self._render_instruction(
+            prompt=prompt,
+            completed_prefix=completed_prefix,
+            original_window=original_window,
+            max_units=max_units,
         )
         encoded = self.tokenizer(instruction, return_tensors="pt", truncation=True)
         inputs = {
@@ -956,7 +956,7 @@ class HFCausalRewriteBackend:
             results.append(
                 RewriteGeneration(
                     token_ids=ids,
-                    text=text,
+                    text=_extract_rewrite_code(text),
                     generation_seed_id=f"local-hf-v1-batch:{seed:016x}:{candidate_index}",
                     rewrite_config_id=(
                         f"local-hf-v1-batch:count={len(candidate_indices)}:"
@@ -966,6 +966,55 @@ class HFCausalRewriteBackend:
                 )
             )
         return tuple(results)
+
+    def _render_instruction(
+        self,
+        *,
+        prompt: str,
+        completed_prefix: str,
+        original_window: str,
+        max_units: int,
+    ) -> str:
+        bounded_task = prompt[-2048:]
+        bounded_prefix = completed_prefix[-4096:]
+        content = (
+            "Task description (context only):\n"
+            f"{bounded_task}\n\n"
+            "Completed prefix (context only; do not output it):\n"
+            f"{bounded_prefix}\n\n"
+            f"Rewrite the target window into exactly {max_units} complete Python statements. "
+            "Preserve every referenced name, assigned name, called function, attribute name, "
+            "literal value, side effect, and control-flow outcome. Do not add imports, "
+            "definitions, returns, raises, or calls. Do not rename anything. Use a natural "
+            "behavior-preserving alternative only if one exists; otherwise copy the target. "
+            f"Return code only, with exactly {max_units} complete Python statements.\n\n"
+            f"Target window:\n{original_window}"
+        )
+        apply_template = getattr(self.tokenizer, "apply_chat_template", None)
+        if callable(apply_template):
+            return apply_template(
+                [{"role": "user", "content": content}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        return content
+
+
+def _extract_rewrite_code(text: str) -> str:
+    """Remove only an outer Markdown code fence; retain all other model text."""
+
+    stripped = text.strip()
+    fence = "`" * 3
+    if not stripped.startswith(fence):
+        return text
+    first_newline = stripped.find("\n")
+    if first_newline < 0:
+        return text
+    body = stripped[first_newline + 1 :]
+    closing = body.find(fence)
+    if closing >= 0:
+        body = body[:closing]
+    return body.strip() + ("\n" if body.strip() else "")
 
 
 class LocalSemanticRuntime:
@@ -1949,12 +1998,17 @@ def _sha256_file(path: Path) -> str:
 
 
 def _load_causal_rewriter(options: LocalHFGateRuntimeOptions):
+    import torch
     from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoTokenizer
 
     path = options.effective_rewrite_model_path
     config = AutoConfig.from_pretrained(str(path), local_files_only=True)
     model_class = AutoModelForSeq2SeqLM if bool(getattr(config, "is_encoder_decoder", False)) else AutoModelForCausalLM
-    model = model_class.from_pretrained(str(path), local_files_only=True)
+    model = model_class.from_pretrained(
+        str(path),
+        local_files_only=True,
+        torch_dtype=torch.bfloat16,
+    )
     tokenizer = AutoTokenizer.from_pretrained(str(path), local_files_only=True)
     model.to(options.model_device)
     model.eval()
@@ -1968,7 +2022,8 @@ def _load_causal_rewriter(options: LocalHFGateRuntimeOptions):
             top_p=options.rewrite_top_p,
         ),
         generation_attempts=options.rewrite_generation_attempts,
-        unique_structural_fallback=True,
+        unique_structural_fallback=False,
+        conservative_semantic_guard=True,
     )
 
 

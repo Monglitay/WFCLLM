@@ -176,6 +176,73 @@ def test_unique_structural_fallback_replaces_duplicate_model_outputs() -> None:
     assert all("public-structural-fallback/v1" in result.rewrite_config_id for result in results)
 
 
+def test_conservative_guard_rejects_name_literal_and_operation_changes() -> None:
+    request = RewriteRequest(
+        prompt="",
+        completed_prefix="",
+        original_window=(
+            "leaf_migration.name = new_name\n"
+            "new_changes[app_label] = [leaf_migration]\n"
+        ),
+        canonical_parent="python-statement-window/v1||parent=module|ordinal=0|role=body",
+        window_start_unit_id="0",
+        window_length=2,
+        structural_boundary=StructuralBoundary(
+            0, 84, 0, "module", ("0", "1"), False, False
+        ),
+    )
+
+    class UnsafePool(Generator):
+        def generate_windows(self, **kwargs):
+            texts = (
+                "leaf_migration.name = other_name\nnew_changes[app_label] = [leaf_migration]\n",
+                "leaf_migration.name = new_name\nnew_changes[app_label].append(leaf_migration)\n",
+                "leaf_migration.name = new_name\nnew_changes[app_label] = [leaf_migration, leaf_migration]\n",
+            )
+            return tuple(
+                RewriteGeneration((index,), text, f"seed-{index}", "cfg")
+                for index, text in enumerate(texts, 1)
+            )
+
+    results = CausalWindowRewriter(
+        UnsafePool(),
+        conservative_semantic_guard=True,
+    ).rewrite_many(request, candidate_indices=(1, 2, 3))
+
+    assert [result.code for result in results] == [request.original_window] * 3
+    assert all(result.rewrite_config_id == "public-noop-fallback/v1" for result in results)
+
+
+def test_conservative_guard_allows_natural_keyword_argument_rewrite() -> None:
+    request = RewriteRequest(
+        prompt="",
+        completed_prefix="",
+        original_window="yield Leaf(pc.type, pc.value, prefix=prefix)\n",
+        canonical_parent="python-statement-window/v1||parent=module|ordinal=0|role=body",
+        window_start_unit_id="0",
+        window_length=1,
+        structural_boundary=StructuralBoundary(
+            0, 49, 0, "module", ("0",), False, False
+        ),
+    )
+
+    class KeywordPool(Generator):
+        def generate_windows(self, **kwargs):
+            text = "yield Leaf(type=pc.type, value=pc.value, prefix=prefix)\n"
+            return tuple(
+                RewriteGeneration((index,), text, f"seed-{index}", "cfg")
+                for index in kwargs["candidate_indices"]
+            )
+
+    results = CausalWindowRewriter(
+        KeywordPool(),
+        conservative_semantic_guard=True,
+    ).rewrite_many(request, candidate_indices=(1, 2, 3))
+
+    assert results[0].code != request.original_window
+    assert results[0].parse_status == "ok"
+
+
 def test_key_blind_whitespace_rewriter_emits_distinct_parser_stable_variants() -> None:
     request = RewriteRequest(
         prompt="",

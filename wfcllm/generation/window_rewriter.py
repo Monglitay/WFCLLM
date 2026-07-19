@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+from collections import Counter
 from dataclasses import dataclass
 import hashlib
 import io
@@ -107,6 +109,7 @@ class CausalWindowRewriter:
         extractor: PythonStatementUnitExtractor | None = None,
         generation_attempts: int = 3,
         unique_structural_fallback: bool = False,
+        conservative_semantic_guard: bool = False,
     ) -> None:
         if not callable(getattr(backend, "generate_window", None)):
             raise ValueError("backend must define generate_window")
@@ -114,10 +117,13 @@ class CausalWindowRewriter:
             raise ValueError("generation_attempts must be an integer of at least 3")
         if not isinstance(unique_structural_fallback, bool):
             raise ValueError("unique_structural_fallback must be a bool")
+        if not isinstance(conservative_semantic_guard, bool):
+            raise ValueError("conservative_semantic_guard must be a bool")
         self._backend = backend
         self._extractor = extractor or PythonStatementUnitExtractor()
         self._generation_attempts = generation_attempts
         self._unique_structural_fallback = unique_structural_fallback
+        self._conservative_semantic_guard = conservative_semantic_guard
 
     def rewrite_generation(
         self, request: RewriteRequest, *, candidate_index: int
@@ -128,7 +134,7 @@ class CausalWindowRewriter:
             completed_prefix=request.completed_prefix,
             original_window=request.original_window,
             candidate_index=candidate_index,
-            max_units=3,
+            max_units=request.window_length,
         )
         if not isinstance(value, RewriteGeneration):
             raise ValueError("causal backend must return RewriteGeneration")
@@ -183,7 +189,7 @@ class CausalWindowRewriter:
                 completed_prefix=request.completed_prefix,
                 original_window=request.original_window,
                 candidate_indices=generation_indices,
-                max_units=3,
+                max_units=request.window_length,
             )
         if (
             not isinstance(generated, tuple)
@@ -199,6 +205,13 @@ class CausalWindowRewriter:
                 value
                 for value in parsed
                 if _is_usable(value, expected_unit_count=request.window_length)
+                and (
+                    not self._conservative_semantic_guard
+                    or _is_conservative_semantic_variant(
+                        request.original_window,
+                        value.text,
+                    )
+                )
             ]
             if self._unique_structural_fallback:
                 selected = _first_unique(
@@ -240,6 +253,29 @@ class CausalWindowRewriter:
                 while len(selected) < len(candidate_indices):
                     selected.append(exact_pool[cursor % len(exact_pool)])
                     cursor += 1
+            parsed = tuple(selected)
+        elif self._conservative_semantic_guard:
+            selected = [
+                value
+                for value in parsed
+                if _is_usable(value, expected_unit_count=request.window_length)
+                and _is_conservative_semantic_variant(
+                    request.original_window,
+                    value.text,
+                )
+            ]
+            original = self._parse_generation(
+                request,
+                RewriteGeneration(
+                    token_ids=(),
+                    text=request.original_window,
+                    generation_seed_id="public-noop-fallback/original-window",
+                    rewrite_config_id="public-noop-fallback/v1",
+                ),
+            )
+            selected = selected[: len(candidate_indices)]
+            while len(selected) < len(candidate_indices):
+                selected.append(original)
             parsed = tuple(selected)
         return tuple(
             self._candidate_from_parsed(
@@ -451,6 +487,50 @@ def _is_usable(
         and value.same_parent_scope
         and value.unit_count == expected_unit_count
     )
+
+
+def _is_conservative_semantic_variant(original: str, candidate: str) -> bool:
+    """Reject copies and obvious name/literal/operation-changing rewrites.
+
+    This is a static semantic-conservation guard, not a quality or test oracle.
+    It deliberately permits positional-to-keyword call spelling, a natural
+    source-level rewrite that adds only ``ast.keyword`` wrapper nodes.
+    """
+
+    try:
+        original_tree = ast.parse(original)
+        candidate_tree = ast.parse(candidate)
+    except SyntaxError:
+        return False
+    if ast.dump(original_tree, include_attributes=False) == ast.dump(
+        candidate_tree,
+        include_attributes=False,
+    ):
+        return False
+
+    ignored = (ast.expr_context, ast.keyword)
+
+    def facts(tree: ast.AST) -> tuple[object, ...]:
+        nodes = tuple(ast.walk(tree))
+        return (
+            Counter(
+                type(node).__name__
+                for node in nodes
+                if not isinstance(node, ignored)
+            ),
+            Counter(
+                (node.id, type(node.ctx).__name__)
+                for node in nodes
+                if isinstance(node, ast.Name)
+            ),
+            Counter(node.attr for node in nodes if isinstance(node, ast.Attribute)),
+            Counter(repr(node.value) for node in nodes if isinstance(node, ast.Constant)),
+            Counter(type(node).__name__ for node in nodes if isinstance(node, ast.operator)),
+            Counter(type(node).__name__ for node in nodes if isinstance(node, ast.boolop)),
+            Counter(type(node).__name__ for node in nodes if isinstance(node, ast.cmpop)),
+        )
+
+    return facts(original_tree) == facts(candidate_tree)
 
 
 def _first_unique(

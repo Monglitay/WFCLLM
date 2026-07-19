@@ -8,8 +8,16 @@ from wfcllm.gate.production import HFCausalRewriteBackend, LocalSemanticRuntime
 
 
 class _Tokenizer:
+    def __init__(self):
+        self.chat_messages = None
+
+    def apply_chat_template(self, messages, **kwargs):
+        self.chat_messages = messages
+        assert kwargs == {"tokenize": False, "add_generation_prompt": True}
+        return "CHAT-FORMATTED"
+
     def __call__(self, text, **kwargs):
-        assert "Original window" in text
+        assert text == "CHAT-FORMATTED"
         return {"input_ids": torch.tensor([[10, 11]]), "attention_mask": torch.ones(1, 2, dtype=torch.long)}
 
     def decode(self, token_ids, **kwargs):
@@ -28,9 +36,10 @@ class _Model:
 
 
 def test_causal_rewrite_backend_decodes_only_new_tokens() -> None:
+    tokenizer = _Tokenizer()
     backend = HFCausalRewriteBackend(
         model=_Model(),
-        tokenizer=_Tokenizer(),
+        tokenizer=tokenizer,
         device="cpu",
         max_new_tokens=64,
         temperature=0.2,
@@ -48,6 +57,11 @@ def test_causal_rewrite_backend_decodes_only_new_tokens() -> None:
     assert result.text == "x = 1\ny = 2\n"
     assert result.token_ids == (21, 22)
     assert result.generation_seed_id.startswith("local-hf-v1:")
+    assert tokenizer.chat_messages[0]["role"] == "user"
+    instruction = tokenizer.chat_messages[0]["content"]
+    assert "exactly 3 complete Python statements" in instruction
+    assert "Preserve every referenced name" in instruction
+    assert "do not output it" in instruction
 
 
 class _Verifier:
