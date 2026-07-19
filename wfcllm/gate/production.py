@@ -106,6 +106,7 @@ class LocalHFGateRuntimeOptions:
     cache_dir: Path = Path("data/gate-cache")
     semantic_embed_dim: int = 128
     lsh_dimension: int = 4
+    lsh_gamma: float = 0.25
     semantic_evidence_rule: str = "semantic_lsh"
     semantic_preservation_threshold: float = 0.9
     rewrite_max_new_tokens: int = 32
@@ -147,6 +148,12 @@ class LocalHFGateRuntimeOptions:
             "keyed_text_region",
         }:
             raise ValueError("unsupported semantic evidence rule")
+        if (
+            isinstance(self.lsh_gamma, bool)
+            or not isinstance(self.lsh_gamma, (int, float))
+            or not 0.0 < self.lsh_gamma < 1.0
+        ):
+            raise ValueError("lsh_gamma must be in (0, 1)")
         if (
             isinstance(self.semantic_preservation_threshold, bool)
             or not isinstance(self.semantic_preservation_threshold, (int, float))
@@ -459,7 +466,8 @@ class LocalHFProductionAdapter:
                     k=max(
                         1,
                         round(
-                            0.25 * (2 ** self.options.lsh_dimension)
+                            self.options.lsh_gamma
+                            * (2 ** self.options.lsh_dimension)
                         ),
                     ),
                 )
@@ -1788,7 +1796,7 @@ def build_local_semantic_window_scorer(
         verifier=components.verifier,
         keying=WatermarkKeying(deployment_key.hex(), options.lsh_dimension),
         contract_version="python-statement-window/v1",
-        k=max(1, round(0.25 * (2 ** options.lsh_dimension))),
+        k=max(1, round(options.lsh_gamma * (2 ** options.lsh_dimension))),
         margin=0.0,
         semantic_preservation_threshold=(
             options.semantic_preservation_threshold
@@ -1803,6 +1811,8 @@ def local_semantic_runtime_hash(options: LocalHFGateRuntimeOptions) -> str:
         + _PUBLIC_SEMANTIC_INITIALIZATION_SEED.to_bytes(8, "big")
         + options.semantic_embed_dim.to_bytes(4, "big")
         + options.lsh_dimension.to_bytes(4, "big")
+        + repr(float(options.lsh_gamma)).encode("ascii")
+        + b"\0"
         + options.semantic_evidence_rule.encode("utf-8")
         + repr(float(options.semantic_preservation_threshold)).encode("ascii")
         + b"\0"

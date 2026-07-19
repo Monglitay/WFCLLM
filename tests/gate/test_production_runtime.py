@@ -74,6 +74,38 @@ def _runtime_options(tmp_path: Path) -> LocalHFGateRuntimeOptions:
     )
 
 
+@pytest.mark.parametrize("gamma", [True, 0.0, 1.0, -0.1, "0.45"])
+def test_runtime_options_reject_invalid_lsh_gamma(tmp_path: Path, gamma) -> None:
+    with pytest.raises(ValueError, match="lsh_gamma"):
+        replace(_runtime_options(tmp_path), lsh_gamma=gamma)
+
+
+def test_deployment_scorer_and_runtime_hash_bind_lsh_gamma(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured = {}
+
+    def scorer(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(**kwargs)
+
+    monkeypatch.setattr(
+        gate_production,
+        "_load_public_semantic_components",
+        lambda _options: SimpleNamespace(verifier=object()),
+    )
+    monkeypatch.setattr("wfcllm.semantic.window_lsh.SemanticWindowScorer", scorer)
+    baseline = replace(_runtime_options(tmp_path), lsh_dimension=12, lsh_gamma=0.25)
+    configured = replace(baseline, lsh_gamma=0.45)
+
+    gate_production.build_local_semantic_window_scorer(configured, b"deployment")
+
+    assert captured["k"] == round(0.45 * (2**12))
+    assert gate_production.local_semantic_runtime_hash(configured) != (
+        gate_production.local_semantic_runtime_hash(baseline)
+    )
+
+
 def test_public_semantic_runtime_initialization_is_repeatable_and_rng_isolated(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

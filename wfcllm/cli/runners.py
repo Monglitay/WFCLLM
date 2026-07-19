@@ -1219,6 +1219,34 @@ def _local_hf_runtime_options(
             "formal runtime requires semantic_lsh; keyed text regions are "
             "forbidden implicit carriers"
         )
+    top_level_gamma = (
+        semantic_lsh.get("lsh_gamma", 0.25)
+        if isinstance(semantic_lsh, Mapping)
+        else 0.25
+    )
+    method_gamma = (
+        method_semantic_lsh.get("gamma", top_level_gamma)
+        if isinstance(method_semantic_lsh, Mapping)
+        else top_level_gamma
+    )
+    for gamma_name, gamma_value in (
+        ("method.semantic.lsh.gamma", method_gamma),
+        ("semantic_lsh.lsh_gamma", top_level_gamma),
+    ):
+        if (
+            isinstance(gamma_value, bool)
+            or not isinstance(gamma_value, (int, float))
+            or not 0.0 < gamma_value < 1.0
+        ):
+            raise ValueError(f"{gamma_name} must be in (0, 1)")
+    if (
+        isinstance(method_semantic_lsh, Mapping)
+        and "gamma" in method_semantic_lsh
+        and isinstance(semantic_lsh, Mapping)
+        and "lsh_gamma" in semantic_lsh
+        and float(method_gamma) != float(top_level_gamma)
+    ):
+        raise ValueError("method and top-level LSH gamma must match")
     base_model_id = gate_train.get("base_encoder_id") if isinstance(gate_train, Mapping) else None
     base_model_override = getattr(args, "gate_base_model_path", None)
     base_model_path = (
@@ -1257,6 +1285,7 @@ def _local_hf_runtime_options(
             if isinstance(semantic_lsh, Mapping)
             else 4
         ),
+        lsh_gamma=float(method_gamma),
         semantic_evidence_rule=semantic_rule,
         semantic_preservation_threshold=(
             float(preservation.get("threshold", 0.9))

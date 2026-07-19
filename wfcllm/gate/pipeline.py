@@ -1886,12 +1886,27 @@ def _validate_observation_against_results(
             raise ValueError(
                 "evidence-free candidate contradicts serialized semantic observation"
             )
-        if (
+        structurally_usable = (
             observation.parse_status == "ok"
             and observation.same_parent_scope
             and observation.unit_count in {1, 2, 3}
-        ):
+        )
+        if structurally_usable:
+            if (
+                observation.semantic_probe_pending is False
+                and observation.semantic_reference_cosine is not None
+                and observation.semantic_preservation_passed is False
+            ):
+                return
             raise ValueError("structurally usable candidate is missing semantic evidence")
+        if (
+            observation.semantic_probe_pending
+            or observation.semantic_reference_cosine is not None
+            or observation.semantic_preservation_passed is not None
+        ):
+            raise ValueError(
+                "structurally invalid candidate contradicts semantic observation"
+            )
         return
     training_results = {key: results[key] for key in training_ids}
     if set(observation.lsh_by_key_id) != set(training_ids):

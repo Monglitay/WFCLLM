@@ -161,7 +161,7 @@ def test_formal_gated_preset_requires_d12_lsh_and_reference_preservation() -> No
                 "lsh": {
                     **preset.method["semantic"]["lsh"],
                     "d": 12,
-                    "gamma": 0.25,
+                    "gamma": 0.45,
                 },
                 "preservation": {
                     "rule": "codet5-cosine-to-original/v1",
@@ -173,7 +173,7 @@ def test_formal_gated_preset_requires_d12_lsh_and_reference_preservation() -> No
             **preset.semantic_lsh,
             "rule_name": "semantic_lsh",
             "lsh_d": 12,
-            "lsh_gamma": 0.25,
+            "lsh_gamma": 0.45,
         },
         runtime={**preset.runtime, "default_phases": SEVEN_PHASES},
     )
@@ -185,6 +185,7 @@ def test_formal_gated_preset_requires_d12_lsh_and_reference_preservation() -> No
     }
     assert formal.semantic_lsh["rule_name"] == "semantic_lsh"
     assert formal.semantic_lsh["lsh_d"] == 12
+    assert formal.semantic_lsh["lsh_gamma"] == pytest.approx(0.45)
 
 
 def test_gated_preset_supports_external_validated_bundle_four_phase_mode() -> None:

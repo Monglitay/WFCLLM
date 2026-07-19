@@ -488,7 +488,7 @@ class WFCLLMMethodPreset:
             semantic_lsh,
             {
                 "d": 12 if formal_semantic_lsh else 1,
-                "gamma": 0.25 if formal_semantic_lsh else 0.5,
+                "gamma": 0.45 if formal_semantic_lsh else 0.5,
                 "margin": 0.0,
                 "key_derivation_version": "wfcllm-parent-key/v1",
             },
@@ -564,7 +564,7 @@ class WFCLLMMethodPreset:
                     "semantic_lsh" if formal_semantic_lsh else "keyed_text_region"
                 ),
                 "lsh_d": 12 if formal_semantic_lsh else 1,
-                "lsh_gamma": 0.25 if formal_semantic_lsh else 0.5,
+                "lsh_gamma": 0.45 if formal_semantic_lsh else 0.5,
                 "semantic_margin": 0.0,
                 "use_ordinal_keying": False,
             },

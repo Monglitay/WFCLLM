@@ -848,6 +848,37 @@ def test_probe_contract_accepts_explicit_semantic_rejection_without_keyed_result
     )
 
 
+def test_artifact_validator_accepts_only_explicit_semantic_rejection_without_results() -> None:
+    original = _group(0).candidate_observations_by_length["1"][0]
+    rejected = replace(
+        original,
+        stable_across_precision_modes=False,
+        stable_across_batch_modes=False,
+        lsh_by_key_id={},
+        lsh_signature=None,
+        semantic_reference_cosine=0.75,
+        semantic_preservation_passed=False,
+    )
+
+    gate_pipeline._validate_observation_against_results(
+        rejected,
+        {},
+        _group(0).observed_training_key_ids,
+    )
+
+    with pytest.raises(ValueError, match="missing semantic evidence"):
+        gate_pipeline._validate_observation_against_results(
+            replace(
+                rejected,
+                semantic_reference_cosine=None,
+                semantic_preservation_passed=None,
+                semantic_probe_pending=True,
+            ),
+            {},
+            _group(0).observed_training_key_ids,
+        )
+
+
 def test_gate_data_rejects_injected_label_that_disagrees_with_causal_recompute(tmp_path: Path) -> None:
     corrupted = replace(_group(0), suitable_target=False)
     deps = FakeDependencies((corrupted, *tuple(_group(i) for i in range(1, 100))))

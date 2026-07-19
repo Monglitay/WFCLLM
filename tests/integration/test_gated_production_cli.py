@@ -160,21 +160,62 @@ def test_formal_runtime_reads_d12_and_reference_cosine_threshold(
                 "gate": {"require_validated": True},
                 "rewrite": {},
                 "semantic": {
-                    "lsh": {"d": 12},
+                    "lsh": {"d": 12, "gamma": 0.45},
                     "preservation": {
                         "rule": "codet5-cosine-to-original/v1",
                         "threshold": 0.9,
                     },
                 },
             },
-            "semantic_lsh": {"lsh_d": 12, "rule_name": "semantic_lsh"},
+            "semantic_lsh": {
+                "lsh_d": 12,
+                "lsh_gamma": 0.45,
+                "rule_name": "semantic_lsh",
+            },
             "gate_train": {},
         },
         "gate-data",
     )
 
     assert options.lsh_dimension == 12
+    assert options.lsh_gamma == pytest.approx(0.45)
     assert options.semantic_preservation_threshold == pytest.approx(0.9)
+
+
+def test_formal_runtime_rejects_mismatched_lsh_gamma(tmp_path: Path) -> None:
+    source_catalog = tmp_path / "sources.jsonl"
+    source_catalog.write_text("", encoding="utf-8")
+    paths = [tmp_path / name for name in ("generator", "semantic", "gate-base", "cache")]
+    for path in paths:
+        path.mkdir()
+    args = build_parser().parse_args(
+        [
+            "--gate-source-catalog", str(source_catalog),
+            "--generation-model-path", str(paths[0]),
+            "--semantic-encoder-model-path", str(paths[1]),
+            "--gate-base-model-path", str(paths[2]),
+            "--gate-cache-dir", str(paths[3]),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="LSH gamma"):
+        runners._local_hf_runtime_options(
+            args,
+            {
+                "method": {
+                    "gate": {"require_validated": True},
+                    "rewrite": {},
+                    "semantic": {"lsh": {"d": 12, "gamma": 0.45}},
+                },
+                "semantic_lsh": {
+                    "lsh_d": 12,
+                    "lsh_gamma": 0.40,
+                    "rule_name": "semantic_lsh",
+                },
+                "gate_train": {},
+            },
+            "gate-data",
+        )
 
 
 def test_entry_uses_explicit_state_file(monkeypatch, tmp_path: Path) -> None:
