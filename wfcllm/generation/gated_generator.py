@@ -51,6 +51,8 @@ class RewriteTokens:
     unit_count: int | None = None
     same_parent_scope: bool | None = None
     parser_spans: tuple[tuple[int, int], ...] | None = None
+    semantic_validation_rule: str | None = None
+    semantic_equivalence_certified: bool | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.token_ids, tuple) or any(
@@ -90,6 +92,18 @@ class RewriteTokens:
             )
         ):
             raise ValueError("parser_spans must contain non-empty byte spans")
+        if (self.semantic_validation_rule is None) != (
+            self.semantic_equivalence_certified is None
+        ):
+            raise ValueError(
+                "semantic validation rule and certificate must be present together"
+            )
+        if self.semantic_validation_rule is not None and (
+            not isinstance(self.semantic_validation_rule, str)
+            or not self.semantic_validation_rule
+            or not isinstance(self.semantic_equivalence_certified, bool)
+        ):
+            raise ValueError("semantic validation certificate is invalid")
 
 
 @dataclass(frozen=True)
@@ -107,6 +121,7 @@ class GatedWindowAudit:
     close_reason: str
     semantic_reference_cosine: float
     semantic_preservation_passed: bool
+    semantic_validation_rule: str = "encoder-cosine/v1"
 
 
 @dataclass(frozen=True)
@@ -141,6 +156,7 @@ class GatedCandidateAudit:
     semantic_margin: float | None
     selected: bool
     evaluation_status: str
+    semantic_validation_rule: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.window_index) is not int or self.window_index < 0:
@@ -185,6 +201,11 @@ class GatedCandidateAudit:
         passed = self.semantic_preservation_passed
         if (cosine is None) != (passed is None):
             raise ValueError("semantic cosine and decision must be present together")
+        semantic_rule = self.semantic_validation_rule
+        if passed is not None and semantic_rule is None:
+            semantic_rule = "encoder-cosine/v1"
+        if passed is None and semantic_rule is not None:
+            raise ValueError("unvalidated candidate must not name a semantic rule")
         if cosine is not None:
             if (
                 isinstance(cosine, bool)
@@ -193,8 +214,22 @@ class GatedCandidateAudit:
                 or not -1.0 <= float(cosine) <= 1.0
             ):
                 raise ValueError("semantic cosine must be finite and in [-1, 1]")
-            if not isinstance(passed, bool) or passed is not (float(cosine) >= 0.90):
-                raise ValueError("semantic decision must equal cosine >= 0.90")
+            if not isinstance(passed, bool):
+                raise ValueError("semantic decision must be a bool")
+            if semantic_rule not in {
+                "identity/v1",
+                "encoder-cosine/v1",
+                "python-ast-equivalent/v1",
+            }:
+                raise ValueError("unknown semantic validation rule")
+            if semantic_rule == "encoder-cosine/v1" and passed is not (
+                float(cosine) >= 0.90
+            ):
+                raise ValueError("encoder semantic decision must equal cosine >= 0.90")
+            if semantic_rule == "identity/v1" and (
+                passed is not True or not math.isclose(float(cosine), 1.0)
+            ):
+                raise ValueError("identity candidate must have unit cosine and pass")
         if not isinstance(self.keyed_lsh_scored, bool):
             raise ValueError("keyed_lsh_scored must be a bool")
         keyed_values = (
@@ -360,12 +395,15 @@ class GatedGenerator:
                 parser_spans=tuple(
                     (unit.start_byte, unit.end_byte) for unit in window.units
                 ),
+                semantic_validation_rule="identity/v1",
+                semantic_equivalence_certified=True,
             )
             selected = candidate_zero
             selected_index = 0
             selected_units = tuple(window.units)
             selected_semantic_cosine = 1.0
             selected_semantic_preserved = True
+            selected_semantic_validation_rule = "identity/v1"
             window_candidate_audit: list[GatedCandidateAudit] = []
 
             if window.suitable and window.close_reason is not CloseReason.INPUT_OVERFLOW:
@@ -389,6 +427,7 @@ class GatedGenerator:
                         structure_ok=True,
                         preservation_cosine=1.0,
                         preservation_passed=True,
+                        semantic_validation_rule="identity/v1",
                         evidence=original_evidence,
                         evaluation_status="evaluated_original",
                     )
@@ -404,7 +443,11 @@ class GatedGenerator:
                         window=tuple(window.units),
                     ),
                 )
-                generated_trajectory = self._rewrite_trajectory(request)
+                generated_trajectory = (
+                    self._rewrite_trajectory(request)
+                    if self._max_rewrites == 3
+                    else None
+                )
                 while controller.next_action() is RetryAction.REWRITE:
                     candidate_index = controller.rewrite_count + 1
                     candidate = (
@@ -419,17 +462,37 @@ class GatedGenerator:
                         original_window=window,
                     )
                     evidence = None
-                    semantic_preservation = None
+                    semantic_preservation_cosine = None
+                    semantic_preservation_passed = None
+                    semantic_validation_rule = None
                     if checked is not None:
                         candidate_units, candidate_window = checked
                         candidate_semantic_text = "".join(
                             unit.text for unit in candidate_units
                         )
-                        semantic_preservation = self._compare_semantics(
+                        semantic_comparison = self._compare_semantics(
                             reference_text=original_semantic_text,
                             candidate_text=candidate_semantic_text,
                         )
-                        if semantic_preservation.passed:
+                        semantic_preservation_cosine = float(
+                            semantic_comparison.cosine
+                        )
+                        candidate_rule = candidate.semantic_validation_rule
+                        if candidate_rule is None:
+                            semantic_validation_rule = "encoder-cosine/v1"
+                            semantic_preservation_passed = bool(
+                                semantic_comparison.passed
+                            )
+                        elif candidate_rule == "python-ast-equivalent/v1":
+                            semantic_validation_rule = candidate_rule
+                            semantic_preservation_passed = bool(
+                                candidate.semantic_equivalence_certified
+                            )
+                        else:
+                            raise ValueError(
+                                f"unsupported rewrite semantic validation rule: {candidate_rule}"
+                            )
+                        if semantic_preservation_passed:
                             evidence = self._score(
                                 window_text=candidate_semantic_text,
                                 parent_descriptor=(
@@ -452,22 +515,18 @@ class GatedGenerator:
                             candidate=candidate,
                             structure_ok=checked is not None,
                             preservation_cosine=(
-                                None
-                                if semantic_preservation is None
-                                else float(semantic_preservation.cosine)
+                                semantic_preservation_cosine
                             ),
                             preservation_passed=(
-                                None
-                                if semantic_preservation is None
-                                else bool(semantic_preservation.passed)
+                                semantic_preservation_passed
                             ),
+                            semantic_validation_rule=semantic_validation_rule,
                             evidence=evidence,
                             evaluation_status=(
                                 "structure_rejected"
                                 if checked is None
                                 else "semantic_rejected"
-                                if semantic_preservation is not None
-                                and not semantic_preservation.passed
+                                if semantic_preservation_passed is False
                                 else "keyed_lsh_evaluated"
                             ),
                         )
@@ -477,11 +536,13 @@ class GatedGenerator:
                         selected = candidate
                         selected_index = candidate_index
                         selected_units = checked[0]
-                        assert semantic_preservation is not None
+                        assert semantic_preservation_cosine is not None
                         selected_semantic_cosine = float(
-                            semantic_preservation.cosine
+                            semantic_preservation_cosine
                         )
                         selected_semantic_preserved = True
+                        assert semantic_validation_rule is not None
+                        selected_semantic_validation_rule = semantic_validation_rule
                         break
                 if generated_trajectory is not None:
                     observed_indices = {
@@ -501,6 +562,7 @@ class GatedGenerator:
                                 structure_ok=None,
                                 preservation_cosine=None,
                                 preservation_passed=None,
+                                semantic_validation_rule=None,
                                 evidence=None,
                                 evaluation_status=(
                                     "generated_not_evaluated_after_accept"
@@ -518,6 +580,7 @@ class GatedGenerator:
                         structure_ok=True,
                         preservation_cosine=1.0,
                         preservation_passed=True,
+                        semantic_validation_rule="identity/v1",
                         evidence=None,
                         evaluation_status="gate_skipped",
                     )
@@ -551,6 +614,7 @@ class GatedGenerator:
                     close_reason=window.close_reason.value,
                     semantic_reference_cosine=selected_semantic_cosine,
                     semantic_preservation_passed=selected_semantic_preserved,
+                    semantic_validation_rule=selected_semantic_validation_rule,
                 )
             )
             self._replay_if_available(rollback_anchor, selected)
@@ -594,6 +658,12 @@ class GatedGenerator:
                     unit_count=getattr(value, "unit_count", None),
                     same_parent_scope=getattr(value, "same_parent_scope", None),
                     parser_spans=getattr(value, "parser_spans", None),
+                    semantic_validation_rule=getattr(
+                        value, "semantic_validation_rule", None
+                    ),
+                    semantic_equivalence_certified=getattr(
+                        value, "semantic_equivalence_certified", None
+                    ),
                 )
             )
         return tuple(output)
@@ -621,6 +691,12 @@ class GatedGenerator:
                 unit_count=getattr(value, "unit_count", None),
                 same_parent_scope=getattr(value, "same_parent_scope", None),
                 parser_spans=getattr(value, "parser_spans", None),
+                semantic_validation_rule=getattr(
+                    value, "semantic_validation_rule", None
+                ),
+                semantic_equivalence_certified=getattr(
+                    value, "semantic_equivalence_certified", None
+                ),
             )
         raise ValueError("rewriter must return an exact token/text candidate")
 
@@ -740,6 +816,7 @@ def _candidate_audit(
     structure_ok: bool | None,
     preservation_cosine: float | None,
     preservation_passed: bool | None,
+    semantic_validation_rule: str | None,
     evidence: Any | None,
     evaluation_status: str,
 ) -> GatedCandidateAudit:
@@ -761,6 +838,7 @@ def _candidate_audit(
         structure_ok=structure_ok,
         semantic_reference_cosine=preservation_cosine,
         semantic_preservation_passed=preservation_passed,
+        semantic_validation_rule=semantic_validation_rule,
         keyed_lsh_scored=evidence is not None,
         lsh_signature=signature,
         semantic_hit=(None if evidence is None else bool(evidence.hit)),

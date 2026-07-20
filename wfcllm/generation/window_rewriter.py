@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import ast
+from dataclasses import dataclass, replace
 import hashlib
 import io
+import json
 import token
+import textwrap
 import tokenize
 from typing import Any, Protocol
 
@@ -52,6 +55,22 @@ class ParsedRewrite:
     same_parent_scope: bool
     generation_seed_id: str
     rewrite_config_id: str
+    semantic_validation_rule: str | None = None
+    semantic_equivalence_certified: bool | None = None
+
+    def __post_init__(self) -> None:
+        if (self.semantic_validation_rule is None) != (
+            self.semantic_equivalence_certified is None
+        ):
+            raise ValueError(
+                "semantic validation rule and certificate must be present together"
+            )
+        if self.semantic_validation_rule is not None and (
+            not isinstance(self.semantic_validation_rule, str)
+            or not self.semantic_validation_rule
+            or not isinstance(self.semantic_equivalence_certified, bool)
+        ):
+            raise ValueError("semantic validation certificate is invalid")
 
 
 class CausalRewriteBackend(Protocol):
@@ -88,6 +107,107 @@ class KeyBlindWhitespaceWindowRewriter:
             text=text,
             generation_seed_id=f"public-key-blind-whitespace:{digest}",
             rewrite_config_id="public-key-blind-whitespace/v1",
+        )
+
+
+class KeyBlindAstEquivalentWindowRewriter:
+    """Emit fixed key-blind variants whose Python AST is byte-independently equal.
+
+    The deployment key and LSH outcome never enter candidate construction.  A
+    candidate is certified only when parsing both windows with type comments
+    enabled produces identical attribute-free ASTs.  This is intentionally
+    conservative: unavailable variants remain visible but uncertified.
+    """
+
+    validation_rule = "python-ast-equivalent/v1"
+
+    def __init__(self, *, extractor: PythonStatementUnitExtractor | None = None) -> None:
+        self._extractor = extractor or PythonStatementUnitExtractor()
+
+    def rewrite_windows(
+        self,
+        request: RewriteRequest,
+        *,
+        candidate_indices: tuple[int, ...],
+    ) -> tuple[ParsedRewrite, ...]:
+        if candidate_indices != (1, 2, 3):
+            raise ValueError(
+                "candidate_indices must equal the public trajectory (1, 2, 3)"
+            )
+        return tuple(
+            self.rewrite_window(request, candidate_index=index)
+            for index in candidate_indices
+        )
+
+    def rewrite_many(
+        self,
+        request: RewriteRequest,
+        *,
+        candidate_indices: tuple[int, ...],
+    ) -> tuple[RewriteCandidate, ...]:
+        return tuple(
+            self._candidate_from_parsed(request, parsed)
+            for parsed in self.rewrite_windows(
+                request,
+                candidate_indices=candidate_indices,
+            )
+        )
+
+    def rewrite(
+        self, request: RewriteRequest, *, candidate_index: int
+    ) -> RewriteCandidate:
+        return self._candidate_from_parsed(
+            request,
+            self.rewrite_window(request, candidate_index=candidate_index),
+        )
+
+    def rewrite_window(
+        self, request: RewriteRequest, *, candidate_index: int
+    ) -> ParsedRewrite:
+        _validate_call(request, candidate_index)
+        text = _ast_equivalent_variant(
+            request.original_window,
+            candidate_index=candidate_index,
+        )
+        certified = (
+            text != request.original_window
+            and python_ast_equivalent(request.original_window, text)
+        )
+        generation = RewriteGeneration(
+            token_ids=(),
+            text=text,
+            generation_seed_id=(
+                "public-key-blind-ast:"
+                + hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+            ),
+            rewrite_config_id=f"public-key-blind-ast-equivalent/v1:{candidate_index}",
+        )
+        parsed = _parse_generation(
+            request,
+            generation,
+            extractor=self._extractor,
+        )
+        return replace(
+            parsed,
+            semantic_validation_rule=self.validation_rule,
+            semantic_equivalence_certified=certified,
+        )
+
+    @staticmethod
+    def _candidate_from_parsed(
+        request: RewriteRequest,
+        parsed: ParsedRewrite,
+    ) -> RewriteCandidate:
+        prefix_bytes = len(request.completed_prefix.encode("utf-8"))
+        end_byte = prefix_bytes + len(parsed.text.encode("utf-8"))
+        return RewriteCandidate(
+            code=parsed.text,
+            parse_status=parsed.parse_status,
+            unit_count=parsed.unit_count,
+            same_parent_scope=parsed.same_parent_scope,
+            boundary_span=(prefix_bytes, end_byte),
+            generation_seed_id=parsed.generation_seed_id,
+            rewrite_config_id=parsed.rewrite_config_id,
         )
 
 
@@ -224,43 +344,194 @@ class CausalWindowRewriter:
         request: RewriteRequest,
         generation: RewriteGeneration,
     ) -> ParsedRewrite:
-        prefix_bytes = len(request.completed_prefix.encode("utf-8"))
-        complete_source = request.completed_prefix + generation.text
-        units = [
-            unit
-            for unit in self._extractor.extract(complete_source)
-            if unit.start_byte >= prefix_bytes
-        ]
-        if not generation.text or not units:
-            parse_status = "parse_error"
-        elif (
-            len(units) not in {1, 2, 3}
-            or len(units) != request.window_length
-        ):
-            parse_status = "unit_count_out_of_range"
-        elif any(unit.hard_boundary for unit in units):
-            parse_status = "parse_error"
-        else:
-            parse_status = "ok"
-
-        same_parent = bool(units) and _same_parent(units)
-        if same_parent:
-            same_parent = _descriptor(units[0]).canonical == request.canonical_parent
-        if parse_status == "ok" and not same_parent:
-            parse_status = "scope_changed"
-
-        parent_descriptor = _descriptor(units[0]).canonical if units else None
-        return ParsedRewrite(
-            token_ids=generation.token_ids,
-            text=generation.text,
-            parser_spans=tuple((unit.start_byte, unit.end_byte) for unit in units),
-            parent_descriptor=parent_descriptor,
-            parse_status=parse_status,
-            unit_count=len(units),
-            same_parent_scope=same_parent,
-            generation_seed_id=generation.generation_seed_id,
-            rewrite_config_id=generation.rewrite_config_id,
+        return _parse_generation(
+            request,
+            generation,
+            extractor=self._extractor,
         )
+
+
+def _parse_generation(
+    request: RewriteRequest,
+    generation: RewriteGeneration,
+    *,
+    extractor: PythonStatementUnitExtractor,
+) -> ParsedRewrite:
+    prefix_bytes = len(request.completed_prefix.encode("utf-8"))
+    complete_source = request.completed_prefix + generation.text
+    units = [
+        unit
+        for unit in extractor.extract(complete_source)
+        if unit.start_byte >= prefix_bytes
+    ]
+    if not generation.text or not units:
+        parse_status = "parse_error"
+    elif len(units) not in {1, 2, 3} or len(units) != request.window_length:
+        parse_status = "unit_count_out_of_range"
+    elif any(unit.hard_boundary for unit in units):
+        parse_status = "parse_error"
+    else:
+        parse_status = "ok"
+
+    same_parent = bool(units) and _same_parent(units)
+    if same_parent:
+        same_parent = _descriptor(units[0]).canonical == request.canonical_parent
+    if parse_status == "ok" and not same_parent:
+        parse_status = "scope_changed"
+
+    parent_descriptor = _descriptor(units[0]).canonical if units else None
+    return ParsedRewrite(
+        token_ids=generation.token_ids,
+        text=generation.text,
+        parser_spans=tuple((unit.start_byte, unit.end_byte) for unit in units),
+        parent_descriptor=parent_descriptor,
+        parse_status=parse_status,
+        unit_count=len(units),
+        same_parent_scope=same_parent,
+        generation_seed_id=generation.generation_seed_id,
+        rewrite_config_id=generation.rewrite_config_id,
+    )
+
+
+def python_ast_equivalent(reference: str, candidate: str) -> bool:
+    """Return true only for windows with identical parsed Python ASTs."""
+
+    if not isinstance(reference, str) or not isinstance(candidate, str):
+        raise ValueError("reference and candidate must be strings")
+    try:
+        reference_tree = ast.parse(textwrap.dedent(reference), type_comments=True)
+        candidate_tree = ast.parse(textwrap.dedent(candidate), type_comments=True)
+    except (SyntaxError, ValueError, TypeError):
+        return False
+    return ast.dump(reference_tree, include_attributes=False) == ast.dump(
+        candidate_tree,
+        include_attributes=False,
+    )
+
+
+def _ast_equivalent_variant(text: str, *, candidate_index: int) -> str:
+    prefix = _common_indentation(text)
+    dedented = textwrap.dedent(text)
+    if not dedented.strip():
+        return text
+
+    mode = (candidate_index - 1) % 3
+    if mode == 0:
+        transformed = _rewrite_first_string(dedented)
+    elif mode == 1:
+        transformed = _rewrite_first_integer(dedented)
+    else:
+        transformed = _rewrite_first_string(dedented)
+        transformed = _rewrite_first_integer(transformed)
+    transformed = _parenthesize_first_expression(
+        transformed,
+        depth=candidate_index,
+    )
+
+    if not python_ast_equivalent(dedented, transformed):
+        return text
+    return _restore_indentation(transformed, prefix)
+
+
+def _rewrite_first_string(text: str) -> str:
+    try:
+        items = tuple(tokenize.generate_tokens(io.StringIO(text).readline))
+    except (IndentationError, tokenize.TokenError):
+        return text
+    for item in items:
+        if item.type != token.STRING or item.string[:1].lower() in {"b", "f", "r", "u"}:
+            continue
+        try:
+            value = ast.literal_eval(item.string)
+        except (SyntaxError, ValueError):
+            continue
+        if not isinstance(value, str):
+            continue
+        replacement = json.dumps(value, ensure_ascii=False)
+        if replacement == item.string:
+            replacement = repr(value)
+        if replacement == item.string:
+            continue
+        return _replace_token(text, item, replacement)
+    return text
+
+
+def _rewrite_first_integer(text: str) -> str:
+    try:
+        items = tuple(tokenize.generate_tokens(io.StringIO(text).readline))
+    except (IndentationError, tokenize.TokenError):
+        return text
+    for item in items:
+        if item.type != token.NUMBER:
+            continue
+        try:
+            value = ast.literal_eval(item.string)
+        except (SyntaxError, ValueError):
+            continue
+        if type(value) is not int or value < 0:
+            continue
+        replacement = hex(value)
+        if replacement == item.string:
+            replacement = f"{value:_d}"
+        if replacement == item.string:
+            continue
+        return _replace_token(text, item, replacement)
+    return text
+
+
+def _parenthesize_first_expression(text: str, *, depth: int) -> str:
+    try:
+        tree = ast.parse(text, type_comments=True)
+    except (SyntaxError, ValueError, TypeError):
+        return text
+    candidates = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.expr)
+        and hasattr(node, "lineno")
+        and hasattr(node, "end_lineno")
+    ]
+    if not candidates:
+        return text
+    node = min(
+        candidates,
+        key=lambda item: (item.lineno, item.col_offset, -(item.end_col_offset - item.col_offset)),
+    )
+    source = text.encode("utf-8")
+    start = _byte_offset(source, node.lineno, node.col_offset)
+    end = _byte_offset(source, node.end_lineno, node.end_col_offset)
+    opening = b"(" * depth
+    closing = b")" * depth
+    return (source[:start] + opening + source[start:end] + closing + source[end:]).decode(
+        "utf-8"
+    )
+
+
+def _replace_token(text: str, item: tokenize.TokenInfo, replacement: str) -> str:
+    start = _text_offset(text, item.start)
+    end = _text_offset(text, item.end)
+    return text[:start] + replacement + text[end:]
+
+
+def _byte_offset(source: bytes, line_number: int, byte_column: int) -> int:
+    lines = source.splitlines(keepends=True)
+    if not 1 <= line_number <= len(lines):
+        raise ValueError("AST position is outside source")
+    return sum(len(line) for line in lines[: line_number - 1]) + byte_column
+
+
+def _common_indentation(text: str) -> str:
+    for line in text.splitlines():
+        if line.strip():
+            return line[: len(line) - len(line.lstrip(" \t"))]
+    return ""
+
+
+def _restore_indentation(text: str, prefix: str) -> str:
+    trailing_newline = text.endswith(("\n", "\r"))
+    lines = text.splitlines()
+    restored = "\n".join(prefix + line if line.strip() else line for line in lines)
+    return restored + ("\n" if trailing_newline else "")
 
 
 def _validate_call(request: object, candidate_index: object) -> None:
@@ -341,7 +612,9 @@ def _descriptor(unit: Any) -> ParentDescriptor:
 
 __all__ = [
     "CausalWindowRewriter",
+    "KeyBlindAstEquivalentWindowRewriter",
     "KeyBlindWhitespaceWindowRewriter",
     "ParsedRewrite",
     "RewriteGeneration",
+    "python_ast_equivalent",
 ]

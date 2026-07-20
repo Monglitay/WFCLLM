@@ -922,7 +922,6 @@ def _build_local_gated_generation_pipeline(args: argparse.Namespace):
         LocalRuntimeGateBundle,
         LocalUnvalidatedRuntimeGateBundle,
         build_local_semantic_window_scorer,
-        load_local_causal_rewriter,
         local_semantic_runtime_hash,
     )
     from wfcllm.generation.gated_generator import GatedGenerator
@@ -930,7 +929,10 @@ def _build_local_gated_generation_pipeline(args: argparse.Namespace):
         GatedGenerationPipeline,
         GatedGenerationPipelineConfig,
     )
-    from wfcllm.generation.window_rewriter import KeyBlindWhitespaceWindowRewriter
+    from wfcllm.generation.window_rewriter import (
+        KeyBlindAstEquivalentWindowRewriter,
+        KeyBlindWhitespaceWindowRewriter,
+    )
 
     config = _require_gated_config(args)
     options = _local_hf_runtime_options(args, config, "generate")
@@ -977,11 +979,7 @@ def _build_local_gated_generation_pipeline(args: argparse.Namespace):
         rewriter=(
             KeyBlindWhitespaceWindowRewriter()
             if options.semantic_evidence_rule == "keyed_text_region"
-            else (
-                program.rewriter
-                if options.effective_rewrite_model_path == options.generation_model_path
-                else load_local_causal_rewriter(options)
-            )
+            else KeyBlindAstEquivalentWindowRewriter()
         ),
         max_rewrites=int(config["method"]["rewrite"]["max_attempts"]),
     )

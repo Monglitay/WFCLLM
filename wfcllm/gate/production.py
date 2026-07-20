@@ -23,7 +23,11 @@ from wfcllm.gate.data import (
     LshProbeResult,
     complete_w1_w2_w3_start_unit_ids,
 )
-from wfcllm.generation.window_rewriter import CausalWindowRewriter, RewriteGeneration
+from wfcllm.generation.window_rewriter import (
+    CausalWindowRewriter,
+    KeyBlindAstEquivalentWindowRewriter,
+    RewriteGeneration,
+)
 from wfcllm.gate.labels import build_gate_labels
 from wfcllm.gate.pipeline import GatePipelineGroup, ValidationOutcome
 from wfcllm.gate.schema import CandidateObservation, GateTrainingGroup
@@ -287,7 +291,11 @@ class LocalHFProductionAdapter:
         if not isinstance(options, LocalHFGateRuntimeOptions):
             raise ValueError("local-hf-v1 requires LocalHFGateRuntimeOptions")
         self.options = options
-        self._rewriter: object | None = None
+        self._rewriter: object | None = (
+            KeyBlindAstEquivalentWindowRewriter()
+            if options.semantic_evidence_rule == "semantic_lsh"
+            else None
+        )
         self._semantic_runtime: object | None = None
         self._parent_by_group: dict[str, str] = {}
         self._training_group_by_group: dict[str, GateTrainingGroup] = {}

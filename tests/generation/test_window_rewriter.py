@@ -3,8 +3,10 @@ from __future__ import annotations
 from wfcllm.gate.data import RewriteRequest, StructuralBoundary
 from wfcllm.generation.window_rewriter import (
     CausalWindowRewriter,
+    KeyBlindAstEquivalentWindowRewriter,
     KeyBlindWhitespaceWindowRewriter,
     RewriteGeneration,
+    python_ast_equivalent,
 )
 
 
@@ -207,3 +209,80 @@ def test_key_blind_whitespace_rewriter_preserves_bare_return_semantics() -> None
     )
 
     assert variant.text == "    return  None\n"
+
+
+def test_ast_equivalent_rewriter_emits_three_distinct_certified_variants() -> None:
+    request = RewriteRequest(
+        prompt="",
+        completed_prefix="def f():\n",
+        original_window=(
+            "    label = 'ready'\n"
+            "    count = 10\n"
+            "    return label, count\n"
+        ),
+        canonical_parent=(
+            "python-statement-window/v1|module/function_definition/block|"
+            "parent=block|ordinal=0|role=body"
+        ),
+        window_start_unit_id="0",
+        window_length=3,
+        structural_boundary=StructuralBoundary(
+            9, 64, 1, "block", ("0", "1", "2"), False, False
+        ),
+    )
+
+    variants = KeyBlindAstEquivalentWindowRewriter().rewrite_windows(
+        request, candidate_indices=(1, 2, 3)
+    )
+
+    assert len({variant.text for variant in variants}) == 3
+    assert all(variant.text != request.original_window for variant in variants)
+    assert all(variant.semantic_validation_rule == "python-ast-equivalent/v1" for variant in variants)
+    assert all(variant.semantic_equivalence_certified is True for variant in variants)
+    assert all(
+        python_ast_equivalent(request.original_window, variant.text)
+        for variant in variants
+    )
+
+
+def test_ast_equivalence_rejects_behavior_changes_seen_in_attempt14() -> None:
+    assert python_ast_equivalent("arr.sort()\n", "arr.sort(reverse=True)\n") is False
+    assert python_ast_equivalent("return y\n", "return y - 1\n") is False
+    assert python_ast_equivalent(
+        "for i in range(2, n):\n    total += i\n",
+        "for i in range(2, n + 1):\n    total += i\n",
+    ) is False
+
+
+def test_ast_equivalent_rewriter_preserves_indentation_and_window_length() -> None:
+    variants = KeyBlindAstEquivalentWindowRewriter().rewrite_windows(
+        _request(), candidate_indices=(1, 2, 3)
+    )
+
+    assert all(variant.parse_status == "ok" for variant in variants)
+    assert all(variant.unit_count == 2 for variant in variants)
+    assert all(variant.same_parent_scope is True for variant in variants)
+
+
+def test_ast_equivalent_rewriter_exposes_gate_data_candidate_interface() -> None:
+    results = KeyBlindAstEquivalentWindowRewriter().rewrite_many(
+        _request(), candidate_indices=(1, 2, 3)
+    )
+
+    assert len(results) == 3
+    assert all(result.parse_status == "ok" for result in results)
+    assert all(result.unit_count == 2 for result in results)
+    assert all(result.same_parent_scope is True for result in results)
+
+
+def test_ast_equivalent_rewriter_supports_bounded_online_retry_beyond_r3() -> None:
+    rewriter = KeyBlindAstEquivalentWindowRewriter()
+
+    variants = tuple(
+        rewriter.rewrite_window(_request(), candidate_index=index)
+        for index in range(1, 13)
+    )
+
+    assert len({variant.text for variant in variants}) == 12
+    assert all(variant.semantic_equivalence_certified is True for variant in variants)
+    assert variants[-1].rewrite_config_id.endswith(":12")

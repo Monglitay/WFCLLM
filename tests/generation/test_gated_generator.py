@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from wfcllm.generation.gated_generator import GatedGenerator, RewriteTokens
-from wfcllm.generation.window_rewriter import CausalWindowRewriter, RewriteGeneration
+from wfcllm.generation.window_rewriter import (
+    CausalWindowRewriter,
+    KeyBlindAstEquivalentWindowRewriter,
+    RewriteGeneration,
+)
 from wfcllm.windowing import GateScores, GateThresholds, WindowPartitioner
 
 
@@ -198,6 +202,31 @@ def test_semantic_failure_skips_keyed_score_and_tries_next_candidate() -> None:
     assert result.final_code == "a = 1\nb = 3\n"
     assert result.audit[0].selected_candidate_index == 2
     assert len(scorer.scored_texts) == 2
+
+
+def test_ast_equivalence_certificate_overrides_low_encoder_cosine() -> None:
+    scorer = Scorer([False, True], semantic_passes=[False])
+    generator = GatedGenerator(
+        partitioner=WindowPartitioner(
+            Gate(), GateThresholds(0.2, 0.7, 0.8), lambda text: len(text)
+        ),
+        scorer=scorer,
+        rewriter=KeyBlindAstEquivalentWindowRewriter(),
+        max_rewrites=3,
+    )
+
+    result = generator.generate(
+        prompt="",
+        original="label = 'ready'\ncount = 10\nreturn_value = (label, count)\n",
+    )
+
+    assert result.audit[0].original_unit_count == 3
+    assert result.audit[0].selected_candidate_index == 1
+    assert result.audit[0].semantic_validation_rule == "python-ast-equivalent/v1"
+    assert result.candidates[1].semantic_reference_cosine == 0.5
+    assert result.candidates[1].semantic_preservation_passed is True
+    assert result.candidates[1].semantic_validation_rule == "python-ast-equivalent/v1"
+    assert result.final_code != "label = 'ready'\ncount = 10\nreturn_value = (label, count)\n"
 
 
 def test_batched_online_trajectory_retains_every_candidate_sidecar() -> None:
