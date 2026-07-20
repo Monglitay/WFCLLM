@@ -7,6 +7,7 @@ from wfcllm.generation.window_rewriter import (
     KeyBlindWhitespaceWindowRewriter,
     RewriteGeneration,
     python_ast_equivalent,
+    python_literal_equivalent,
 )
 
 
@@ -286,3 +287,69 @@ def test_ast_equivalent_rewriter_supports_bounded_online_retry_beyond_r3() -> No
     assert len({variant.text for variant in variants}) == 12
     assert all(variant.semantic_equivalence_certified is True for variant in variants)
     assert variants[-1].rewrite_config_id.endswith(":12")
+
+
+def test_literal_equivalence_prover_accepts_identities_and_rejects_changes() -> None:
+    assert python_literal_equivalent("return 10\n", "return 10 + 0\n") is True
+    assert python_literal_equivalent("return 'ok'\n", "return 'ok' + ''\n") is True
+    assert python_literal_equivalent("return y\n", "return y - 1\n") is False
+    assert python_literal_equivalent("'doc'\n", "'doc' + ''\n") is False
+
+
+def test_literal_equivalent_rewriter_adds_distinct_semantic_variants_after_r12() -> None:
+    rewriter = KeyBlindAstEquivalentWindowRewriter()
+    variants = tuple(
+        rewriter.rewrite_window(_request(), candidate_index=index)
+        for index in range(13, 19)
+    )
+
+    assert len({variant.text for variant in variants}) == 6
+    assert all(
+        variant.semantic_validation_rule == "python-literal-equivalent/v1"
+        for variant in variants
+    )
+    assert all(variant.semantic_equivalence_certified is True for variant in variants)
+    assert all(
+        python_literal_equivalent(_request().original_window, variant.text)
+        for variant in variants
+    )
+
+
+def test_literal_equivalent_trajectory_advances_to_next_literal_after_six_modes() -> None:
+    rewriter = KeyBlindAstEquivalentWindowRewriter()
+    first_literal = tuple(
+        rewriter.rewrite_window(_request(), candidate_index=index)
+        for index in range(13, 19)
+    )
+    second_literal = tuple(
+        rewriter.rewrite_window(_request(), candidate_index=index)
+        for index in range(19, 25)
+    )
+
+    assert len({variant.text for variant in second_literal}) == 6
+    assert {variant.text for variant in first_literal}.isdisjoint(
+        variant.text for variant in second_literal
+    )
+    assert all("x = 1\n" in variant.text for variant in second_literal)
+    assert all(variant.semantic_equivalence_certified is True for variant in second_literal)
+
+
+def test_literal_equivalent_rewriter_fails_closed_on_fstrings() -> None:
+    request = RewriteRequest(
+        prompt="",
+        completed_prefix="",
+        original_window='result = f"{value:02d}"\n',
+        canonical_parent="python-statement-window/v1||parent=module|ordinal=0|role=body",
+        window_start_unit_id="0",
+        window_length=1,
+        structural_boundary=StructuralBoundary(
+            0, 24, 0, "module", ("0",), False, False
+        ),
+    )
+
+    variant = KeyBlindAstEquivalentWindowRewriter().rewrite_window(
+        request, candidate_index=13
+    )
+
+    assert variant.text == request.original_window
+    assert variant.semantic_equivalence_certified is False

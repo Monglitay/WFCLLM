@@ -220,6 +220,7 @@ class GatedCandidateAudit:
                 "identity/v1",
                 "encoder-cosine/v1",
                 "python-ast-equivalent/v1",
+                "python-literal-equivalent/v1",
             }:
                 raise ValueError("unknown semantic validation rule")
             if semantic_rule == "encoder-cosine/v1" and passed is not (
@@ -483,7 +484,10 @@ class GatedGenerator:
                             semantic_preservation_passed = bool(
                                 semantic_comparison.passed
                             )
-                        elif candidate_rule == "python-ast-equivalent/v1":
+                        elif candidate_rule in {
+                            "python-ast-equivalent/v1",
+                            "python-literal-equivalent/v1",
+                        }:
                             semantic_validation_rule = candidate_rule
                             semantic_preservation_passed = bool(
                                 candidate.semantic_equivalence_certified

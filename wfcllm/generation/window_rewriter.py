@@ -165,14 +165,26 @@ class KeyBlindAstEquivalentWindowRewriter:
         self, request: RewriteRequest, *, candidate_index: int
     ) -> ParsedRewrite:
         _validate_call(request, candidate_index)
-        text = _ast_equivalent_variant(
-            request.original_window,
-            candidate_index=candidate_index,
-        )
-        certified = (
-            text != request.original_window
-            and python_ast_equivalent(request.original_window, text)
-        )
+        if candidate_index <= 12:
+            validation_rule = self.validation_rule
+            text = _ast_equivalent_variant(
+                request.original_window,
+                candidate_index=candidate_index,
+            )
+            certified = (
+                text != request.original_window
+                and python_ast_equivalent(request.original_window, text)
+            )
+        else:
+            validation_rule = "python-literal-equivalent/v1"
+            text = _literal_equivalent_variant(
+                request.original_window,
+                candidate_index=candidate_index,
+            )
+            certified = (
+                text != request.original_window
+                and python_literal_equivalent(request.original_window, text)
+            )
         generation = RewriteGeneration(
             token_ids=(),
             text=text,
@@ -189,7 +201,7 @@ class KeyBlindAstEquivalentWindowRewriter:
         )
         return replace(
             parsed,
-            semantic_validation_rule=self.validation_rule,
+            semantic_validation_rule=validation_rule,
             semantic_equivalence_certified=certified,
         )
 
@@ -409,6 +421,26 @@ def python_ast_equivalent(reference: str, candidate: str) -> bool:
     )
 
 
+def python_literal_equivalent(reference: str, candidate: str) -> bool:
+    """Prove equivalence after folding only closed literal identities."""
+
+    if not isinstance(reference, str) or not isinstance(candidate, str):
+        raise ValueError("reference and candidate must be strings")
+    try:
+        reference_tree = ast.parse(textwrap.dedent(reference), type_comments=True)
+        candidate_tree = ast.parse(textwrap.dedent(candidate), type_comments=True)
+    except (SyntaxError, ValueError, TypeError):
+        return False
+    if _docstring_values(reference_tree) != _docstring_values(candidate_tree):
+        return False
+    folded = _LiteralIdentityFolder().visit(candidate_tree)
+    ast.fix_missing_locations(folded)
+    return ast.dump(reference_tree, include_attributes=False) == ast.dump(
+        folded,
+        include_attributes=False,
+    )
+
+
 def _ast_equivalent_variant(text: str, *, candidate_index: int) -> str:
     prefix = _common_indentation(text)
     dedented = textwrap.dedent(text)
@@ -431,6 +463,138 @@ def _ast_equivalent_variant(text: str, *, candidate_index: int) -> str:
     if not python_ast_equivalent(dedented, transformed):
         return text
     return _restore_indentation(transformed, prefix)
+
+
+def _literal_equivalent_variant(text: str, *, candidate_index: int) -> str:
+    prefix = _common_indentation(text)
+    dedented = textwrap.dedent(text)
+    try:
+        tree = ast.parse(dedented, type_comments=True)
+    except (SyntaxError, ValueError, TypeError):
+        return text
+    literal_trajectory_index = candidate_index - 13
+    transformer = _LiteralVariantTransformer(
+        literal_trajectory_index % 6,
+        occurrence=literal_trajectory_index // 6,
+    )
+    transformed_tree = transformer.visit(tree)
+    if not transformer.changed:
+        return text
+    ast.fix_missing_locations(transformed_tree)
+    try:
+        transformed = ast.unparse(transformed_tree)
+    except (TypeError, ValueError, RecursionError):
+        return text
+    if text.endswith(("\n", "\r")):
+        transformed += "\n"
+    candidate = _restore_indentation(transformed, prefix)
+    return candidate if python_literal_equivalent(text, candidate) else text
+
+
+class _LiteralVariantTransformer(ast.NodeTransformer):
+    def __init__(self, mode: int, *, occurrence: int) -> None:
+        self.mode = mode
+        self.occurrence = occurrence
+        self._eligible_seen = 0
+        self.changed = False
+        self._skip_standalone_string = False
+
+    def visit_Expr(self, node: ast.Expr):
+        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            return node
+        return self.generic_visit(node)
+
+    def visit_JoinedStr(self, node: ast.JoinedStr):
+        return node
+
+    def visit_Constant(self, node: ast.Constant):
+        if self.changed or isinstance(node.value, bool):
+            return node
+        value = node.value
+        if type(value) is int:
+            replacements = (
+                ast.BinOp(node, ast.Add(), ast.Constant(0)),
+                ast.BinOp(ast.Constant(0), ast.Add(), node),
+                ast.BinOp(node, ast.Sub(), ast.Constant(0)),
+                ast.BinOp(node, ast.Mult(), ast.Constant(1)),
+                ast.BinOp(
+                    ast.BinOp(node, ast.Add(), ast.Constant(1)),
+                    ast.Sub(),
+                    ast.Constant(1),
+                ),
+                ast.BinOp(node, ast.FloorDiv(), ast.Constant(1)),
+            )
+        elif isinstance(value, str):
+            empty = ast.Constant("")
+            replacements = (
+                ast.BinOp(node, ast.Add(), empty),
+                ast.BinOp(empty, ast.Add(), node),
+                ast.BinOp(node, ast.Mult(), ast.Constant(1)),
+                ast.BinOp(ast.Constant(1), ast.Mult(), node),
+                ast.BinOp(ast.BinOp(node, ast.Add(), empty), ast.Add(), ast.Constant("")),
+                ast.BinOp(ast.BinOp(empty, ast.Add(), ast.Constant("")), ast.Add(), node),
+            )
+        else:
+            return node
+        if self._eligible_seen != self.occurrence:
+            self._eligible_seen += 1
+            return node
+        self._eligible_seen += 1
+        self.changed = True
+        return ast.copy_location(replacements[self.mode], node)
+
+
+class _LiteralIdentityFolder(ast.NodeTransformer):
+    def visit_BinOp(self, node: ast.BinOp):
+        node = self.generic_visit(node)
+        if not isinstance(node.left, ast.Constant) or not isinstance(
+            node.right, ast.Constant
+        ):
+            return node
+        left = node.left.value
+        right = node.right.value
+        if isinstance(left, bool) or isinstance(right, bool):
+            return node
+        try:
+            if isinstance(node.op, ast.Add) and (
+                (type(left) is int and type(right) is int)
+                or (isinstance(left, str) and isinstance(right, str))
+            ):
+                value = left + right
+            elif isinstance(node.op, ast.Sub) and type(left) is int and type(right) is int:
+                value = left - right
+            elif isinstance(node.op, ast.Mult) and (
+                (type(left) is int and type(right) is int)
+                or (isinstance(left, str) and type(right) is int)
+                or (type(left) is int and isinstance(right, str))
+            ):
+                value = left * right
+            elif (
+                isinstance(node.op, ast.FloorDiv)
+                and type(left) is int
+                and type(right) is int
+                and right != 0
+            ):
+                value = left // right
+            else:
+                return node
+        except (ArithmeticError, MemoryError, OverflowError):
+            return node
+        return ast.copy_location(ast.Constant(value=value), node)
+
+
+def _docstring_values(tree: ast.AST) -> tuple[str | None, ...]:
+    containers = (
+        ast.Module,
+        ast.FunctionDef,
+        ast.AsyncFunctionDef,
+        ast.ClassDef,
+    )
+    return tuple(
+        ast.get_docstring(node, clean=False)
+        for node in ast.walk(tree)
+        if isinstance(node, containers)
+    )
 
 
 def _rewrite_first_string(text: str) -> str:
@@ -617,4 +781,5 @@ __all__ = [
     "ParsedRewrite",
     "RewriteGeneration",
     "python_ast_equivalent",
+    "python_literal_equivalent",
 ]
