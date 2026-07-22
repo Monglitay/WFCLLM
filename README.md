@@ -202,6 +202,441 @@ export GATE_EPOCHS=3
 - `CALIBRATION_LIMIT=32`：快速校准时取多少 negative 样本。full run 会使用脚本里的 full 流程。
 - `GATE_EPOCHS=3`：门控模型训练轮数。想更快可以调小，想更充分可以调大。
 
+## 影响嵌入、提取和检测效果的主要参数
+
+这一节专门解释“哪些参数会影响实验结果”。这里说的“嵌入”就是生成代码时把水印信号放进去；“提取”就是只看最终代码，把水印信号读出来；“检测”就是判断这份代码是否带水印。
+
+最重要的结论先放前面：
+
+```text
+想提高 Pass@1：不要让改写太激进，优先保证语义不变。
+想提高嵌入率：让更多窗口进入改写，或者增加每个窗口的尝试次数。
+想提高 TPR：让更多可靠窗口命中水印，或者降低检测阈值。
+想降低 FPR：提高检测阈值，或者要求更多可靠窗口。
+想跑得更快：减少样本数、训练轮数、改写次数，或者减少模型大小。
+```
+
+这些目标通常互相拉扯。比如增加改写次数可能提高嵌入率和 TPR，但也会更慢，并且有可能伤害 Pass@1。降低检测阈值可能提高 TPR，但也可能提高 FPR。
+
+### 1. 实验规模参数
+
+这些参数一般通过环境变量设置。
+
+```bash
+export SAMPLE_LIMIT=164
+export CALIBRATION_LIMIT=32
+export GATE_EPOCHS=3
+```
+
+| 参数 | 当前建议 | 影响什么 | 怎么影响 |
+| --- | --- | --- | --- |
+| `SAMPLE_LIMIT` | `164` | HumanEval 覆盖范围、运行时间 | `164` 表示跑完整 HumanEval。调小可以快速试跑，但不能当 full-164 结果汇报。 |
+| `CALIBRATION_LIMIT` | `32` | 校准速度、negative 覆盖 | fast run 里会限制 negative 数量。negative 越少越快，但 FPR 估计更不稳。full run 应尽量用完整 negative 输入。 |
+| `GATE_EPOCHS` | `3` 或配置默认 | gate 训练质量、运行时间 | 轮数更多，gate 可能更稳，但更慢，也可能过拟合。轮数太少，gate 可能选不准窗口。 |
+
+如果只是检查流程，先用小 `SAMPLE_LIMIT`。如果要复现实验结果，必须用：
+
+```bash
+export SAMPLE_LIMIT=164
+```
+
+### 2. 生成模型参数
+
+这些在配置里：
+
+```json
+"generation": {
+  "max_new_tokens": 512,
+  "temperature": 0.0,
+  "top_p": 0.95,
+  "top_k": 0,
+  "seed": 7,
+  "load_in_4bit": true,
+  "max_total_sampled_tokens": 32768
+}
+```
+
+| 参数 | 当前值 | 影响什么 | 怎么影响 |
+| --- | --- | --- | --- |
+| `generation.max_new_tokens` | `512` | Pass@1、运行时间 | 每题最多生成多少 token。太小会截断答案，Pass@1 下降；太大会更慢。 |
+| `generation.temperature` | `0.0` | 稳定性、Pass@1 | `0.0` 更稳定，便于复现。调高会更随机，有时提高个别题质量，但结果波动更大。 |
+| `generation.top_p` | `0.95` | 生成多样性 | 和 temperature 一起控制随机性。temperature 为 `0.0` 时影响通常较小。 |
+| `generation.top_k` | `0` | 生成候选范围 | `0` 通常表示不额外限制 top-k。 |
+| `generation.seed` | `7` | 复现性 | 同样模型、同样环境、同样 seed 更容易复现实验。 |
+| `generation.load_in_4bit` | `true` | 显存、速度、数值差异 | 省显存，适合单卡。可能带来轻微数值差异。 |
+| `generation.max_total_sampled_tokens` | `32768` | 总预算 | 防止生成阶段无限变长。太小会提前停，太大更耗时。 |
+
+一般不建议为了追 Pass@1 临时改这些参数后直接和原结果比较。要比较，就保存新配置和新输出目录。
+
+### 3. 窗口切分参数
+
+“窗口”就是一次准备判断和改写的代码片段。当前方法不是随便改整段代码，而是先按语句切成窗口。
+
+配置位置：
+
+```json
+"method": {
+  "windowing": {
+    "max_units": 3,
+    "max_preceding_units": 3,
+    "excluded_statement_types": [...],
+    "compound_header_singleton": true
+  }
+}
+```
+
+| 参数 | 当前值 | 影响什么 | 怎么影响 |
+| --- | --- | --- | --- |
+| `windowing.max_units` | `3` | 嵌入机会、Pass@1、检测窗口数 | 一个窗口最多包含几个语句。值越大，窗口更长，可能更容易产生稳定信号，但改写风险也更高。当前限制在 1 到 3。 |
+| `windowing.max_preceding_units` | `3` | gate 判断质量 | 给 gate 看多少前文。前文更多，判断可能更准，但输入更长。 |
+| `windowing.excluded_statement_types` | 见配置 | Pass@1、安全性 | 排除 `import`、`raise`、`assert`、`pass`、函数/类头等不适合改写的语句。排除越多，Pass 更稳，但嵌入机会更少。 |
+| `windowing.compound_header_singleton` | `true` | 结构安全 | `if/for/while/def/class` 这类头部单独成窗，避免和 body 混改导致语法或语义问题。 |
+
+这次你提到的“一个语句生成后，门控模型决定等几个语句组成窗口再嵌入”，主要就是这部分和 gate 部分一起控制的。
+
+### 4. gate 参数
+
+gate 可以理解为“窗口选择器”。它决定什么时候关闭窗口，以及这个窗口适不适合改写。
+
+配置位置：
+
+```json
+"method": {
+  "gate": {
+    "require_validated": true,
+    "uncertain_boundary_policy": "close_and_skip",
+    "max_input_tokens": 256
+  }
+}
+```
+
+代码里还有 gate 阈值对象：
+
+```text
+close_low
+close_high
+suitable_accept
+max_units
+max_input_tokens
+```
+
+| 参数 | 当前值/含义 | 影响什么 | 怎么影响 |
+| --- | --- | --- | --- |
+| `gate.require_validated` | full 配置为 `true` | 实验可信度 | `true` 表示必须使用验证过的 gate bundle。更严格，避免拿未验证 gate 直接跑正式结果。 |
+| `gate.uncertain_boundary_policy` | `close_and_skip` | Pass@1、嵌入率 | gate 不确定时关闭窗口并跳过。更保守，Pass 更稳，但嵌入率可能下降。 |
+| `gate.max_input_tokens` | `256` | gate 输入长度、速度 | gate 每次最多看多少 token。太小会缺上下文，太大更慢。 |
+| `close_low` | 代码阈值 | 窗口长度 | close 分数低于它时倾向继续等下一个语句。 |
+| `close_high` | 代码阈值 | 窗口长度 | close 分数高于它时倾向关闭窗口。 |
+| `suitable_accept` | 代码阈值 | 嵌入率、Pass@1 | suitable 分数高于它才认为窗口适合改写。调低会增加嵌入机会，也可能增加坏改写；调高更保守。 |
+
+通俗地说：
+
+```text
+gate 越宽松：嵌入机会更多，TPR 可能更高，但 Pass@1 风险更大。
+gate 越严格：Pass@1 更稳，但很多样本可能窗口太少，TPR 分母变小或嵌入率下降。
+```
+
+### 5. 改写参数
+
+改写就是对一个窗口生成候选版本，然后看能不能带来水印命中。
+
+配置位置：
+
+```json
+"method": {
+  "rewrite": {
+    "max_attempts": 3,
+    "experiment_budgets": [1, 3],
+    "key_blind": true,
+    "temperature": 0.2,
+    "top_p": 0.95,
+    "max_new_tokens": 16,
+    "generation_attempts": 3,
+    "candidate_selection": "fixed-key-blind-abc-trajectory/v1"
+  }
+}
+```
+
+| 参数 | 当前值 | 影响什么 | 怎么影响 |
+| --- | --- | --- | --- |
+| `rewrite.max_attempts` | `3` | 嵌入率、速度、Pass@1 | 每个窗口最多尝试几个改写候选。更多尝试通常提高命中机会，但更慢，也增加误改风险。 |
+| `rewrite.experiment_budgets` | `[1, 3]` | 对比不同预算 | 用来比较只试 1 次和最多试 3 次的效果。 |
+| `rewrite.key_blind` | `true` | 方法合规性 | 改写器不知道密钥，不能直接按答案作弊式生成水印。 |
+| `rewrite.temperature` | `0.2` | 改写多样性、Pass@1 | 越高改写越发散，可能增加命中，也更容易破坏语义。 |
+| `rewrite.top_p` | `0.95` | 改写候选范围 | 控制候选采样范围。太低保守，太高发散。 |
+| `rewrite.max_new_tokens` | `16` | 改写长度、速度 | 每个窗口改写最多生成多少 token。太小可能生成不完整，太大更慢且更容易跑偏。 |
+| `rewrite.generation_attempts` | `3` | 后端生成次数 | 后端内部最多生成几次候选。更多更慢。 |
+| `rewrite.candidate_selection` | 固定轨迹 | 复现性 | 固定 A/B/C 轨迹便于复现和审计。 |
+
+当前代码还会做结构检查：候选必须还是 1 到 3 个语句，不能跑到别的父结构里。结构不合格就拒绝，不会写进最终答案。
+
+### 6. 语义保持参数
+
+这部分控制“改写后是否还像原来的代码”。如果改写语义不稳，Pass@1 可能掉。
+
+配置位置：
+
+```json
+"method": {
+  "semantic": {
+    "preservation": {
+      "rule": "codet5-cosine-to-original/v1",
+      "threshold": 0.9
+    }
+  }
+}
+```
+
+| 参数 | 当前值 | 影响什么 | 怎么影响 |
+| --- | --- | --- | --- |
+| `semantic.preservation.threshold` | `0.9` | Pass@1、嵌入率 | 改写和原窗口的语义相似度要达到这个阈值。调高更安全但更少改写通过；调低嵌入更多但 Pass 风险更大。 |
+| `semantic.preservation.rule` | `codet5-cosine-to-original/v1` | 判断方式 | 用语义编码模型比较原窗口和候选窗口。 |
+
+另外，当前 Python 改写里有一些 AST/literal 等价证明。如果候选能被证明是 AST 等价或字面量等价，就可以绕开纯 cosine 的不稳定性。这对 Pass@1 很重要，因为它比“看起来相似”更可靠。
+
+### 7. 语义 LSH 参数
+
+语义 LSH 是水印信号的核心。它把窗口语义向量映射成一个签名，再根据密钥判断这个窗口是否“命中”。
+
+配置位置：
+
+```json
+"semantic_lsh": {
+  "rule_name": "semantic_lsh",
+  "lsh_d": 12,
+  "lsh_gamma": 0.45,
+  "semantic_margin": 0.0,
+  "use_ordinal_keying": false
+}
+```
+
+同样的信息也在：
+
+```json
+"method": {
+  "semantic": {
+    "lsh": {
+      "d": 12,
+      "gamma": 0.45,
+      "margin": 0.0
+    }
+  }
+}
+```
+
+| 参数 | 当前值 | 影响什么 | 怎么影响 |
+| --- | --- | --- | --- |
+| `semantic_lsh.rule_name` | `semantic_lsh` | 是否是当前方法 | 必须是 `semantic_lsh`。旧 carrier 方法会出现 `keyed_text_region`，那不是当前主方法。 |
+| `semantic_lsh.lsh_d` / `semantic.lsh.d` | `12` | 命中难度、FPR、TPR | 维度越大，随机命中更难，FPR 更低，但嵌入也更难；维度越小，容易命中，但误报风险更高。 |
+| `semantic_lsh.lsh_gamma` / `semantic.lsh.gamma` | `0.45` | 命中宽松程度 | 越大通常越宽松，更多窗口可能命中，TPR 可能升，FPR 也可能升；越小更严格。 |
+| `semantic_lsh.semantic_margin` / `semantic.lsh.margin` | `0.0` | 稳定性 | 要求窗口离边界至少有多少距离。提高 margin 会减少不稳定命中，但也减少可用证据。 |
+| `semantic_lsh.use_ordinal_keying` | `false` | key 派生方式 | 是否把窗口序号也放入 key。当前不使用 ordinal keying，减少生成和提取时序号变化带来的不一致。 |
+
+简单理解：
+
+```text
+lsh_d 控制“签名空间有多细”。
+lsh_gamma 控制“命中判定有多宽”。
+semantic_margin 控制“离边界太近的证据要不要放弃”。
+```
+
+这次保存的诊断里，用了 `hit_rate >= 0.60` 和 `reliable_window_count >= 3` 计算条件 TPR。这里的 `hit_rate` 就是命中窗口数除以可靠窗口数。
+
+### 8. 检测参数
+
+检测阶段只看最终代码，不看生成过程。
+
+配置位置：
+
+```json
+"detector": {
+  "target_fpr": 0.05,
+  "minimum_reliable_windows": 2,
+  "statistic": "reliable_window_hit_rate",
+  "abstain_policy": "exclude_from_denominator"
+}
+```
+
+| 参数 | 当前值 | 影响什么 | 怎么影响 |
+| --- | --- | --- | --- |
+| `detector.target_fpr` | `0.05` | FPR/TPR 平衡 | 目标误报率。越低越严格，FPR 降低但 TPR 可能下降。 |
+| `detector.minimum_reliable_windows` | `2` | 覆盖率、可靠性 | 至少需要多少可靠窗口才给检测结论。调高会更稳，但更多样本变成证据不足。 |
+| `detector.statistic` | `reliable_window_hit_rate` | 检测统计量 | 使用命中率作为检测分数。 |
+| `detector.abstain_policy` | `exclude_from_denominator` | 分母怎么算 | 不稳定窗口不算入命中率分母。 |
+
+检测时每个窗口会有三种状态：
+
+```text
+hit      命中水印
+miss     没命中
+abstain  不稳定，放弃判断
+```
+
+计算：
+
+```text
+reliable_window_count = hit_count + miss_count
+hit_rate = hit_count / reliable_window_count
+```
+
+如果 `reliable_window_count` 小于 `minimum_reliable_windows`，检测结果就是证据不足。
+
+这也是为什么我们单独报告过 `n >= 3`：当可靠窗口至少 3 个时，判断更有意义。
+
+### 9. 校准参数
+
+校准阶段用 negative 样本估计“没有水印时会有多少误报”。
+
+配置位置：
+
+```json
+"calibration": {
+  "method": "pooled_negative_binomial_right_tail",
+  "group_by": "pooled_binomial_tail",
+  "target_fpr": 0.05
+}
+```
+
+| 参数 | 当前值 | 影响什么 | 怎么影响 |
+| --- | --- | --- | --- |
+| `calibration.method` | `pooled_negative_binomial_right_tail` | 阈值估计方式 | 用 pooled 的方式估计右尾概率。 |
+| `calibration.group_by` | `pooled_binomial_tail` | negative 如何分组 | 把窗口证据汇总到同一个背景分布里。 |
+| `calibration.target_fpr` | `0.05` | 检测阈值 | 和 `detector.target_fpr` 对齐。越小越保守。 |
+| `NEGATIVE_INPUT` | 环境变量 | FPR 是否可信 | negative 样本越干净、越接近真实无水印代码，FPR 估计越可信。 |
+
+不要用 positive 样本来挑正式阈值。可以做诊断扫阈值，但报告时要说明是诊断，不是正式校准。
+
+### 10. gate-data 参数
+
+gate-data 是训练 gate 前的数据准备阶段。它决定 gate 学到什么样的窗口选择规则。
+
+配置位置：
+
+```json
+"gate_data": {
+  "window_lengths": [1, 2, 3],
+  "rewrite_count": 3,
+  "rewrite_budgets": [1, 3],
+  "training_key_count": 32,
+  "holdout_key_count": 8,
+  "label_thresholds": {
+    "reliable_success_rate_r3_min": 0.6,
+    "structurally_valid_rewrite_rate_r3_min": 0.6666666666666666,
+    "unstable_candidate_rate_r3_max": 0.1
+  }
+}
+```
+
+| 参数 | 当前值 | 影响什么 | 怎么影响 |
+| --- | --- | --- | --- |
+| `gate_data.window_lengths` | `[1, 2, 3]` | gate 学哪些窗口长度 | 包含 1、2、3 语句窗口。少了某个长度，gate 对该长度判断会弱。 |
+| `gate_data.rewrite_count` | `3` | 训练标签质量、成本 | 每个窗口准备多少候选改写。更多候选让标签更充分，但数据准备更慢。 |
+| `gate_data.rewrite_budgets` | `[1, 3]` | 比较不同尝试次数 | 能看到只试一次和试三次的差别。 |
+| `gate_data.training_key_count` | `32` | gate 训练稳定性 | 训练用 key 数量。更多 key 更稳，但更慢。 |
+| `gate_data.holdout_key_count` | `8` | 泛化检查 | 留出 key 用来检查 gate 是否只记住训练 key。 |
+| `reliable_success_rate_r3_min` | `0.6` | 什么算 positive 窗口 | 三次尝试下成功率至少 0.6 才更可能被标成适合。 |
+| `structurally_valid_rewrite_rate_r3_min` | `2/3` | 结构安全 | 三次候选里结构有效比例太低，就不适合改。 |
+| `unstable_candidate_rate_r3_max` | `0.1` | 稳定性 | 不稳定候选比例太高，gate 应该少选这种窗口。 |
+
+这里的标签会直接影响 gate 的选择风格。标签太宽松，gate 会选很多危险窗口；标签太严格，gate 会漏掉很多可嵌入窗口。
+
+### 11. gate-train 参数
+
+gate-train 是训练门控模型。
+
+配置位置：
+
+```json
+"gate_train": {
+  "learning_rate": 0.00002,
+  "max_epochs": 4,
+  "early_stopping_patience": 1,
+  "loss_weights": {
+    "suitable_false_positive": 4.0
+  }
+}
+```
+
+| 参数 | 当前值 | 影响什么 | 怎么影响 |
+| --- | --- | --- | --- |
+| `gate_train.learning_rate` | `0.00002` | 训练稳定性 | 太大可能训练不稳，太小可能学得慢。 |
+| `gate_train.max_epochs` | `4` | 训练充分度、时间 | 上限轮数。环境变量 `GATE_EPOCHS` 可覆盖运行轮数。 |
+| `gate_train.early_stopping_patience` | `1` | 过拟合和时间 | 验证集不提升时提前停止。 |
+| `loss_weights.suitable_false_positive` | `4.0` | Pass@1、安全性、嵌入率 | 对“把不适合窗口误判为适合”的惩罚更重。值越大，gate 越保守。 |
+
+想让 gate 更激进，可以降低误判惩罚或 suitable 阈值；想保 Pass，更应保持保守。
+
+### 12. gate-validate 参数
+
+gate-validate 是正式使用 gate 前的检查。
+
+配置位置：
+
+```json
+"gate_validate": {
+  "formal_quantization": "torch-dynamic-qint8-linear",
+  "acceptance_thresholds": {
+    "decision_agreement_min": 0.999,
+    "float_quantized_accepted_set_agreement_min": 0.999,
+    "formal_accepted_span_consensus_min": 1.0,
+    "suitable_false_positive_rate_max": 0.05
+  }
+}
+```
+
+| 参数 | 当前值 | 影响什么 | 怎么影响 |
+| --- | --- | --- | --- |
+| `decision_agreement_min` | `0.999` | gate 稳定性 | 不同加载/精度下决策要高度一致。 |
+| `float_quantized_accepted_set_agreement_min` | `0.999` | 部署一致性 | float 和量化版本选出的窗口要几乎一致。 |
+| `formal_accepted_span_consensus_min` | `1.0` | 窗口边界一致性 | 正式接受的 span 必须完全一致。 |
+| `suitable_false_positive_rate_max` | `0.05` | Pass@1 风险 | gate 把危险窗口选中的比例不能太高。 |
+
+这些阈值越严格，正式通过验证的 gate 越可靠，但也更容易验证失败。
+
+### 13. 这次结果里几个关键诊断口径
+
+这次保存的诊断结果里有几个口径需要分清：
+
+```text
+full HumanEval Pass@1:
+113 / 164 = 68.9024%
+
+n >= 3 条件 TPR:
+80 / 130 = 61.5385%
+
+被排除在 n >= 3 分母外的 positive:
+34 / 164
+
+heldout negative false positive:
+4 / 128
+```
+
+解释如下：
+
+- `164`：HumanEval 全量题数。
+- `113`：真实单候选通过测试的题数。
+- `130`：可靠窗口数至少为 3 的 positive 样本数。
+- `80`：在这 130 个样本里，被检测为带水印的数量。
+- `34`：窗口数不足 3 的 positive 样本，没放进 `n >= 3` 条件 TPR 分母。
+- `4 / 128`：heldout negative 里按该诊断阈值误报的数量。
+
+如果你改了 `lsh_d`、`lsh_gamma`、`minimum_reliable_windows`、`target_fpr`、gate 阈值或改写次数，这些数字都会变，不能再直接引用这次结果。
+
+### 14. 推荐调参顺序
+
+如果目标是“先稳定复现，再提高”，建议按这个顺序：
+
+```text
+1. 先不要改参数，完整复现一次。
+2. 只改一个参数，换新 EXPERIMENT_ROOT 跑。
+3. 先看 Pass@1，确认没有明显掉。
+4. 再看 reliable_window_count 覆盖率。
+5. 再看 hit_rate / TPR。
+6. 最后看 heldout negative 的 FPR。
+```
+
+不要一次改很多参数，否则不知道结果变化是谁造成的。
+
 ## 一键运行 HumanEval 全量实验
 
 所有变量设置好以后，运行：
