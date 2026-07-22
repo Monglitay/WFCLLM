@@ -1,102 +1,289 @@
-# WFCLLM: Structure-Aware Generation-Time Semantic Watermarking for Code LLMs
+# WFCLLM
 
-WFCLLM is a structure-aware generation-time semantic watermarking method for code LLMs. The default and official baseline preset remains `evidence_retry_seed7x3`. The optional `gated_semantic_window_v1` preset is experimental; offline fake tests establish its implementation contract and wiring, not real gate effectiveness or detector improvement.
+这个仓库是代码大模型水印实验项目。当前主方法是“无 carrier 的门控语义窗口方法”：模型生成代码时，先按语句窗口切分代码，再由门控模型判断哪些窗口适合改写，最后用语义 LSH 规则判断水印信号。这里的重点是：水印不是靠插入固定 carrier 文本，而是靠门控模型选择窗口后做语义等价或近似等价的代码改写。
 
-WFCLLM embeds semantic LSH evidence while code is generated, using structure-aware boundary detection, rollback-capable evidence-only retry, and strict final-code-only statistical detection. The official protocol forbids pass/test/correctness proxies during generation, retry, calibration, detection, and final candidate selection.
+当前已经跑过的一轮核心实验是 Python HumanEval 全量 164 题。服务器保存的结果是：
 
-## Quick Start
-
-Run commands from the repository root in the `WFCLLM` conda environment.
-
-```bash
-python run.py --status
-python run.py --config configs/base_config.json
-python run.py --phase generate
-python run.py --phase detect --input data/runs/<run_id>/inputs/final_code.jsonl
-python run.py --phase audit --run-dir data/runs/<run_id>
+```text
+Pass@1: 113 / 164 = 68.9024%
+n >= 3 条件 TPR: 80 / 130 = 61.5385%
 ```
 
-To select the experimental gated configuration, use
-`--config configs/wfcllm/gated_semantic_window_v1.json`. Its default phase
-sequence is `gate-data`, `gate-train`, `gate-validate`, `generate`, `calibrate`,
-`detect`, `report`, `audit`. A separately validated external bundle may start
-at `generate` and then uses the normal five main phases.
+`Pass@1` 可以简单理解为：164 道题里，有多少题生成的单个答案能通过真实测试。`n >= 3 条件 TPR` 可以理解为：只看检测器有至少 3 个可靠判断窗口的样本时，水印被检测出来的比例。这个 TPR 是实验诊断指标，不等于正式统计校准结论。
 
-The default run root is `data/runs/`. Generated official detector inputs are written as `inputs/final_code.jsonl` with exactly `id`, `dataset`, `prompt`, and `final_code`.
+## 目录速览
 
-The command block above is the official `run.py` workflow contract for the mainline phases. In this refactor branch, the phase runners currently establish phase names and run-state behavior; for direct artifact-producing generation while those runners are being wired to the full pipeline, use `scripts/wfcllm_generate.py` with the same preset values documented in [docs/REPRO_EVIDENCE_RETRY_SEED7X3.md](docs/REPRO_EVIDENCE_RETRY_SEED7X3.md).
+常用目录如下：
 
-## Remote Gated HumanEval Experiment
+```text
+configs/wfcllm/experiments/        实验配置
+scripts/experiments/               一键运行脚本
+wfcllm/                            项目代码
+tests/                             测试
+docs/                              方法和协议文档
+data/                              本地数据和运行产物，通常不要提交
+```
 
-The current gated semantic HumanEval experiment is the no-carrier variant:
-semantic evidence is embedded by the gated statement-window model and semantic
-LSH rewrite path, not by `keyed_text_region` carrier text. The runnable full
-HumanEval wrapper is:
+这次 HumanEval 实验主要用到：
 
-```bash
+```text
+configs/wfcllm/experiments/python_humaneval_full.json
 scripts/experiments/run_python_humaneval_full.sh
+scripts/experiments/run_gated_experiment.sh
+README.md
 ```
 
-On AutoDL-style servers, keep the repository and experiment state on the data
-disk and use an explicit conda prefix. The server used for the latest run had
-the environment at `/root/autodl-tmp/conda/envs/WFCLLM`.
+## 服务器准备
+
+建议在 AutoDL 这类服务器上把仓库、模型、数据、实验输出都放到数据盘：
+
+```text
+/root/autodl-tmp
+```
+
+不要把大模型、数据集、实验输出放到系统盘 `/`，系统盘通常很小。
+
+如果是新服务器，先进入数据盘：
 
 ```bash
 cd /root/autodl-tmp
-git clone <repo-url> WFCLLM
-cd /root/autodl-tmp/WFCLLM
+```
 
+克隆仓库：
+
+```bash
+git clone https://github.com/Monglitay/WFCLLM.git WFCLLM
+cd /root/autodl-tmp/WFCLLM
+```
+
+如果服务器上已经有仓库，直接进入即可：
+
+```bash
+cd /root/autodl-tmp/WFCLLM
+```
+
+确认当前代码是最新的 `main`：
+
+```bash
+git fetch origin main
+git switch -C main FETCH_HEAD
+git log -1 --oneline
+```
+
+最后一行应该显示一个最新提交。当前可复现实验状态对应的提交是：
+
+```text
+6e94ab2 feat: integrate gated semantic experiment state
+```
+
+如果服务器后续又有更新，以远程 `main` 最新提交为准。
+
+## 安装 Python 环境
+
+推荐使用 conda，并把环境也放到数据盘：
+
+```bash
 /root/miniconda3/bin/conda create -p /root/autodl-tmp/conda/envs/WFCLLM python=3.11 -y
+```
+
+安装依赖：
+
+```bash
 /root/miniconda3/bin/conda run -p /root/autodl-tmp/conda/envs/WFCLLM pip install -r requirements.txt
 ```
 
-All model, dataset, source-catalog, negative-corpus, and key material must be
-local. The runner does not download these resources and does not write private
-keys into public configs or reports.
+如果只想检查环境是否能导入项目，可以运行：
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+  /root/miniconda3/bin/conda run -p /root/autodl-tmp/conda/envs/WFCLLM \
+  python run.py --status
+```
+
+这里的三个 `OFFLINE` 变量表示不要临时联网下载 HuggingFace 模型或数据。正式跑实验时，也建议一直带着它们，避免实验中途因为下载失败或版本变化出问题。
+
+## 需要提前放好的文件
+
+完整跑 HumanEval 实验前，服务器本地必须已经有这些东西：
+
+```text
+1. 代码生成模型
+2. 语义编码模型
+3. gate 基础模型 codet5-small
+4. HumanEval 数据集
+5. gate 训练用 source catalog
+6. gate full run 用 source catalog
+7. negative final_code JSONL
+```
+
+这些文件不会由脚本自动下载。路径由环境变量告诉脚本。
+
+建议按下面这种方式组织：
+
+```text
+/root/autodl-tmp/models/
+  <local-code-generation-model>/
+  <local-semantic-encoder>/
+  codet5-small/
+
+/root/autodl-tmp/data/
+  datasets/
+  gate_sources/
+    python_humaneval_pilot.jsonl
+    python_humaneval_full.jsonl
+  negative/
+    humaneval_negative_final_code.jsonl
+```
+
+如果你的实际路径不一样，没有关系，把后面环境变量改成你的真实路径即可。
+
+## 环境变量怎么填
+
+进入仓库根目录：
+
+```bash
+cd /root/autodl-tmp/WFCLLM
+```
+
+先设置 conda 路径：
 
 ```bash
 export CONDA_EXE=/root/miniconda3/bin/conda
 export CONDA_ENV_PREFIX=/root/autodl-tmp/conda/envs/WFCLLM
+```
 
+设置模型路径：
+
+```bash
 export GENERATION_MODEL_PATH=/root/autodl-tmp/models/<local-code-generation-model>
 export REWRITE_MODEL_PATH="${GENERATION_MODEL_PATH}"
 export SEMANTIC_ENCODER_MODEL_PATH=/root/autodl-tmp/models/<local-semantic-encoder>
 export GATE_BASE_MODEL_PATH=/root/autodl-tmp/models/codet5-small
+```
 
+这几个变量的意思是：
+
+- `GENERATION_MODEL_PATH`：用来生成 HumanEval 答案的代码模型。
+- `REWRITE_MODEL_PATH`：用来生成改写候选的模型。本次实验可以先设成和 `GENERATION_MODEL_PATH` 一样。
+- `SEMANTIC_ENCODER_MODEL_PATH`：用来把代码窗口变成语义向量的模型。
+- `GATE_BASE_MODEL_PATH`：训练门控模型用的基础模型，通常是本地的 `codet5-small`。
+
+设置数据路径：
+
+```bash
 export DATASET_PATH=/root/autodl-tmp/data/datasets
 export PILOT_SOURCE_CATALOG=/root/autodl-tmp/data/gate_sources/python_humaneval_pilot.jsonl
 export FULL_SOURCE_CATALOG=/root/autodl-tmp/data/gate_sources/python_humaneval_full.jsonl
 export NEGATIVE_INPUT=/root/autodl-tmp/data/negative/humaneval_negative_final_code.jsonl
+```
 
+这几个变量的意思是：
+
+- `DATASET_PATH`：HumanEval 数据所在目录。
+- `PILOT_SOURCE_CATALOG`：先做小规模可行性检查用的数据清单。
+- `FULL_SOURCE_CATALOG`：正式 full run 用的数据清单。
+- `NEGATIVE_INPUT`：没有水印的代码样本，用来估计误报情况。
+
+注意：`PILOT_SOURCE_CATALOG` 和 `FULL_SOURCE_CATALOG` 必须是两个不同文件。脚本会检查这一点。这样做是为了避免先用一批数据调方法，正式实验又用同一批数据，导致结果不干净。
+
+设置输出目录和实验规模：
+
+```bash
 export EXPERIMENT_ROOT=/root/autodl-tmp/wfcllm-runs/python-humaneval-full
 export SAMPLE_LIMIT=164
 export CALIBRATION_LIMIT=32
 export GATE_EPOCHS=3
+```
 
+这几个变量的意思是：
+
+- `EXPERIMENT_ROOT`：本次实验所有输出放在哪里。
+- `SAMPLE_LIMIT=164`：跑完整 HumanEval 164 题。
+- `CALIBRATION_LIMIT=32`：快速校准时取多少 negative 样本。full run 会使用脚本里的 full 流程。
+- `GATE_EPOCHS=3`：门控模型训练轮数。想更快可以调小，想更充分可以调大。
+
+## 一键运行 HumanEval 全量实验
+
+所有变量设置好以后，运行：
+
+```bash
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
   scripts/experiments/run_python_humaneval_full.sh
 ```
 
-For a full run, `PILOT_SOURCE_CATALOG` and `FULL_SOURCE_CATALOG` must be
-different files. The wrapper enforces this because pilot gate feasibility and
-the full embedding run must not share the same source-catalog split.
-
-The run writes the formal artifacts under:
+这个脚本会按顺序做这些事：
 
 ```text
-${EXPERIMENT_ROOT}/run/
-  inputs/final_code.jsonl
-  calibration/reference_calibration.json
-  detection/
-  reports/
-  audit/
+1. 检查配置和运行环境
+2. 准备 gate 训练/验证需要的私有 key 和 manifest
+3. 用 pilot 数据做一次可行性检查
+4. 准备 full run 数据
+5. 训练门控模型
+6. 验证门控模型
+7. 生成 HumanEval 164 题答案
+8. 用 negative 样本校准检测阈值
+9. 对生成结果做水印检测
+10. 生成报告
+11. 做审计检查
 ```
 
-Posthoc utility and diagnostic summaries are computed only after generation,
-calibration, detection, report, and audit complete. They must not feed back into
-generation, retry, final-code selection, calibration, or detection.
+脚本结束时会打印：
 
-The latest saved server summary for this experiment was:
+```text
+completed: <run_dir>
+```
+
+这里的 `<run_dir>` 就是正式结果目录。
+
+## 结果在哪里看
+
+如果你按上面的例子设置：
+
+```bash
+export EXPERIMENT_ROOT=/root/autodl-tmp/wfcllm-runs/python-humaneval-full
+```
+
+正式结果会在：
+
+```text
+/root/autodl-tmp/wfcllm-runs/python-humaneval-full/run/
+```
+
+常看文件：
+
+```text
+run/inputs/final_code.jsonl
+```
+
+这是最终生成的代码。检测器正式只看这个文件里的最终代码，不看生成过程日志。
+
+```text
+run/calibration/reference_calibration.json
+```
+
+这是 negative 样本上得到的校准结果。
+
+```text
+run/detection/
+```
+
+这里是检测结果和每个窗口的细节。
+
+```text
+run/reports/
+```
+
+这里是汇总报告。
+
+```text
+run/audit/
+```
+
+这里是审计结果，用来确认实验有没有违反“不能用测试结果来挑答案”等规则。
+
+## 本次已经跑出的结果文件
+
+这次服务器上保存过一份汇总结果：
 
 ```text
 /tmp/gamma25_gate_pass113/humaneval_summary.json
@@ -104,117 +291,164 @@ The latest saved server summary for this experiment was:
 /tmp/gamma25_gate_pass113/n_ge_3_tpr_summary.json
 ```
 
-Those files reported full HumanEval single-candidate Pass@1 as
-`113/164 = 68.9024%`. The conditional diagnostic TPR with eligibility
-`reliable_window_count >= 3` and threshold `hit_rate >= 0.60` was
-`80/130 = 61.5385%`; `34/164` positives were outside that conditional
-denominator. The heldout negative diagnostic count at that threshold was
-`4/128` false positives. This thresholded `n >= 3` TPR is a saved diagnostic
-summary, not the official detector calibration claim.
-
-## Official Method
-
-The main method preset is documented in [docs/WFCLLM_METHOD.md](docs/WFCLLM_METHOD.md). Reproduction notes for the default preset are in [docs/REPRO_EVIDENCE_RETRY_SEED7X3.md](docs/REPRO_EVIDENCE_RETRY_SEED7X3.md).
-
-Core protocol references:
-
-- [No Quality Gate Protocol](docs/NO_QUALITY_GATE_PROTOCOL.md)
-- [Strict Code-Only Detector](docs/STRICT_CODE_ONLY_DETECTOR.md)
-- [Artifact Schema](docs/ARTIFACT_SCHEMA.md)
-- [Diagnostic Upper Bound](docs/DIAGNOSTIC_UPPER_BOUND.md)
-- [Legacy Archive](docs/LEGACY_ARCHIVE.md)
-
-Known metrics for the current official preset are intentionally modest. Detector evidence remains the main limitation, and the preset is the best official single-configuration generation-time candidate rather than a solved detector result.
-
-## Repository Layout
+其中：
 
 ```text
-wfcllm/
-  method/
-  generation/
-  semantic/
-  detection/
-  audit/
-  diagnostics/
-  cli/
-  orchestration/
-  datasets/
-  lang/
-  encoder/
-  common/
-configs/
-  base_config.json
-  wfcllm/
-scripts/
-  wfcllm_generate.py
-  wfcllm_sanitize_final_code.py
-  evaluate.py
-tests/
-docs/
-archive/
+humaneval_summary.json
 ```
 
-The live package is `wfcllm/`. Archived legacy code and historical documentation are kept under `archive/` and `docs/archive/` for traceability.
+看 HumanEval Pass@1 汇总。
 
-## Environment
+```text
+humaneval_results.jsonl
+```
 
-Use the conda environment named `WFCLLM`.
+看 164 道题每一题是否通过。
+
+```text
+n_ge_3_tpr_summary.json
+```
+
+看 `n >= 3` 条件下的 TPR 汇总。
+
+已保存数字：
+
+```text
+Pass@1 = 113 / 164 = 68.9024%
+n >= 3 条件 TPR = 80 / 130 = 61.5385%
+未纳入 n >= 3 分母的 positive = 34 / 164
+heldout negative false positive = 4 / 128
+```
+
+这里的 `n >= 3` 是指检测时可靠窗口数量至少为 3。窗口太少的样本不放进这个条件 TPR 的分母。
+
+## 如何单独验证代码环境
+
+如果只是想确认当前代码能跑，不想立刻跑完整实验，可以先跑这些轻量测试：
 
 ```bash
-conda create -n WFCLLM python=3.11 -y
-conda run -n WFCLLM pip install torch
-conda run -n WFCLLM pip install -r requirements.txt
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+  conda run -p /root/autodl-tmp/conda/envs/WFCLLM pytest \
+  tests/detection/test_gated_pipeline.py \
+  tests/generation/test_gated_generator.py \
+  tests/generation/test_window_rewriter.py \
+  tests/cli/test_experiment_preflight.py \
+  tests/cli/test_gated_generation_dataset_selection.py \
+  tests/integration/test_experiment_matrix.py \
+  tests/lang/test_cpp_adapter.py \
+  tests/lang/test_java_adapter.py \
+  tests/windowing/test_multilanguage.py \
+  tests/generation/test_multilanguage_rewriter.py -q
 ```
 
-Development and tests should assume offline execution unless a user explicitly requests online behavior.
+正常情况下会看到类似：
+
+```text
+68 passed
+```
+
+如果报 `No module named tree_sitter_cpp` 或 `No module named tree_sitter_java`，说明依赖没装全，重新运行：
 
 ```bash
-HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/method -v
-HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/generation -v
-HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/detection -v
-HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/audit -v
-HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/diagnostics -v
-conda run -n WFCLLM python -m compileall wfcllm run.py scripts tools
+/root/miniconda3/bin/conda run -p /root/autodl-tmp/conda/envs/WFCLLM pip install -r requirements.txt
 ```
 
-For model-sensitive tests, prefer local resources under `data/models/` and `data/datasets/`.
+## 常见问题
 
-The gated workflow requires all resources locally: a supported base generation
-model, the semantic encoder, `data/models/codet5-small`, source datasets, a
-private 32-key training bank, a disjoint private 8-key holdout bank, and a
-deployment key supplied through the CLI's file/environment options. It never
-downloads models or datasets automatically. Keys stay outside configs and
-public artifacts; only identifiers and hashes may be published.
+### 1. 脚本说找不到模型
 
-## Mainline Phases
+检查这些变量是否是真实存在的目录：
 
-`run.py` is a thin entrypoint that forwards to `wfcllm.cli.entry:main`.
+```bash
+echo "$GENERATION_MODEL_PATH"
+echo "$REWRITE_MODEL_PATH"
+echo "$SEMANTIC_ENCODER_MODEL_PATH"
+echo "$GATE_BASE_MODEL_PATH"
+```
 
-Default mainline phases:
+再逐个检查：
 
-- `generate`
-- `calibrate`
-- `detect`
-- `report`
-- `audit`
+```bash
+test -d "$GENERATION_MODEL_PATH" && echo OK
+test -d "$SEMANTIC_ENCODER_MODEL_PATH" && echo OK
+test -d "$GATE_BASE_MODEL_PATH" && echo OK
+```
 
-The experimental gated preset prepends three phases:
+### 2. 脚本说 pilot 和 full catalog 不能一样
 
-- `gate-data` builds provenance-bound, no-quality-proxy supervision.
-- `gate-train` trains the close/suitable gate with the fixed six-loss contract.
-- `gate-validate` fits thresholds, validates float/int8 stability, and is the
-  only formal gate-bundle publisher.
+这是正常保护。请准备两个不同文件：
 
-The default config is `configs/base_config.json`, which points to the official method preset and the `data/runs/` artifact root.
+```bash
+echo "$PILOT_SOURCE_CATALOG"
+echo "$FULL_SOURCE_CATALOG"
+```
 
-## Protocol Summary
+它们不能指向同一个路径。
 
-Detector input is final code only. Audit rows, generation traces, retry decisions, candidate sidecars, and posthoc pass reports are not detector inputs.
+### 3. 跑到一半找不到 HumanEval 数据
 
-Posthoc pass reports must carry the marker described in [docs/NO_QUALITY_GATE_PROTOCOL.md](docs/NO_QUALITY_GATE_PROTOCOL.md). They can be used to report utility after the run, but they cannot influence generation, retry, final selection, calibration, or detection.
+检查：
 
-Diagnostic selector outputs must be marked `diagnostic_only=true` and `not_official_method=true`; see [docs/DIAGNOSTIC_UPPER_BOUND.md](docs/DIAGNOSTIC_UPPER_BOUND.md).
+```bash
+echo "$DATASET_PATH"
+find "$DATASET_PATH" -maxdepth 3 -type f | head
+```
 
-Do not commit `data/runs/`, gate datasets, key banks, models, checkpoints,
-bundles, generated JSONL, logs, or other experiment artifacts. The repository
-tracks contracts, code, small configs, tests, and documentation only.
+`DATASET_PATH` 必须指向本地数据目录。
+
+### 4. 想重新跑一次干净实验
+
+换一个新的输出目录即可：
+
+```bash
+export EXPERIMENT_ROOT=/root/autodl-tmp/wfcllm-runs/python-humaneval-full-rerun-001
+```
+
+然后重新运行：
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+  scripts/experiments/run_python_humaneval_full.sh
+```
+
+不要直接覆盖旧目录，这样方便对比不同运行。
+
+### 5. 服务器没有 GPU
+
+完整实验需要 GPU。可以先跑轻量测试确认代码没坏，但 full generation/training 没有 GPU 会非常慢或直接失败。
+
+## 不要提交什么
+
+不要提交这些内容：
+
+```text
+data/
+模型文件
+数据集原文
+私有 key
+checkpoint
+大 JSONL
+实验日志
+实验输出目录
+```
+
+仓库应该只提交代码、配置、小脚本、测试和必要文档。
+
+## 协议说明
+
+当前实验遵守两个基本规则：
+
+```text
+1. 生成和选择答案时，不能看 HumanEval 测试是否通过。
+2. 检测器正式输入只使用最终代码 final_code.jsonl。
+```
+
+这意味着 Pass@1 只能在生成结束后统计，不能反过来影响生成过程。
+
+相关文档：
+
+- [方法说明](docs/WFCLLM_METHOD.md)
+- [Artifact 结构](docs/ARTIFACT_SCHEMA.md)
+- [No Quality Gate 规则](docs/NO_QUALITY_GATE_PROTOCOL.md)
+- [Strict Code-Only Detector](docs/STRICT_CODE_ONLY_DETECTOR.md)
+- [Diagnostic Upper Bound](docs/DIAGNOSTIC_UPPER_BOUND.md)
