@@ -40,3 +40,9 @@ def test_duplicate_register_raises():
 def test_names_includes_python():
     from wfcllm import lang
     assert "python" in lang.names()
+
+
+def test_names_include_cpp_and_java():
+    from wfcllm import lang
+
+    assert {"cpp", "java"}.issubset(lang.names())

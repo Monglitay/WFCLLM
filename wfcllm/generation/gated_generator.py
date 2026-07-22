@@ -321,7 +321,7 @@ class GatedGenerator:
         scorer: SemanticWindowScorer | Any,
         rewriter: WholeWindowRewriter | Any,
         max_rewrites: int,
-        extractor: PythonStatementUnitExtractor | None = None,
+        extractor: Any | None = None,
         model_context: Any | None = None,
     ) -> None:
         if not isinstance(partitioner, WindowPartitioner):
@@ -339,6 +339,7 @@ class GatedGenerator:
         self._rewriter = rewriter
         self._max_rewrites = max_rewrites
         self._extractor = extractor or PythonStatementUnitExtractor()
+        self._window_contract_version = partitioner.window_contract_version
         self._model_context = model_context
 
     def generate(
@@ -387,7 +388,7 @@ class GatedGenerator:
             rewrite_window = source[rollback_anchor:window.end_byte].decode("utf-8")
             candidate_zero = RewriteTokens(
                 original_token_ids,
-                original_window,
+                rewrite_window,
                 generation_seed_id="candidate-zero/original",
                 rewrite_config_id="candidate-zero/original/v1",
                 parse_status="ok",
@@ -499,9 +500,7 @@ class GatedGenerator:
                         if semantic_preservation_passed:
                             evidence = self._score(
                                 window_text=candidate_semantic_text,
-                                parent_descriptor=(
-                                    candidate_window.parent_descriptor.canonical
-                                ),
+                                parent_descriptor=window.parent_descriptor.canonical,
                             )
                     controller.observe(
                         _attempt(
@@ -597,9 +596,15 @@ class GatedGenerator:
                 )
             )
 
-            output.extend(selected.text.encode("utf-8"))
-            selected_start = len(output) - len(selected.text.encode("utf-8"))
+            trailing_layout = source[window.end_byte:replacement_end]
+            selected_text = (
+                selected.text.rstrip(" \t\r\n") if trailing_layout else selected.text
+            )
+            selected_bytes = selected_text.encode("utf-8")
+            output.extend(selected_bytes)
+            selected_start = len(output) - len(selected_bytes)
             selected_end = len(output)
+            output.extend(trailing_layout)
             audit.append(
                 GatedWindowAudit(
                     original_span=ByteSpan(window.start_byte, window.end_byte),
@@ -610,7 +615,9 @@ class GatedGenerator:
                     selected_candidate_index=selected_index,
                     original_token_ids=candidate_zero.token_ids,
                     selected_token_ids=selected.token_ids,
-                    parent_descriptor=_descriptor(selected_units[0]).canonical,
+                    parent_descriptor=_descriptor(
+                        selected_units[0], self._window_contract_version
+                    ).canonical,
                     previous_statement_text_unchanged=(
                         bytes(output[:selected_start])
                         == source[:rollback_anchor]
@@ -881,9 +888,12 @@ def _rewrite_request(
     )
 
 
-def _descriptor(unit: Any) -> ParentDescriptor:
+def _descriptor(
+    unit: Any,
+    window_contract_version: str = WINDOW_CONTRACT_VERSION,
+) -> ParentDescriptor:
     return ParentDescriptor(
-        contract_version=WINDOW_CONTRACT_VERSION,
+        contract_version=window_contract_version,
         ancestor_node_types=unit.parent_path[:-1],
         direct_parent_type=unit.direct_parent_type,
         first_unit_ordinal=unit.direct_child_ordinal,

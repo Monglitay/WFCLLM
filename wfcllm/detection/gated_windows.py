@@ -11,13 +11,13 @@ from typing import Any
 from wfcllm.detection.config import GatedDetectionConfig
 from wfcllm.gate.input import GATE_INPUT_CONTRACT_VERSION
 from wfcllm.windowing import (
-    WINDOW_CONTRACT_VERSION,
     CloseReason,
     GateDecision,
     GateScores,
     GateThresholds,
     ParentDescriptor,
-    PythonStatementUnitExtractor,
+    get_statement_unit_extractor,
+    is_supported_window_contract,
     SemanticWindow,
     SkipReason,
     SkippedContext,
@@ -112,7 +112,17 @@ class GatedWindowExtractor:
         )
         predictor = _bound_stable_predictor(bundle)
         tokenizer_counter = _tokenizer_counter(bundle)
-        self.unit_extractor = PythonStatementUnitExtractor()
+        contract = manifest.window_contract_version
+        self.window_contract_version = contract
+        contract_to_language = {
+            "python-statement-window/v1": "python",
+            "cpp-statement-window/v1": "cpp",
+            "java-statement-window/v1": "java",
+        }
+        language = contract_to_language.get(contract)
+        if language is None:
+            raise ValueError("gate bundle window contract mismatch")
+        self.unit_extractor = get_statement_unit_extractor(language)
         self.partitioner = WindowPartitioner(
             predictor=predictor,
             thresholds=GateThresholds(
@@ -123,6 +133,7 @@ class GatedWindowExtractor:
                 max_input_tokens=manifest.max_tokens,
             ),
             tokenizer_counter=tokenizer_counter,
+            window_contract_version=contract,
         )
 
     def extract(self, final_code: str) -> GatedWindowExtraction:
@@ -202,7 +213,9 @@ def _validate_bundle(
     if manifest is None:
         raise ValueError("validated gate bundle manifest is required")
 
-    if getattr(manifest, "window_contract_version", None) != WINDOW_CONTRACT_VERSION:
+    if not is_supported_window_contract(
+        getattr(manifest, "window_contract_version", None)
+    ):
         raise ValueError("gate bundle window contract mismatch")
     if (
         getattr(manifest, "gate_input_contract_version", None)

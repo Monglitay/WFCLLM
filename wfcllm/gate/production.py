@@ -40,7 +40,10 @@ from wfcllm.windowing import (
     GateScores,
     GateThresholds,
     PythonStatementUnitExtractor,
+    get_statement_unit_extractor,
+    language_for_window_contract,
 )
+from wfcllm.windowing.contracts import is_supported_window_contract
 from wfcllm.windowing.normalization import WINDOW_NORMALIZATION_VERSION, normalize_unit_text
 
 LOCAL_HF_ADAPTER_NAME = "local-hf-v1"
@@ -123,6 +126,7 @@ class LocalHFGateRuntimeOptions:
     gate_learning_rate: float = 2e-5
     gate_early_stopping_patience: int = 1
     gate_resume_checkpoint: Path | None = None
+    window_contract_version: str = WINDOW_CONTRACT_VERSION
 
     def __post_init__(self) -> None:
         for name in (
@@ -152,6 +156,8 @@ class LocalHFGateRuntimeOptions:
             "keyed_text_region",
         }:
             raise ValueError("unsupported semantic evidence rule")
+        if not is_supported_window_contract(self.window_contract_version):
+            raise ValueError("unsupported window contract version")
         if (
             isinstance(self.lsh_gamma, bool)
             or not isinstance(self.lsh_gamma, (int, float))
@@ -291,9 +297,13 @@ class LocalHFProductionAdapter:
         if not isinstance(options, LocalHFGateRuntimeOptions):
             raise ValueError("local-hf-v1 requires LocalHFGateRuntimeOptions")
         self.options = options
+        language = language_for_window_contract(
+            options.window_contract_version
+        )
         self._rewriter: object | None = (
             KeyBlindAstEquivalentWindowRewriter()
             if options.semantic_evidence_rule == "semantic_lsh"
+            and language == "python"
             else None
         )
         self._semantic_runtime: object | None = None
@@ -314,7 +324,10 @@ class LocalHFProductionAdapter:
         records = tuple(load_source_catalog(self.options.source_catalog))
         if source_manifest.get("source_count") != len(records):
             raise ValueError("gate source manifest count does not match catalog")
-        extractor = PythonStatementUnitExtractor()
+        language = language_for_window_contract(
+            self.options.window_contract_version
+        )
+        extractor = get_statement_unit_extractor(language)
         return tuple(
             _ParsedCatalogSource(record, tuple(extractor.extract(record.code)))
             for record in records
@@ -371,6 +384,9 @@ class LocalHFProductionAdapter:
                     repository_id=record.repository_id,
                     task_id=record.task_id,
                     function_id=record.function_id,
+                    language=language_for_window_contract(
+                        config.parser_contract
+                    ),
                     parser_contract_version=config.parser_contract,
                 ),
                 source_text=record.code,
@@ -802,6 +818,7 @@ class LocalHFProductionAdapter:
             training_data_manifest_sha256=_sha256_file(config.data_dir / "manifest.json"),
             training_key_bank_id=data_manifest["training_key_bank_id"],
             holdout_key_bank_id=data_manifest["holdout_key_bank_id"],
+            window_contract_version=self.options.window_contract_version,
         )
         shutil.rmtree(inputs)
         return ValidationOutcome(validated=True, summary=summary, bundle=bundle)
@@ -1476,11 +1493,12 @@ def _load_unvalidated_runtime_manifest(
     *,
     tokenizer_sha256: str,
     max_tokens: int,
+    window_contract_version: str = WINDOW_CONTRACT_VERSION,
 ) -> tuple[_ExperimentalGateManifest, str | None]:
     """Load an optional runtime profile whose bytes are bound by the bundle hash."""
 
     defaults = _ExperimentalGateManifest(
-        window_contract_version=WINDOW_CONTRACT_VERSION,
+        window_contract_version=window_contract_version,
         gate_input_contract_version=GATE_INPUT_CONTRACT_VERSION,
         tokenizer_sha256=tokenizer_sha256,
         close_low_threshold=0.45,
@@ -1571,6 +1589,7 @@ class LocalExperimentalRuntimeGateBundle:
         base_model_path: Path,
         bundle_sha256: str,
         max_tokens: int = 256,
+        window_contract_version: str = WINDOW_CONTRACT_VERSION,
     ) -> None:
         import torch
         from transformers import AutoTokenizer
@@ -1602,7 +1621,7 @@ class LocalExperimentalRuntimeGateBundle:
             "not_official_method": True,
         }
         self.manifest = _ExperimentalGateManifest(
-            window_contract_version=WINDOW_CONTRACT_VERSION,
+            window_contract_version=window_contract_version,
             gate_input_contract_version=GATE_INPUT_CONTRACT_VERSION,
             tokenizer_sha256=tokenizer_hash,
             close_low_threshold=0.45,
@@ -1631,12 +1650,16 @@ class LocalUnvalidatedRuntimeGateBundle(LocalExperimentalRuntimeGateBundle):
     unvalidated_candidate = True
 
     def __init__(self, **kwargs: Any) -> None:
+        window_contract_version = kwargs.get(
+            "window_contract_version", WINDOW_CONTRACT_VERSION
+        )
         super().__init__(**kwargs)
         self.manifest, self.runtime_thresholds_sha256 = (
             _load_unvalidated_runtime_manifest(
                 self.root,
                 tokenizer_sha256=self.tokenizer_sha256,
                 max_tokens=self.manifest.max_tokens,
+                window_contract_version=window_contract_version,
             )
         )
         self.validation_summary = {
@@ -1752,7 +1775,7 @@ class LocalHFProgramGenerator:
         completion = self.tokenizer.decode(token_ids, skip_special_tokens=True)
         if not isinstance(completion, str):
             raise ValueError("generation tokenizer decode must return text")
-        return completion if self.is_encoder_decoder else prompt + completion
+        return prompt + completion
 
 
 class KeyedTextRegionWindowScorer:
@@ -1806,7 +1829,7 @@ def build_local_semantic_window_scorer(
     return SemanticWindowScorer(
         verifier=components.verifier,
         keying=WatermarkKeying(deployment_key.hex(), options.lsh_dimension),
-        contract_version="python-statement-window/v1",
+        contract_version=options.window_contract_version,
         k=max(1, round(options.lsh_gamma * (2 ** options.lsh_dimension))),
         margin=0.0,
         semantic_preservation_threshold=(
@@ -1825,6 +1848,8 @@ def local_semantic_runtime_hash(options: LocalHFGateRuntimeOptions) -> str:
         + repr(float(options.lsh_gamma)).encode("ascii")
         + b"\0"
         + options.semantic_evidence_rule.encode("utf-8")
+        + b"\0"
+        + options.window_contract_version.encode("utf-8")
         + repr(float(options.semantic_preservation_threshold)).encode("ascii")
         + b"\0"
     )
@@ -2229,6 +2254,7 @@ def _load_causal_rewriter(options: LocalHFGateRuntimeOptions):
     tokenizer = AutoTokenizer.from_pretrained(str(path), local_files_only=True)
     model.to(options.model_device)
     model.eval()
+    language = language_for_window_contract(options.window_contract_version)
     return CausalWindowRewriter(
         HFCausalRewriteBackend(
             model=model,
@@ -2238,7 +2264,9 @@ def _load_causal_rewriter(options: LocalHFGateRuntimeOptions):
             temperature=options.rewrite_temperature,
             top_p=options.rewrite_top_p,
         ),
+        extractor=get_statement_unit_extractor(language),
         generation_attempts=options.rewrite_generation_attempts,
+        window_contract_version=options.window_contract_version,
     )
 
 

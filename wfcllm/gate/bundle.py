@@ -19,7 +19,11 @@ import torch
 from torch import nn
 
 from wfcllm.gate.input import GATE_INPUT_CONTRACT_VERSION
-from wfcllm.windowing.contracts import GateScores, WINDOW_CONTRACT_VERSION
+from wfcllm.windowing.contracts import (
+    GateScores,
+    WINDOW_CONTRACT_VERSION,
+    is_supported_window_contract,
+)
 
 GATE_BUNDLE_CONTRACT_VERSION = "wfcllm-gate-bundle/v1"
 GATE_MODEL_FORMAT_VERSION = "wfcllm-gate-model-state/v1"
@@ -107,7 +111,7 @@ class GateBundleManifest:
             raise ValueError("bundle contract version mismatch")
         if self.model_format_version != GATE_MODEL_FORMAT_VERSION:
             raise ValueError("model format version mismatch")
-        if self.window_contract_version != WINDOW_CONTRACT_VERSION:
+        if not is_supported_window_contract(self.window_contract_version):
             raise ValueError("window contract version mismatch")
         if self.gate_input_contract_version != GATE_INPUT_CONTRACT_VERSION:
             raise ValueError("gate input contract version mismatch")
@@ -274,6 +278,7 @@ class GateBundle:
         training_data_manifest_sha256: str,
         training_key_bank_id: str,
         holdout_key_bank_id: str,
+        window_contract_version: str = WINDOW_CONTRACT_VERSION,
     ) -> GateBundle:
         """Create and immediately re-verify a formal bundle.
 
@@ -356,7 +361,7 @@ class GateBundle:
             manifest = GateBundleManifest(
                 contract_version=GATE_BUNDLE_CONTRACT_VERSION,
                 model_format_version=GATE_MODEL_FORMAT_VERSION,
-                window_contract_version=WINDOW_CONTRACT_VERSION,
+                window_contract_version=window_contract_version,
                 gate_input_contract_version=GATE_INPUT_CONTRACT_VERSION,
                 model_architecture=model_architecture,
                 base_model_id=base_model_id,

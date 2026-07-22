@@ -578,6 +578,7 @@ class GateDataBuilder:
                     window=window,
                     prompt=build_context.prompt,
                     source_bytes=source_bytes,
+                    window_contract_version=build_context.parser_contract_version,
                 )
                 observations: list[CandidateObservation] = []
                 original = RewriteCandidate(
@@ -626,7 +627,9 @@ class GateDataBuilder:
                     observations.append(observation)
                 trajectories[length_key] = tuple(observations)
 
-            descriptor = _parent_descriptor(windows[0][0]).canonical
+            descriptor = _parent_descriptor(
+                windows[0][0], build_context.parser_contract_version
+            ).canonical
             group_id = _group_id(
                 build_context,
                 start,
@@ -810,6 +813,7 @@ def _make_request(
     window: tuple[StatementUnit, ...],
     prompt: str,
     source_bytes: bytes | None,
+    window_contract_version: str = WINDOW_CONTRACT_VERSION,
 ) -> RewriteRequest:
     first = window[0]
     end_index = start_index + len(window)
@@ -843,7 +847,9 @@ def _make_request(
         prompt=prompt,
         completed_prefix=completed_prefix,
         original_window=original_window,
-        canonical_parent=_parent_descriptor(first).canonical,
+        canonical_parent=_parent_descriptor(
+            first, window_contract_version
+        ).canonical,
         window_start_unit_id=first.unit_id,
         window_length=len(window),
         structural_boundary=boundary,
@@ -874,9 +880,12 @@ def compute_hard_boundary_after(
     )
 
 
-def _parent_descriptor(unit: StatementUnit) -> ParentDescriptor:
+def _parent_descriptor(
+    unit: StatementUnit,
+    window_contract_version: str = WINDOW_CONTRACT_VERSION,
+) -> ParentDescriptor:
     return ParentDescriptor(
-        contract_version=WINDOW_CONTRACT_VERSION,
+        contract_version=window_contract_version,
         ancestor_node_types=unit.parent_path[:-1],
         direct_parent_type=unit.direct_parent_type,
         first_unit_ordinal=unit.direct_child_ordinal,

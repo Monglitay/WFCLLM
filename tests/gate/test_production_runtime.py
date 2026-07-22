@@ -80,6 +80,46 @@ def test_runtime_options_reject_invalid_lsh_gamma(tmp_path: Path, gamma) -> None
         replace(_runtime_options(tmp_path), lsh_gamma=gamma)
 
 
+@pytest.mark.parametrize(
+    ("contract", "code", "expected_type"),
+    [
+        (
+            "cpp-statement-window/v1",
+            "int f() { int x = 1; return x; }",
+            "return_statement",
+        ),
+        (
+            "java-statement-window/v1",
+            "class A { int f() { int x = 1; return x; } }",
+            "return_statement",
+        ),
+    ],
+)
+def test_production_adapter_parses_configured_language_contract(
+    tmp_path: Path,
+    contract: str,
+    code: str,
+    expected_type: str,
+) -> None:
+    from wfcllm.gate.production import LocalHFProductionAdapter
+
+    options = replace(_runtime_options(tmp_path), window_contract_version=contract)
+    row = json.loads(options.source_catalog.read_text(encoding="utf-8"))
+    row["code"] = code
+    options.source_catalog.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    source_manifest = {
+        "catalog_sha256": gate_production._sha256_file(options.source_catalog),
+        "source_count": 1,
+    }
+
+    parsed = LocalHFProductionAdapter(options).parse_statement_units(
+        source_manifest,
+        object(),
+    )
+
+    assert any(unit.node_type == expected_type for unit in parsed[0].units)
+
+
 def test_deployment_scorer_and_runtime_hash_bind_lsh_gamma(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -540,6 +580,41 @@ def test_local_program_generation_uses_transformers_compatible_seed_state() -> N
 
     assert runtime.generate_program(prompt="def f():\n", sample_id="HumanEval/0") == (
         "def f():\nx = 7\n"
+    )
+
+
+def test_encoder_decoder_program_generation_keeps_benchmark_prompt() -> None:
+    import torch
+
+    from wfcllm.gate.production import LocalHFProgramGenerator
+
+    class Tokenizer:
+        def __call__(self, text, **_kwargs):
+            return {
+                "input_ids": torch.tensor([[10, 11]]),
+                "attention_mask": torch.tensor([[1, 1]]),
+            }
+
+        def decode(self, ids, **_kwargs):
+            return " return 1;\n}"
+
+    class Model:
+        def generate(self, **_kwargs):
+            return torch.tensor([[7, 8]])
+
+    runtime = object.__new__(LocalHFProgramGenerator)
+    runtime.model = Model()
+    runtime.tokenizer = Tokenizer()
+    runtime.device = "cpu"
+    runtime.max_new_tokens = 16
+    runtime.temperature = 0.0
+    runtime.top_p = 0.95
+    runtime.seed = 7
+    runtime.is_encoder_decoder = True
+
+    prompt = "int f() {"
+    assert runtime.generate_program(prompt=prompt, sample_id="cpp/0").startswith(
+        prompt
     )
 
 

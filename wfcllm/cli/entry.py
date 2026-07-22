@@ -6,6 +6,7 @@ Replaces run.py:main() and its helpers. Wires up RunStateManager + PhaseRegistry
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import logging
 import os
 from pathlib import Path
@@ -135,6 +136,12 @@ def main(argv: list[str] | None = None) -> int:
     # Cache the loaded config on args for downstream helpers (matches old behavior).
     try:
         resolved_config = resolve_method_config(load_config(args.config))
+        if args.gate_data_scale is not None:
+            resolved_config = deepcopy(resolved_config)
+            gate_data = resolved_config.get("gate_data")
+            if not isinstance(gate_data, dict):
+                raise ValueError("--gate-data-scale requires a gate_data config")
+            gate_data["scale"] = args.gate_data_scale
     except (OSError, UnicodeError, ValueError, RuntimeError) as exc:
         print(f"[错误] 配置无效：{exc}", file=sys.stderr)
         return 1

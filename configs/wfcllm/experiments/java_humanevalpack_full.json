@@ -1,0 +1,20 @@
+{
+  "method": {
+    "name": "gated_semantic_window_v1",
+    "windowing": {"contract_version": "java-statement-window/v1"},
+    "gate": {"require_validated": true},
+    "rewrite": {"strategy": "model_semantic_window"},
+    "semantic": {"parent_descriptor_version": "java-statement-window/v1"}
+  },
+  "generation": {
+    "language": "java",
+    "dataset": "humanevalpack",
+    "program_finalizer": "none"
+  },
+  "semantic_lsh": {
+    "rule_name": "semantic_lsh",
+    "lsh_d": 12,
+    "lsh_gamma": 0.45
+  },
+  "experiment": {"profile": "full"}
+}

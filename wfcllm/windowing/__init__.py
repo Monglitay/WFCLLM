@@ -2,9 +2,17 @@
 
 from wfcllm.windowing.contracts import (
     WINDOW_CONTRACT_VERSION,
+    WINDOW_CONTRACT_VERSIONS,
     GateScores,
     ParentDescriptor,
     StatementUnit,
+    is_supported_window_contract,
+    language_for_window_contract,
+    window_contract_for_language,
+)
+from wfcllm.windowing.multilanguage import (
+    TreeSitterStatementUnitExtractor,
+    get_statement_unit_extractor,
 )
 from wfcllm.windowing.partitioner import (
     CloseReason,
@@ -26,12 +34,18 @@ __all__ = [
     "GateScores",
     "GateThresholds",
     "WINDOW_CONTRACT_VERSION",
+    "WINDOW_CONTRACT_VERSIONS",
     "ParentDescriptor",
     "PartitionResult",
     "PythonStatementUnitExtractor",
+    "TreeSitterStatementUnitExtractor",
     "SemanticWindow",
     "SkipReason",
     "SkippedContext",
     "StatementUnit",
     "WindowPartitioner",
+    "get_statement_unit_extractor",
+    "is_supported_window_contract",
+    "language_for_window_contract",
+    "window_contract_for_language",
 ]

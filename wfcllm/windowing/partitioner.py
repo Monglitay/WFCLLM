@@ -257,10 +257,20 @@ class WindowPartitioner:
         predictor: GatePredictor,
         thresholds: GateThresholds,
         tokenizer_counter: Callable[[str], int],
+        window_contract_version: str = WINDOW_CONTRACT_VERSION,
     ) -> None:
+        from wfcllm.windowing.contracts import is_supported_window_contract
+
+        if not is_supported_window_contract(window_contract_version):
+            raise ValueError("unsupported window contract version")
         self._predictor = predictor
         self._thresholds = thresholds
         self._tokenizer_counter = tokenizer_counter
+        self._window_contract_version = window_contract_version
+
+    @property
+    def window_contract_version(self) -> str:
+        return self._window_contract_version
 
     def partition(self, units: list[StatementUnit]) -> PartitionResult:
         from wfcllm.gate.input import serialize_gate_input
@@ -346,7 +356,9 @@ class WindowPartitioner:
 
             if not open_units:
                 previous_context = tuple(consumed[-3:])
-                parent_descriptor = _parent_descriptor(unit)
+                parent_descriptor = _parent_descriptor(
+                    unit, self._window_contract_version
+                )
 
             open_units.append(unit)
             consumed.append(unit)
@@ -447,9 +459,12 @@ class WindowPartitioner:
         )
 
 
-def _parent_descriptor(unit: StatementUnit) -> ParentDescriptor:
+def _parent_descriptor(
+    unit: StatementUnit,
+    window_contract_version: str = WINDOW_CONTRACT_VERSION,
+) -> ParentDescriptor:
     return ParentDescriptor(
-        contract_version=WINDOW_CONTRACT_VERSION,
+        contract_version=window_contract_version,
         ancestor_node_types=unit.parent_path[:-1],
         direct_parent_type=unit.direct_parent_type,
         first_unit_ordinal=unit.direct_child_ordinal,

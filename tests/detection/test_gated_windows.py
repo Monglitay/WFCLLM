@@ -27,11 +27,12 @@ class _ValidatedFakeBundle:
     root: Path
     bundle_sha256: str = "a" * 64
     tokenizer_sha256: str = "b" * 64
+    window_contract_version: str = "python-statement-window/v1"
 
     def __post_init__(self) -> None:
         self.validation_summary = {"validated": True}
         self.manifest = SimpleNamespace(
-            window_contract_version="python-statement-window/v1",
+            window_contract_version=self.window_contract_version,
             gate_input_contract_version="wfcllm-gate-input/v1",
             tokenizer_sha256=self.tokenizer_sha256,
             close_low_threshold=0.4,
@@ -216,3 +217,42 @@ def test_byte_spans_slice_original_utf8_source(tmp_path: Path) -> None:
         assert raw[window.byte_span[0] : window.byte_span[1]].decode("utf-8") == (
             raw[window.start_byte : window.end_byte].decode("utf-8")
         )
+
+
+@pytest.mark.parametrize(
+    ("contract", "source", "expected_type"),
+    [
+        (
+            "cpp-statement-window/v1",
+            "int f() { int x = 1; return x; }",
+            "return_statement",
+        ),
+        (
+            "java-statement-window/v1",
+            "class A { int f() { int x = 1; return x; } }",
+            "return_statement",
+        ),
+    ],
+)
+def test_final_code_extractor_uses_bundle_language_contract(
+    tmp_path: Path,
+    contract: str,
+    source: str,
+    expected_type: str,
+) -> None:
+    bundle = _ValidatedFakeBundle(
+        root=tmp_path / "bundle",
+        window_contract_version=contract,
+    )
+    config = _config(tmp_path, window_contract_version=contract)
+
+    result = GatedWindowExtractor(bundle, config).extract(source)
+
+    assert any(
+        unit.node_type == expected_type
+        for window in result.windows
+        for unit in window.units
+    )
+    assert {
+        window.parent_descriptor.contract_version for window in result.windows
+    } == {contract}

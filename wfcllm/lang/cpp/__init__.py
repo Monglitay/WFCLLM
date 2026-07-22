@@ -1,1 +1,5 @@
-"""C++ language adapter — placeholder for future implementation (spec §5.1)."""
+"""C++ language adapter."""
+
+from wfcllm.lang.cpp.adapter import CppAdapter
+
+__all__ = ["CppAdapter"]

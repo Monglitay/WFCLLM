@@ -54,9 +54,77 @@ def resolve_method_config(config: Mapping[str, object]) -> dict:
     if name not in {EVIDENCE_RETRY_SEED7X3_NAME, GATED_SEMANTIC_WINDOW_V1_NAME}:
         return deepcopy(dict(config))
     merged = _deep_merge(load_method_preset(name).to_dict(), dict(config))
+    experiment = config.get("experiment")
+    if name == GATED_SEMANTIC_WINDOW_V1_NAME and isinstance(
+        experiment, Mapping
+    ):
+        return _resolve_experiment_matrix_config(config, merged)
     from wfcllm.method.config import WFCLLMMethodPreset
 
     return WFCLLMMethodPreset(**merged).to_dict()
+
+
+def _resolve_experiment_matrix_config(
+    raw_config: Mapping[str, object],
+    merged: dict,
+) -> dict:
+    """Resolve one preflight-validated no-carrier matrix overlay."""
+    from wfcllm.cli.experiment_preflight import validate_experiment_config
+
+    generation = raw_config.get("generation")
+    experiment = raw_config.get("experiment")
+    if not isinstance(generation, Mapping) or not isinstance(experiment, Mapping):
+        raise ValueError("experiment matrix config is incomplete")
+    language = generation.get("language")
+    dataset = generation.get("dataset")
+    profile = experiment.get("profile")
+    if not all(isinstance(value, str) for value in (language, dataset, profile)):
+        raise ValueError("experiment matrix identity must contain strings")
+    validate_experiment_config(raw_config, language, dataset, profile)
+
+    semantic_lsh = merged["semantic_lsh"]
+    method = merged["method"]
+    method["semantic"]["lsh"]["d"] = semantic_lsh["lsh_d"]
+    method["semantic"]["lsh"]["gamma"] = semantic_lsh["lsh_gamma"]
+    method["semantic"]["lsh"]["margin"] = semantic_lsh.get(
+        "semantic_margin", 0.0
+    )
+    method["semantic"].setdefault(
+        "preservation",
+        {"rule": "codet5-cosine-to-original/v1", "threshold": 0.9},
+    )
+    source_family = {
+        "python": "oss_python",
+        "cpp": "oss_cpp",
+        "java": "oss_java",
+    }[language]
+    merged["gate_data"]["sources"] = [
+        "main_generation",
+        source_family,
+        "parser_boundary",
+    ]
+    merged["gate_data"]["scale"] = "pilot" if profile == "fast" else "full"
+    merged["runtime"]["default_phases"] = (
+        [
+            "gate-data",
+            "gate-train",
+            "gate-validate",
+            "generate",
+            "calibrate",
+            "detect",
+            "report",
+        ]
+        if profile == "full"
+        else [
+            "gate-data",
+            "gate-train",
+            "generate",
+            "calibrate",
+            "detect",
+            "report",
+        ]
+    )
+    return merged
 
 
 def _deep_merge(base: dict, override: dict) -> dict:

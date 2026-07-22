@@ -141,6 +141,22 @@ def test_oss_requires_explicit_license_and_parser_samples_are_hard_set_only() ->
         )
 
 
+@pytest.mark.parametrize("family", ["oss_cpp", "oss_java"])
+def test_multilanguage_oss_families_require_licensed_repositories(
+    family: str,
+) -> None:
+    source = _source(
+        family,
+        family=family,
+        repository_id=f"{family}-repo",
+        task_id=None,
+        model_id=None,
+        license_id="MIT",
+    )
+
+    assert GateSourceLoader((source,)).load(source_family=family) == (source,)
+
+
 def test_manifest_requires_three_models_and_keeps_them_out_of_gate_input() -> None:
     records = tuple(
         _source(f"source-{index}", model_id=f"model-{index}")

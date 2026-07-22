@@ -1,1 +1,5 @@
-"""Java language adapter — placeholder for future implementation (spec §5.1)."""
+"""Java language adapter."""
+
+from wfcllm.lang.java.adapter import JavaAdapter
+
+__all__ = ["JavaAdapter"]

@@ -62,6 +62,14 @@ def _manifest(**overrides: object) -> GateBundleManifest:
     return GateBundleManifest(**values)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize(
+    "contract",
+    ["python-statement-window/v1", "cpp-statement-window/v1", "java-statement-window/v1"],
+)
+def test_bundle_manifest_accepts_supported_language_contracts(contract: str) -> None:
+    assert _manifest(window_contract_version=contract).window_contract_version == contract
+
+
 def _write_bundle(root: Path) -> Path:
     root.mkdir()
     float_model = TinyGate().eval()

@@ -653,6 +653,9 @@ def run_gate_validate(args: argparse.Namespace, state: RunStateManager) -> int:
     )
     if not result.validated or result.manifest_path is None or result.bundle is None:
         raise ValueError("gate-validate did not publish a validated formal gate bundle")
+    expected_contract = config["method"]["windowing"]["contract_version"]
+    if result.bundle.manifest.window_contract_version != expected_contract:
+        raise ValueError("validated gate bundle window contract mismatch")
     expected_output, expected_manifest = _require_expected_gate_result_paths(
         args, "gate-validate", result.output_dir, result.manifest_path
     )
@@ -914,14 +917,62 @@ def _resolve_program_finalizer(
     raise ValueError(f"unsupported generation program_finalizer: {name}")
 
 
+def _load_gated_generation_samples(
+    args: argparse.Namespace,
+    generation: Mapping[str, object],
+) -> list[dict[str, str]]:
+    """Load normalized prompts through the registered dataset adapter."""
+    from wfcllm import datasets
+
+    dataset = str(generation.get("dataset", "humaneval"))
+    language = str(generation.get("language", "python"))
+    cli_dataset = getattr(args, "dataset", None)
+    cli_language = getattr(args, "language", None)
+    if cli_dataset is not None and cli_dataset != dataset:
+        raise ValueError(
+            f"--dataset must match generation.dataset={dataset!r}"
+        )
+    if cli_language is not None and cli_language != language:
+        raise ValueError(
+            f"--language must match generation.language={language!r}"
+        )
+
+    adapter = datasets.get(dataset)
+    dataset_path = getattr(args, "dataset_path", None)
+    if isinstance(dataset_path, str) and dataset_path:
+        try:
+            adapter = type(adapter)(dataset_path=dataset_path)
+        except TypeError:
+            pass
+    if not adapter.supports(language):
+        raise ValueError(
+            f"dataset {dataset!r} does not support language={language!r}"
+        )
+    samples = list(adapter.iter_samples(language=language))
+    offset = getattr(args, "sample_offset", None)
+    limit = getattr(args, "sample_limit", None)
+    if offset is not None:
+        if offset < 0:
+            raise ValueError("sample_offset must be non-negative")
+        samples = samples[offset:]
+    if limit is not None:
+        if limit < 0:
+            raise ValueError("sample_limit must be non-negative")
+        samples = samples[:limit]
+    return [
+        {"id": sample.task_id, "prompt": sample.prompt}
+        for sample in samples
+    ]
+
+
 def _build_local_gated_generation_pipeline(args: argparse.Namespace):
-    from wfcllm.datasets.loaders.local import load_prompts
     from wfcllm.detection.gated_windows import GatedWindowExtractor
     from wfcllm.gate.production import (
         LocalHFProgramGenerator,
         LocalRuntimeGateBundle,
         LocalUnvalidatedRuntimeGateBundle,
         build_local_semantic_window_scorer,
+        load_local_causal_rewriter,
         local_semantic_runtime_hash,
     )
     from wfcllm.generation.gated_generator import GatedGenerator
@@ -946,7 +997,14 @@ def _build_local_gated_generation_pipeline(args: argparse.Namespace):
         root=bundle_path,
         base_model_path=options.gate_base_model_path,
         bundle_sha256=bundle_hash,
-        **({"max_tokens": int(config["method"]["gate"]["max_input_tokens"])} if unvalidated else {}),
+        **(
+            {
+                "max_tokens": int(config["method"]["gate"]["max_input_tokens"]),
+                "window_contract_version": options.window_contract_version,
+            }
+            if unvalidated
+            else {}
+        ),
     )
     generation = config.get("generation")
     if not isinstance(generation, Mapping):
@@ -973,24 +1031,36 @@ def _build_local_gated_generation_pipeline(args: argparse.Namespace):
         runtime_bundle,
         allow_unvalidated=unvalidated,
     )
+    if runtime_bundle.manifest.window_contract_version != options.window_contract_version:
+        raise ValueError("gate bundle and experiment window contracts differ")
+    language = str(generation.get("language", "python"))
+    rewrite_strategy = str(config["method"]["rewrite"].get("strategy", ""))
+    if rewrite_strategy == "python_ast_equivalent":
+        if language != "python":
+            raise ValueError("Python AST rewrite strategy cannot serve another language")
+        rewriter = KeyBlindAstEquivalentWindowRewriter()
+    elif rewrite_strategy == "model_semantic_window":
+        rewriter = (
+            load_local_causal_rewriter(options)
+            if options.rewrite_model_path is not None
+            else program.rewriter.for_extractor(
+                extractor.unit_extractor,
+                window_contract_version=options.window_contract_version,
+            )
+        )
+    elif options.semantic_evidence_rule == "keyed_text_region":
+        rewriter = KeyBlindWhitespaceWindowRewriter()
+    else:
+        raise ValueError(f"unsupported gated rewrite strategy: {rewrite_strategy!r}")
     generator = GatedGenerator(
         partitioner=extractor.partitioner,
         scorer=semantic_scorer,
-        rewriter=(
-            KeyBlindWhitespaceWindowRewriter()
-            if options.semantic_evidence_rule == "keyed_text_region"
-            else KeyBlindAstEquivalentWindowRewriter()
-        ),
+        rewriter=rewriter,
         max_rewrites=int(config["method"]["rewrite"]["max_attempts"]),
+        extractor=extractor.unit_extractor,
     )
     dataset = str(generation.get("dataset", "humaneval"))
-    dataset_path = getattr(args, "dataset_path", None) or "data/datasets"
-    samples = load_prompts(
-        dataset,
-        dataset_path,
-        sample_limit=getattr(args, "sample_limit", None),
-        sample_offset=getattr(args, "sample_offset", None),
-    )
+    samples = _load_gated_generation_samples(args, generation)
     run_dir = _gate_run_dir(args, config)
     semantic_hash = local_semantic_runtime_hash(options)
     return GatedGenerationPipeline(
@@ -1046,7 +1116,14 @@ def _build_local_gated_detection_pipeline(args: argparse.Namespace):
         root=bundle_path,
         base_model_path=options.gate_base_model_path,
         bundle_sha256=bundle_hash,
-        **({"max_tokens": int(config["method"]["gate"]["max_input_tokens"])} if unvalidated else {}),
+        **(
+            {
+                "max_tokens": int(config["method"]["gate"]["max_input_tokens"]),
+                "window_contract_version": options.window_contract_version,
+            }
+            if unvalidated
+            else {}
+        ),
     )
     negative_hash = getattr(args, "_gated_negative_corpus_hash", None)
     if not isinstance(negative_hash, str) or _DIGEST.fullmatch(negative_hash) is None:
@@ -1061,6 +1138,8 @@ def _build_local_gated_detection_pipeline(args: argparse.Namespace):
     if not isinstance(calibration, Mapping):
         raise ValueError("gated calibration config is missing")
     semantic_hash = local_semantic_runtime_hash(options)
+    if runtime_bundle.manifest.window_contract_version != options.window_contract_version:
+        raise ValueError("gate bundle and experiment window contracts differ")
     return GatedDetectionPipeline(
         extractor=GatedWindowExtractor(
             runtime_bundle,
@@ -1076,6 +1155,7 @@ def _build_local_gated_detection_pipeline(args: argparse.Namespace):
             lsh_config_sha256=_canonical_hash(config["semantic_lsh"]),
             key_identifier_sha256=hashlib.sha256(deployment_key).hexdigest(),
             negative_corpus_manifest_sha256=negative_hash,
+            window_contract_version=options.window_contract_version,
         ),
         target_fpr=float(detector.get("target_fpr", 0.05)),
         calibration_group_by=str(
@@ -1333,6 +1413,11 @@ def _local_hf_runtime_options(
             1,
         ),
         gate_resume_checkpoint=_optional_runtime_path(args, "gate_resume_checkpoint"),
+        window_contract_version=str(
+            method.get("windowing", {}).get(
+                "contract_version", "python-statement-window/v1"
+            )
+        ),
     )
 
 

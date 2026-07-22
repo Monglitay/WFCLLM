@@ -34,6 +34,8 @@ class _Semantic:
 
 
 class _Extractor:
+    window_contract_version = "python-statement-window/v1"
+
     def extract(self, final_code: str):
         windows = tuple(
             _Window(True, token, start_byte=index, end_byte=index + 1)
@@ -93,6 +95,26 @@ def test_pipeline_is_final_code_only_and_outputs_derived_details(tmp_path: Path)
         "suitable_probability", "status", "margin",
     }
     assert "final_code" not in payload
+
+
+def test_pooled_sample_level_calibration_keeps_insufficient_negatives_in_fpr_denominator() -> None:
+    pipeline = GatedDetectionPipeline(
+        extractor=_Extractor(),
+        scorer=GatedWindowScorer(semantic_scorer=_Semantic(), minimum_reliable_windows=2),
+        bindings=_bindings(),
+        target_fpr=0.05,
+        calibration_group_by="pooled_reliable_hit_rate",
+    )
+
+    artifact = pipeline.calibrate(
+        [
+            _row("insufficient", "hit"),
+            _row("enough-miss", "miss miss"),
+            _row("enough-half", "hit miss"),
+        ]
+    )
+
+    assert artifact.reliable_window_count_buckets == {"2": (0.0, 0.0, 0.5)}
 
 
 def test_detector_rejects_generation_audit_as_input(tmp_path: Path) -> None:

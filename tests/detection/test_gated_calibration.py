@@ -22,6 +22,8 @@ class _Semantic:
 
 
 class _Extractor:
+    window_contract_version = "python-statement-window/v1"
+
     def extract(self, final_code: str):
         return SimpleNamespace(windows=tuple(
             SimpleNamespace(

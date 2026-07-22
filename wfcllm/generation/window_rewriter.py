@@ -20,6 +20,10 @@ from wfcllm.windowing import (
 )
 
 
+class StatementUnitExtractor(Protocol):
+    def extract(self, source: str) -> list[Any]: ...
+
+
 @dataclass(frozen=True)
 class RewriteGeneration:
     """Raw output from a causal generation backend."""
@@ -171,16 +175,19 @@ class KeyBlindAstEquivalentWindowRewriter:
                 request.original_window,
                 candidate_index=candidate_index,
             )
-            certified = (
-                text != request.original_window
-                and python_ast_equivalent(request.original_window, text)
-            )
         else:
             validation_rule = "python-literal-equivalent/v1"
             text = _literal_equivalent_variant(
                 request.original_window,
                 candidate_index=candidate_index,
             )
+        text = _preserve_trailing_layout(request.original_window, text)
+        if candidate_index <= 12:
+            certified = (
+                text != request.original_window
+                and python_ast_equivalent(request.original_window, text)
+            )
+        else:
             certified = (
                 text != request.original_window
                 and python_literal_equivalent(request.original_window, text)
@@ -235,7 +242,8 @@ class CausalWindowRewriter:
         self,
         backend: CausalRewriteBackend,
         *,
-        extractor: PythonStatementUnitExtractor | None = None,
+        extractor: StatementUnitExtractor | None = None,
+        window_contract_version: str = WINDOW_CONTRACT_VERSION,
         generation_attempts: int = 3,
     ) -> None:
         if not callable(getattr(backend, "generate_window", None)):
@@ -245,6 +253,20 @@ class CausalWindowRewriter:
         self._backend = backend
         self._extractor = extractor or PythonStatementUnitExtractor()
         self._generation_attempts = generation_attempts
+        self._window_contract_version = window_contract_version
+
+    def for_extractor(
+        self,
+        extractor: StatementUnitExtractor,
+        *,
+        window_contract_version: str,
+    ) -> CausalWindowRewriter:
+        return CausalWindowRewriter(
+            self._backend,
+            extractor=extractor,
+            generation_attempts=self._generation_attempts,
+            window_contract_version=window_contract_version,
+        )
 
     def rewrite_generation(
         self, request: RewriteRequest, *, candidate_index: int
@@ -360,6 +382,7 @@ class CausalWindowRewriter:
             request,
             generation,
             extractor=self._extractor,
+            window_contract_version=self._window_contract_version,
         )
 
 
@@ -367,7 +390,8 @@ def _parse_generation(
     request: RewriteRequest,
     generation: RewriteGeneration,
     *,
-    extractor: PythonStatementUnitExtractor,
+    extractor: StatementUnitExtractor,
+    window_contract_version: str = WINDOW_CONTRACT_VERSION,
 ) -> ParsedRewrite:
     prefix_bytes = len(request.completed_prefix.encode("utf-8"))
     complete_source = request.completed_prefix + generation.text
@@ -387,11 +411,16 @@ def _parse_generation(
 
     same_parent = bool(units) and _same_parent(units)
     if same_parent:
-        same_parent = _descriptor(units[0]).canonical == request.canonical_parent
+        same_parent = (
+            _descriptor(units[0], window_contract_version).canonical
+            == request.canonical_parent
+        )
     if parse_status == "ok" and not same_parent:
         parse_status = "scope_changed"
 
-    parent_descriptor = _descriptor(units[0]).canonical if units else None
+    parent_descriptor = (
+        _descriptor(units[0], window_contract_version).canonical if units else None
+    )
     return ParsedRewrite(
         token_ids=generation.token_ids,
         text=generation.text,
@@ -489,6 +518,13 @@ def _literal_equivalent_variant(text: str, *, candidate_index: int) -> str:
         transformed += "\n"
     candidate = _restore_indentation(transformed, prefix)
     return candidate if python_literal_equivalent(text, candidate) else text
+
+
+def _preserve_trailing_layout(reference: str, candidate: str) -> str:
+    trailing = reference[len(reference.rstrip(" \t\r\n")) :]
+    if not trailing:
+        return candidate
+    return candidate.rstrip(" \t\r\n") + trailing
 
 
 class _LiteralVariantTransformer(ast.NodeTransformer):
@@ -764,9 +800,12 @@ def _same_parent(units: list[Any]) -> bool:
     )
 
 
-def _descriptor(unit: Any) -> ParentDescriptor:
+def _descriptor(
+    unit: Any,
+    window_contract_version: str = WINDOW_CONTRACT_VERSION,
+) -> ParentDescriptor:
     return ParentDescriptor(
-        contract_version=WINDOW_CONTRACT_VERSION,
+        contract_version=window_contract_version,
         ancestor_node_types=unit.parent_path[:-1],
         direct_parent_type=unit.direct_parent_type,
         first_unit_ordinal=unit.direct_child_ordinal,

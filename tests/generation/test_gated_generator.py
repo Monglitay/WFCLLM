@@ -23,9 +23,11 @@ class Scorer:
         self.hits = iter(hits)
         self.semantic_passes = iter(semantic_passes or [True] * 100)
         self.scored_texts: list[str] = []
+        self.scored_parents: list[str] = []
 
     def score(self, *, window_text: str, parent_descriptor: str):
         self.scored_texts.append(window_text)
+        self.scored_parents.append(parent_descriptor)
         hit = next(self.hits)
         return type(
             "Evidence",
@@ -149,6 +151,22 @@ def test_all_failed_rewrites_restore_original_and_continue() -> None:
     )
     assert result.final_code == "x = 1\ny = 2\nreturn x + y\n"
     assert result.audit[0].selected_candidate_index == 0
+
+
+def test_selected_rewrite_preserves_source_separator_after_window() -> None:
+    scorer = Scorer([False, True])
+    result = GatedGenerator(
+        partitioner=WindowPartitioner(
+            Gate(), GateThresholds(0.2, 0.7, 0.8), lambda text: len(text)
+        ),
+        scorer=scorer,
+        rewriter=Rewriter(["x = 10\ny = 20\nz = 30"] * 3),
+        max_rewrites=3,
+    ).generate(prompt="", original="x = 1\ny = 2\nz = 3\n")
+
+    assert result.final_code == "x = 10\ny = 20\nz = 30\n"
+    assert result.audit[0].selected_candidate_index == 1
+    assert len(set(scorer.scored_parents)) == 1
 
 
 def test_rewrites_must_be_one_to_three_units_and_same_parent() -> None:

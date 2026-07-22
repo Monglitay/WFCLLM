@@ -9,7 +9,10 @@ from typing import Literal
 
 from wfcllm.gate.input import GATE_INPUT_CONTRACT_VERSION
 from wfcllm.semantic.rules import _quantize_gamma
-from wfcllm.windowing.contracts import WINDOW_CONTRACT_VERSION
+from wfcllm.windowing.contracts import (
+    WINDOW_CONTRACT_VERSION,
+    is_supported_window_contract,
+)
 
 
 DETECTOR_MODE = "wfcllm-structure-aware-proxy-window/v1"
@@ -62,9 +65,9 @@ class GatedDetectionConfig:
             value = getattr(self, name)
             if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
                 raise ValueError(f"{name} must be a lowercase SHA-256 digest")
-        if self.window_contract_version != WINDOW_CONTRACT_VERSION:
+        if not is_supported_window_contract(self.window_contract_version):
             raise ValueError(
-                f"window_contract_version must be {WINDOW_CONTRACT_VERSION!r}"
+                "window_contract_version must be a supported language contract"
             )
         if self.gate_input_contract_version != GATE_INPUT_CONTRACT_VERSION:
             raise ValueError(

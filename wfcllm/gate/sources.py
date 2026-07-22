@@ -21,6 +21,8 @@ APPROVED_GATE_SOURCE_FAMILIES = frozenset(
         "mbpp_train",
         "mbpp_validation",
         "oss_python",
+        "oss_cpp",
+        "oss_java",
         "parser_boundary",
     }
 )
@@ -77,11 +79,11 @@ class GateSourceRecord:
             raise ValueError("contract_or_hard_set must be a bool")
         if not any((self.repository_id, self.task_id, self.function_id)):
             raise ValueError("source requires a repository, task, or function ID")
-        if self.source_family == "oss_python":
+        if self.source_family in {"oss_python", "oss_cpp", "oss_java"}:
             if self.repository_id is None:
-                raise ValueError("oss_python requires repository_id")
+                raise ValueError("OSS source families require repository_id")
             if self.license_id is None or not self.license_id.strip():
-                raise ValueError("oss_python requires an explicit license_id")
+                raise ValueError("OSS source families require an explicit license_id")
         if self.source_family == "parser_boundary":
             if not self.contract_or_hard_set:
                 raise ValueError(
@@ -215,7 +217,7 @@ class GateSourceManifest:
         oss_repository_groups = {
             canonical_gate_source_identity(record.repository_id)
             for record in formal
-            if record.source_family == "oss_python"
+            if record.source_family in {"oss_python", "oss_cpp", "oss_java"}
             and record.repository_id is not None
         }
         if not oss_repository_groups:
@@ -226,7 +228,7 @@ class GateSourceManifest:
             (
                 count
                 for family, count in group_counts.items()
-                if family != "oss_python"
+                if family not in {"oss_python", "oss_cpp", "oss_java"}
             ),
             default=0,
         )
@@ -278,7 +280,7 @@ class GateSourceManifest:
             {
                 canonical_gate_source_identity(record.repository_id)
                 for record in self.formal_records
-                if record.source_family == "oss_python"
+                if record.source_family in {"oss_python", "oss_cpp", "oss_java"}
                 and record.repository_id is not None
             }
         )
@@ -453,7 +455,7 @@ def validate_gate_source_identity(name: str, value: object) -> None:
 
 
 def validate_gate_source_family(value: object) -> None:
-    """Require one of the five formal gate-data source families."""
+    """Require one of the approved formal gate-data source families."""
 
     validate_gate_source_identity("source_family", value)
     if value not in APPROVED_GATE_SOURCE_FAMILIES:

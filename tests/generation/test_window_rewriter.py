@@ -287,6 +287,7 @@ def test_ast_equivalent_rewriter_supports_bounded_online_retry_beyond_r3() -> No
     assert len({variant.text for variant in variants}) == 12
     assert all(variant.semantic_equivalence_certified is True for variant in variants)
     assert variants[-1].rewrite_config_id.endswith(":12")
+    assert all(variant.text.endswith("\n") for variant in variants)
 
 
 def test_literal_equivalence_prover_accepts_identities_and_rejects_changes() -> None:
@@ -313,6 +314,7 @@ def test_literal_equivalent_rewriter_adds_distinct_semantic_variants_after_r12()
         python_literal_equivalent(_request().original_window, variant.text)
         for variant in variants
     )
+    assert all(variant.text.endswith("\n") for variant in variants)
 
 
 def test_literal_equivalent_trajectory_advances_to_next_literal_after_six_modes() -> None:

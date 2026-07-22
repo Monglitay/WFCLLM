@@ -156,12 +156,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gate-epochs", type=int, default=None)
     parser.add_argument("--gate-early-stopping-patience", type=int, default=None)
     parser.add_argument("--gate-resume-checkpoint", default=None)
+    parser.add_argument(
+        "--gate-data-scale",
+        choices=["pilot", "full"],
+        default=None,
+        help="仅覆盖当前 gate-data 命令的数据规模",
+    )
     parser.add_argument("--lm-model-path", default=None, help="legacy watermark 阶段使用：代码生成 LLM 路径")
     parser.add_argument(
         "--dataset",
         default=None,
-        choices=["humaneval", "mbpp"],
+        choices=["humaneval", "mbpp", "humanevalpack"],
         help="legacy watermark 阶段使用：水印嵌入数据集（humaneval 或 mbpp，默认: humaneval）",
+    )
+    parser.add_argument(
+        "--language",
+        default=None,
+        choices=["python", "cpp", "java"],
+        help="gated generation 使用的显式编程语言",
     )
     parser.add_argument(
         "--dataset-path",

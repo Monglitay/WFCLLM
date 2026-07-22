@@ -26,6 +26,92 @@ The default run root is `data/runs/`. Generated official detector inputs are wri
 
 The command block above is the official `run.py` workflow contract for the mainline phases. In this refactor branch, the phase runners currently establish phase names and run-state behavior; for direct artifact-producing generation while those runners are being wired to the full pipeline, use `scripts/wfcllm_generate.py` with the same preset values documented in [docs/REPRO_EVIDENCE_RETRY_SEED7X3.md](docs/REPRO_EVIDENCE_RETRY_SEED7X3.md).
 
+## Remote Gated HumanEval Experiment
+
+The current gated semantic HumanEval experiment is the no-carrier variant:
+semantic evidence is embedded by the gated statement-window model and semantic
+LSH rewrite path, not by `keyed_text_region` carrier text. The runnable full
+HumanEval wrapper is:
+
+```bash
+scripts/experiments/run_python_humaneval_full.sh
+```
+
+On AutoDL-style servers, keep the repository and experiment state on the data
+disk and use an explicit conda prefix. The server used for the latest run had
+the environment at `/root/autodl-tmp/conda/envs/WFCLLM`.
+
+```bash
+cd /root/autodl-tmp
+git clone <repo-url> WFCLLM
+cd /root/autodl-tmp/WFCLLM
+
+/root/miniconda3/bin/conda create -p /root/autodl-tmp/conda/envs/WFCLLM python=3.11 -y
+/root/miniconda3/bin/conda run -p /root/autodl-tmp/conda/envs/WFCLLM pip install -r requirements.txt
+```
+
+All model, dataset, source-catalog, negative-corpus, and key material must be
+local. The runner does not download these resources and does not write private
+keys into public configs or reports.
+
+```bash
+export CONDA_EXE=/root/miniconda3/bin/conda
+export CONDA_ENV_PREFIX=/root/autodl-tmp/conda/envs/WFCLLM
+
+export GENERATION_MODEL_PATH=/root/autodl-tmp/models/<local-code-generation-model>
+export REWRITE_MODEL_PATH="${GENERATION_MODEL_PATH}"
+export SEMANTIC_ENCODER_MODEL_PATH=/root/autodl-tmp/models/<local-semantic-encoder>
+export GATE_BASE_MODEL_PATH=/root/autodl-tmp/models/codet5-small
+
+export DATASET_PATH=/root/autodl-tmp/data/datasets
+export PILOT_SOURCE_CATALOG=/root/autodl-tmp/data/gate_sources/python_humaneval_pilot.jsonl
+export FULL_SOURCE_CATALOG=/root/autodl-tmp/data/gate_sources/python_humaneval_full.jsonl
+export NEGATIVE_INPUT=/root/autodl-tmp/data/negative/humaneval_negative_final_code.jsonl
+
+export EXPERIMENT_ROOT=/root/autodl-tmp/wfcllm-runs/python-humaneval-full
+export SAMPLE_LIMIT=164
+export CALIBRATION_LIMIT=32
+export GATE_EPOCHS=3
+
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+  scripts/experiments/run_python_humaneval_full.sh
+```
+
+For a full run, `PILOT_SOURCE_CATALOG` and `FULL_SOURCE_CATALOG` must be
+different files. The wrapper enforces this because pilot gate feasibility and
+the full embedding run must not share the same source-catalog split.
+
+The run writes the formal artifacts under:
+
+```text
+${EXPERIMENT_ROOT}/run/
+  inputs/final_code.jsonl
+  calibration/reference_calibration.json
+  detection/
+  reports/
+  audit/
+```
+
+Posthoc utility and diagnostic summaries are computed only after generation,
+calibration, detection, report, and audit complete. They must not feed back into
+generation, retry, final-code selection, calibration, or detection.
+
+The latest saved server summary for this experiment was:
+
+```text
+/tmp/gamma25_gate_pass113/humaneval_summary.json
+/tmp/gamma25_gate_pass113/humaneval_results.jsonl
+/tmp/gamma25_gate_pass113/n_ge_3_tpr_summary.json
+```
+
+Those files reported full HumanEval single-candidate Pass@1 as
+`113/164 = 68.9024%`. The conditional diagnostic TPR with eligibility
+`reliable_window_count >= 3` and threshold `hit_rate >= 0.60` was
+`80/130 = 61.5385%`; `34/164` positives were outside that conditional
+denominator. The heldout negative diagnostic count at that threshold was
+`4/128` false positives. This thresholded `n >= 3` TPR is a saved diagnostic
+summary, not the official detector calibration claim.
+
 ## Official Method
 
 The main method preset is documented in [docs/WFCLLM_METHOD.md](docs/WFCLLM_METHOD.md). Reproduction notes for the default preset are in [docs/REPRO_EVIDENCE_RETRY_SEED7X3.md](docs/REPRO_EVIDENCE_RETRY_SEED7X3.md).

@@ -5,7 +5,30 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 
-WINDOW_CONTRACT_VERSION = "python-statement-window/v1"
+WINDOW_CONTRACT_VERSIONS = {
+    "python": "python-statement-window/v1",
+    "cpp": "cpp-statement-window/v1",
+    "java": "java-statement-window/v1",
+}
+WINDOW_CONTRACT_VERSION = WINDOW_CONTRACT_VERSIONS["python"]
+
+
+def window_contract_for_language(language: str) -> str:
+    try:
+        return WINDOW_CONTRACT_VERSIONS[language]
+    except KeyError as exc:
+        raise ValueError(f"unsupported window language: {language!r}") from exc
+
+
+def is_supported_window_contract(value: str) -> bool:
+    return value in WINDOW_CONTRACT_VERSIONS.values()
+
+
+def language_for_window_contract(value: str) -> str:
+    for language, contract in WINDOW_CONTRACT_VERSIONS.items():
+        if contract == value:
+            return language
+    raise ValueError(f"unsupported window contract: {value!r}")
 
 
 @dataclass(frozen=True)

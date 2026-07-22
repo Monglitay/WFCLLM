@@ -18,7 +18,10 @@ from wfcllm.detection.config import GATED_DETECTOR_MODE
 from wfcllm.detection.pipeline import load_jsonl_records
 from wfcllm.detection.scoring import GatedSampleScore, GatedWindowScorer
 from wfcllm.gate.input import GATE_INPUT_CONTRACT_VERSION
-from wfcllm.windowing.contracts import WINDOW_CONTRACT_VERSION
+from wfcllm.windowing.contracts import (
+    WINDOW_CONTRACT_VERSION,
+    is_supported_window_contract,
+)
 
 GATED_METHOD_NAME = "gated_semantic_window_v1"
 GATED_CALIBRATION_SCHEMA_VERSION = "wfcllm-gated-calibration/v1"
@@ -48,7 +51,7 @@ class GatedDetectionBindings:
         ):
             if _DIGEST.fullmatch(getattr(self, name)) is None:
                 raise ValueError(f"{name} must be a lowercase SHA-256 digest")
-        if self.window_contract_version != WINDOW_CONTRACT_VERSION:
+        if not is_supported_window_contract(self.window_contract_version):
             raise ValueError("window contract mismatch")
         if self.gate_input_contract_version != GATE_INPUT_CONTRACT_VERSION:
             raise ValueError("gate input contract mismatch")
@@ -180,6 +183,11 @@ class GatedDetectionPipeline:
             raise ValueError("scorer must be GatedWindowScorer")
         if not isinstance(bindings, GatedDetectionBindings):
             raise ValueError("bindings must be GatedDetectionBindings")
+        if (
+            getattr(extractor, "window_contract_version", None)
+            != bindings.window_contract_version
+        ):
+            raise ValueError("extractor and detection bindings window contracts differ")
         if isinstance(target_fpr, bool) or not isinstance(target_fpr, (int, float)) or not 0 < target_fpr < 1:
             raise ValueError("target_fpr must be in (0, 1)")
         if calibration_group_by not in {
@@ -205,6 +213,9 @@ class GatedDetectionPipeline:
             validate_final_code_record_exact(record)
             score = self._score_record(record)
             if score.reliable_window_count < self._scorer.minimum_reliable_windows:
+                if self._calibration_group_by == "pooled_reliable_hit_rate":
+                    bucket = str(self._scorer.minimum_reliable_windows)
+                    buckets.setdefault(bucket, []).append(0.0)
                 continue
             if self._calibration_group_by == "pooled_binomial_tail":
                 bucket = str(self._scorer.minimum_reliable_windows)
