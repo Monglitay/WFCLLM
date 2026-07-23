@@ -9,6 +9,7 @@ WINDOW_CONTRACT_VERSIONS = {
     "python": "python-statement-window/v1",
     "cpp": "cpp-statement-window/v1",
     "java": "java-statement-window/v1",
+    "js": "js-statement-window/v1",
 }
 WINDOW_CONTRACT_VERSION = WINDOW_CONTRACT_VERSIONS["python"]
 

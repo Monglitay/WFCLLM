@@ -118,6 +118,7 @@ class GatedWindowExtractor:
             "python-statement-window/v1": "python",
             "cpp-statement-window/v1": "cpp",
             "java-statement-window/v1": "java",
+            "js-statement-window/v1": "js",
         }
         language = contract_to_language.get(contract)
         if language is None:

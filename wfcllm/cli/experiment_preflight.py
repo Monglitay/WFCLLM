@@ -14,6 +14,7 @@ SUPPORTED_EXPERIMENT_PAIRS = frozenset(
         ("python", "mbpp"),
         ("cpp", "humanevalpack"),
         ("java", "humanevalpack"),
+        ("js", "humanevalpack"),
     }
 )
 SUPPORTED_EXPERIMENT_PROFILES = frozenset({"full", "fast"})
@@ -93,7 +94,7 @@ def validate_runtime_capabilities(config: Mapping[str, object]) -> None:
                 "rewrite strategy"
             )
         return
-    if language in {"cpp", "java"}:
+    if language in {"cpp", "java", "js"}:
         if strategy != "model_semantic_window":
             raise ValueError(
                 f"{language} experiments require model_semantic_window; "

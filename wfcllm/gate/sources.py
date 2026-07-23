@@ -23,6 +23,7 @@ APPROVED_GATE_SOURCE_FAMILIES = frozenset(
         "oss_python",
         "oss_cpp",
         "oss_java",
+        "oss_js",
         "parser_boundary",
     }
 )
@@ -79,7 +80,7 @@ class GateSourceRecord:
             raise ValueError("contract_or_hard_set must be a bool")
         if not any((self.repository_id, self.task_id, self.function_id)):
             raise ValueError("source requires a repository, task, or function ID")
-        if self.source_family in {"oss_python", "oss_cpp", "oss_java"}:
+        if self.source_family in {"oss_python", "oss_cpp", "oss_java", "oss_js"}:
             if self.repository_id is None:
                 raise ValueError("OSS source families require repository_id")
             if self.license_id is None or not self.license_id.strip():
@@ -217,7 +218,7 @@ class GateSourceManifest:
         oss_repository_groups = {
             canonical_gate_source_identity(record.repository_id)
             for record in formal
-            if record.source_family in {"oss_python", "oss_cpp", "oss_java"}
+            if record.source_family in {"oss_python", "oss_cpp", "oss_java", "oss_js"}
             and record.repository_id is not None
         }
         if not oss_repository_groups:
@@ -228,7 +229,7 @@ class GateSourceManifest:
             (
                 count
                 for family, count in group_counts.items()
-                if family not in {"oss_python", "oss_cpp", "oss_java"}
+                if family not in {"oss_python", "oss_cpp", "oss_java", "oss_js"}
             ),
             default=0,
         )
@@ -280,7 +281,7 @@ class GateSourceManifest:
             {
                 canonical_gate_source_identity(record.repository_id)
                 for record in self.formal_records
-                if record.source_family in {"oss_python", "oss_cpp", "oss_java"}
+                if record.source_family in {"oss_python", "oss_cpp", "oss_java", "oss_js"}
                 and record.repository_id is not None
             }
         )

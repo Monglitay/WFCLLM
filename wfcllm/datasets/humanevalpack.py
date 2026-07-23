@@ -11,7 +11,7 @@ from wfcllm.datasets.registry import register
 @register("humanevalpack")
 class HumanEvalPackAdapter(DatasetAdapter):
     name = "humanevalpack"
-    supported_languages: tuple[str, ...] = ("cpp", "java")
+    supported_languages: tuple[str, ...] = ("cpp", "java", "js")
 
     def __init__(self, dataset_path: str = "data/datasets") -> None:
         self._dataset_path = Path(dataset_path)
@@ -35,6 +35,16 @@ class HumanEvalPackAdapter(DatasetAdapter):
         raise KeyError(f"HumanEvalPack task_id not found{qualifier}: {task_id!r}")
 
     def _load_split(self, language: str):
+        local_jsonl = self._dataset_path / "humanevalpack" / language / "test.jsonl"
+        if local_jsonl.is_file():
+            import json
+
+            return [
+                json.loads(line)
+                for line in local_jsonl.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+
         from datasets import load_dataset
 
         dataset = load_dataset(

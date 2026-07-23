@@ -39,7 +39,7 @@ RUN_PY=("${CONDA_EXE}" run -p "${CONDA_ENV_PREFIX}" python)
   --profile "${WFCLLM_PROFILE}" \
   --check-runtime-capabilities
 
-if rg -q '"rule_name"[[:space:]]*:[[:space:]]*"keyed_text_region"' "${WFCLLM_CONFIG}"; then
+if grep -Eq '"rule_name"[[:space:]]*:[[:space:]]*"keyed_text_region"' "${WFCLLM_CONFIG}"; then
   echo "carrier config keyed_text_region is forbidden" >&2
   exit 2
 fi
@@ -66,7 +66,7 @@ CALIBRATION_LIMIT="${CALIBRATION_LIMIT:-32}"
 
 mkdir -p "${ROOT}"
 if [[ "${WFCLLM_PROFILE}" == "full" && ! -e "${PILOT_SOURCE_MANIFEST}" ]]; then
-  "${RUN_PY[@]}" scripts/wfcllm_prepare_gated_experiment.py \
+  env PYTHONPATH=. HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 "${RUN_PY[@]}" scripts/wfcllm_prepare_gated_experiment.py \
     --source-catalog "${PILOT_SOURCE_CATALOG}" \
     --source-manifest "${PILOT_SOURCE_MANIFEST}" \
     --training-key-bank "${PILOT_TRAINING_KEYS}" \
@@ -74,7 +74,7 @@ if [[ "${WFCLLM_PROFILE}" == "full" && ! -e "${PILOT_SOURCE_MANIFEST}" ]]; then
     --deployment-key "${PILOT_DEPLOYMENT_KEY}"
 fi
 if [[ ! -e "${SOURCE_MANIFEST}" ]]; then
-  "${RUN_PY[@]}" scripts/wfcllm_prepare_gated_experiment.py \
+  env PYTHONPATH=. HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 "${RUN_PY[@]}" scripts/wfcllm_prepare_gated_experiment.py \
     --source-catalog "${FULL_SOURCE_CATALOG}" \
     --source-manifest "${SOURCE_MANIFEST}" \
     --training-key-bank "${TRAINING_KEYS}" \
@@ -146,11 +146,15 @@ if [[ "${WFCLLM_PROFILE}" == "full" ]]; then
     --pilot-feasibility "${PILOT_FEASIBILITY}" \
     --model-device cuda --gate-device cuda
 else
-  run_phase gate-data --gate-data-scale pilot \
+  run_phase gate-data --gate-data-scale full \
     --model-device cuda --gate-device cuda
 fi
-run_phase gate-train --model-device cuda --gate-device cuda \
-  "${GATE_TRAIN_OVERRIDES[@]}"
+GATE_TRAIN_ARGS=(--model-device cuda --gate-device cuda)
+if [[ "${WFCLLM_PROFILE}" == "full" ]]; then
+  GATE_TRAIN_ARGS+=(--pilot-feasibility "${PILOT_FEASIBILITY}")
+fi
+GATE_TRAIN_ARGS+=("${GATE_TRAIN_OVERRIDES[@]}")
+run_phase gate-train "${GATE_TRAIN_ARGS[@]}"
 
 if [[ "${WFCLLM_PROFILE}" == "full" ]]; then
   env "${OFFLINE[@]}" CUDA_VISIBLE_DEVICES="" "${RUN_PY[@]}" run.py \

@@ -1,1 +1,5 @@
-"""JavaScript language adapter — placeholder for future implementation (spec §5.1)."""
+"""JavaScript language adapter."""
+
+from wfcllm.lang.js.adapter import JavaScriptAdapter
+
+__all__ = ["JavaScriptAdapter"]

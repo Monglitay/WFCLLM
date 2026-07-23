@@ -172,7 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--language",
         default=None,
-        choices=["python", "cpp", "java"],
+        choices=["python", "cpp", "java", "js"],
         help="gated generation 使用的显式编程语言",
     )
     parser.add_argument(

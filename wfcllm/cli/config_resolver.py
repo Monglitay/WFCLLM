@@ -97,6 +97,7 @@ def _resolve_experiment_matrix_config(
         "python": "oss_python",
         "cpp": "oss_cpp",
         "java": "oss_java",
+        "js": "oss_js",
     }[language]
     merged["gate_data"]["sources"] = [
         "main_generation",
