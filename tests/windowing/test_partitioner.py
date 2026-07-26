@@ -87,6 +87,7 @@ def _partition(
     *,
     tokenizer_counter=lambda _text: 32,
     thresholds: GateThresholds | None = None,
+    defer_unreliable_until_max_units: bool = False,
 ):
     predictor = FakeGatePredictor(scores)
     result = WindowPartitioner(
@@ -98,6 +99,7 @@ def _partition(
             suitable_accept=0.80,
         ),
         tokenizer_counter=tokenizer_counter,
+        defer_unreliable_until_max_units=defer_unreliable_until_max_units,
     ).partition(units)
     return result, predictor
 
@@ -354,6 +356,42 @@ def test_unreliable_gate_scores_close_and_skip(
     assert window.close_reason is CloseReason.UNRELIABLE_GATE
     assert window.skip_reason is reason
     assert window.suitable is False
+
+
+def test_deferred_unreliable_prefix_can_recover_as_one_reliable_window() -> None:
+    units = _units(3)
+    result, predictor = _partition(
+        units,
+        [
+            _score(stable=False),
+            _score(),
+            _score(),
+        ],
+        defer_unreliable_until_max_units=True,
+    )
+
+    assert len(predictor.inputs) == 3
+    assert [window.units for window in result.windows] == [tuple(units)]
+    assert result.windows[0].close_reason is CloseReason.MAX_UNITS
+    assert result.windows[0].skip_reason is None
+    assert result.windows[0].suitable is True
+
+
+def test_deferred_unreliable_score_at_max_units_still_skips() -> None:
+    units = _units(3)
+    result, _ = _partition(
+        units,
+        [
+            _score(stable=False),
+            _score(),
+            _score(stable=False),
+        ],
+        defer_unreliable_until_max_units=True,
+    )
+
+    assert [window.units for window in result.windows] == [tuple(units)]
+    assert result.windows[0].close_reason is CloseReason.UNRELIABLE_GATE
+    assert result.windows[0].skip_reason is SkipReason.UNSTABLE_SCORES
 
 
 def test_third_unit_forces_close_even_when_gate_says_continue() -> None:

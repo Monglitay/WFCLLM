@@ -213,6 +213,21 @@ def test_rewrite_request_is_key_blind_and_contains_only_public_context() -> None
         assert forbidden not in serialized
 
 
+def test_rewrite_request_descriptor_drops_repeated_direct_parent() -> None:
+    builder, rewriter, _ = _builder()
+    unit = _unit(
+        0,
+        parent=("program", "if_statement", "if_statement", "if_statement"),
+        depth=3,
+    )
+
+    builder.build([unit])
+
+    assert rewriter.calls[0][3]["canonical_parent"] == (
+        "python-statement-window/v1|program|parent=if_statement|ordinal=0|role=body"
+    )
+
+
 @pytest.mark.parametrize(
     "payload",
     [

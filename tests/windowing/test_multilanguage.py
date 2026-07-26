@@ -60,6 +60,25 @@ def test_multilanguage_compound_headers_are_singleton_boundaries(language: str) 
     assert any(unit.eligible is False for unit in headers)
 
 
+def test_cpp_for_initializer_declaration_does_not_overlap_for_header() -> None:
+    source = (
+        "bool f(vector<int> values) {\n"
+        "  for (int i = 0; i < values.size(); i++) {\n"
+        "    if (values[i] < 0) return true;\n"
+        "  }\n"
+        "  return false;\n"
+        "}\n"
+    )
+
+    units = get_statement_unit_extractor("cpp").extract(source)
+
+    assert all(left.end_byte <= right.start_byte for left, right in zip(units, units[1:]))
+    assert not any(
+        unit.node_type == "declaration" and "int i = 0" in unit.text
+        for unit in units
+    )
+
+
 @pytest.mark.parametrize("language", ["cpp", "java"])
 def test_partitioner_uses_language_window_contract(language: str) -> None:
     source = (

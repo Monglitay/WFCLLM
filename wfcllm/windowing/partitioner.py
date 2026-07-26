@@ -194,8 +194,9 @@ class SemanticWindow:
 
         first = self.units[0]
         expected_role = "header" if first.compound_header else "body"
+        expected_ancestors = _descriptor_ancestor_node_types(first)
         descriptor_matches = (
-            self.parent_descriptor.ancestor_node_types == first.parent_path[:-1]
+            self.parent_descriptor.ancestor_node_types == expected_ancestors
             and self.parent_descriptor.direct_parent_type
             == first.direct_parent_type
             and self.parent_descriptor.first_unit_ordinal
@@ -258,15 +259,21 @@ class WindowPartitioner:
         thresholds: GateThresholds,
         tokenizer_counter: Callable[[str], int],
         window_contract_version: str = WINDOW_CONTRACT_VERSION,
+        defer_unreliable_until_max_units: bool = False,
     ) -> None:
         from wfcllm.windowing.contracts import is_supported_window_contract
 
         if not is_supported_window_contract(window_contract_version):
             raise ValueError("unsupported window contract version")
+        if type(defer_unreliable_until_max_units) is not bool:
+            raise ValueError("defer_unreliable_until_max_units must be a bool")
         self._predictor = predictor
         self._thresholds = thresholds
         self._tokenizer_counter = tokenizer_counter
         self._window_contract_version = window_contract_version
+        self._defer_unreliable_until_max_units = (
+            defer_unreliable_until_max_units
+        )
 
     @property
     def window_contract_version(self) -> str:
@@ -387,12 +394,24 @@ class WindowPartitioner:
                 )
             last_scores = predicted_scores
             if not last_scores.stable:
+                if (
+                    self._defer_unreliable_until_max_units
+                    and len(open_units) < self._thresholds.max_units
+                    and not unit.compound_header
+                ):
+                    continue
                 close_window(
                     CloseReason.UNRELIABLE_GATE,
                     skip_reason=SkipReason.UNSTABLE_SCORES,
                 )
                 continue
             if not last_scores.decision_agreement:
+                if (
+                    self._defer_unreliable_until_max_units
+                    and len(open_units) < self._thresholds.max_units
+                    and not unit.compound_header
+                ):
+                    continue
                 close_window(
                     CloseReason.UNRELIABLE_GATE,
                     skip_reason=SkipReason.DECISION_DISAGREEMENT,
@@ -465,11 +484,21 @@ def _parent_descriptor(
 ) -> ParentDescriptor:
     return ParentDescriptor(
         contract_version=window_contract_version,
-        ancestor_node_types=unit.parent_path[:-1],
+        ancestor_node_types=_descriptor_ancestor_node_types(unit),
         direct_parent_type=unit.direct_parent_type,
         first_unit_ordinal=unit.direct_child_ordinal,
         compound_header_role="header" if unit.compound_header else "body",
     )
+
+
+def _descriptor_ancestor_node_types(unit: StatementUnit) -> tuple[str, ...]:
+    ancestor_node_types = unit.parent_path[:-1]
+    while (
+        ancestor_node_types
+        and ancestor_node_types[-1] == unit.direct_parent_type
+    ):
+        ancestor_node_types = ancestor_node_types[:-1]
+    return ancestor_node_types
 
 
 def _has_same_parent(

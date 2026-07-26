@@ -82,15 +82,23 @@ class TreeSitterStatementUnitExtractor:
         units: list[StatementUnit] = []
         ordinals: defaultdict[tuple[int, int, str], int] = defaultdict(int)
 
-        def walk(node: Node, parent_path: tuple[str, ...], depth: int) -> None:
+        def walk(
+            node: Node,
+            parent_path: tuple[str, ...],
+            depth: int,
+            *,
+            skip_before: int | None = None,
+        ) -> None:
             owner_key = (node.start_byte, node.end_byte, node.type)
             for child in node.named_children:
                 if child.is_missing:
                     continue
+                if skip_before is not None and child.end_byte <= skip_before:
+                    continue
                 compound = child.type in self._compound_types
                 simple = child.type in self._simple_types
                 if not compound and not simple:
-                    walk(child, (*parent_path, child.type), depth)
+                    walk(child, (*parent_path, child.type), depth, skip_before=skip_before)
                     continue
 
                 ordinal = ordinals[owner_key]
@@ -125,7 +133,12 @@ class TreeSitterStatementUnitExtractor:
                         )
                     )
                 if compound:
-                    walk(child, (*parent_path, child.type), depth + 1)
+                    walk(
+                        child,
+                        (*parent_path, child.type),
+                        depth + 1,
+                        skip_before=end_byte,
+                    )
 
         walk(root, (root.type,), 0)
         units.sort(key=lambda unit: (unit.start_byte, unit.end_byte))
