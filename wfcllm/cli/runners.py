@@ -193,14 +193,12 @@ def run_calibrate(args: argparse.Namespace, state: RunStateManager) -> int:
         generated_hash = state.get("generate", "gate_bundle_sha256")
         if generated_hash != bundle_hash:
             raise ValueError("calibrate requires the same gate bundle as generate")
-        negative_input = getattr(args, "negative_input", None)
-        if negative_input is None:
-            raise ValueError("gated calibrate requires --negative-input")
-        setattr(args, "_gated_negative_corpus_hash", _safe_file_hash(Path(negative_input)))
+        corpus_path, corpus_hash = _resolve_gated_negative_corpus(args, config)
+        setattr(args, "_gated_negative_corpus_hash", corpus_hash)
         pipeline = _require_gated_detection_pipeline(args)
         calibration_path = _gated_calibration_output(args, config)
         try:
-            pipeline.calibrate_jsonl(negative_input, output_path=calibration_path)
+            pipeline.calibrate_jsonl(str(corpus_path), output_path=calibration_path)
         except ValueError as exc:
             if (
                 not _uses_fast_experimental_gate_training(config)
@@ -269,6 +267,235 @@ def _write_fast_experimental_fallback_gated_calibration(
         },
     )
     write_gated_calibration_artifact(output_path, artifact)
+
+
+_GATED_NEGATIVE_CORPUS_MANIFEST_SCHEMA = "wfcllm-gated-negative-corpus-manifest/v1"
+
+
+def _resolve_gated_negative_corpus(
+    args: argparse.Namespace,
+    config: Mapping[str, object],
+) -> tuple[Path, str]:
+    """Resolve the calibration negative corpus, supplementing when configured.
+
+    Without calibration.target_negative_count this keeps the historical
+    behavior: --negative-input is required and the returned hash covers that
+    external file.  With a target, the external corpus (missing file counts
+    as zero rows) is topped up with plain unwatermarked completions on
+    held-out dataset prompts (ADR 0008), the consolidated corpus is written
+    to run_dir/calibration/negative_corpus.jsonl, and the returned hash —
+    the value bound as negative_corpus_manifest_sha256 — covers that
+    consolidated corpus file, preserving the existing binding semantics
+    (hash of the corpus file calibration actually reads).
+    """
+
+    calibration = config.get("calibration")
+    target = (
+        calibration.get("target_negative_count")
+        if isinstance(calibration, Mapping)
+        else None
+    )
+    negative_input = getattr(args, "negative_input", None)
+    if target is None:
+        if negative_input is None:
+            raise ValueError("gated calibrate requires --negative-input")
+        path = Path(negative_input)
+        return path, _safe_file_hash(path)
+    if type(target) is not int or target < 1:
+        raise ValueError(
+            "calibration.target_negative_count must be a positive integer"
+        )
+    external_records = _load_external_negative_records(negative_input)
+    needed = target - len(external_records)
+    generated_records: list[dict[str, str]] = []
+    generation_model_identifier: str | None = None
+    decoding_config: dict[str, object] | None = None
+    if needed > 0:
+        generated_records, generation_model_identifier, decoding_config = (
+            _generate_unwatermarked_negative_supplement(args, config, needed)
+        )
+    corpus_records = [*external_records, *generated_records]
+    corpus_path = (
+        _gate_run_dir(args, config) / "calibration" / "negative_corpus.jsonl"
+    )
+    corpus_path.parent.mkdir(parents=True, exist_ok=True)
+    corpus_path.write_text(
+        "".join(
+            json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+            for record in corpus_records
+        ),
+        encoding="utf-8",
+    )
+    corpus_hash = _safe_file_hash(corpus_path)
+    _write_public_json(
+        corpus_path.parent / "negative_corpus_manifest.json",
+        {
+            "schema_version": _GATED_NEGATIVE_CORPUS_MANIFEST_SCHEMA,
+            "target_negative_count": target,
+            "external_count": len(external_records),
+            "generated_count": len(generated_records),
+            "generation_model_identifier": generation_model_identifier,
+            "decoding_config": decoding_config,
+            "corpus_sha256": corpus_hash,
+        },
+    )
+    return corpus_path, corpus_hash
+
+
+def _load_external_negative_records(
+    negative_input: object,
+) -> list[dict[str, object]]:
+    """Load externally provided negatives; a missing file contributes zero rows."""
+
+    if negative_input is None:
+        return []
+    path = Path(negative_input)
+    if not path.exists():
+        return []
+    from wfcllm.detection.code_only import validate_final_code_record_exact
+    from wfcllm.detection.pipeline import load_jsonl_records
+
+    records = load_jsonl_records(path)
+    for record in records:
+        validate_final_code_record_exact(record)
+    return [dict(record) for record in records]
+
+
+def _generate_unwatermarked_negative_supplement(
+    args: argparse.Namespace,
+    config: Mapping[str, object],
+    needed: int,
+) -> tuple[list[dict[str, str]], str, dict[str, object]]:
+    """Generate plain unwatermarked completions on held-out dataset prompts.
+
+    No gated embedding, no window rewriting, and no deployment key are
+    involved, and every completion is adopted as-is: the supplement path
+    never reads pass/test/correctness signals.  The generation model is
+    loaded only here, i.e. only when supplementation actually triggers.
+    """
+
+    generation = config.get("generation")
+    if not isinstance(generation, Mapping):
+        raise ValueError("gated generation config is missing")
+    decoding = _gated_negative_decoding_config(config, generation)
+    positive_ids = _gated_positive_sample_ids(args, config)
+    samples = _load_gated_dataset_samples(args, generation)
+    held_out = [
+        sample for sample in samples if sample["id"] not in positive_ids
+    ]
+    if len(held_out) < needed:
+        raise ValueError(
+            f"calibration negative supplement requires {needed} held-out "
+            f"dataset prompts but only {len(held_out)} remain outside the "
+            "positive evaluation set"
+        )
+    selected = held_out[:needed]
+    options = _local_hf_runtime_options(args, config, "calibrate")
+    from wfcllm.gate.production import LocalHFProgramGenerator
+
+    program = LocalHFProgramGenerator(
+        model_path=options.generation_model_path,
+        device=options.model_device,
+        max_new_tokens=int(decoding["max_new_tokens"]),
+        temperature=float(decoding["temperature"]),
+        top_p=float(decoding["top_p"]),
+        seed=int(decoding["seed"]),
+        program_prompt_mode=str(decoding["prompt_mode"]),
+        rewrite_max_new_tokens=options.rewrite_max_new_tokens,
+        rewrite_generation_attempts=options.rewrite_generation_attempts,
+        rewrite_temperature=options.rewrite_temperature,
+        rewrite_top_p=options.rewrite_top_p,
+        load_in_4bit=bool(decoding["load_in_4bit"]),
+        torch_dtype=str(decoding["torch_dtype"]),
+    )
+    dataset = str(generation.get("dataset", "humaneval"))
+    records = [
+        {
+            "id": sample["id"],
+            "dataset": dataset,
+            "prompt": sample["prompt"],
+            "final_code": program.generate_program(
+                prompt=sample["prompt"],
+                sample_id=sample["id"],
+            ),
+        }
+        for sample in selected
+    ]
+    return records, options.generation_model_path.name, decoding
+
+
+def _gated_negative_decoding_config(
+    config: Mapping[str, object],
+    generation: Mapping[str, object],
+) -> dict[str, object]:
+    """Generation-phase decoding defaults with optional calibration overrides."""
+
+    decoding: dict[str, object] = {
+        "max_new_tokens": int(generation.get("max_new_tokens", 256)),
+        "temperature": float(generation.get("temperature", 0.25)),
+        "top_p": float(generation.get("top_p", 0.95)),
+        "seed": int(generation.get("seed", 7)),
+        "prompt_mode": str(generation.get("prompt_mode", "completion")),
+        "load_in_4bit": bool(generation.get("load_in_4bit", False)),
+        "torch_dtype": str(generation.get("torch_dtype", "bf16")),
+    }
+    calibration = config.get("calibration")
+    supplement = (
+        calibration.get("supplement") if isinstance(calibration, Mapping) else None
+    )
+    if supplement is None:
+        return decoding
+    if not isinstance(supplement, Mapping):
+        raise ValueError("calibration.supplement must be a mapping")
+    allowed = {"max_new_tokens", "temperature", "top_p", "seed"}
+    unknown = sorted(set(supplement) - allowed)
+    if unknown:
+        raise ValueError(
+            f"calibration.supplement has unknown fields: {unknown}"
+        )
+    overridden = dict(decoding)
+    for name in sorted(allowed & set(supplement)):
+        overridden[name] = supplement[name]
+    return overridden
+
+
+def _gated_positive_sample_ids(
+    args: argparse.Namespace,
+    config: Mapping[str, object],
+) -> set[str]:
+    """Read only the id column of this run's generate output.
+
+    inputs/final_code.jsonl is a generate artifact of the same run; reading
+    its id list here enforces the held-out guarantee for supplement prompts.
+    Only ids are used — never detection or quality signals.
+    """
+
+    final_code_path = (
+        _gate_run_dir(args, config) / "inputs" / "final_code.jsonl"
+    )
+    if not final_code_path.exists():
+        raise ValueError(
+            "calibration negative supplement requires the generate output "
+            "inputs/final_code.jsonl to hold out positive prompts"
+        )
+    ids: set[str] = set()
+    for line_number, line in enumerate(
+        final_code_path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"invalid generate output row final_code.jsonl:{line_number}"
+            ) from exc
+        if not isinstance(record, Mapping) or "id" not in record:
+            raise ValueError(
+                f"generate output row must carry an id final_code.jsonl:{line_number}"
+            )
+        ids.add(str(record["id"]))
+    return ids
 
 
 def run_detect(args: argparse.Namespace, state: RunStateManager) -> int:
@@ -892,11 +1119,11 @@ def _resolve_program_finalizer(
     raise ValueError(f"unsupported generation program_finalizer: {name}")
 
 
-def _load_gated_generation_samples(
+def _load_gated_dataset_samples(
     args: argparse.Namespace,
     generation: Mapping[str, object],
 ) -> list[dict[str, str]]:
-    """Load normalized prompts through the registered dataset adapter."""
+    """Load every normalized prompt of the configured dataset in adapter order."""
     from wfcllm import datasets
 
     dataset = str(generation.get("dataset", "humaneval"))
@@ -923,7 +1150,18 @@ def _load_gated_generation_samples(
         raise ValueError(
             f"dataset {dataset!r} does not support language={language!r}"
         )
-    samples = list(adapter.iter_samples(language=language))
+    return [
+        {"id": sample.task_id, "prompt": sample.prompt}
+        for sample in adapter.iter_samples(language=language)
+    ]
+
+
+def _load_gated_generation_samples(
+    args: argparse.Namespace,
+    generation: Mapping[str, object],
+) -> list[dict[str, str]]:
+    """Load normalized prompts through the registered dataset adapter."""
+    samples = _load_gated_dataset_samples(args, generation)
     offset = getattr(args, "sample_offset", None)
     limit = getattr(args, "sample_limit", None)
     if offset is not None:
@@ -934,10 +1172,7 @@ def _load_gated_generation_samples(
         if limit < 0:
             raise ValueError("sample_limit must be non-negative")
         samples = samples[:limit]
-    return [
-        {"id": sample.task_id, "prompt": sample.prompt}
-        for sample in samples
-    ]
+    return samples
 
 
 def _build_local_gated_generation_pipeline(args: argparse.Namespace):

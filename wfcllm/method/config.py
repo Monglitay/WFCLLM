@@ -298,14 +298,17 @@ class WFCLLMMethodPreset:
             },
             "detector",
         )
+        calibration_required_keys = {
+            "method",
+            "group_by",
+            "target_fpr",
+            "posthoc_pass_at_1_noninferiority_absolute_drop_max",
+        }
+        calibration_optional_keys = {"target_negative_count", "supplement"}
         self._require_exact_keys(
             self.calibration,
-            {
-                "method",
-                "group_by",
-                "target_fpr",
-                "posthoc_pass_at_1_noninferiority_absolute_drop_max",
-            },
+            calibration_required_keys
+            | (calibration_optional_keys & set(self.calibration)),
             "calibration",
         )
         self._require_exact_keys(self.artifacts, {"run_root"}, "artifacts")
@@ -621,6 +624,7 @@ class WFCLLMMethodPreset:
                 "calibration method/group_by must select one supported "
                 "predeclared 5% FPR statistic"
             )
+        self._validate_calibration_negative_supplement()
         run_root = self.artifacts.get("run_root")
         if (
             not isinstance(run_root, str)
@@ -630,6 +634,54 @@ class WFCLLMMethodPreset:
             or ".." in Path(run_root).parts
         ):
             raise ValueError("artifacts.run_root must identify a local directory")
+
+    def _validate_calibration_negative_supplement(self) -> None:
+        """Validate the optional autonomous negative-supplement keys (ADR 0008)."""
+
+        target_negative_count = self.calibration.get("target_negative_count")
+        if target_negative_count is not None and (
+            type(target_negative_count) is not int or target_negative_count < 1
+        ):
+            raise ValueError(
+                "calibration.target_negative_count must be a positive integer"
+            )
+        supplement = self.calibration.get("supplement")
+        if supplement is None:
+            return
+        if not isinstance(supplement, Mapping):
+            raise ValueError("calibration.supplement must be a dict")
+        allowed_keys = {"max_new_tokens", "temperature", "top_p", "seed"}
+        unknown = sorted(set(supplement) - allowed_keys)
+        if unknown:
+            raise ValueError(
+                f"calibration.supplement has unknown fields: {unknown}"
+            )
+        max_new_tokens = supplement.get("max_new_tokens")
+        if max_new_tokens is not None and (
+            type(max_new_tokens) is not int or max_new_tokens < 1
+        ):
+            raise ValueError(
+                "calibration.supplement.max_new_tokens must be a positive integer"
+            )
+        temperature = supplement.get("temperature")
+        if temperature is not None and (
+            isinstance(temperature, bool)
+            or not isinstance(temperature, (int, float))
+            or temperature < 0
+        ):
+            raise ValueError(
+                "calibration.supplement.temperature must be a non-negative number"
+            )
+        top_p = supplement.get("top_p")
+        if top_p is not None and (
+            isinstance(top_p, bool)
+            or not isinstance(top_p, (int, float))
+            or not 0 < top_p <= 1
+        ):
+            raise ValueError("calibration.supplement.top_p must be in (0, 1]")
+        seed = supplement.get("seed")
+        if seed is not None and type(seed) is not int:
+            raise ValueError("calibration.supplement.seed must be an integer")
 
     def _validate_gate_data(self) -> None:
         expected_keys = {

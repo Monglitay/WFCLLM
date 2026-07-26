@@ -558,3 +558,58 @@ def test_gated_public_config_rejects_raw_values_in_non_secret_carrier_fields(
     preset = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME)
     with pytest.raises(ValueError, match=match):
         _replace_section(preset, section_name, mutation)
+
+
+def test_gated_preset_accepts_optional_calibration_negative_supplement_keys() -> None:
+    preset = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME)
+    calibration = deepcopy(preset.to_dict()["calibration"])
+    calibration["target_negative_count"] = 200
+    calibration["supplement"] = {
+        "max_new_tokens": 256,
+        "temperature": 0.8,
+        "top_p": 0.95,
+        "seed": 11,
+    }
+
+    tuned = replace(preset, calibration=calibration)
+
+    assert tuned.calibration["target_negative_count"] == 200
+    assert tuned.calibration["supplement"]["temperature"] == 0.8
+
+
+def test_gated_preset_default_calibration_has_no_negative_supplement() -> None:
+    preset = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME)
+
+    assert "target_negative_count" not in preset.calibration
+    assert "supplement" not in preset.calibration
+
+
+@pytest.mark.parametrize("target", [0, -1, True, 1.5, "200"])
+def test_gated_preset_rejects_invalid_target_negative_count(target) -> None:
+    preset = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME)
+    calibration = deepcopy(preset.to_dict()["calibration"])
+    calibration["target_negative_count"] = target
+
+    with pytest.raises(ValueError, match="target_negative_count"):
+        replace(preset, calibration=calibration)
+
+
+@pytest.mark.parametrize(
+    ("supplement", "match"),
+    [
+        ({"pass_rate": 1.0}, "unknown fields"),
+        ({"max_new_tokens": 0}, "max_new_tokens"),
+        ({"temperature": -0.1}, "temperature"),
+        ({"top_p": 0.0}, "top_p"),
+        ({"seed": "7"}, "seed"),
+        ("greedy", "supplement"),
+    ],
+)
+def test_gated_preset_rejects_invalid_calibration_supplement(supplement, match) -> None:
+    preset = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME)
+    calibration = deepcopy(preset.to_dict()["calibration"])
+    calibration["target_negative_count"] = 100
+    calibration["supplement"] = supplement
+
+    with pytest.raises(ValueError, match=match):
+        replace(preset, calibration=calibration)
