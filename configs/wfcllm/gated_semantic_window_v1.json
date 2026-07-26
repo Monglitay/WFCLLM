@@ -186,6 +186,7 @@
   },
   "runtime": {
     "default_phases": [
+      "encoder",
       "gate-data",
       "gate-train",
       "generate",

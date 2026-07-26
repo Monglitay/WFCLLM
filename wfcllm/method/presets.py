@@ -234,6 +234,7 @@ _GATED_SEMANTIC_WINDOW_V1 = WFCLLMMethodPreset(
     artifacts={"run_root": "data/runs"},
     runtime={
         "default_phases": [
+            "encoder",
             "gate-data",
             "gate-train",
             "generate",

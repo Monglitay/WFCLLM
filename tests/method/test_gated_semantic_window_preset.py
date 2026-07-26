@@ -17,6 +17,7 @@ from wfcllm.method.presets import (
 
 
 GATED_PHASES = [
+    "encoder",
     "gate-data",
     "gate-train",
     "generate",

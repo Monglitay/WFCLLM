@@ -183,14 +183,17 @@ if [[ "${WFCLLM_PROFILE}" == "full" ]]; then
     --gate-base-model-path "${GATE_BASE_MODEL_PATH}"
     --gate-cache-dir "${CACHE_DIR}"
   )
+  env "${OFFLINE[@]}" "${RUN_PY[@]}" run.py --phase encoder "${PILOT_COMMON[@]}"
   env "${OFFLINE[@]}" "${RUN_PY[@]}" run.py --phase gate-data \
     "${PILOT_COMMON[@]}" --gate-data-scale pilot \
     --model-device cuda --gate-device cuda
   PILOT_FEASIBILITY="${PILOT_RUN_DIR}/gate-data/feasibility_summary.json"
+  run_phase encoder
   run_phase gate-data --gate-data-scale full \
     --pilot-feasibility "${PILOT_FEASIBILITY}" \
     --model-device cuda --gate-device cuda
 else
+  run_phase encoder
   run_phase gate-data --gate-data-scale full \
     --model-device cuda --gate-device cuda
 fi

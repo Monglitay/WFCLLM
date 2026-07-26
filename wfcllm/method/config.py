@@ -19,6 +19,7 @@ DEFAULT_HUMANEVAL_STOP_SEQUENCES = ("\nclass", "\ndef", "\n#", "\nif", "\nprint"
 _EVIDENCE_RETRY_METHOD = "evidence_retry_seed7x3"
 _GATED_METHOD = "gated_semantic_window_v1"
 _GATED_PHASES = (
+    "encoder",
     "gate-data",
     "gate-train",
     "generate",

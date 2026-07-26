@@ -766,19 +766,7 @@ def python_literal_equivalent(reference: str, candidate: str) -> bool:
 def _java_equivalent_variant(text: str, *, candidate_index: int) -> str:
     body = text.rstrip()
     trailing = text[len(body):]
-    variants = (
-        _java_parenthesize_return,
-        _java_ternary_return,
-        lambda value: _java_boolean_return(value, operator="&&"),
-        lambda value: _java_boolean_return(value, operator="||"),
-        _java_boolean_object_ternary_return,
-        _java_parenthesize_condition,
-        lambda value: _java_boolean_condition(value, operator="&&"),
-        lambda value: _java_boolean_condition(value, operator="||"),
-        _java_parenthesize_initializer_or_assignment,
-        lambda value: _java_boolean_initializer_or_assignment(value, operator="&&"),
-        lambda value: _java_boolean_initializer_or_assignment(value, operator="||"),
-    )
+    variants = _JAVA_EQUIVALENT_TRANSFORMS
     transform = variants[(candidate_index - 1) % len(variants)]
     if "\n" not in body:
         transformed = transform(body)
@@ -967,26 +955,7 @@ def _java_boolean_expression(expression: str) -> bool:
 def _cpp_equivalent_variant(text: str, *, candidate_index: int) -> str:
     body = text.rstrip()
     trailing = text[len(body):]
-    variants = (
-        _cpp_parenthesize_return,
-        _cpp_parenthesize_condition,
-        _cpp_parenthesize_initializer_or_assignment,
-        lambda value: _cpp_comment_return(value, tag="r1"),
-        lambda value: _cpp_comment_condition(value, tag="c1"),
-        lambda value: _cpp_comment_initializer_or_assignment(value, tag="a1"),
-        lambda value: _cpp_ternary_return(value),
-        lambda value: _cpp_boolean_condition(value, operator="&&"),
-        lambda value: _cpp_ternary_initializer_or_assignment(value),
-        lambda value: _cpp_comment_return(value, tag="r2"),
-        lambda value: _cpp_boolean_condition(value, operator="||"),
-        lambda value: _cpp_comment_initializer_or_assignment(value, tag="a2"),
-        _cpp_comma_return,
-        _cpp_comma_condition,
-        _cpp_comma_initializer_or_assignment,
-        _cpp_sizeof_return,
-        _cpp_not_not_condition,
-        _cpp_sizeof_initializer_or_assignment,
-    )
+    variants = _CPP_EQUIVALENT_TRANSFORMS
     transform = variants[(candidate_index - 1) % len(variants)]
     if "\n" not in body:
         transformed = transform(body)
@@ -1236,6 +1205,86 @@ def _cpp_sizeof_initializer_or_assignment(text: str) -> str:
         f"{match.group(1)}((void)sizeof({expression}), {expression})"
         f"{match.group(3)}"
     )
+
+
+_JAVA_EQUIVALENT_TRANSFORMS: tuple[Callable[[str], str], ...] = (
+    _java_parenthesize_return,
+    _java_ternary_return,
+    lambda value: _java_boolean_return(value, operator="&&"),
+    lambda value: _java_boolean_return(value, operator="||"),
+    _java_boolean_object_ternary_return,
+    _java_parenthesize_condition,
+    lambda value: _java_boolean_condition(value, operator="&&"),
+    lambda value: _java_boolean_condition(value, operator="||"),
+    _java_parenthesize_initializer_or_assignment,
+    lambda value: _java_boolean_initializer_or_assignment(value, operator="&&"),
+    lambda value: _java_boolean_initializer_or_assignment(value, operator="||"),
+)
+
+_CPP_EQUIVALENT_TRANSFORMS: tuple[Callable[[str], str], ...] = (
+    _cpp_parenthesize_return,
+    _cpp_parenthesize_condition,
+    _cpp_parenthesize_initializer_or_assignment,
+    lambda value: _cpp_comment_return(value, tag="r1"),
+    lambda value: _cpp_comment_condition(value, tag="c1"),
+    lambda value: _cpp_comment_initializer_or_assignment(value, tag="a1"),
+    lambda value: _cpp_ternary_return(value),
+    lambda value: _cpp_boolean_condition(value, operator="&&"),
+    lambda value: _cpp_ternary_initializer_or_assignment(value),
+    lambda value: _cpp_comment_return(value, tag="r2"),
+    lambda value: _cpp_boolean_condition(value, operator="||"),
+    lambda value: _cpp_comment_initializer_or_assignment(value, tag="a2"),
+    _cpp_comma_return,
+    _cpp_comma_condition,
+    _cpp_comma_initializer_or_assignment,
+    _cpp_sizeof_return,
+    _cpp_not_not_condition,
+    _cpp_sizeof_initializer_or_assignment,
+)
+
+_PUBLIC_EQUIVALENT_VARIANT_FAMILIES: dict[
+    str, tuple[Callable[..., str], int]
+] = {
+    "cpp": (_cpp_equivalent_variant, len(_CPP_EQUIVALENT_TRANSFORMS)),
+    "java": (_java_equivalent_variant, len(_JAVA_EQUIVALENT_TRANSFORMS)),
+}
+
+
+def public_equivalent_variants(language: str, text: str, count: int) -> tuple[str, ...]:
+    """Return up to ``count`` deduplicated key-blind equivalent variants.
+
+    The shared cpp/java candidate generators are the only public entry;
+    python positives come from the TransformEngine positive rules instead.
+    Results never contain the original text or duplicates, so unproductive
+    inputs may yield fewer than ``count`` variants (possibly none).
+    """
+
+    if not isinstance(language, str) or not language:
+        raise ValueError("language must be a non-empty string")
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("text must be a non-empty string")
+    if type(count) is not int or count <= 0:
+        raise ValueError("count must be a positive integer")
+    if language == "python":
+        raise ValueError(
+            "python equivalent variants come from the TransformEngine positive "
+            "rules; the public equivalent-variant entry supports cpp and java"
+        )
+    family = _PUBLIC_EQUIVALENT_VARIANT_FAMILIES.get(language)
+    if family is None:
+        raise ValueError(
+            f"language {language!r} has no public equivalent-variant generator; "
+            "encoder positive samples cannot be built"
+        )
+    variant_fn, family_size = family
+    variants: list[str] = []
+    for candidate_index in range(1, family_size + 1):
+        candidate = variant_fn(text, candidate_index=candidate_index)
+        if candidate != text and candidate not in variants:
+            variants.append(candidate)
+        if len(variants) >= count:
+            break
+    return tuple(variants)
 
 
 def python_comprehension_alpha_equivalent(

@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from collections.abc import Mapping
 
@@ -83,6 +84,20 @@ def ensure_gate_phase_prerequisites(
     )
 
     fast_experimental = _uses_fast_experimental_gate_training(config)
+    if phase == "gate-data":
+        checkpoint = getattr(args, "semantic_encoder_checkpoint_path", None)
+        has_explicit_checkpoint = (
+            isinstance(checkpoint, str) and bool(checkpoint)
+        ) or isinstance(checkpoint, Path)
+        encoder_done = callable(getattr(state, "is_done", None)) and state.is_done(
+            "encoder"
+        )
+        if not has_explicit_checkpoint and not encoder_done:
+            raise ValueError(
+                "gate-data requires a completed encoder phase or an explicit "
+                "--semantic-encoder-checkpoint-path; run --phase encoder first "
+                "to train the per-dataset semantic encoder"
+            )
     if phase == "gate-train":
         run_dir = _gate_run_dir(args, config)
         data_manifest = run_dir / "gate-data" / "manifest.json"

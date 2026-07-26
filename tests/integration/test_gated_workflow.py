@@ -31,6 +31,7 @@ from wfcllm.orchestration.state import RunStateManager
 
 
 GATED_PHASES = [
+    "encoder",
     "gate-data",
     "gate-train",
     "generate",
@@ -91,6 +92,9 @@ class _FakeGatedCliRunner:
             if expected_bundle_hash is not None and actual_hash != expected_bundle_hash:
                 raise ValueError("external gate bundle hash mismatch")
 
+        if "encoder" in completed:
+            # A resumed run consumes the encoder trained by the prior run.
+            self._write_encoder_artifacts(paths)
         if "gate-train" in completed and bundle is None:
             # A resumed run consumes the candidate published by the prior run.
             self._publish_candidate(paths)
@@ -98,7 +102,24 @@ class _FakeGatedCliRunner:
         for phase in phases:
             if phase in completed:
                 continue
-            if phase == "gate-data":
+            if phase == "encoder":
+                from types import SimpleNamespace
+
+                from wfcllm.encoder import projection_training
+
+                projection_training.train_semantic_projection(
+                    SimpleNamespace(
+                        source_catalog=paths.run_dir / "catalog.jsonl",
+                        model_path=paths.run_dir / "semantic-base",
+                        output_dir=paths.run_dir / "encoder",
+                        language="python",
+                    )
+                )
+            elif phase == "gate-data":
+                if not (paths.run_dir / "encoder" / "best_model.pt").exists():
+                    raise ValueError(
+                        "gate-data requires a completed encoder phase"
+                    )
                 _write_json(
                     paths.gate_data_manifest,
                     _diagnostic_artifact("wfcllm-gate-data-manifest/v1"),
@@ -172,6 +193,20 @@ class _FakeGatedCliRunner:
         )
 
     @staticmethod
+    def _write_encoder_artifacts(paths: RunPaths) -> None:
+        encoder_dir = paths.run_dir / "encoder"
+        encoder_dir.mkdir(parents=True, exist_ok=True)
+        (encoder_dir / "best_model.pt").write_bytes(b"fake-projection")
+        _write_json(
+            encoder_dir / "manifest.json",
+            {
+                **_diagnostic_artifact("wfcllm-semantic-encoder-manifest/v1"),
+                "language": "python",
+                "built_group_counts": {"train": 2, "validation": 1, "test": 1},
+            },
+        )
+
+    @staticmethod
     def _publish_candidate(paths: RunPaths) -> None:
         paths.gate_candidate_bundle_dir.mkdir(parents=True, exist_ok=True)
         (paths.gate_candidate_bundle_dir / "gate_float.pt").write_bytes(
@@ -217,7 +252,30 @@ def tracing_open() -> _TracingOpen:
 
 
 @pytest.fixture
-def cli_runner(tracing_open: _TracingOpen) -> _FakeGatedCliRunner:
+def cli_runner(
+    tracing_open: _TracingOpen, monkeypatch: pytest.MonkeyPatch
+) -> _FakeGatedCliRunner:
+    def _stub_projection_training(settings):
+        output_dir = Path(settings.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        best = output_dir / "best_model.pt"
+        best.write_bytes(b"fake-projection")
+        manifest = {
+            **_diagnostic_artifact("wfcllm-semantic-encoder-manifest/v1"),
+            "language": settings.language,
+            "built_group_counts": {"train": 2, "validation": 1, "test": 1},
+        }
+        _write_json(output_dir / "manifest.json", manifest)
+        return {
+            "best_model_path": str(best),
+            "built_group_counts": {"train": 2, "validation": 1, "test": 1},
+            "language": settings.language,
+        }
+
+    monkeypatch.setattr(
+        "wfcllm.encoder.projection_training.train_semantic_projection",
+        _stub_projection_training,
+    )
     return _FakeGatedCliRunner(tracing_open)
 
 
@@ -265,8 +323,33 @@ def test_external_bundle_skips_gate_phases(
 def test_fake_workflow_resume_skips_completed_phases(
     tmp_path: Path, cli_runner: _FakeGatedCliRunner
 ) -> None:
-    result = cli_runner.run_gated(tmp_path, completed={"gate-data", "gate-train"})
-    assert result.phase_order == GATED_PHASES[2:]
+    result = cli_runner.run_gated(
+        tmp_path, completed={"encoder", "gate-data", "gate-train"}
+    )
+    assert result.phase_order == GATED_PHASES[3:]
+
+
+def test_gated_workflow_trains_encoder_before_gate_data(
+    tmp_path: Path, cli_runner: _FakeGatedCliRunner
+) -> None:
+    result = cli_runner.run_gated(tmp_path, backend="fake")
+
+    assert result.phase_order[0] == "encoder"
+    assert result.phase_order == GATED_PHASES
+    encoder_dir = result.run_paths.run_dir / "encoder"
+    assert (encoder_dir / "best_model.pt").exists()
+    manifest = json.loads(
+        (encoder_dir / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["language"] == "python"
+    assert manifest["built_group_counts"]["train"] >= 1
+
+
+def test_fake_gate_data_fails_without_a_trained_encoder(
+    tmp_path: Path, cli_runner: _FakeGatedCliRunner
+) -> None:
+    with pytest.raises(ValueError, match="requires a completed encoder"):
+        cli_runner.run_gated(tmp_path, start_phase="gate-data")
 
 
 def test_fake_bundle_hash_mismatch_fails_before_generate(

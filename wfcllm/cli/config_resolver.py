@@ -133,6 +133,7 @@ def _resolve_experiment_matrix_config(
     ]
     merged["gate_data"]["scale"] = "pilot" if profile == "fast" else "full"
     merged["runtime"]["default_phases"] = [
+        "encoder",
         "gate-data",
         "gate-train",
         "generate",

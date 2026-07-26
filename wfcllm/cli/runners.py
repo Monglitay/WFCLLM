@@ -1276,6 +1276,33 @@ def _formal_gate_dependencies(args: argparse.Namespace, phase: str) -> object:
     return dependencies
 
 
+def _resolve_semantic_encoder_checkpoint(args: argparse.Namespace) -> Path | None:
+    """Prefer the explicit checkpoint; fall back to the run's encoder phase."""
+
+    explicit = _optional_runtime_path(args, "semantic_encoder_checkpoint_path")
+    if explicit is not None:
+        return explicit
+    from wfcllm.orchestration.state import DEFAULT_STATE_FILE
+
+    state_file = getattr(args, "state_file", None)
+    state_path = (
+        Path(state_file)
+        if isinstance(state_file, (str, Path)) and str(state_file)
+        else DEFAULT_STATE_FILE
+    )
+    if not state_path.exists():
+        return None
+    try:
+        recorded = RunStateManager(path=state_path).get("encoder", "best_model_path")
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not isinstance(recorded, str) or not recorded:
+        return None
+    checkpoint = Path(recorded)
+    _reject_symlink_path(checkpoint)
+    return checkpoint
+
+
 def _local_hf_runtime_options(
     args: argparse.Namespace, config: Mapping[str, object], phase: str
 ):
@@ -1346,9 +1373,7 @@ def _local_hf_runtime_options(
         generation_model_path=required_runtime_path("generation_model_path"),
         rewrite_model_path=_optional_runtime_path(args, "rewrite_model_path"),
         semantic_encoder_model_path=required_runtime_path("semantic_encoder_model_path"),
-        semantic_encoder_checkpoint_path=_optional_runtime_path(
-            args, "semantic_encoder_checkpoint_path"
-        ),
+        semantic_encoder_checkpoint_path=_resolve_semantic_encoder_checkpoint(args),
         semantic_whitening_path=_optional_runtime_path(args, "semantic_whitening_path"),
         gate_base_model_path=base_model_path,
         model_device=getattr(args, "model_device", "cuda"),
@@ -1779,6 +1804,9 @@ def run_encoder(args: argparse.Namespace, state: RunStateManager) -> int:
     from wfcllm.encoder.config import EncoderConfig
     from wfcllm.encoder.train import main as encoder_main
 
+    if _is_gated(get_config(args)):
+        return _run_gated_encoder(args, state)
+
     print("=== 阶段一：语义编码器预训练 ===")
 
     if args.eval_only:
@@ -1854,6 +1882,49 @@ def run_encoder(args: argparse.Namespace, state: RunStateManager) -> int:
 
     state.mark_done("encoder", checkpoint=checkpoint_path, best_model_path=best_model_path)
     print(f"[完成] 编码器训练完毕，最优模型: {best_model_path}")
+    return 0
+
+
+def _run_gated_encoder(args: argparse.Namespace, state: RunStateManager) -> int:
+    """Train the mandatory per-dataset semantic projection for a gated run."""
+
+    from wfcllm.encoder import projection_training
+
+    config = _require_gated_config(args)
+    if getattr(args, "eval_only", False):
+        raise ValueError("gated encoder phase does not support --eval-only")
+    catalog = _required_runtime_path(args, "gate_source_catalog")
+    model_path = _required_runtime_path(args, "semantic_encoder_model_path")
+    generation = config.get("generation")
+    language = (
+        str(generation.get("language", "python"))
+        if isinstance(generation, Mapping)
+        else "python"
+    )
+    cli_language = getattr(args, "language", None)
+    if cli_language is not None and cli_language != language:
+        raise ValueError(
+            f"--language must match generation.language={language!r}"
+        )
+    run_dir = _gate_run_dir(args, config)
+    result = projection_training.train_semantic_projection(
+        projection_training.ProjectionTrainingSettings(
+            source_catalog=catalog,
+            model_path=model_path,
+            output_dir=run_dir / "encoder",
+            language=language,
+        )
+    )
+    best_model_path = str(result["best_model_path"])
+    built_group_counts = dict(result["built_group_counts"])
+    state.mark_done(
+        "encoder",
+        checkpoint=best_model_path,
+        best_model_path=best_model_path,
+        language=language,
+        built_group_counts=built_group_counts,
+    )
+    print("=== WFCLLM encoder ===")
     return 0
 
 

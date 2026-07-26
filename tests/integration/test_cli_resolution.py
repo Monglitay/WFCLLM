@@ -66,8 +66,8 @@ def test_runtime_config_resolver_expands_and_validates_gated_preset():
     resolved = resolve_method_config({"method": {"name": GATED_SEMANTIC_WINDOW_V1_NAME}})
 
     assert resolved["method"]["name"] == GATED_SEMANTIC_WINDOW_V1_NAME
-    assert resolved["runtime"]["default_phases"][:3] == [
-        "gate-data", "gate-train", "generate"
+    assert resolved["runtime"]["default_phases"][:4] == [
+        "encoder", "gate-data", "gate-train", "generate"
     ]
 
 
@@ -401,6 +401,8 @@ def test_real_main_gate_data_reports_missing_production_runtime_path(tmp_path):
     holdout.write_text(json.dumps([f"holdout-{index}" for index in range(8)]))
     pilot = tmp_path / "pilot.json"
     pilot.write_text("{}")
+    encoder_checkpoint = tmp_path / "encoder.pt"
+    encoder_checkpoint.write_bytes(b"stub")
     result = subprocess.run(
         [
             sys.executable,
@@ -412,6 +414,7 @@ def test_real_main_gate_data_reports_missing_production_runtime_path(tmp_path):
             "--training-key-bank-file", str(training),
             "--holdout-key-bank-file", str(holdout),
             "--pilot-feasibility", str(pilot),
+            "--semantic-encoder-checkpoint-path", str(encoder_checkpoint),
         ],
         cwd=tmp_path,
         env={**os.environ, "HF_HUB_OFFLINE": "1", "HF_DATASETS_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"},
@@ -492,6 +495,8 @@ def test_entry_main_requires_production_runtime_for_each_gate_phase(
     holdout.write_text(json.dumps([f"holdout-{index}" for index in range(8)]))
     pilot = tmp_path / "pilot.json"
     pilot.write_text("{}")
+    encoder_checkpoint = tmp_path / "encoder.pt"
+    encoder_checkpoint.write_bytes(b"stub")
 
     monkeypatch.setattr("wfcllm.cli.entry.DEFAULT_STATE_FILE", tmp_path / "state.json")
     rc = main([
@@ -502,6 +507,7 @@ def test_entry_main_requires_production_runtime_for_each_gate_phase(
         "--training-key-bank-file", str(training),
         "--holdout-key-bank-file", str(holdout),
         "--pilot-feasibility", str(pilot),
+        "--semantic-encoder-checkpoint-path", str(encoder_checkpoint),
     ])
 
     assert rc == 1

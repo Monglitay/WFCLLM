@@ -31,6 +31,7 @@ def test_official_no_carrier_config_uses_semantic_lsh_rule_and_gated_phases() ->
     assert config["semantic_lsh"]["rule_name"] == "semantic_lsh"
     assert "require_validated" not in config["method"]["gate"]
     assert config["runtime"]["default_phases"] == [
+        "encoder",
         "gate-data",
         "gate-train",
         "generate",

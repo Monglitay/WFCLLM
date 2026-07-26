@@ -408,7 +408,7 @@ def test_gated_method_uses_configured_fast_phase_sequence(tmp_path):
     )
 
     assert orchestrator.resolve_phase_sequence() == [
-        "gate-data", "gate-train", "generate",
+        "encoder", "gate-data", "gate-train", "generate",
         "calibrate", "detect", "report",
     ]
 
@@ -576,6 +576,7 @@ def test_gate_state_paths_from_another_run_cannot_authorize_skip(tmp_path):
     args = _make_args(phase="gate-data")
     args.run_dir = str(tmp_path / "run-b")
     args.run_id = None
+    args.semantic_encoder_checkpoint_path = str(tmp_path / "encoder.pt")
     args._config_cache = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME).to_dict()
     args._phase_input_hashes = {"gate-data": input_hash}
     ran = []

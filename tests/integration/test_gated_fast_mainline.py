@@ -133,6 +133,7 @@ def test_single_gpu_runner_executes_minimal_experimental_pipeline() -> None:
     runner = RUNNER_PATH.read_text(encoding="utf-8")
 
     assert phases == [
+        "encoder",
         "gate-data",
         "gate-train",
         "generate",

@@ -92,3 +92,16 @@ def test_shared_runner_performs_preflight_before_preparing_keys() -> None:
     assert '--config "${WFCLLM_CONFIG}"' in runner
     assert "--gate-data-scale pilot" in runner
     assert "--gate-data-scale full" in runner
+
+
+def test_shared_runner_trains_encoder_before_each_gate_data_chain() -> None:
+    runner = (
+        ROOT / "scripts" / "experiments" / "run_gated_experiment.sh"
+    ).read_text(encoding="utf-8")
+
+    assert 'run.py --phase encoder "${PILOT_COMMON[@]}"' in runner
+    assert runner.index('run.py --phase encoder "${PILOT_COMMON[@]}"') < runner.index(
+        "--gate-data-scale pilot"
+    )
+    assert "run_phase encoder" in runner
+    assert runner.index("run_phase encoder") < runner.index("run_phase gate-data")
