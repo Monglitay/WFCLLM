@@ -8,7 +8,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from wfcllm.generation.completion_finalizer import ProgramFinalizationResult
+from wfcllm.generation.completion_finalizer import (
+    ProgramFinalizationResult,
+    finalize_mbpp_program_with_interface_wrapper,
+)
 from wfcllm.generation.gated_generator import (
     ByteSpan,
     GatedCandidateAudit,
@@ -277,6 +280,41 @@ def test_each_sample_generates_exactly_one_base_program(tmp_path: Path) -> None:
     assert len(_read_jsonl(tmp_path / "inputs" / "final_code.jsonl")) == 1
 
 
+def test_multiple_embedding_passes_chain_without_regenerating_base(
+    tmp_path: Path,
+) -> None:
+    class ChainedGenerator:
+        def __init__(self) -> None:
+            self.originals: list[str] = []
+
+        def generate(self, *, prompt: str, original: str) -> GatedGenerationResult:
+            self.originals.append(original)
+            next_value = int(original.removeprefix("x = ").strip()) + 1
+            return GatedGenerationResult(f"x = {next_value}\n", ())
+
+    base = _BaseModel("x = 1\n")
+    generator = ChainedGenerator()
+    GatedGenerationPipeline(
+        config=replace(_config(tmp_path), embedding_passes=2),
+        bundle_loader=lambda _p: _bundle(),
+        bundle_hasher=lambda _p: _digest("bundle"),
+        base_model=base,
+        generator=generator,
+        data_adapter=lambda: [{"id": "1", "prompt": "p"}],
+        deployment_key=b"key",
+    ).run()
+
+    assert base.calls == 1
+    assert generator.originals == ["x = 1\n", "x = 2\n"]
+    assert _read_jsonl(tmp_path / "inputs" / "final_code.jsonl")[0][
+        "final_code"
+    ] == "x = 3\n"
+    manifest = json.loads(
+        (tmp_path / "generation" / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["embedding_passes"] == 2
+
+
 def test_candidate_audit_rejects_semantic_or_keyed_evidence_contradictions() -> None:
     base = GatedCandidateAudit(
         window_index=0,
@@ -424,6 +462,55 @@ def test_finalizer_that_adds_an_ast_statement_fails_closed(tmp_path: Path) -> No
 
     with pytest.raises(RuntimeError, match="introduced AST statements"):
         pipeline.run()
+
+
+def test_trusted_mbpp_interface_wrapper_has_explicit_provenance(
+    tmp_path: Path,
+) -> None:
+    prompt = 'def add(a, b):\n    """Return the sum."""\n'
+    source = "def add(a, b):\n    return a + b\n"
+
+    GatedGenerationPipeline(
+        config=_config(tmp_path),
+        bundle_loader=lambda _p: _bundle(),
+        bundle_hasher=lambda _p: _digest("bundle"),
+        base_model=_BaseModel(source),
+        generator=_Generator(),
+        data_adapter=[{"id": "mbpp/1", "prompt": prompt}],
+        deployment_key=b"key",
+        program_finalizer=finalize_mbpp_program_with_interface_wrapper,
+        program_finalizer_name="mbpp_target_interface_wrapper_v1",
+    ).run()
+
+    row = _read_jsonl(tmp_path / "generation" / "finalizer.jsonl")[0]
+    assert row["statement_provenance_verified"] is True
+    assert row["provenance_mode"] == "trusted_mbpp_interface_wrapper/v1"
+    assert row["added_ast_statement_count"] > 0
+    assert row["carrier_count"] == 0
+
+
+def test_mbpp_interface_wrapper_name_rejects_untrusted_callable(
+    tmp_path: Path,
+) -> None:
+    def untrusted(_prompt: str, source: str) -> ProgramFinalizationResult:
+        return ProgramFinalizationResult(
+            code=source + "hidden = 1\n",
+            applied=True,
+            reason="fake_wrapper",
+        )
+
+    with pytest.raises(ValueError, match="trusted MBPP interface wrapper"):
+        GatedGenerationPipeline(
+            config=_config(tmp_path),
+            bundle_loader=lambda _p: _bundle(),
+            bundle_hasher=lambda _p: _digest("bundle"),
+            base_model=_BaseModel("x = 1\n"),
+            generator=_Generator(),
+            data_adapter=[{"id": "mbpp/1", "prompt": "p"}],
+            deployment_key=b"key",
+            program_finalizer=untrusted,
+            program_finalizer_name="mbpp_target_interface_wrapper_v1",
+        )
 
 
 def test_finalizer_fallback_keeps_sample_and_strict_schema(tmp_path: Path) -> None:

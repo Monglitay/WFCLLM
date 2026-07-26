@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import ast
 from collections import Counter
+from datetime import datetime, timezone
 import hashlib
-from dataclasses import asdict, dataclass
+import json
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 import re
+import sys
 from typing import Any, Callable, Iterable, Mapping
 
 from wfcllm.generation.completion_finalizer import ProgramFinalizationResult
@@ -38,6 +41,7 @@ class GatedGenerationPipelineConfig:
     lsh_config_sha256: str
     generation_config_sha256: str
     secret_source_type: str
+    embedding_passes: int = 1
     fail_fast: bool = False
     experimental_only: bool = False
     unvalidated_gate_candidate: bool = False
@@ -61,6 +65,11 @@ class GatedGenerationPipelineConfig:
                 raise ValueError(f"{name} must be a non-empty string")
         if self.secret_source_type not in {"file", "environment"}:
             raise ValueError("secret_source_type must be file or environment")
+        if (
+            type(self.embedding_passes) is not int
+            or not 1 <= self.embedding_passes <= 3
+        ):
+            raise ValueError("embedding_passes must be an integer in [1, 3]")
         if type(self.fail_fast) is not bool:
             raise ValueError("fail_fast must be boolean")
         if type(self.experimental_only) is not bool:
@@ -109,6 +118,16 @@ class GatedGenerationPipeline:
             raise ValueError("program_finalizer_name must be a non-empty string")
         if (program_finalizer is None) != (program_finalizer_name == "none"):
             raise ValueError("program_finalizer and name must be configured together")
+        if program_finalizer_name == "mbpp_target_interface_wrapper_v1":
+            from wfcllm.generation.completion_finalizer import (
+                finalize_mbpp_program_with_interface_wrapper,
+            )
+
+            if program_finalizer is not finalize_mbpp_program_with_interface_wrapper:
+                raise ValueError(
+                    "mbpp_target_interface_wrapper_v1 requires the trusted "
+                    "MBPP interface wrapper"
+                )
         if not (
             callable(base_model)
             or callable(getattr(base_model, "generate_program", None))
@@ -179,9 +198,38 @@ class GatedGenerationPipeline:
         audits: list[dict[str, Any]] = []
         candidates: list[dict[str, Any]] = []
         finalizer_rows: list[dict[str, Any]] = []
-        samples = self._data_adapter() if callable(self._data_adapter) else self._data_adapter
+        samples_iter = (
+            self._data_adapter() if callable(self._data_adapter) else self._data_adapter
+        )
+        samples = list(samples_iter)
+        total_samples = len(samples)
+        progress_path = root / "generation" / "progress.json"
+        self._write_progress(
+            progress_path,
+            status="running",
+            total_samples=total_samples,
+            completed_samples=0,
+            failed_samples=0,
+            final_code_rows=0,
+            audit_rows=0,
+            candidate_sidecar_rows=0,
+            current_sample_id=None,
+        )
         for raw in samples:
             sample_id, prompt = self._sample_identity(raw)
+            self._write_progress(
+                progress_path,
+                status="running",
+                total_samples=total_samples,
+                completed_samples=len(final_rows),
+                failed_samples=sum(
+                    row.get("sample_generation_failed") is True for row in audits
+                ),
+                final_code_rows=len(final_rows),
+                audit_rows=len(audits),
+                candidate_sidecar_rows=len(candidates),
+                current_sample_id=sample_id,
+            )
             original = ""
             try:
                 original = self._generate_base_program(prompt, sample_id)
@@ -196,6 +244,8 @@ class GatedGenerationPipeline:
                     provenance = _verify_finalizer_statement_provenance(
                         before=before,
                         after=original,
+                        prompt=prompt,
+                        program_finalizer_name=self._program_finalizer_name,
                     )
                     finalizer_rows.append(
                         {
@@ -217,9 +267,30 @@ class GatedGenerationPipeline:
                             **provenance,
                         }
                     )
-                result = self._generator.generate(prompt=prompt, original=original)
-                if not isinstance(result, GatedGenerationResult):
-                    raise ValueError("gated generator returned an invalid result")
+                pass_audits = []
+                pass_candidates = []
+                for _embedding_pass in range(self._config.embedding_passes):
+                    result = self._generator.generate(
+                        prompt=prompt,
+                        original=original,
+                    )
+                    if not isinstance(result, GatedGenerationResult):
+                        raise ValueError("gated generator returned an invalid result")
+                    window_offset = len(pass_audits)
+                    pass_audits.extend(result.audit)
+                    pass_candidates.extend(
+                        replace(
+                            candidate,
+                            window_index=candidate.window_index + window_offset,
+                        )
+                        for candidate in result.candidates
+                    )
+                    original = result.final_code
+                result = GatedGenerationResult(
+                    final_code=original,
+                    audit=tuple(pass_audits),
+                    candidates=tuple(pass_candidates),
+                )
             except FinalizerIntegrityError:
                 raise
             except Exception as exc:
@@ -240,6 +311,37 @@ class GatedGenerationPipeline:
                         "prompt": prompt,
                         "final_code": original,
                     }
+                )
+                self._publish_partial_outputs(
+                    root,
+                    final_rows=final_rows,
+                    audits=audits,
+                    candidates=candidates,
+                    finalizer_rows=finalizer_rows,
+                )
+                self._write_progress(
+                    progress_path,
+                    status="running",
+                    total_samples=total_samples,
+                    completed_samples=len(final_rows),
+                    failed_samples=sum(
+                        row.get("sample_generation_failed") is True for row in audits
+                    ),
+                    final_code_rows=len(final_rows),
+                    audit_rows=len(audits),
+                    candidate_sidecar_rows=len(candidates),
+                    current_sample_id=sample_id,
+                )
+                self._log_progress(
+                    total_samples=total_samples,
+                    completed_samples=len(final_rows),
+                    failed_samples=sum(
+                        row.get("sample_generation_failed") is True for row in audits
+                    ),
+                    final_code_rows=len(final_rows),
+                    audit_rows=len(audits),
+                    candidate_sidecar_rows=len(candidates),
+                    sample_id=sample_id,
                 )
                 continue
             final_rows.append(
@@ -269,17 +371,49 @@ class GatedGenerationPipeline:
                     }
                 )
                 candidates.append(value)
+            self._publish_partial_outputs(
+                root,
+                final_rows=final_rows,
+                audits=audits,
+                candidates=candidates,
+                finalizer_rows=finalizer_rows,
+            )
+            self._write_progress(
+                progress_path,
+                status="running",
+                total_samples=total_samples,
+                completed_samples=len(final_rows),
+                failed_samples=sum(
+                    row.get("sample_generation_failed") is True for row in audits
+                ),
+                final_code_rows=len(final_rows),
+                audit_rows=len(audits),
+                candidate_sidecar_rows=len(candidates),
+                current_sample_id=sample_id,
+            )
+            self._log_progress(
+                total_samples=total_samples,
+                completed_samples=len(final_rows),
+                failed_samples=sum(
+                    row.get("sample_generation_failed") is True for row in audits
+                ),
+                final_code_rows=len(final_rows),
+                audit_rows=len(audits),
+                candidate_sidecar_rows=len(candidates),
+                sample_id=sample_id,
+            )
 
         final_path = root / "inputs" / "final_code.jsonl"
-        write_final_code_rows(final_path, final_rows)
-        write_generation_sidecar_rows(root / "generation" / "audit.jsonl", audits)
-        write_generation_sidecar_rows(
-            root / "generation" / "candidate_sidecar.jsonl", candidates
+        self._publish_partial_outputs(
+            root,
+            final_rows=final_rows,
+            audits=audits,
+            candidates=candidates,
+            finalizer_rows=finalizer_rows,
         )
-        if self._program_finalizer is not None:
-            write_generation_sidecar_rows(
-                root / "generation" / "finalizer.jsonl", finalizer_rows
-            )
+        failed_samples = sum(
+            row.get("sample_generation_failed") is True for row in audits
+        )
         write_generation_manifest(
             root / "generation" / "manifest.json",
             {
@@ -300,6 +434,7 @@ class GatedGenerationPipeline:
                 "semantic_encoder_sha256": self._config.semantic_encoder_sha256,
                 "lsh_config_sha256": self._config.lsh_config_sha256,
                 "generation_config_sha256": self._config.generation_config_sha256,
+                "embedding_passes": self._config.embedding_passes,
                 "program_finalizer": self._program_finalizer_name,
                 "finalizer_applied_count": sum(
                     row["applied"] is True for row in finalizer_rows
@@ -334,7 +469,100 @@ class GatedGenerationPipeline:
                 ),
             },
         )
+        self._write_progress(
+            progress_path,
+            status="completed",
+            total_samples=total_samples,
+            completed_samples=len(final_rows),
+            failed_samples=failed_samples,
+            final_code_rows=len(final_rows),
+            audit_rows=len(audits),
+            candidate_sidecar_rows=len(candidates),
+            current_sample_id=None,
+        )
         return str(final_path)
+
+    def _publish_partial_outputs(
+        self,
+        root: Path,
+        *,
+        final_rows: list[dict[str, str]],
+        audits: list[dict[str, Any]],
+        candidates: list[dict[str, Any]],
+        finalizer_rows: list[dict[str, Any]],
+    ) -> None:
+        write_final_code_rows(root / "inputs" / "final_code.jsonl", final_rows)
+        write_generation_sidecar_rows(root / "generation" / "audit.jsonl", audits)
+        write_generation_sidecar_rows(
+            root / "generation" / "candidate_sidecar.jsonl", candidates
+        )
+        if self._program_finalizer is not None:
+            write_generation_sidecar_rows(
+                root / "generation" / "finalizer.jsonl", finalizer_rows
+            )
+
+    @staticmethod
+    def _write_progress(
+        path: Path,
+        *,
+        status: str,
+        total_samples: int,
+        completed_samples: int,
+        failed_samples: int,
+        final_code_rows: int,
+        audit_rows: int,
+        candidate_sidecar_rows: int,
+        current_sample_id: str | None,
+    ) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema_version": "wfcllm-gated-generation-progress/v1",
+            "status": status,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "total_samples": total_samples,
+            "completed_samples": completed_samples,
+            "failed_samples": failed_samples,
+            "final_code_rows": final_code_rows,
+            "audit_rows": audit_rows,
+            "candidate_sidecar_rows": candidate_sidecar_rows,
+            "current_sample_id": current_sample_id,
+        }
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        tmp_path.write_text(
+            json.dumps(
+                payload,
+                allow_nan=False,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        tmp_path.replace(path)
+
+    @staticmethod
+    def _log_progress(
+        *,
+        total_samples: int,
+        completed_samples: int,
+        failed_samples: int,
+        final_code_rows: int,
+        audit_rows: int,
+        candidate_sidecar_rows: int,
+        sample_id: str,
+    ) -> None:
+        print(
+            "[progress] gated generate "
+            f"completed={completed_samples}/{total_samples} "
+            f"failed={failed_samples} "
+            f"final_code_rows={final_code_rows} "
+            f"audit_rows={audit_rows} "
+            f"candidate_sidecar_rows={candidate_sidecar_rows} "
+            f"last_sample_id={sample_id}",
+            file=sys.stderr,
+            flush=True,
+        )
 
     @staticmethod
     def _sample_identity(raw: Mapping[str, Any]) -> tuple[str, str]:
@@ -361,9 +589,39 @@ class GatedGenerationPipeline:
 
 
 def _verify_finalizer_statement_provenance(
-    *, before: str, after: str
+    *,
+    before: str,
+    after: str,
+    prompt: str,
+    program_finalizer_name: str,
 ) -> dict[str, Any]:
     """Prove every output statement already occurs in a parseable input prefix."""
+
+    if program_finalizer_name == "mbpp_target_interface_wrapper_v1":
+        from wfcllm.generation.completion_finalizer import (
+            finalize_mbpp_program,
+            finalize_mbpp_program_with_interface_wrapper,
+        )
+
+        expected = finalize_mbpp_program_with_interface_wrapper(prompt, before)
+        if expected.code != after:
+            raise FinalizerIntegrityError(
+                "trusted MBPP interface wrapper output mismatch"
+            )
+        finalized_base = finalize_mbpp_program(prompt, before)
+        input_count = _statement_count_if_parseable(finalized_base.code)
+        output_count = _statement_count_if_parseable(after)
+        if input_count is None or output_count is None or output_count < input_count:
+            raise FinalizerIntegrityError(
+                "trusted MBPP interface wrapper AST accounting failed"
+            )
+        return {
+            "statement_provenance_verified": True,
+            "provenance_mode": "trusted_mbpp_interface_wrapper/v1",
+            "input_ast_statement_count": input_count,
+            "output_ast_statement_count": output_count,
+            "added_ast_statement_count": output_count - input_count,
+        }
 
     if before == after:
         statement_count = _statement_count_if_parseable(after)

@@ -114,6 +114,22 @@ class _CheckpointRecord:
 
 
 @dataclass(frozen=True)
+class GeneratedToken:
+    token_id: int
+    token_text: str
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.token_id, bool)
+            or not isinstance(self.token_id, int)
+            or self.token_id < 0
+        ):
+            raise ValueError("token_id must be a non-negative integer")
+        if not isinstance(self.token_text, str):
+            raise ValueError("token_text must be a string")
+
+
+@dataclass(frozen=True)
 class _RetryPenaltySequence:
     base_ids: tuple[int, ...]
     failed_ids: tuple[int, ...]
@@ -793,6 +809,7 @@ class SawrGenerator:
         lm_prompt = build_generation_prompt(
             prompt,
             self._tokenizer,
+            dataset=dataset,
             prompt_mode=self.config.prompt_mode,
         )
         context = SawrModelContext(self._model, self._tokenizer, self.config)
@@ -878,7 +895,7 @@ class SawrGenerator:
         generated = strip_repeated_prompt_function(prompt, context.generated_text)
         generated = truncate_at_stop_sequences(generated, self.config.stop_sequences)
         return SawrGenerateResult(
-            final_code=prompt + generated,
+            final_code=compose_final_code(prompt, generated, dataset=dataset),
             accepted_hit_count=state_machine.accepted_hit_count,
             closed_without_hit_count=state_machine.closed_without_hit_count,
             fallback_count=state_machine.fallback_count,
@@ -979,13 +996,25 @@ def build_generation_prompt(
     prompt: str,
     tokenizer: Any,
     *,
+    dataset: str = "humaneval",
     prompt_mode: str = "completion",
 ) -> str:
     if prompt_mode == "completion":
+        if dataset.lower() == "mbpp":
+            return build_mbpp_code_prompt(prompt)
         return prompt
     if prompt_mode == "chat":
         return build_chat_prompt(prompt, tokenizer)
     raise ValueError(f"unsupported prompt_mode: {prompt_mode}")
+
+
+def build_mbpp_code_prompt(prompt: str) -> str:
+    return (
+        "Write a correct Python function for the following programming task.\n"
+        "Output only executable Python code. Do not include explanations, "
+        "Markdown fences, examples, tests, print calls, or prose.\n\n"
+        f"Task:\n{prompt}\n\nPython code:\n"
+    )
 
 
 def strip_repeated_prompt_function(prompt: str, generated: str) -> str:
@@ -998,6 +1027,88 @@ def strip_repeated_prompt_function(prompt: str, generated: str) -> str:
         if line.rstrip() == last_def:
             return "".join(generated_lines[index + 1 :]).lstrip("\n")
     return generated
+
+
+def compose_final_code(prompt: str, generated: str, *, dataset: str) -> str:
+    """Build the detector-facing final code for a dataset prompt style."""
+
+    if dataset.lower() == "humaneval":
+        return prompt + generated
+    if dataset.lower() == "mbpp":
+        return extract_python_code_completion(strip_repeated_prompt_text(prompt, generated))
+    return prompt + generated
+
+
+def strip_repeated_prompt_text(prompt: str, generated: str) -> str:
+    """Remove an exact natural-language prompt echo from a completion."""
+
+    if generated.startswith(prompt):
+        return generated[len(prompt) :].lstrip("\n")
+    return generated
+
+
+def extract_python_code_completion(text: str) -> str:
+    """Extract executable Python from completion-style model output."""
+
+    fenced = _first_python_fence(text)
+    if fenced is not None:
+        return _trim_to_compilable_python(fenced)
+
+    lines = text.replace("<jupyter>", "").splitlines()
+    start = _first_python_code_line(lines)
+    if start is None:
+        return text.strip() + ("\n" if text.strip() else "")
+    return _trim_to_compilable_python("\n".join(lines[start:]))
+
+
+def _first_python_fence(text: str) -> str | None:
+    pattern = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.IGNORECASE | re.DOTALL)
+    match = pattern.search(text)
+    return match.group(1) if match else None
+
+
+def _first_python_code_line(lines: list[str]) -> int | None:
+    for index, line in enumerate(lines):
+        if re.match(r"^\s*(?:from\s+\S+\s+import\s+|import\s+|def\s+|class\s+|@)", line):
+            return index
+    return None
+
+
+def _trim_to_compilable_python(text: str) -> str:
+    lines: list[str] = []
+    for line in text.replace("<jupyter>", "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            break
+        if line.startswith(
+            (
+                "This function",
+                "You can",
+                "The ",
+                "In this",
+                "Explanation:",
+                "Output:",
+                "Input:",
+            )
+        ):
+            break
+        lines.append(line)
+
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+
+    for end in range(len(lines), 0, -1):
+        candidate = "\n".join(lines[:end]).strip()
+        if not candidate:
+            continue
+        try:
+            compile(candidate + "\n", "<wfcllm-final-code>", "exec")
+        except SyntaxError:
+            continue
+        return candidate + "\n"
+    return ("\n".join(lines).strip() + "\n") if lines else ""
 
 
 def truncate_at_stop_sequences(generated: str, stop_sequences: tuple[str, ...]) -> str:
