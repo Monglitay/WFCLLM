@@ -618,6 +618,124 @@ def test_encoder_decoder_program_generation_keeps_benchmark_prompt() -> None:
     )
 
 
+def test_mbpp_program_prompt_uses_humaneval_style_interface_prefix() -> None:
+    code_prefix = (
+        "def target(arg1, arg2):\n"
+        '    """Natural task.\n'
+        "    Return the result instead of printing it.\n"
+        '    """\n'
+    )
+
+    prompt = gate_production._program_generation_prompt(
+        code_prefix,
+        sample_id="mbpp/1",
+    )
+
+    assert prompt == code_prefix
+    assert "placeholder" not in prompt.lower()
+
+
+def test_mbpp_generation_combines_interface_prefix_with_completion() -> None:
+    import torch
+
+    code_prefix = (
+        "def target(arg1, arg2):\n"
+        '    """Return the sum."""\n'
+    )
+
+    class Tokenizer:
+        def __call__(self, text, **_kwargs):
+            assert text == code_prefix
+            return {
+                "input_ids": torch.tensor([[10, 11]]),
+                "attention_mask": torch.tensor([[1, 1]]),
+            }
+
+        def decode(self, ids, **_kwargs):
+            assert ids.tolist() == [7]
+            return "    return arg1 + arg2\n"
+
+    class Model:
+        def generate(self, **_kwargs):
+            return torch.tensor([[10, 11, 7]])
+
+    runtime = object.__new__(LocalHFProgramGenerator)
+    runtime.model = Model()
+    runtime.tokenizer = Tokenizer()
+    runtime.device = "cpu"
+    runtime.max_new_tokens = 16
+    runtime.temperature = 0.0
+    runtime.top_p = 0.95
+    runtime.seed = 7
+    runtime.is_encoder_decoder = False
+
+    assert runtime.generate_program(
+        prompt=code_prefix,
+        sample_id="mbpp/1",
+    ) == (code_prefix + "    return arg1 + arg2\n")
+
+
+def test_mbpp_chat_generation_requests_complete_interface_program() -> None:
+    import torch
+
+    code_prefix = (
+        "def target(items):\n"
+        '    """Return the number of items."""\n'
+    )
+
+    class Tokenizer:
+        def apply_chat_template(self, messages, **kwargs):
+            assert kwargs == {
+                "tokenize": False,
+                "add_generation_prompt": True,
+            }
+            assert messages[0]["role"] == "user"
+            content = messages[0]["content"]
+            assert "one complete executable Python program" in content
+            assert "at least four semantically meaningful statements" in content
+            assert "contribute to the returned value" in content
+            assert "Do not use a one-line implementation" in content
+            assert "do not add dead code" in content
+            assert code_prefix in content
+            assert "tests" in content
+            return "<chat-prompt>"
+
+        def __call__(self, text, **_kwargs):
+            assert text == "<chat-prompt>"
+            return {
+                "input_ids": torch.tensor([[10, 11]]),
+                "attention_mask": torch.tensor([[1, 1]]),
+            }
+
+        def decode(self, ids, **_kwargs):
+            assert ids.tolist() == [7]
+            return "def targte(items):\n    return len(items)\n"
+
+    class Model:
+        def generate(self, **_kwargs):
+            return torch.tensor([[10, 11, 7]])
+
+    runtime = object.__new__(LocalHFProgramGenerator)
+    runtime.model = Model()
+    runtime.tokenizer = Tokenizer()
+    runtime.device = "cpu"
+    runtime.max_new_tokens = 16
+    runtime.temperature = 0.0
+    runtime.top_p = 0.95
+    runtime.seed = 7
+    runtime.is_encoder_decoder = False
+    runtime.program_prompt_mode = "mbpp_chat"
+
+    assert runtime.generate_program(
+        prompt=code_prefix,
+        sample_id="mbpp/1",
+    ) == (
+        "def target(items):\n"
+        '    """Return the number of items."""\n'
+        "    return len(items)\n"
+    )
+
+
 def test_source_catalog_rejects_humaneval_without_echoing_code(tmp_path: Path) -> None:
     path = tmp_path / "catalog.jsonl"
     secret_code = "def hidden_secret(): return 'do-not-echo'"

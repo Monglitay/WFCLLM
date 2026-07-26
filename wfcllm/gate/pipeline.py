@@ -25,7 +25,7 @@ from wfcllm.gate.feasibility import (
 from wfcllm.gate.bundle import GateBundle, sha256_directory
 from wfcllm.gate.validation import GateValidationSummary
 from wfcllm.gate.data import LshProbeResult
-from wfcllm.gate.labels import GateLabels, build_gate_labels
+from wfcllm.gate.labels import GateLabels, LabelThresholds, build_gate_labels
 from wfcllm.gate.schema import CandidateObservation
 
 GATE_DATA_MANIFEST_VERSION = "wfcllm-gate-data-manifest/v1"
@@ -560,7 +560,11 @@ def _run_gate_data_impl(config: GateDataPipelineConfig, dependencies: GatePipeli
                 _validate_same_group_identities((generated,), (built,), "multi-key LSH probe")
                 _validate_probe_contract((built,), training_bank, holdout_bank)
                 probed = _probed_stage(trajectory, built)
-                labeled = _recompute_and_attest_labels(probed, built)
+                labeled = _recompute_and_attest_labels(
+                    probed,
+                    built,
+                    fast_experimental=config.fast_experimental,
+                )
                 split_group = _single_group(
                     dependencies.split_groups((built,), config),
                     "split",
@@ -1314,26 +1318,53 @@ def _validate_probe_contract(
                         raise ValueError("CandidateObservation evidence contradicts LshProbeResult")
 
 
-def _labels_for_group(group: GatePipelineGroup, length: int) -> GateLabels:
+def _labels_for_group(
+    group: GatePipelineGroup,
+    length: int,
+    *,
+    fast_experimental: bool = False,
+) -> GateLabels:
     candidates = group.candidate_observations_by_length[str(length)]
     cache_key = hashlib.sha256(
-        _canonical_bytes([candidate.to_dict() for candidate in candidates])
+        _canonical_bytes(
+            {
+                "fast_experimental": fast_experimental,
+                "candidates": [candidate.to_dict() for candidate in candidates],
+            }
+        )
     ).hexdigest()
     cached = _LABEL_CACHE.get(cache_key)
     if cached is not None:
         _LABEL_CACHE.move_to_end(cache_key)
         return cached
-    labels = build_gate_labels(candidates, training_key_count=32)
+    thresholds = LabelThresholds(r3_hit_rate=0.25) if fast_experimental else None
+    labels = build_gate_labels(
+        candidates,
+        training_key_count=32,
+        thresholds=thresholds,
+    )
     _LABEL_CACHE[cache_key] = labels
     if len(_LABEL_CACHE) > _EVIDENCE_LRU_SIZE:
         _LABEL_CACHE.popitem(last=False)
     return labels
 
 
-def _recompute_and_attest_labels(probed: ProbedGroup, group: GatePipelineGroup) -> LabeledGroup:
+def _recompute_and_attest_labels(
+    probed: ProbedGroup,
+    group: GatePipelineGroup,
+    *,
+    fast_experimental: bool = False,
+) -> LabeledGroup:
     if probed.identity.digest != _group_identity(group).digest:
         raise ValueError("label stage changed immutable base identity")
-    labels = {length: _labels_for_group(group, length) for length in (1, 2, 3)}
+    labels = {
+        length: _labels_for_group(
+            group,
+            length,
+            fast_experimental=fast_experimental,
+        )
+        for length in (1, 2, 3)
+    }
     selected = labels[3]
     r1, r3 = (selected.budgets[budget].success_rate for budget in (1, 3))
     first_hits = [value for value in selected.budgets[3].first_hit_by_key_id.values() if value is not None]

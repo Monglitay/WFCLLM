@@ -26,9 +26,10 @@ from wfcllm.gate.data import (
 from wfcllm.generation.window_rewriter import (
     CausalWindowRewriter,
     KeyBlindAstEquivalentWindowRewriter,
+    KeyBlindCppEquivalentWindowRewriter,
     RewriteGeneration,
 )
-from wfcllm.gate.labels import build_gate_labels
+from wfcllm.gate.labels import LabelThresholds, build_gate_labels
 from wfcllm.gate.pipeline import GatePipelineGroup, ValidationOutcome
 from wfcllm.gate.schema import CandidateObservation, GateTrainingGroup
 from wfcllm.gate.sources import GateSourceRecord, canonical_gate_source_identity
@@ -300,10 +301,17 @@ class LocalHFProductionAdapter:
         language = language_for_window_contract(
             options.window_contract_version
         )
+        extractor = get_statement_unit_extractor(language)
         self._rewriter: object | None = (
             KeyBlindAstEquivalentWindowRewriter()
             if options.semantic_evidence_rule == "semantic_lsh"
             and language == "python"
+            else KeyBlindCppEquivalentWindowRewriter(
+                extractor=extractor,
+                window_contract_version=options.window_contract_version,
+            )
+            if options.semantic_evidence_rule == "semantic_lsh"
+            and language == "cpp"
             else None
         )
         self._semantic_runtime: object | None = None
@@ -595,7 +603,16 @@ class LocalHFProductionAdapter:
                 observations_by_length[str(length)] = tuple(observations)
                 results_by_length[str(length)] = tuple(candidate_results)
 
-            selected = build_gate_labels(observations_by_length["3"], training_key_count=32)
+            label_thresholds = (
+                LabelThresholds(r3_hit_rate=0.25)
+                if config.fast_experimental
+                else None
+            )
+            selected = build_gate_labels(
+                observations_by_length["3"],
+                training_key_count=32,
+                thresholds=label_thresholds,
+            )
             r1, r3 = (selected.budgets[budget].success_rate for budget in (1, 3))
             holdout_hits = sum(
                 any(
@@ -625,7 +642,11 @@ class LocalHFProductionAdapter:
                 candidate_observations_by_length=observations_by_length,
                 probe_results_by_length=results_by_length,
             )
-            self._append_training_examples(result, observations_by_length)
+            self._append_training_examples(
+                result,
+                observations_by_length,
+                fast_experimental=config.fast_experimental,
+            )
             yield result
 
     def split_groups(self, groups, config):
@@ -723,6 +744,23 @@ class LocalHFProductionAdapter:
         output_dir.mkdir(parents=True, exist_ok=False)
         torch.save(state, output_dir / "gate_float.pt")
         tokenizer.save_pretrained(output_dir / "tokenizer")
+        if config.fast_experimental:
+            (output_dir / "runtime_thresholds.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": _UNVALIDATED_RUNTIME_SCHEMA,
+                        "close_low_threshold": 0.0,
+                        "close_high_threshold": 0.000001,
+                        "suitable_accept_threshold": 0.0,
+                        "max_units": 3,
+                        "runtime_profile": "fast-experimental-low-threshold/v1",
+                    },
+                    allow_nan=False,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
         shutil.rmtree(work)
         return {
             "backend": LOCAL_HF_ADAPTER_NAME,
@@ -830,6 +868,8 @@ class LocalHFProductionAdapter:
         self,
         group: GatePipelineGroup,
         observations_by_length: Mapping[str, tuple[CandidateObservation, ...]],
+        *,
+        fast_experimental: bool = False,
     ) -> None:
         from wfcllm.gate.input import GateInput, serialize_gate_input
 
@@ -841,7 +881,12 @@ class LocalHFProductionAdapter:
             self._gate_tokenizer = tokenizer
         rows: list[dict[str, Any]] = []
         for length in (1, 2, 3):
-            labels = build_gate_labels(observations_by_length[str(length)], training_key_count=32)
+            thresholds = LabelThresholds(r3_hit_rate=0.25) if fast_experimental else None
+            labels = build_gate_labels(
+                observations_by_length[str(length)],
+                training_key_count=32,
+                thresholds=thresholds,
+            )
             current_units = tuple(metadata["current_units"][str(length)])
             normalized = "\n".join(normalize_unit_text(unit) for unit in current_units)
             token_count = _token_count(tokenizer, normalized)
@@ -1686,6 +1731,7 @@ class LocalHFProgramGenerator:
         top_p: float,
         seed: int,
         rewrite_max_new_tokens: int,
+        program_prompt_mode: str = "completion",
         rewrite_generation_attempts: int = 3,
         rewrite_temperature: float = 0.8,
         rewrite_top_p: float = 0.95,
@@ -1700,7 +1746,7 @@ class LocalHFProgramGenerator:
             AutoTokenizer,
         )
 
-        model_config = AutoConfig.from_pretrained(str(model_path), local_files_only=True)
+        model_config = AutoConfig.from_pretrained(str(model_path), local_files_only=True, trust_remote_code=True)
         model_class = (
             AutoModelForSeq2SeqLM
             if bool(getattr(model_config, "is_encoder_decoder", False))
@@ -1733,12 +1779,17 @@ class LocalHFProgramGenerator:
         if not load_in_4bit:
             self.model.to(device)
         self.model.eval()
-        self.tokenizer = AutoTokenizer.from_pretrained(str(model_path), local_files_only=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(str(model_path), local_files_only=True, trust_remote_code=True)
         self.device = device
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self.top_p = top_p
         self.seed = seed
+        if program_prompt_mode not in {"completion", "mbpp_chat"}:
+            raise ValueError(
+                "program_prompt_mode must be completion or mbpp_chat"
+            )
+        self.program_prompt_mode = program_prompt_mode
         self.is_encoder_decoder = bool(getattr(model_config, "is_encoder_decoder", False))
         self.rewriter = CausalWindowRewriter(
             HFCausalRewriteBackend(
@@ -1755,12 +1806,23 @@ class LocalHFProgramGenerator:
     def generate_program(self, *, prompt: str, sample_id: str) -> str:
         import torch
 
-        encoded = self.tokenizer(prompt, return_tensors="pt", truncation=True)
+        mbpp_chat = (
+            _is_mbpp_sample(sample_id)
+            and _is_mbpp_interface_prefix(prompt)
+            and getattr(self, "program_prompt_mode", "completion")
+            == "mbpp_chat"
+        )
+        lm_prompt = (
+            _mbpp_chat_program_prompt(self.tokenizer, prompt)
+            if mbpp_chat
+            else _program_generation_prompt(prompt, sample_id=sample_id)
+        )
+        encoded = self.tokenizer(lm_prompt, return_tensors="pt", truncation=True)
         inputs = {
             name: value.to(self.device) if hasattr(value, "to") else value
             for name, value in dict(encoded).items()
         }
-        digest = hashlib.sha256(f"{self.seed}\0{sample_id}\0{prompt}".encode("utf-8")).digest()
+        digest = hashlib.sha256(f"{self.seed}\0{sample_id}\0{lm_prompt}".encode("utf-8")).digest()
         torch.manual_seed(int.from_bytes(digest[:8], "big"))
         generated = self.model.generate(
             **inputs,
@@ -1775,7 +1837,211 @@ class LocalHFProgramGenerator:
         completion = self.tokenizer.decode(token_ids, skip_special_tokens=True)
         if not isinstance(completion, str):
             raise ValueError("generation tokenizer decode must return text")
+        if _is_mbpp_sample(sample_id):
+            combined = (
+                prompt + completion
+                if _is_mbpp_interface_prefix(prompt) and not mbpp_chat
+                else completion
+            )
+            code = _extract_python_code_completion(combined)
+            return (
+                _normalize_mbpp_chat_interface(prompt, code)
+                if mbpp_chat
+                else code
+            )
         return prompt + completion
+
+
+def _is_mbpp_sample(sample_id: str) -> bool:
+    return sample_id.lower().startswith("mbpp/")
+
+
+def _program_generation_prompt(prompt: str, *, sample_id: str) -> str:
+    if not _is_mbpp_sample(sample_id):
+        return prompt
+    if _is_mbpp_interface_prefix(prompt):
+        return prompt
+    return (
+        "Write executable Python code only. Return the result; do not print it. "
+        "Do not include Markdown, prose, tests, print calls, or input calls.\n\n"
+        f"Task:\n{prompt}\n\nPython code:\n"
+    )
+
+
+def _mbpp_chat_program_prompt(tokenizer: Any, prompt: str) -> str:
+    apply_chat_template = getattr(tokenizer, "apply_chat_template", None)
+    if not callable(apply_chat_template):
+        raise ValueError("mbpp_chat requires a tokenizer chat template")
+    user_prompt = (
+        "Return one complete executable Python program that implements the "
+        "function prefix below. Preserve the exact function and parameter "
+        "names. Return the result instead of printing it. Do not include "
+        "Markdown, explanations, examples, tests, print calls, or input "
+        "calls. Use at least four semantically meaningful statements, "
+        "excluding docstrings and imports. Intermediate variables must "
+        "contribute to the returned value. Do not use a one-line "
+        "implementation; do not add dead code.\n\n"
+        f"{prompt}"
+    )
+    rendered = apply_chat_template(
+        [{"role": "user", "content": user_prompt}],
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+    if not isinstance(rendered, str) or not rendered:
+        raise ValueError("tokenizer chat template returned an invalid prompt")
+    return rendered
+
+
+def _normalize_mbpp_chat_interface(prompt: str, code: str) -> str:
+    """Restore the sanitized prompt interface without consulting MBPP tests."""
+
+    try:
+        prompt_tree = ast.parse(prompt)
+        code_tree = ast.parse(code)
+    except (SyntaxError, TypeError, ValueError):
+        return code
+    expected_functions = [
+        node
+        for node in prompt_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    actual_functions = [
+        node
+        for node in code_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    if not expected_functions or not actual_functions:
+        return code
+    expected = expected_functions[-1]
+    same_name = [node for node in actual_functions if node.name == expected.name]
+    if same_name:
+        actual = same_name[0]
+    else:
+        expected_arity = len(expected.args.posonlyargs) + len(expected.args.args)
+        same_arity = [
+            node
+            for node in actual_functions
+            if type(node) is type(expected)
+            and node.args.vararg is None
+            and len(node.args.posonlyargs) + len(node.args.args)
+            == expected_arity
+        ]
+        if len(same_arity) != 1:
+            return code
+        actual = same_arity[0]
+
+    old_name = actual.name
+    actual.name = expected.name
+    actual.args = deepcopy(expected.args)
+    if old_name != expected.name:
+        class _RenameRecursiveCall(ast.NodeTransformer):
+            def visit_Name(self, node: ast.Name) -> ast.AST:
+                if node.id == old_name:
+                    return ast.copy_location(
+                        ast.Name(id=expected.name, ctx=node.ctx),
+                        node,
+                    )
+                return node
+
+        _RenameRecursiveCall().visit(actual)
+
+    expected_docstring = (
+        expected.body[0]
+        if expected.body
+        and isinstance(expected.body[0], ast.Expr)
+        and isinstance(expected.body[0].value, ast.Constant)
+        and isinstance(expected.body[0].value.value, str)
+        else None
+    )
+    actual_has_docstring = bool(
+        actual.body
+        and isinstance(actual.body[0], ast.Expr)
+        and isinstance(actual.body[0].value, ast.Constant)
+        and isinstance(actual.body[0].value.value, str)
+    )
+    if expected_docstring is not None:
+        if actual_has_docstring:
+            actual.body[0] = deepcopy(expected_docstring)
+        else:
+            actual.body.insert(0, deepcopy(expected_docstring))
+    ast.fix_missing_locations(code_tree)
+    try:
+        return ast.unparse(code_tree).rstrip() + "\n"
+    except (RecursionError, TypeError, ValueError):
+        return code
+
+
+def _is_mbpp_interface_prefix(prompt: str) -> bool:
+    return bool(
+        re.search(r"(?m)^def\s+[A-Za-z_]\w*\s*\(", prompt)
+        and prompt.lstrip().startswith(("class ", "def "))
+    )
+
+
+def _extract_python_code_completion(text: str) -> str:
+    fenced = _first_python_fence(text)
+    if fenced is not None:
+        return _trim_to_compilable_python(fenced)
+    cleaned = text.replace("<jupyter>", "")
+    lines = cleaned.splitlines()
+    start = _first_python_code_line(lines)
+    if start is None:
+        return cleaned.strip() + ("\n" if cleaned.strip() else "")
+    return _trim_to_compilable_python("\n".join(lines[start:]))
+
+
+def _first_python_fence(text: str) -> str | None:
+    match = re.search(
+        r"```(?:python|py)?\s*\n(.*?)```",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    return match.group(1) if match else None
+
+
+def _first_python_code_line(lines: list[str]) -> int | None:
+    for index, line in enumerate(lines):
+        if re.match(r"^\s*(?:from\s+\S+\s+import\s+|import\s+|def\s+|class\s+|@)", line):
+            return index
+    return None
+
+
+def _trim_to_compilable_python(text: str) -> str:
+    lines: list[str] = []
+    for line in text.replace("<jupyter>", "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            break
+        if line.startswith(
+            (
+                "This function",
+                "You can",
+                "The ",
+                "In this",
+                "Explanation:",
+                "Output:",
+                "Input:",
+            )
+        ):
+            break
+        lines.append(line)
+
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+
+    for end in range(len(lines), 0, -1):
+        candidate = "\n".join(lines[:end]).strip()
+        if not candidate:
+            continue
+        try:
+            compile(candidate + "\n", "<wfcllm-mbpp-final-code>", "exec")
+        except SyntaxError:
+            continue
+        return candidate + "\n"
+    return ("\n".join(lines).strip() + "\n") if lines else ""
 
 
 class KeyedTextRegionWindowScorer:
@@ -2244,14 +2510,14 @@ def _load_causal_rewriter(options: LocalHFGateRuntimeOptions):
     from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoTokenizer
 
     path = options.effective_rewrite_model_path
-    config = AutoConfig.from_pretrained(str(path), local_files_only=True)
+    config = AutoConfig.from_pretrained(str(path), local_files_only=True, trust_remote_code=True)
     model_class = AutoModelForSeq2SeqLM if bool(getattr(config, "is_encoder_decoder", False)) else AutoModelForCausalLM
     model = model_class.from_pretrained(
         str(path),
         local_files_only=True,
         torch_dtype=torch.bfloat16,
     )
-    tokenizer = AutoTokenizer.from_pretrained(str(path), local_files_only=True)
+    tokenizer = AutoTokenizer.from_pretrained(str(path), local_files_only=True, trust_remote_code=True)
     model.to(options.model_device)
     model.eval()
     language = language_for_window_contract(options.window_contract_version)

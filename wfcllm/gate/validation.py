@@ -22,7 +22,7 @@ from wfcllm.gate.config import GateValidateConfig
 
 GATE_VALIDATION_CONTRACT_VERSION = "wfcllm-gate-validation/v1"
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
-_WORKER_POLL_TIMEOUT_SECONDS = 30.0
+_WORKER_POLL_TIMEOUT_SECONDS = 180.0
 _WORKER_JOIN_TIMEOUT_SECONDS = 5.0
 
 

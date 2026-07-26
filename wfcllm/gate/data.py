@@ -886,11 +886,21 @@ def _parent_descriptor(
 ) -> ParentDescriptor:
     return ParentDescriptor(
         contract_version=window_contract_version,
-        ancestor_node_types=unit.parent_path[:-1],
+        ancestor_node_types=_descriptor_ancestor_node_types(unit),
         direct_parent_type=unit.direct_parent_type,
         first_unit_ordinal=unit.direct_child_ordinal,
         compound_header_role="header" if unit.compound_header else "body",
     )
+
+
+def _descriptor_ancestor_node_types(unit: StatementUnit) -> tuple[str, ...]:
+    ancestor_node_types = unit.parent_path[:-1]
+    while (
+        ancestor_node_types
+        and ancestor_node_types[-1] == unit.direct_parent_type
+    ):
+        ancestor_node_types = ancestor_node_types[:-1]
+    return ancestor_node_types
 
 
 def _validate_probe_results(
