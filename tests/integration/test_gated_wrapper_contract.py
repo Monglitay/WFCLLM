@@ -17,22 +17,22 @@ def test_gated_wrapper_requires_separate_pilot_and_full_catalogs() -> None:
     assert '--gate-source-catalog "${PILOT_SOURCE_CATALOG}"' in script
     assert '--gate-source-catalog "${FULL_SOURCE_CATALOG}"' in script
     assert 'CONDA_ENVS_PATH="${CONDA_ENVS_PATH:-/root/autodl-tmp/conda/envs}"' in script
-    assert '--phase gate-validate' in script
+    assert '--phase gate-validate' not in script
     assert 'SAMPLE_LIMIT="${SAMPLE_LIMIT:-164}"' in script
     assert "wfcllm_fast_postprocess.py" not in script
 
 
-def test_official_no_carrier_config_requires_formal_gate_validation() -> None:
+def test_official_no_carrier_config_uses_semantic_lsh_rule_and_gated_phases() -> None:
     config = json.loads(
         (ROOT / "configs" / "wfcllm" / "gated_semantic_window_nocarrier_v1.json")
         .read_text(encoding="utf-8")
     )
 
-    assert config["method"]["gate"]["require_validated"] is True
+    assert config["semantic_lsh"]["rule_name"] == "semantic_lsh"
+    assert "require_validated" not in config["method"]["gate"]
     assert config["runtime"]["default_phases"] == [
         "gate-data",
         "gate-train",
-        "gate-validate",
         "generate",
         "calibrate",
         "detect",

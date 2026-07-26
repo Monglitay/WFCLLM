@@ -6,9 +6,6 @@
       "defer_unreliable_until_max_units": true,
       "max_units": 2
     },
-    "gate": {
-      "require_validated": true
-    },
     "rewrite": {
       "strategy": "python_ast_equivalent",
       "max_attempts": 18

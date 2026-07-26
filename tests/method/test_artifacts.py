@@ -80,10 +80,7 @@ def test_run_paths_include_all_gate_artifacts_without_changing_final_code_path(
     assert paths.gate_checkpoints_dir == tmp_path / "run-1" / "gate-train" / "checkpoints"
     assert paths.gate_candidate_bundle_dir == tmp_path / "run-1" / "gate-train" / "candidate_bundle"
     assert paths.gate_candidate_bundle_manifest == tmp_path / "run-1" / "gate-train" / "candidate_bundle_manifest.json"
-    assert paths.gate_validation_summary == tmp_path / "run-1" / "gate-validate" / "validation_summary.json"
-    assert paths.gate_agreement_details == tmp_path / "run-1" / "gate-validate" / "agreement_details.jsonl"
-    assert paths.gate_bundle_dir == tmp_path / "run-1" / "gate-validate" / "bundle"
-    assert paths.gate_bundle_manifest == tmp_path / "run-1" / "gate-validate" / "gate_bundle_manifest.json"
+    assert not hasattr(paths, "gate_bundle_manifest")
     assert paths.audit_log == tmp_path / "run-1" / "generation" / "audit.jsonl"
     assert paths.candidate_sidecar == tmp_path / "run-1" / "generation" / "candidate_sidecar.jsonl"
     assert paths.raw_attempt_summary == tmp_path / "run-1" / "generation" / "raw_attempt_summary.jsonl"

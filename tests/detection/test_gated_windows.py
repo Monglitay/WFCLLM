@@ -219,12 +219,12 @@ def test_extractor_is_final_code_only_and_deterministic(tmp_path: Path) -> None:
         GatedWindowExtractor(bundle, _config(tmp_path), sidecar={})  # type: ignore[call-arg]
 
 
-def test_unvalidated_or_contract_and_hash_mismatched_bundle_is_rejected(
+def test_experimental_or_contract_and_hash_mismatched_bundle_is_rejected(
     tmp_path: Path,
 ) -> None:
     bundle = _ValidatedFakeBundle(root=tmp_path / "bundle")
-    bundle.validation_summary["validated"] = False
-    with pytest.raises(ValueError, match="validated"):
+    bundle.experimental_only = True
+    with pytest.raises(ValueError, match="diagnostic acceptance"):
         GatedWindowExtractor(bundle, _config(tmp_path))
 
     with pytest.raises(ValueError, match="bundle hash"):
@@ -265,24 +265,13 @@ def test_explicit_experimental_mode_accepts_marked_unvalidated_bundle(
     assert extractor.extract("x = 1\n").windows
 
 
-def test_explicit_unvalidated_mode_accepts_non_diagnostic_candidate(
+def test_candidate_runtime_bundle_is_accepted_without_validation_summary(
     tmp_path: Path,
 ) -> None:
     bundle = _ValidatedFakeBundle(root=tmp_path / "bundle")
-    bundle.validation_summary = {
-        "validated": False,
-        "validation_skipped_by_protocol": True,
-        "unvalidated_candidate": True,
-        "diagnostic_only": False,
-        "not_official_method": False,
-    }
-    bundle.unvalidated_candidate = True
+    bundle.validation_summary = None
 
-    extractor = GatedWindowExtractor(
-        bundle,
-        _config(tmp_path),
-        allow_unvalidated=True,
-    )
+    extractor = GatedWindowExtractor(bundle, _config(tmp_path))
 
     assert extractor.extract("x = 1\n").windows
 

@@ -146,32 +146,9 @@ def test_deployment_scorer_and_runtime_hash_bind_lsh_gamma(
     )
 
 
-def test_validate_candidate_resolves_hash_helper_before_loading_cache(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class CacheLoaded(RuntimeError):
-        pass
-
-    adapter = object.__new__(gate_production.LocalHFProductionAdapter)
-
-    def stop_after_imports(_self, _config_hash):
-        raise CacheLoaded
-
-    monkeypatch.setattr(
-        gate_production.LocalHFProductionAdapter,
-        "_load_training_cache",
-        stop_after_imports,
-    )
-
-    with pytest.raises(CacheLoaded):
-        adapter.validate_candidate(
-            config=SimpleNamespace(config_hash="config"),
-            candidate_bundle=Path("candidate"),
-            data_manifest={},
-            threshold_fit_group_ids=(),
-            agreement_group_ids=(),
-            output_dir=Path("output"),
-        )
+def test_production_adapter_no_longer_exposes_validate_candidate() -> None:
+    assert not hasattr(gate_production.LocalHFProductionAdapter, "validate_candidate")
+    assert "validate_candidate" not in gate_production.LocalHFProductionAdapter.capabilities
 
 
 def test_public_semantic_runtime_initialization_is_repeatable_and_rng_isolated(
@@ -1123,10 +1100,10 @@ def test_local_hf_probe_keeps_semantically_rejected_rewrites_evidence_free(
                 assert results == {}
 
 
-def test_unvalidated_runtime_manifest_loads_hashed_single_statement_profile(
+def test_candidate_runtime_manifest_loads_hashed_single_statement_profile(
     tmp_path: Path,
 ) -> None:
-    from wfcllm.gate.production import _load_unvalidated_runtime_manifest
+    from wfcllm.gate.production import _load_candidate_runtime_manifest
 
     payload = {
         "schema_version": "wfcllm-unvalidated-runtime-thresholds/v1",
@@ -1139,7 +1116,7 @@ def test_unvalidated_runtime_manifest_loads_hashed_single_statement_profile(
     path = tmp_path / "runtime_thresholds.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
 
-    manifest, runtime_hash = _load_unvalidated_runtime_manifest(
+    manifest, runtime_hash = _load_candidate_runtime_manifest(
         tmp_path,
         tokenizer_sha256="a" * 64,
         max_tokens=256,
@@ -1153,10 +1130,10 @@ def test_unvalidated_runtime_manifest_loads_hashed_single_statement_profile(
     assert runtime_hash == hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def test_unvalidated_runtime_manifest_rejects_unbound_or_invalid_profile(
+def test_candidate_runtime_manifest_rejects_unbound_or_invalid_profile(
     tmp_path: Path,
 ) -> None:
-    from wfcllm.gate.production import _load_unvalidated_runtime_manifest
+    from wfcllm.gate.production import _load_candidate_runtime_manifest
 
     (tmp_path / "runtime_thresholds.json").write_text(
         json.dumps(
@@ -1174,7 +1151,7 @@ def test_unvalidated_runtime_manifest_rejects_unbound_or_invalid_profile(
     )
 
     with pytest.raises(ValueError, match="schema mismatch"):
-        _load_unvalidated_runtime_manifest(
+        _load_candidate_runtime_manifest(
             tmp_path,
             tokenizer_sha256="a" * 64,
             max_tokens=256,

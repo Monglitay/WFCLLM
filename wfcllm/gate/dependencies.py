@@ -24,7 +24,6 @@ PRODUCTION_GATE_ADAPTER_CAPABILITIES = frozenset(
         "split_groups",
         "audit_gate_data",
         "train_candidate",
-        "validate_candidate",
     }
 )
 
@@ -72,7 +71,6 @@ class ProductionGateAdapter(Protocol):
     def split_groups(self, groups, config): ...
     def audit_gate_data(self, staging_dir, manifest): ...
     def train_candidate(self, **kwargs): ...
-    def validate_candidate(self, **kwargs): ...
 
 
 class _PrivateKeyBank:
@@ -295,13 +293,6 @@ class LocalGateDependencies:
         return self._delegate(
             "train_candidate",
             "local gate trainer dependency adapter is required; downloads are disabled",
-            **kwargs,
-        )
-
-    def validate_candidate(self, **kwargs):
-        return self._delegate(
-            "validate_candidate",
-            "local gate validator dependency adapter is required; downloads are disabled",
             **kwargs,
         )
 

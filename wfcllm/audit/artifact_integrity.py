@@ -75,7 +75,6 @@ _FORMAL_VERSION_IDENTITIES = frozenset(
         "wfcllm-gate-split/v1",
         "wfcllm-training-key-bank-manifest/v1",
         "wfcllm-gate-train-candidate/v1",
-        "wfcllm-gate-validate-publication/v1",
         "wfcllm-gate-candidate-attempts/v2",
         "wfcllm-gate-label/v1",
         "wfcllm-production-gate-adapter/v1",

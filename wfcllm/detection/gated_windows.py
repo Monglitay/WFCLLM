@@ -104,10 +104,10 @@ class GatedWindowExtraction:
 class GatedWindowExtractor:
     """Recover gated windows from final code and no generation-time evidence.
 
-    The bundle passed here is already a validated runtime bundle.  It must
-    expose its formal manifest, one bound stable predictor, and the tokenizer
-    counter used by the gate.  This keeps ``extract`` deliberately limited to
-    one argument: the final code string.
+    The bundle passed here is a hash-bound gate-train candidate runtime
+    bundle.  It must expose its manifest, one bound stable predictor, and the
+    tokenizer counter used by the gate.  This keeps ``extract`` deliberately
+    limited to one argument: the final code string.
     """
 
     def __init__(
@@ -116,7 +116,6 @@ class GatedWindowExtractor:
         config: GatedDetectionConfig | None = None,
         *,
         allow_experimental: bool = False,
-        allow_unvalidated: bool = False,
         defer_unreliable_until_max_units: bool = False,
         max_units_override: int | None = None,
     ) -> None:
@@ -124,13 +123,9 @@ class GatedWindowExtractor:
         self._config = config
         if type(allow_experimental) is not bool:
             raise ValueError("allow_experimental must be a bool")
-        if type(allow_unvalidated) is not bool:
-            raise ValueError("allow_unvalidated must be a bool")
         if type(defer_unreliable_until_max_units) is not bool:
             raise ValueError("defer_unreliable_until_max_units must be a bool")
-        manifest = _validate_bundle(
-            bundle, config, allow_experimental, allow_unvalidated
-        )
+        manifest = _validate_bundle(bundle, config, allow_experimental)
         bundle_max_units = getattr(manifest, "max_units", 3)
         if max_units_override is not None and (
             type(max_units_override) is not int
@@ -231,37 +226,23 @@ def _validate_bundle(
     bundle: object,
     config: GatedDetectionConfig | None,
     allow_experimental: bool,
-    allow_unvalidated: bool,
 ) -> Any:
-    summary = getattr(bundle, "validation_summary", None)
-    experimental = (
-        allow_experimental
-        and getattr(bundle, "experimental_only", False) is True
-        and isinstance(summary, Mapping)
-        and summary.get("validated") is False
-        and summary.get("experimental_only") is True
-        and summary.get("diagnostic_only") is True
-        and summary.get("not_official_method") is True
-    )
-    unvalidated = (
-        allow_unvalidated
-        and getattr(bundle, "unvalidated_candidate", False) is True
-        and isinstance(summary, Mapping)
-        and summary.get("validated") is False
-        and summary.get("validation_skipped_by_protocol") is True
-        and summary.get("unvalidated_candidate") is True
-        and summary.get("diagnostic_only") is False
-        and summary.get("not_official_method") is False
-    )
-    if not isinstance(summary, Mapping) or (
-        summary.get("validated") is not True
-        and not experimental
-        and not unvalidated
-    ):
-        raise ValueError("gated extraction requires a validated gate bundle")
+    if getattr(bundle, "experimental_only", False) is True:
+        summary = getattr(bundle, "validation_summary", None)
+        experimental = (
+            allow_experimental
+            and isinstance(summary, Mapping)
+            and summary.get("experimental_only") is True
+            and summary.get("diagnostic_only") is True
+            and summary.get("not_official_method") is True
+        )
+        if not experimental:
+            raise ValueError(
+                "experimental gate candidates require explicit diagnostic acceptance"
+            )
     manifest = getattr(bundle, "manifest", None)
     if manifest is None:
-        raise ValueError("validated gate bundle manifest is required")
+        raise ValueError("gate bundle manifest is required")
 
     if not is_supported_window_contract(
         getattr(manifest, "window_contract_version", None)

@@ -25,7 +25,7 @@ def test_phase_runner_dispatches_gated_pipeline_once(tmp_path: Path, monkeypatch
     )
     args.secret_key_file.write_bytes(b"deployment")
     monkeypatch.setattr(
-        "wfcllm.cli.runners.resolve_validated_gate_bundle",
+        "wfcllm.cli.runners.resolve_gate_bundle",
         lambda _args: (tmp_path / "bundle", "a" * 64),
     )
     state = RunStateManager(tmp_path / "state.json")

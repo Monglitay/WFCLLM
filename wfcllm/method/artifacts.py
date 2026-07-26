@@ -50,10 +50,6 @@ class RunPaths:
     gate_checkpoints_dir: Path
     gate_candidate_bundle_dir: Path
     gate_candidate_bundle_manifest: Path
-    gate_validation_summary: Path
-    gate_agreement_details: Path
-    gate_bundle_dir: Path
-    gate_bundle_manifest: Path
     audit_log: Path
     candidate_sidecar: Path
     raw_attempt_summary: Path
@@ -127,12 +123,6 @@ def build_run_paths(run_root: str | Path, run_id: str) -> RunPaths:
         gate_candidate_bundle_dir=run_dir / "gate-train" / "candidate_bundle",
         gate_candidate_bundle_manifest=(
             run_dir / "gate-train" / "candidate_bundle_manifest.json"
-        ),
-        gate_validation_summary=run_dir / "gate-validate" / "validation_summary.json",
-        gate_agreement_details=run_dir / "gate-validate" / "agreement_details.jsonl",
-        gate_bundle_dir=run_dir / "gate-validate" / "bundle",
-        gate_bundle_manifest=(
-            run_dir / "gate-validate" / "gate_bundle_manifest.json"
         ),
         audit_log=run_dir / "generation" / "audit.jsonl",
         candidate_sidecar=run_dir / "generation" / "candidate_sidecar.jsonl",

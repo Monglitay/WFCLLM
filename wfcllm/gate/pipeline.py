@@ -1,4 +1,4 @@
-"""Atomic low-level gate data, training, and validation pipelines."""
+"""Atomic low-level gate data and training pipelines."""
 
 from __future__ import annotations
 
@@ -22,15 +22,12 @@ from wfcllm.gate.feasibility import (
     GateDataFeasibilitySummary,
     evaluate_gate_data_feasibility,
 )
-from wfcllm.gate.bundle import GateBundle, sha256_directory
-from wfcllm.gate.validation import GateValidationSummary
 from wfcllm.gate.data import LshProbeResult
 from wfcllm.gate.labels import GateLabels, LabelThresholds, build_gate_labels
 from wfcllm.gate.schema import CandidateObservation
 
 GATE_DATA_MANIFEST_VERSION = "wfcllm-gate-data-manifest/v1"
 GATE_TRAIN_MANIFEST_VERSION = "wfcllm-gate-train-candidate/v1"
-GATE_VALIDATE_MANIFEST_VERSION = "wfcllm-gate-validate-publication/v1"
 _HASH_CHUNK_BYTES = 1024 * 1024
 _MAX_PUBLIC_JSON_BYTES = 1024 * 1024
 _MAX_GATE_GROUPS = 2_000
@@ -102,19 +99,6 @@ class GateTrainPipelineConfig:
             _path("pilot_feasibility_path", self.pilot_feasibility_path)
         if type(self.fast_experimental) is not bool:
             raise ValueError("fast_experimental must be a bool")
-        _digest("config_hash", self.config_hash)
-
-
-@dataclass(frozen=True)
-class GateValidatePipelineConfig:
-    output_root: Path
-    candidate_bundle: Path
-    data_dir: Path
-    config_hash: str
-
-    def __post_init__(self) -> None:
-        for name in ("output_root", "candidate_bundle", "data_dir"):
-            _path(name, getattr(self, name))
         _digest("config_hash", self.config_hash)
 
 
@@ -420,29 +404,6 @@ class GateTrainResult:
     candidate_bundle_path: Path
     manifest_path: Path
     manifest: Mapping[str, Any]
-
-
-@dataclass(frozen=True)
-class ValidationOutcome:
-    validated: bool
-    summary: GateValidationSummary | Mapping[str, Any]
-    bundle: object | None
-
-    def __post_init__(self) -> None:
-        if type(self.validated) is not bool or not isinstance(self.summary, (GateValidationSummary, Mapping)):
-            raise ValueError("validation outcome schema mismatch")
-        if self.validated and self.bundle is None:
-            raise ValueError("validated outcome requires a bundle")
-
-
-@dataclass(frozen=True)
-class GateValidateResult:
-    validated: bool
-    output_dir: Path
-    bundle: object | None
-    manifest_path: Path | None
-    failed_summary_path: Path | None
-    summary: Mapping[str, Any]
 
 
 class GatePipelineDependencies(Protocol):
@@ -918,181 +879,6 @@ def run_gate_train(config: GateTrainPipelineConfig, dependencies: object) -> Gat
         shutil.rmtree(staging, ignore_errors=True)
         raise
     return GateTrainResult(output, output / "candidate_bundle", output / "candidate_bundle_manifest.json", candidate_manifest)
-
-
-def run_gate_validate(config: GateValidatePipelineConfig, dependencies: object) -> GateValidateResult:
-    if not isinstance(config, GateValidatePipelineConfig):
-        raise ValueError("config must be GateValidatePipelineConfig")
-    if not config.candidate_bundle.is_dir() or _has_symlink(config.candidate_bundle):
-        raise ValueError("candidate bundle is missing or unsafe")
-    data_manifest_path = config.data_dir / "manifest.json"
-    if not data_manifest_path.is_file():
-        raise ValueError("data manifest is missing")
-    data_manifest = _read_json(data_manifest_path, "data manifest")
-    diagnostic = bool(getattr(dependencies, "diagnostic_test_backend", False))
-    threshold_fit_group_ids: tuple[str, ...] = ()
-    agreement_group_ids: tuple[str, ...] = ()
-    candidate_manifest_path: Path | None = None
-    if not diagnostic:
-        if (
-            data_manifest.get("schema_version") != GATE_DATA_MANIFEST_VERSION
-            or data_manifest.get("scale") != "full"
-            or data_manifest.get("config_hash") != config.config_hash
-            or data_manifest.get("feasibility_contract") != FEASIBILITY_CONTRACT_VERSION
-            or data_manifest.get("feasibility_thresholds") != dict(FEASIBILITY_THRESHOLD_ITEMS)
-            or data_manifest.get("formal_eligible") is not True
-            or data_manifest.get("diagnostic_test_backend") is not False
-        ):
-            raise ValueError("formal validation requires a matching full data manifest")
-        index_rows = _audit_training_group_index(config.data_dir, data_manifest, config.config_hash)
-        _audit_gate_data_artifacts(config.data_dir, data_manifest, config.config_hash)
-        threshold_fit_group_ids = tuple(row["group_id"] for row in index_rows if row["split"] == "validation")
-        agreement_group_ids = tuple(row["group_id"] for row in index_rows if row["split"] == "test")
-        if not threshold_fit_group_ids or not agreement_group_ids:
-            raise ValueError("formal validation requires non-empty validation and test holdout groups")
-        candidate_manifest_path = config.candidate_bundle.parent / "candidate_bundle_manifest.json"
-        candidate_manifest = _read_json(candidate_manifest_path, "candidate bundle manifest")
-        if (
-            candidate_manifest.get("schema_version") != GATE_TRAIN_MANIFEST_VERSION
-            or candidate_manifest.get("config_hash") != config.config_hash
-            or candidate_manifest.get("formal_eligible") is not True
-            or candidate_manifest.get("diagnostic_test_backend") is not False
-            or candidate_manifest.get("data_manifest_sha256") != _sha_file(data_manifest_path)
-            or candidate_manifest.get("candidate_bundle_sha256") != _tree_hash(config.candidate_bundle)
-        ):
-            raise ValueError("candidate bundle manifest does not match formal validation inputs")
-        _validate_formal_candidate_tree(config.candidate_bundle)
-    root = config.output_root / "gate-validate"
-    if _has_symlink(config.output_root) or root.is_symlink():
-        raise ValueError("gate-validate output path cannot traverse symlinks")
-    config.output_root.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=".gate-validate-", dir=config.output_root))
-    try:
-        callback_candidate = config.candidate_bundle
-        original_candidate_digest = _tree_hash(config.candidate_bundle)
-        original_data_digest = _tree_hash(config.data_dir)
-        original_data_manifest_sha256 = _sha_file(data_manifest_path)
-        original_candidate_manifest_sha256 = (
-            None if candidate_manifest_path is None else _sha_file(candidate_manifest_path)
-        )
-        candidate_snapshot: Path | None = None
-        if not diagnostic:
-            candidate_snapshot = staging / "_candidate_snapshot"
-            _copy_tree_snapshot(config.candidate_bundle, candidate_snapshot)
-            _validate_formal_candidate_tree(candidate_snapshot)
-            callback_candidate = candidate_snapshot
-        outcome = dependencies.validate_candidate(
-            config=config,
-            candidate_bundle=callback_candidate,
-            data_manifest=data_manifest,
-            threshold_fit_group_ids=threshold_fit_group_ids,
-            agreement_group_ids=agreement_group_ids,
-            output_dir=staging,
-        )
-        if not diagnostic:
-            assert candidate_snapshot is not None
-            _validate_formal_candidate_tree(candidate_snapshot)
-            if (
-                _tree_hash(candidate_snapshot) != original_candidate_digest
-                or _tree_hash(config.candidate_bundle) != original_candidate_digest
-                or _tree_hash(config.data_dir) != original_data_digest
-                or _sha_file(data_manifest_path) != original_data_manifest_sha256
-                or candidate_manifest_path is None
-                or _sha_file(candidate_manifest_path) != original_candidate_manifest_sha256
-            ):
-                raise ValueError("validator mutated formal validation inputs")
-        if not isinstance(outcome, ValidationOutcome):
-            raise ValueError("validator must return ValidationOutcome")
-        if diagnostic:
-            if isinstance(outcome.summary, GateValidationSummary):
-                raw_summary = outcome.summary.to_dict()
-            else:
-                raw_summary = dict(outcome.summary)
-            summary = {**raw_summary, "diagnostic_test_backend": True}
-            summary["validated"] = False
-            summary["formal_eligible"] = False
-            _reject_sensitive_public_fields(summary)
-            root.mkdir(parents=True, exist_ok=True)
-            failed = root / "failed_validation_summary.json"
-            _write_json_atomic(failed, summary)
-            shutil.rmtree(staging, ignore_errors=True)
-            return GateValidateResult(False, root, None, None, failed, summary)
-        if not isinstance(outcome.summary, GateValidationSummary):
-            raise ValueError("formal validator must return GateValidationSummary")
-        if outcome.validated != outcome.summary.validated:
-            raise ValueError("validator outcome flag contradicts strict validation summary")
-        summary = outcome.summary.to_dict()
-        if not outcome.summary.validated:
-            failed_payload = {**summary, "diagnostic_test_backend": False, "formal_eligible": False}
-            root.mkdir(parents=True, exist_ok=True)
-            failed = root / "failed_validation_summary.json"
-            _write_json_atomic(failed, failed_payload)
-            shutil.rmtree(staging, ignore_errors=True)
-            return GateValidateResult(False, root, None, None, failed, failed_payload)
-        bundle_path = staging / "bundle"
-        if not bundle_path.is_dir() or not any(bundle_path.iterdir()) or _has_symlink(bundle_path):
-            raise ValueError("validated publisher did not produce a safe bundle directory")
-        loaded_bundle = GateBundle.load(bundle_path)
-        if dict(loaded_bundle.validation_summary) != summary:
-            raise ValueError("staging bundle validation summary differs from strict validator result")
-        expected_fit_digest = _validation_group_digest(set(threshold_fit_group_ids))
-        expected_agreement_digest = _validation_group_digest(set(agreement_group_ids))
-        if (
-            summary["threshold_fit_group_digest"] != expected_fit_digest
-            or summary["agreement_group_digest"] != expected_agreement_digest
-        ):
-            raise ValueError("validation summary group digests do not match pipeline holdout groups")
-        if (
-            loaded_bundle.manifest.training_data_manifest_sha256 != original_data_manifest_sha256
-            or loaded_bundle.manifest.training_key_bank_id != data_manifest.get("training_key_bank_id")
-            or loaded_bundle.manifest.holdout_key_bank_id != data_manifest.get("holdout_key_bank_id")
-        ):
-            raise ValueError("staging bundle provenance does not match gate data manifest")
-        if (
-            loaded_bundle.manifest.float_model_sha256 != _sha_file(callback_candidate / "gate_float.pt")
-            or loaded_bundle.manifest.tokenizer_sha256 != sha256_directory(callback_candidate / "tokenizer")
-        ):
-            raise ValueError("validated bundle model/tokenizer do not match candidate bundle")
-        publication_summary = {**summary, "diagnostic_test_backend": False, "formal_eligible": True}
-        publication = {
-            "schema_version": GATE_VALIDATE_MANIFEST_VERSION,
-            "validated": True,
-            "config_hash": config.config_hash,
-            "candidate_bundle_sha256": original_candidate_digest,
-            "data_manifest_sha256": original_data_manifest_sha256,
-            "bundle_sha256": _tree_hash(bundle_path),
-            "validation_summary": publication_summary,
-            "diagnostic_test_backend": False,
-        }
-        _reject_sensitive_public_fields(publication)
-        if candidate_snapshot is not None:
-            shutil.rmtree(candidate_snapshot)
-        _write_json(staging / "gate_bundle_manifest.json", publication)
-        final_manifest = root / "gate_bundle_manifest.json"
-        if root.is_symlink():
-            raise ValueError("validated bundle publication path is unsafe")
-        if root.exists():
-            names = {path.name for path in root.iterdir()}
-            if names != {"failed_validation_summary.json"}:
-                raise ValueError("validated bundle publication already exists")
-            backup = config.output_root / f".gate-validate-failed-{os.getpid()}"
-            if backup.exists() or backup.is_symlink():
-                raise ValueError("validation publication backup already exists")
-            os.replace(root, backup)
-            try:
-                os.replace(staging, root)
-            except BaseException:
-                if not root.exists():
-                    os.replace(backup, root)
-                raise
-            shutil.rmtree(backup)
-        else:
-            os.replace(staging, root)
-        published_bundle = GateBundle.load(root / "bundle")
-        return GateValidateResult(True, root, published_bundle, final_manifest, None, publication_summary)
-    except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
 
 
 def _iter_groups(values: object, stage: str) -> Iterator[GatePipelineGroup]:
@@ -1993,11 +1779,6 @@ def _read_jsonl(path: Path, name: str) -> list[dict[str, Any]]:
 def _deterministic_subsets(groups: Sequence[Any], seed: str) -> dict[str, list[str]]:
     ordered = sorted(groups, key=lambda group: (hashlib.sha256((seed + "\0" + group.group_id).encode()).hexdigest(), group.group_id))
     return {"full": [group.group_id for group in ordered]}
-
-
-def _validation_group_digest(groups: set[str]) -> str:
-    payload = json.dumps(sorted(groups), separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
 
 
 def _contains_humaneval(value: object) -> bool:

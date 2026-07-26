@@ -1,10 +1,15 @@
 {
   "method": {
     "name": "gated_semantic_window_v1",
-    "windowing": {"contract_version": "python-statement-window/v1"},
-    "gate": {"require_validated": true},
-    "rewrite": {"strategy": "python_ast_equivalent"},
-    "semantic": {"parent_descriptor_version": "python-statement-window/v1"}
+    "windowing": {
+      "contract_version": "python-statement-window/v1"
+    },
+    "rewrite": {
+      "strategy": "python_ast_equivalent"
+    },
+    "semantic": {
+      "parent_descriptor_version": "python-statement-window/v1"
+    }
   },
   "generation": {
     "language": "python",
@@ -16,5 +21,7 @@
     "lsh_d": 12,
     "lsh_gamma": 0.45
   },
-  "experiment": {"profile": "full"}
+  "experiment": {
+    "profile": "full"
+  }
 }

@@ -16,16 +16,7 @@ from wfcllm.method.presets import (
 )
 
 
-SEVEN_PHASES = [
-    "gate-data",
-    "gate-train",
-    "gate-validate",
-    "generate",
-    "calibrate",
-    "detect",
-    "report",
-]
-FAST_PHASES = [
+GATED_PHASES = [
     "gate-data",
     "gate-train",
     "generate",
@@ -51,13 +42,13 @@ def test_gated_preset_has_full_phase_sequence_and_no_secret() -> None:
     preset = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME)
 
     assert preset.method["name"] == GATED_SEMANTIC_WINDOW_V1_NAME
-    assert preset.runtime["default_phases"] == FAST_PHASES
+    assert preset.runtime["default_phases"] == GATED_PHASES
     assert preset.runtime["external_validated_bundle_phases"] == FOUR_PHASES
     assert preset.method["windowing"]["max_units"] == 3
     assert preset.method["gate"]["max_input_tokens"] == 256
-    assert preset.method["gate"]["require_validated"] is False
+    assert "require_validated" not in preset.method["gate"]
     assert preset.gate_data["training_key_count"] == 32
-    assert preset.gate_validate["holdout_key_count"] == 8
+    assert preset.gate_data["holdout_key_count"] == 8
     assert "secret" not in json.dumps(preset.to_dict(), sort_keys=True).lower()
 
 
@@ -83,12 +74,6 @@ def test_gated_preset_contains_frozen_contracts_and_thresholds() -> None:
         "reliable_success_rate_r3_min": 0.60,
         "structurally_valid_rewrite_rate_r3_min": pytest.approx(2 / 3),
         "unstable_candidate_rate_r3_max": 0.10,
-    }
-    assert preset.gate_validate["acceptance_thresholds"] == {
-        "decision_agreement_min": 0.999,
-        "float_quantized_accepted_set_agreement_min": 0.999,
-        "formal_accepted_span_consensus_min": 1.0,
-        "suitable_false_positive_rate_max": 0.05,
     }
     assert preset.detector["mode"] == "wfcllm-gated-semantic-window/v1"
     assert preset.gate_data["feasibility_contract_version"] == "gate-data-feasibility/v1"
@@ -196,7 +181,7 @@ def test_gated_preset_is_deep_copied_between_loads() -> None:
     assert first.method is not second.method
     assert first.method["windowing"] is not second.method["windowing"]
     assert "made_up" not in second.method["windowing"]["excluded_statement_types"]
-    assert second.runtime["default_phases"] == FAST_PHASES
+    assert second.runtime["default_phases"] == GATED_PHASES
     assert isinstance(payload["method"], dict)
     assert isinstance(payload["runtime"]["default_phases"], list)
 
@@ -237,10 +222,6 @@ def test_formal_gated_preset_requires_d12_lsh_and_reference_preservation() -> No
         preset,
         method={
             **preset.method,
-            "gate": {
-                **preset.method["gate"],
-                "require_validated": True,
-            },
             "semantic": {
                 **preset.method["semantic"],
                 "lsh": {
@@ -260,7 +241,6 @@ def test_formal_gated_preset_requires_d12_lsh_and_reference_preservation() -> No
             "lsh_d": 12,
             "lsh_gamma": 0.45,
         },
-        runtime={**preset.runtime, "default_phases": SEVEN_PHASES},
     )
 
     assert formal.method["semantic"]["lsh"]["d"] == 12
@@ -292,7 +272,7 @@ def test_gated_preset_supports_external_validated_bundle_four_phase_mode() -> No
     )
 
     assert external.runtime["default_phases"] == FOUR_PHASES
-    assert external.method["gate"]["require_validated"] is False
+    assert "require_validated" not in external.method["gate"]
 
 
 def test_gated_preset_allows_local_paths_containing_secrets_word() -> None:
@@ -437,7 +417,6 @@ def test_preset_dataclass_defaults_gate_sections_only_for_legacy_method() -> Non
     )
     assert legacy.gate_data == {}
     assert legacy.gate_train == {}
-    assert legacy.gate_validate == {}
 
 
 def test_preset_preserves_all_seven_legacy_positional_arguments() -> None:
@@ -471,7 +450,6 @@ def test_preset_preserves_all_seven_legacy_positional_arguments() -> None:
     assert preset.runtime is runtime
     assert preset.gate_data == {}
     assert preset.gate_train == {}
-    assert preset.gate_validate == {}
 
 
 def test_gate_train_records_exact_formal_loss_weights() -> None:
@@ -499,13 +477,6 @@ def test_gate_train_records_exact_formal_loss_weights() -> None:
         ("gate_train", lambda value: value["losses"].append("made_up"), "losses"),
         ("gate_train", lambda value: value["loss_weights"].__setitem__("made_up", 0.2), "loss_weights"),
         ("gate_train", lambda value: value["loss_weights"].__setitem__("close_bce", True), "loss_weights"),
-        ("gate_validate", lambda value: value.pop("batch_sizes"), "missing fields"),
-        ("gate_validate", lambda value: value.__setitem__("junk", True), "unknown fields"),
-        ("gate_validate", lambda value: value.__setitem__("batch_sizes", [1, 8]), "batch_sizes"),
-        ("gate_validate", lambda value: value.__setitem__("orders", ["reverse"]), "orders"),
-        ("gate_validate", lambda value: value.__setitem__("independent_reloads", 2), "independent_reloads"),
-        ("gate_validate", lambda value: value["acceptance_thresholds"].__setitem__("decision_agreement_min", 0.9), "acceptance_thresholds"),
-        ("gate_validate", lambda value: value["acceptance_thresholds"].__setitem__("formal_accepted_span_consensus_min", True), "acceptance_thresholds"),
     ],
 )
 def test_gated_low_level_sections_reject_missing_junk_or_tampered_values(
@@ -525,7 +496,6 @@ def test_gated_low_level_sections_reject_missing_junk_or_tampered_values(
         ("detector", lambda value: value.__setitem__("api_key", "value")),
         ("gate_data", lambda value: value.__setitem__("raw_training_key", "0101")),
         ("gate_train", lambda value: value.__setitem__("key_material", "0101")),
-        ("gate_validate", lambda value: value.__setitem__("private_key", "value")),
     ],
 )
 def test_gated_public_config_rejects_secret_carriers_recursively(

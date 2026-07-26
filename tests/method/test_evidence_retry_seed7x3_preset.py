@@ -29,7 +29,6 @@ def test_evidence_retry_seed7x3_preset_matches_spec() -> None:
     ]
     assert preset.gate_data == {}
     assert preset.gate_train == {}
-    assert preset.gate_validate == {}
 
 
 def test_evidence_retry_preset_is_deep_copied_between_loads() -> None:

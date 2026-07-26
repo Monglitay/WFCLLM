@@ -79,40 +79,32 @@ def ensure_gate_phase_prerequisites(
         _reject_symlink_path,
         _require_experimental_manifest,
         _uses_fast_experimental_gate_training,
-        resolve_validated_gate_bundle,
+        resolve_gate_bundle,
     )
 
     fast_experimental = _uses_fast_experimental_gate_training(config)
-    if phase in {"gate-train", "gate-validate"}:
+    if phase == "gate-train":
         run_dir = _gate_run_dir(args, config)
         data_manifest = run_dir / "gate-data" / "manifest.json"
         _reject_symlink_path(data_manifest)
         if not data_manifest.is_file():
             raise ValueError(f"{phase} requires the gate-data manifest")
-        if fast_experimental and phase == "gate-train":
+        if fast_experimental:
             _require_experimental_manifest(
                 _load_json_object(data_manifest),
                 "gate-data",
             )
         else:
             _load_formal_json(data_manifest, "gate-data")
-    if phase == "gate-validate":
-        run_dir = _gate_run_dir(args, config)
-        candidate = run_dir / "gate-train" / "candidate_bundle"
-        candidate_manifest = run_dir / "gate-train" / "candidate_bundle_manifest.json"
-        _reject_symlink_path(candidate)
-        if not candidate.is_dir() or not candidate_manifest.is_file():
-            raise ValueError("gate-validate requires the gate-train candidate bundle")
-        _load_formal_json(candidate_manifest, "gate-train")
     if phase in {"generate", "calibrate", "detect"}:
         try:
-            _path, bundle_hash = resolve_validated_gate_bundle(args)
+            _path, bundle_hash = resolve_gate_bundle(args)
         except ValueError as exc:
-            raise ValueError(f"validated gate bundle prerequisite failed: {exc}") from exc
+            raise ValueError(f"gate bundle prerequisite failed: {exc}") from exc
         if phase == "calibrate" and state.get("generate", "gate_bundle_sha256") != bundle_hash:
-            raise ValueError("calibrate requires the same validated gate bundle as generate")
+            raise ValueError("calibrate requires the same gate bundle as generate")
         if phase == "detect":
             if state.get("generate", "gate_bundle_sha256") != bundle_hash:
-                raise ValueError("detect requires the same validated gate bundle as generate")
+                raise ValueError("detect requires the same gate bundle as generate")
             if state.get("calibrate", "gate_bundle_sha256") != bundle_hash:
-                raise ValueError("detect requires the same validated gate bundle as calibrate")
+                raise ValueError("detect requires the same gate bundle as calibrate")

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from wfcllm.cli.runners import _unvalidated_artifact_markers
 from wfcllm.gate.config import GateDataConfig
 from wfcllm.gate.feasibility import FEASIBILITY_THRESHOLD_ITEMS
 from wfcllm.gate.pipeline import GateDataPipelineConfig
@@ -69,10 +68,9 @@ def test_full_gate_data_no_longer_requires_a_separate_pilot() -> None:
     assert value.pilot_feasibility_path is None
 
 
-def test_gated_training_and_validation_use_fast_contract() -> None:
+def test_gated_training_uses_fast_contract() -> None:
     config = _config()
 
-    assert config["method"]["gate"]["require_validated"] is False
     assert config["method"]["gate"]["max_input_tokens"] == 256
     assert config["method"]["rewrite"]["max_attempts"] == 3
     assert config["gate_train"]["max_tokens"] == 256
@@ -83,21 +81,13 @@ def test_gated_training_and_validation_use_fast_contract() -> None:
         "suitable_bce",
         "dangerous_negative_fp",
     ]
-    assert config["gate_validate"]["batch_sizes"] == [1]
-    assert config["gate_validate"]["orders"] == ["original"]
-    assert config["gate_validate"]["gpu_float_if_available"] is False
-    assert config["gate_validate"]["independent_reloads"] == 1
 
 
-def test_skipped_gate_validation_is_disclosed_without_diagnostic_markers() -> None:
-    markers = _unvalidated_artifact_markers(_config())
+def test_gated_config_carries_no_removed_gate_validation_keys() -> None:
+    config = _config()
 
-    assert markers == {
-        "gate_validation_skipped": True,
-        "unvalidated_gate_candidate": True,
-    }
-    assert "diagnostic_only" not in markers
-    assert "not_official_method" not in markers
+    assert "gate_validate" not in config
+    assert "require_validated" not in config["method"]["gate"]
 
 
 def test_window_diagnostic_summary_counts_reliable_evidence() -> None:

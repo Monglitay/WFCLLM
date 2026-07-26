@@ -6,7 +6,6 @@
       "max_units": 1
     },
     "gate": {
-      "require_validated": true,
       "bundle_path": "/root/autodl-tmp/wfcllm-runs/opencoder-8b-dense48-diag32-20260723-223500/run/gate-validate/bundle",
       "bundle_sha256": "0ed9dc85f6716d4d1ba7ba1a940926d2efde9b152ca87908bcb29f5b9cfe0978"
     },

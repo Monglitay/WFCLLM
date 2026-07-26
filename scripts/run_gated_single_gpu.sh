@@ -102,10 +102,6 @@ env "${OFFLINE[@]}" "${CONDA_EXE}" run -p "${CONDA_ENVS_PATH}/WFCLLM" python run
   --state-file "${FULL_STATE}" --pilot-feasibility "${PILOT_FEASIBILITY}" \
   --model-device cuda --gate-device cuda "${FULL_COMMON[@]}" "${GATE_TRAIN_OVERRIDES[@]}"
 
-env "${OFFLINE[@]}" CUDA_VISIBLE_DEVICES="" "${CONDA_EXE}" run -p "${CONDA_ENVS_PATH}/WFCLLM" python run.py \
-  --phase gate-validate --config "${FULL_CONFIG}" --run-dir "${FULL_RUN}" \
-  --state-file "${FULL_STATE}" --model-device cpu --gate-device cpu "${FULL_COMMON[@]}"
-
 env "${OFFLINE[@]}" "${CONDA_EXE}" run -p "${CONDA_ENVS_PATH}/WFCLLM" python run.py \
   --phase generate --config "${FULL_CONFIG}" --run-dir "${FULL_RUN}" \
   --state-file "${FULL_STATE}" --dataset-path "${DATASET_PATH}" \

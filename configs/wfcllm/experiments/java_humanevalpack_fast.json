@@ -1,16 +1,19 @@
 {
   "method": {
     "name": "gated_semantic_window_v1",
-    "windowing": {"contract_version": "java-statement-window/v1"},
+    "windowing": {
+      "contract_version": "java-statement-window/v1"
+    },
     "gate": {
-      "require_validated": false,
       "fast_experimental": true
     },
     "rewrite": {
       "strategy": "model_semantic_window",
       "max_attempts": 18
     },
-    "semantic": {"parent_descriptor_version": "java-statement-window/v1"}
+    "semantic": {
+      "parent_descriptor_version": "java-statement-window/v1"
+    }
   },
   "generation": {
     "language": "java",
@@ -29,5 +32,7 @@
   "detector": {
     "target_fpr": 0.5
   },
-  "experiment": {"profile": "fast"}
+  "experiment": {
+    "profile": "fast"
+  }
 }

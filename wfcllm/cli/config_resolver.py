@@ -35,6 +35,31 @@ def load_config(config_path: Path) -> dict:
         sys.exit(1)
 
 
+def _strip_removed_gate_validation_keys(config: dict) -> dict:
+    """Drop config keys retired with the gate-validate stage (ADR 0007).
+
+    Historical gated configs may still carry these keys; they are ignored
+    instead of rejected so third-party configs keep resolving.
+    """
+
+    config.pop("gate_validate", None)
+    method = config.get("method")
+    if isinstance(method, Mapping):
+        method = dict(method)
+        gate = method.get("gate")
+        if isinstance(gate, Mapping):
+            gate = dict(gate)
+            gate.pop("require_validated", None)
+            method["gate"] = gate
+        config["method"] = method
+    experiment = config.get("experiment")
+    if isinstance(experiment, Mapping):
+        experiment = dict(experiment)
+        experiment.pop("allow_unvalidated_gate_candidate", None)
+        config["experiment"] = experiment
+    return config
+
+
 def resolve_method_config(config: Mapping[str, object]) -> dict:
     """Expand a named public method config against its canonical preset."""
 
@@ -53,6 +78,8 @@ def resolve_method_config(config: Mapping[str, object]) -> dict:
 
     if name not in {EVIDENCE_RETRY_SEED7X3_NAME, GATED_SEMANTIC_WINDOW_V1_NAME}:
         return deepcopy(dict(config))
+    if name == GATED_SEMANTIC_WINDOW_V1_NAME:
+        config = _strip_removed_gate_validation_keys(deepcopy(dict(config)))
     merged = _deep_merge(load_method_preset(name).to_dict(), dict(config))
     experiment = config.get("experiment")
     if name == GATED_SEMANTIC_WINDOW_V1_NAME and isinstance(
@@ -105,26 +132,14 @@ def _resolve_experiment_matrix_config(
         "parser_boundary",
     ]
     merged["gate_data"]["scale"] = "pilot" if profile == "fast" else "full"
-    merged["runtime"]["default_phases"] = (
-        [
-            "gate-data",
-            "gate-train",
-            "gate-validate",
-            "generate",
-            "calibrate",
-            "detect",
-            "report",
-        ]
-        if profile == "full"
-        else [
-            "gate-data",
-            "gate-train",
-            "generate",
-            "calibrate",
-            "detect",
-            "report",
-        ]
-    )
+    merged["runtime"]["default_phases"] = [
+        "gate-data",
+        "gate-train",
+        "generate",
+        "calibrate",
+        "detect",
+        "report",
+    ]
     return merged
 
 

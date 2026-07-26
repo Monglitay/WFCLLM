@@ -30,7 +30,7 @@ from wfcllm.generation.window_rewriter import (
     RewriteGeneration,
 )
 from wfcllm.gate.labels import LabelThresholds, build_gate_labels
-from wfcllm.gate.pipeline import GatePipelineGroup, ValidationOutcome
+from wfcllm.gate.pipeline import GatePipelineGroup
 from wfcllm.gate.schema import CandidateObservation, GateTrainingGroup
 from wfcllm.gate.sources import GateSourceRecord, canonical_gate_source_identity
 from wfcllm.semantic.keying import WatermarkKeying
@@ -290,7 +290,6 @@ class LocalHFProductionAdapter:
             "split_groups",
             "audit_gate_data",
             "train_candidate",
-            "validate_candidate",
         }
     )
 
@@ -748,7 +747,7 @@ class LocalHFProductionAdapter:
             (output_dir / "runtime_thresholds.json").write_text(
                 json.dumps(
                     {
-                        "schema_version": _UNVALIDATED_RUNTIME_SCHEMA,
+                        "schema_version": _CANDIDATE_RUNTIME_SCHEMA,
                         "close_low_threshold": 0.0,
                         "close_high_threshold": 0.000001,
                         "suitable_accept_threshold": 0.0,
@@ -772,94 +771,6 @@ class LocalHFProductionAdapter:
             "candidate_sha256": _sha256_file(output_dir / "gate_float.pt"),
         }
 
-    def validate_candidate(
-        self,
-        *,
-        config,
-        candidate_bundle,
-        data_manifest,
-        threshold_fit_group_ids,
-        agreement_group_ids,
-        output_dir,
-    ):
-        import torch
-
-        from wfcllm.gate.bundle import (
-            GateBundle,
-            quantize_gate_model_dynamic,
-            sha256_file,
-        )
-        from wfcllm.gate.config import GateTrainConfig, GateValidateConfig
-        from wfcllm.gate.model import GateModel
-        from wfcllm.gate.validation import (
-            GateValidationArtifacts,
-            GateValidator,
-        )
-
-        rows = self._load_training_cache(config.config_hash)
-        _validate_cache_against_data(rows, config.data_dir)
-        fit_ids = set(threshold_fit_group_ids)
-        agreement_ids = set(agreement_group_ids)
-        fit = tuple(
-            _validation_example_from_cache(row, "threshold_fit")
-            for row in rows
-            if row["group_id"] in fit_ids and row["budget"] == 3
-        )
-        agreement = tuple(
-            _validation_example_from_cache(row, "agreement")
-            for row in rows
-            if row["group_id"] in agreement_ids and row["budget"] == 3
-        )
-        if not fit or not agreement:
-            raise ValueError("gate validation cache does not cover both holdout subsets")
-        float_path = candidate_bundle / "gate_float.pt"
-        float_state = torch.load(float_path, map_location="cpu", weights_only=True)
-        model = GateModel.from_local_pretrained(
-            GateTrainConfig(base_model_path=self.options.gate_base_model_path)
-        ).cpu().eval()
-        model.load_state_dict(float_state, strict=True)
-        quantized = quantize_gate_model_dynamic(model)
-        inputs = output_dir / "_validation_inputs"
-        inputs.mkdir()
-        int8_path = inputs / "gate_int8.pt"
-        torch.save(quantized.state_dict(), int8_path)
-        artifacts = GateValidationArtifacts(
-            float_model_path=float_path,
-            int8_model_path=int8_path,
-            float_model_sha256=sha256_file(float_path),
-            int8_model_sha256=sha256_file(int8_path),
-        )
-        factory = _LocalGatePredictorFactory(
-            base_model_path=self.options.gate_base_model_path,
-            tokenizer_path=candidate_bundle / "tokenizer",
-            artifacts=artifacts,
-        )
-        summary = GateValidator(GateValidateConfig()).validate(
-            threshold_fit_examples=fit,
-            agreement_examples=agreement,
-            max_tokens=512,
-            predictor_factory=factory,
-            gpu_available=torch.cuda.is_available(),
-        )
-        if not summary.validated:
-            shutil.rmtree(inputs)
-            return ValidationOutcome(validated=False, summary=summary, bundle=None)
-        bundle = GateBundle.create(
-            root=output_dir / "bundle",
-            validated_float_artifact=float_path,
-            validated_int8_artifact=int8_path,
-            tokenizer_source=candidate_bundle / "tokenizer",
-            validation_summary=summary.to_dict(),
-            model_architecture="local-transformer-dual-head",
-            base_model_id=self.options.gate_base_model_path.as_posix(),
-            thresholds=summary.thresholds,
-            training_data_manifest_sha256=_sha256_file(config.data_dir / "manifest.json"),
-            training_key_bank_id=data_manifest["training_key_bank_id"],
-            holdout_key_bank_id=data_manifest["holdout_key_bank_id"],
-            window_contract_version=self.options.window_contract_version,
-        )
-        shutil.rmtree(inputs)
-        return ValidationOutcome(validated=True, summary=summary, bundle=bundle)
 
     def _training_cache_path(self, config_hash: str) -> Path:
         return self.options.cache_dir / f"gate-examples-{config_hash}.jsonl"
@@ -1308,53 +1219,6 @@ class LocalSemanticRuntime:
         )
 
 
-@dataclass(frozen=True)
-class _LocalGatePredictorFactory:
-    base_model_path: Path
-    tokenizer_path: Path
-    artifacts: Any
-
-    def __call__(self, mode, state):
-        from transformers import AutoTokenizer
-
-        from wfcllm.gate.bundle import quantize_gate_model_dynamic
-        from wfcllm.gate.config import GateTrainConfig
-        from wfcllm.gate.model import GateModel
-
-        model = GateModel.from_local_pretrained(
-            GateTrainConfig(base_model_path=self.base_model_path)
-        ).cpu().eval()
-        if mode.precision == "int8":
-            model = quantize_gate_model_dynamic(model)
-        model.load_state_dict(state, strict=True)
-        device = "cuda" if mode.device == "gpu" else "cpu"
-        model = model.to(device).eval()
-        tokenizer = AutoTokenizer.from_pretrained(
-            str(self.tokenizer_path), local_files_only=True
-        )
-        return _LocalGatePredictor(model=model, tokenizer=tokenizer, device=device)
-
-
-class _LocalGatePredictor:
-    def __init__(self, *, model: object, tokenizer: object, device: str) -> None:
-        self.model = model
-        self.tokenizer = tokenizer
-        self.device = device
-
-    def encode_batch(self, examples):
-        encoded = self.tokenizer(
-            [example.serialized_input for example in examples],
-            padding=True,
-            truncation=True,
-            max_length=512,
-            return_tensors="pt",
-        )
-        return {
-            "input_ids": encoded["input_ids"].to(self.device),
-            "attention_mask": encoded["attention_mask"].to(self.device),
-        }
-
-
 def _gate_example_from_cache(row: Mapping[str, Any]):
     from wfcllm.gate.dataset import GateExample
     from wfcllm.gate.input import GateInput
@@ -1387,23 +1251,6 @@ def _gate_example_from_cache(row: Mapping[str, Any]):
     )
 
 
-def _validation_example_from_cache(row: Mapping[str, Any], role: str):
-    from wfcllm.gate.validation import GateValidationExample
-
-    span = row.get("span")
-    return GateValidationExample(
-        example_id=(
-            f"{row['group_id']}:context-{row['context_length']}:budget-{row['budget']}"
-        ),
-        group_id=row["group_id"],
-        serialized_input=row["serialized_gate_input"],
-        span=(int(span[0]), int(span[1])),
-        close_target=row["close_target"],
-        suitable_target=row["suitable_target"],
-        validation_role=role,
-    )
-
-
 def _load_gate_tokenizer(options: LocalHFGateRuntimeOptions):
     from transformers import AutoTokenizer
 
@@ -1428,87 +1275,6 @@ def _token_count(tokenizer: object, text: str) -> int:
     return len(input_ids)
 
 
-class _BundlePredictorAdapter:
-    def __init__(
-        self,
-        *,
-        model: object,
-        tokenizer: object,
-        tokenizer_sha256: str,
-    ) -> None:
-        self.model = model
-        self.tokenizer = tokenizer
-        self.tokenizer_sha256 = tokenizer_sha256
-
-    def encode_input(self, serialized_input: str):
-        encoded = self.tokenizer(
-            serialized_input,
-            truncation=True,
-            max_length=512,
-            return_tensors="pt",
-        )
-        return {
-            "input_ids": encoded["input_ids"].cpu(),
-            "attention_mask": encoded["attention_mask"].cpu(),
-        }
-
-
-@dataclass(frozen=True)
-class _BundlePredictorLoader:
-    base_model_path: Path
-    tokenizer_path: Path
-
-    def __call__(self, *, precision, state, tokenizer_snapshot, manifest):
-        from transformers import AutoTokenizer
-
-        from wfcllm.gate.bundle import quantize_gate_model_dynamic
-        from wfcllm.gate.config import GateTrainConfig
-        from wfcllm.gate.model import GateModel
-
-        model = GateModel.from_local_pretrained(
-            GateTrainConfig(base_model_path=self.base_model_path)
-        ).cpu().eval()
-        if precision == "int8":
-            model = quantize_gate_model_dynamic(model)
-        model.load_state_dict(state, strict=True)
-        tokenizer = AutoTokenizer.from_pretrained(
-            str(self.tokenizer_path), local_files_only=True
-        )
-        return _BundlePredictorAdapter(
-            model=model.eval(),
-            tokenizer=tokenizer,
-            tokenizer_sha256=tokenizer_snapshot.sha256,
-        )
-
-
-class LocalRuntimeGateBundle:
-    """Validated bundle with its CPU predictor and tokenizer bound once."""
-
-    def __init__(self, *, root: Path, base_model_path: Path, bundle_sha256: str) -> None:
-        from transformers import AutoTokenizer
-
-        from wfcllm.gate.bundle import GateBundle
-
-        bundle = GateBundle.load(root)
-        self.root = root
-        self.bundle_sha256 = bundle_sha256
-        self.manifest = bundle.manifest
-        self.validation_summary = bundle.validation_summary
-        self.tokenizer_sha256 = bundle.manifest.tokenizer_sha256
-        self.stable_gate_predictor = bundle.stable_predictor(
-            _BundlePredictorLoader(
-                base_model_path=base_model_path,
-                tokenizer_path=root / "tokenizer",
-            )
-        )
-        self._tokenizer = AutoTokenizer.from_pretrained(
-            str(root / "tokenizer"), local_files_only=True
-        )
-
-    def tokenizer_counter(self, text: str) -> int:
-        return _token_count(self._tokenizer, text)
-
-
 @dataclass(frozen=True)
 class _ExperimentalGateManifest:
     window_contract_version: str
@@ -1522,8 +1288,8 @@ class _ExperimentalGateManifest:
     runtime_profile: str
 
 
-_UNVALIDATED_RUNTIME_SCHEMA = "wfcllm-unvalidated-runtime-thresholds/v1"
-_UNVALIDATED_RUNTIME_FIELDS = {
+_CANDIDATE_RUNTIME_SCHEMA = "wfcllm-unvalidated-runtime-thresholds/v1"
+_CANDIDATE_RUNTIME_FIELDS = {
     "schema_version",
     "runtime_profile",
     "close_low_threshold",
@@ -1533,7 +1299,7 @@ _UNVALIDATED_RUNTIME_FIELDS = {
 }
 
 
-def _load_unvalidated_runtime_manifest(
+def _load_candidate_runtime_manifest(
     root: Path,
     *,
     tokenizer_sha256: str,
@@ -1559,16 +1325,16 @@ def _load_unvalidated_runtime_manifest(
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ValueError("unvalidated runtime threshold artifact is invalid") from exc
+        raise ValueError("candidate runtime threshold artifact is invalid") from exc
     if (
         not isinstance(payload, Mapping)
-        or set(payload) != _UNVALIDATED_RUNTIME_FIELDS
-        or payload.get("schema_version") != _UNVALIDATED_RUNTIME_SCHEMA
+        or set(payload) != _CANDIDATE_RUNTIME_FIELDS
+        or payload.get("schema_version") != _CANDIDATE_RUNTIME_SCHEMA
     ):
-        raise ValueError("unvalidated runtime threshold schema mismatch")
+        raise ValueError("candidate runtime threshold schema mismatch")
     profile = payload.get("runtime_profile")
     if not isinstance(profile, str) or not profile.strip():
-        raise ValueError("unvalidated runtime profile must be non-empty")
+        raise ValueError("candidate runtime profile must be non-empty")
     thresholds = GateThresholds(
         close_low=payload.get("close_low_threshold"),
         close_high=payload.get("close_high_threshold"),
@@ -1688,11 +1454,10 @@ class LocalExperimentalRuntimeGateBundle:
         return _token_count(self._tokenizer, text)
 
 
-class LocalUnvalidatedRuntimeGateBundle(LocalExperimentalRuntimeGateBundle):
-    """Formal float candidate used when validation is explicitly out of scope."""
+class LocalCandidateRuntimeGateBundle(LocalExperimentalRuntimeGateBundle):
+    """Formal float gate-train candidate bound by its publication tree hash."""
 
     experimental_only = False
-    unvalidated_candidate = True
 
     def __init__(self, **kwargs: Any) -> None:
         window_contract_version = kwargs.get(
@@ -1700,19 +1465,15 @@ class LocalUnvalidatedRuntimeGateBundle(LocalExperimentalRuntimeGateBundle):
         )
         super().__init__(**kwargs)
         self.manifest, self.runtime_thresholds_sha256 = (
-            _load_unvalidated_runtime_manifest(
+            _load_candidate_runtime_manifest(
                 self.root,
                 tokenizer_sha256=self.tokenizer_sha256,
                 max_tokens=self.manifest.max_tokens,
                 window_contract_version=window_contract_version,
             )
         )
-        self.validation_summary = {
-            "validated": False,
-            "validation_skipped_by_protocol": True,
-            "unvalidated_candidate": True,
-            "diagnostic_only": False,
-            "not_official_method": False,
+        self.validation_summary = None
+        self.runtime_markers = {
             "runtime_profile": self.manifest.runtime_profile,
             "runtime_thresholds_sha256": self.runtime_thresholds_sha256,
         }
@@ -2576,9 +2337,8 @@ __all__ = [
     "LocalHFProductionAdapter",
     "HFCausalRewriteBackend",
     "LocalHFProgramGenerator",
-    "LocalRuntimeGateBundle",
+    "LocalCandidateRuntimeGateBundle",
     "LocalExperimentalRuntimeGateBundle",
-    "LocalUnvalidatedRuntimeGateBundle",
     "LocalSemanticRuntime",
     "KeyedTextRegionWindowScorer",
     "build_local_semantic_window_scorer",

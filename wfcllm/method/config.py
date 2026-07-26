@@ -21,15 +21,6 @@ _GATED_METHOD = "gated_semantic_window_v1"
 _GATED_PHASES = (
     "gate-data",
     "gate-train",
-    "gate-validate",
-    "generate",
-    "calibrate",
-    "detect",
-    "report",
-)
-_GATED_FAST_PHASES = (
-    "gate-data",
-    "gate-train",
     "generate",
     "calibrate",
     "detect",
@@ -83,12 +74,6 @@ _FEASIBILITY_THRESHOLDS = {
     "holdout_key_absolute_decline_max": 0.10,
     "validation_test_suitable_positive_min": 3,
     "validation_test_suitable_negative_min": 8,
-}
-_ACCEPTANCE_THRESHOLDS = {
-    "decision_agreement_min": 0.999,
-    "float_quantized_accepted_set_agreement_min": 0.999,
-    "formal_accepted_span_consensus_min": 1.0,
-    "suitable_false_positive_rate_max": 0.05,
 }
 _HEX_DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -191,7 +176,6 @@ class WFCLLMMethodPreset:
     runtime: Mapping[str, Any] = field(default_factory=dict)
     gate_data: Mapping[str, Any] = field(default_factory=dict)
     gate_train: Mapping[str, Any] = field(default_factory=dict)
-    gate_validate: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         section_names = (
@@ -202,7 +186,6 @@ class WFCLLMMethodPreset:
             "calibration",
             "gate_data",
             "gate_train",
-            "gate_validate",
             "artifacts",
             "runtime",
         )
@@ -349,7 +332,6 @@ class WFCLLMMethodPreset:
                 "bundle_contract_version",
                 "bundle_path",
                 "bundle_sha256",
-                "require_validated",
                 "uncertain_boundary_policy",
                 "max_input_tokens",
             },
@@ -370,7 +352,7 @@ class WFCLLMMethodPreset:
             },
             "method.rewrite",
         )
-        formal_semantic_lsh = gate.get("require_validated") is True
+        formal_semantic_lsh = self._formal_semantic_lsh()
         semantic_keys = {"parent_descriptor_version", "encoder_id", "lsh"}
         if formal_semantic_lsh:
             semantic_keys.add("preservation")
@@ -424,8 +406,6 @@ class WFCLLMMethodPreset:
             raise ValueError("method.gate.input_contract_version is incompatible")
         if gate.get("bundle_contract_version") != "wfcllm-gate-bundle/v1":
             raise ValueError("method.gate.bundle_contract_version is incompatible")
-        if type(gate.get("require_validated")) is not bool:
-            raise ValueError("method.gate.require_validated must be a bool")
         if gate.get("uncertain_boundary_policy") != "close_and_skip":
             raise ValueError(
                 "method.gate.uncertain_boundary_policy must be close_and_skip"
@@ -525,14 +505,11 @@ class WFCLLMMethodPreset:
         self._validate_reusable_sections()
         self._validate_gate_data()
         self._validate_gate_train()
-        self._validate_gate_validate()
 
         expected_default_phases = (
             list(_GATED_MAIN_PHASES)
             if bundle_path is not None
             else list(_GATED_PHASES)
-            if gate.get("require_validated") is True
-            else list(_GATED_FAST_PHASES)
         )
         if self.runtime.get("default_phases") != expected_default_phases:
             phase_description = (
@@ -545,6 +522,16 @@ class WFCLLMMethodPreset:
             raise ValueError(
                 "gated runtime.external_validated_bundle_phases must use the four main phases"
             )
+
+    def _formal_semantic_lsh(self) -> bool:
+        """Whether the config declares the formal semantic-LSH evidence rule."""
+
+        rule_name = self.semantic_lsh.get("rule_name")
+        if rule_name not in {"semantic_lsh", "keyed_text_region"}:
+            raise ValueError(
+                "semantic_lsh.rule_name must be semantic_lsh or keyed_text_region"
+            )
+        return rule_name == "semantic_lsh"
 
     def _validate_reusable_sections(self) -> None:
         self._require_fixed_values(
@@ -565,10 +552,7 @@ class WFCLLMMethodPreset:
             },
             "generation",
         )
-        formal_semantic_lsh = (
-            isinstance(self.method.get("gate"), Mapping)
-            and self.method["gate"].get("require_validated") is True
-        )
+        formal_semantic_lsh = self._formal_semantic_lsh()
         self._require_fixed_values(
             self.semantic_lsh,
             {
@@ -775,40 +759,6 @@ class WFCLLMMethodPreset:
         ):
             raise ValueError("gate_train.base_encoder_id must identify a local model")
 
-    def _validate_gate_validate(self) -> None:
-        expected_keys = {
-            "contract_version",
-            "holdout_key_count",
-            "holdout_key_bank_file_parameter",
-            "threshold_fit_grouped",
-            "agreement_subset_disjoint",
-            "batch_sizes",
-            "orders",
-            "cpu_precisions",
-            "gpu_float_if_available",
-            "independent_reloads",
-            "formal_quantization",
-            "max_input_tokens",
-            "acceptance_thresholds",
-        }
-        self._require_exact_keys(self.gate_validate, expected_keys, "gate_validate")
-        fixed = {
-            "contract_version": "wfcllm-gate-validation/v1",
-            "holdout_key_count": 8,
-            "holdout_key_bank_file_parameter": "holdout_key_bank_file",
-            "threshold_fit_grouped": True,
-            "agreement_subset_disjoint": True,
-            "batch_sizes": [1],
-            "orders": ["original"],
-            "cpu_precisions": ["float", "dynamic_qint8"],
-            "gpu_float_if_available": False,
-            "independent_reloads": 1,
-            "formal_quantization": "torch-dynamic-qint8-linear",
-            "max_input_tokens": 512,
-            "acceptance_thresholds": _ACCEPTANCE_THRESHOLDS,
-        }
-        self._require_fixed_values(self.gate_validate, fixed, "gate_validate")
-
     @staticmethod
     def _required_mapping(
         parent: Mapping[str, Any], name: str
@@ -924,7 +874,7 @@ class WFCLLMMethodPreset:
     def to_dict(self) -> dict[str, Any]:
         if self.method.get("name") == _EVIDENCE_RETRY_METHOD:
             payload = asdict(self)
-            for section_name in ("gate_data", "gate_train", "gate_validate"):
+            for section_name in ("gate_data", "gate_train"):
                 payload.pop(section_name)
             return payload
         payload = {
@@ -937,7 +887,6 @@ class WFCLLMMethodPreset:
             "runtime": _thaw_config(self.runtime),
             "gate_data": _thaw_config(self.gate_data),
             "gate_train": _thaw_config(self.gate_train),
-            "gate_validate": _thaw_config(self.gate_validate),
         }
         return payload
 

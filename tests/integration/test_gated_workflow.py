@@ -33,15 +33,6 @@ from wfcllm.orchestration.state import RunStateManager
 GATED_PHASES = [
     "gate-data",
     "gate-train",
-    "gate-validate",
-    "generate",
-    "calibrate",
-    "detect",
-    "report",
-]
-FAST_EXPERIMENT_PHASES = [
-    "gate-data",
-    "gate-train",
     "generate",
     "calibrate",
     "detect",
@@ -82,7 +73,7 @@ class _FakeGatedCliRunner:
         backend: str = "fake",
         bundle: Path | None = None,
         start_phase: str | None = None,
-        fail_validation: bool = False,
+        corrupt_candidate: bool = False,
         expected_bundle_hash: str | None = None,
         completed: set[str] | None = None,
     ) -> _WorkflowResult:
@@ -98,7 +89,11 @@ class _FakeGatedCliRunner:
         if bundle is not None:
             actual_hash = _tree_hash(bundle)
             if expected_bundle_hash is not None and actual_hash != expected_bundle_hash:
-                raise ValueError("validated gate bundle hash mismatch")
+                raise ValueError("external gate bundle hash mismatch")
+
+        if "gate-train" in completed and bundle is None:
+            # A resumed run consumes the candidate published by the prior run.
+            self._publish_candidate(paths)
 
         for phase in phases:
             if phase in completed:
@@ -109,25 +104,22 @@ class _FakeGatedCliRunner:
                     _diagnostic_artifact("wfcllm-gate-data-manifest/v1"),
                 )
             elif phase == "gate-train":
-                _write_json(
-                    paths.gate_candidate_bundle_manifest,
-                    _diagnostic_artifact("wfcllm-gate-train-candidate/v1"),
-                )
-            elif phase == "gate-validate":
-                if fail_validation:
-                    raise ValueError("fake gate validation failed before generate")
-                paths.gate_bundle_dir.mkdir(parents=True, exist_ok=True)
-                (paths.gate_bundle_dir / "diagnostic.bin").write_bytes(b"fake")
-                _write_json(
-                    paths.gate_bundle_manifest,
-                    {
-                        **_diagnostic_artifact("wfcllm-test-gate-bundle/v1"),
-                        "validated": False,
-                    },
-                )
+                self._publish_candidate(paths)
+                if corrupt_candidate:
+                    (paths.gate_candidate_bundle_dir / "gate_float.pt").write_bytes(
+                        b"tampered-candidate"
+                    )
             elif phase == "generate":
-                if bundle is None and not paths.gate_bundle_manifest.exists():
-                    raise ValueError("generate requires a validated bundle")
+                if bundle is None:
+                    if not paths.gate_candidate_bundle_manifest.exists():
+                        raise ValueError("generate requires the gate-train candidate bundle")
+                    manifest = json.loads(
+                        paths.gate_candidate_bundle_manifest.read_text(encoding="utf-8")
+                    )
+                    if manifest["candidate_bundle_sha256"] != _tree_hash(
+                        paths.gate_candidate_bundle_dir
+                    ):
+                        raise ValueError("gate candidate bundle hash mismatch")
                 paths.final_code_input.parent.mkdir(parents=True, exist_ok=True)
                 paths.final_code_input.write_text(
                     json.dumps(
@@ -179,6 +171,22 @@ class _FakeGatedCliRunner:
             diagnostic_only=True,
         )
 
+    @staticmethod
+    def _publish_candidate(paths: RunPaths) -> None:
+        paths.gate_candidate_bundle_dir.mkdir(parents=True, exist_ok=True)
+        (paths.gate_candidate_bundle_dir / "gate_float.pt").write_bytes(
+            b"fake-candidate"
+        )
+        _write_json(
+            paths.gate_candidate_bundle_manifest,
+            {
+                **_diagnostic_artifact("wfcllm-gate-train-candidate/v1"),
+                "candidate_bundle_sha256": _tree_hash(
+                    paths.gate_candidate_bundle_dir
+                ),
+            },
+        )
+
 
 def _diagnostic_artifact(schema: str) -> dict[str, object]:
     return {
@@ -227,10 +235,13 @@ def test_gated_workflow_runs_all_phases_with_fake_backends(
     result = cli_runner.run_gated(tmp_path, backend="fake")
     assert result.phase_order == GATED_PHASES
     assert result.run_paths.final_code_input.exists()
-    assert result.run_paths.gate_bundle_manifest.exists()
+    assert result.run_paths.gate_candidate_bundle_manifest.exists()
     assert result.audit_summary["detector_input_integrity"] == "pass"
     assert result.diagnostic_only is True
-    assert json.loads(result.run_paths.gate_bundle_manifest.read_text())["validated"] is False
+    manifest = json.loads(
+        result.run_paths.gate_candidate_bundle_manifest.read_text()
+    )
+    assert manifest["diagnostic_test_backend"] is True
 
 
 def test_detector_opens_no_generation_sidecars(
@@ -244,7 +255,7 @@ def test_detector_opens_no_generation_sidecars(
     assert all("gate-data" not in str(path) for path in detector_reads)
 
 
-def test_external_validated_bundle_skips_gate_phases(
+def test_external_bundle_skips_gate_phases(
     tmp_path: Path, cli_runner: _FakeGatedCliRunner, fake_bundle: Path
 ) -> None:
     result = cli_runner.run_gated(tmp_path, bundle=fake_bundle, start_phase="generate")
@@ -270,11 +281,11 @@ def test_fake_bundle_hash_mismatch_fails_before_generate(
         )
 
 
-def test_failed_validation_cannot_reach_generate(
+def test_candidate_hash_mismatch_cannot_reach_generate(
     tmp_path: Path, cli_runner: _FakeGatedCliRunner
 ) -> None:
-    with pytest.raises(ValueError, match="validation failed"):
-        cli_runner.run_gated(tmp_path, fail_validation=True)
+    with pytest.raises(ValueError, match="hash mismatch"):
+        cli_runner.run_gated(tmp_path, corrupt_candidate=True)
     assert not build_run_paths(tmp_path, "fake-gated-run").final_code_input.exists()
 
 
@@ -288,14 +299,14 @@ def test_old_preset_keeps_five_phase_contract() -> None:
 
 def test_gated_config_captures_complete_offline_contract_without_secrets() -> None:
     config = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME).to_dict()
-    assert config["runtime"]["default_phases"] == FAST_EXPERIMENT_PHASES
+    assert config["runtime"]["default_phases"] == GATED_PHASES
     assert config["method"]["windowing"]["max_units"] == 3
     assert config["method"]["rewrite"]["candidate_zero"] == "original_window"
     assert config["method"]["rewrite"]["experiment_budgets"] == [1, 3]
     assert config["gate_data"]["training_key_count"] == 32
     assert config["gate_data"]["holdout_key_count"] == 8
     assert config["method"]["gate"]["max_input_tokens"] == 256
-    assert config["gate_validate"]["formal_quantization"] == "torch-dynamic-qint8-linear"
+    assert "gate_validate" not in config
     assert config["detector"]["target_fpr"] == 0.05
     assert (
         config["calibration"]["posthoc_pass_at_1_noninferiority_absolute_drop_max"]
@@ -337,6 +348,26 @@ def test_gated_and_proxy_report_state_are_separated(tmp_path: Path) -> None:
     assert proxy_state.get("report", "detector_mode") != gated_state.get(
         "report", "detector_mode"
     )
+
+
+def test_gated_run_state_and_report_carry_no_gate_validation_markers(
+    tmp_path: Path,
+) -> None:
+    """New runs must not emit the removed gate-validation skip markers."""
+    state = RunStateManager(tmp_path / "marker-state.json")
+    config = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME).to_dict()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    args = argparse.Namespace(_config_cache=config, run_dir=str(run_dir))
+    assert run_report(args, state) == 0
+
+    forbidden = {"gate_validation_skipped", "unvalidated_gate_candidate"}
+    for phase, row in state.status().items():
+        assert not forbidden & set(row), (phase, row)
+    report = json.loads(
+        (run_dir / "reports" / "reference_report.json").read_text(encoding="utf-8")
+    )
+    assert not forbidden & set(report)
 
 
 def test_gated_report_records_required_metrics_and_posthoc_marker(tmp_path: Path) -> None:

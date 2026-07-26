@@ -1,4 +1,4 @@
-"""Frozen configuration contracts for gate data, training, and validation."""
+"""Frozen configuration contracts for gate data and training."""
 
 from __future__ import annotations
 
@@ -48,33 +48,3 @@ class GateTrainConfig:
         first_component = path_text.split("/", 1)[0]
         if path_text in {"", "."} or ":" in first_component:
             raise ValueError("base_model_path must identify a local model path")
-
-
-@dataclass(frozen=True)
-class GateValidateConfig:
-    """Hard validation thresholds for publishing a formal gate bundle."""
-
-    decision_agreement_min: float = 0.999
-    float_quantized_accepted_set_agreement_min: float = 0.999
-    formal_accepted_span_consensus_min: float = 1.0
-    suitable_false_positive_rate_max: float = 0.05
-    batch_sizes: tuple[int, ...] = (1,)
-    orders: tuple[str, ...] = ("original",)
-    gpu_float_if_available: bool = False
-    independent_reloads: int = 1
-
-    def __post_init__(self) -> None:
-        expected = {
-            "decision_agreement_min": 0.999,
-            "float_quantized_accepted_set_agreement_min": 0.999,
-            "formal_accepted_span_consensus_min": 1.0,
-            "suitable_false_positive_rate_max": 0.05,
-            "batch_sizes": (1,),
-            "orders": ("original",),
-            "gpu_float_if_available": False,
-            "independent_reloads": 1,
-        }
-        for name, required in expected.items():
-            actual = getattr(self, name)
-            if type(actual) is not type(required) or actual != required:
-                raise ValueError(f"{name} must remain fixed at {required!r}")

@@ -5,7 +5,6 @@
       "contract_version": "js-statement-window/v1"
     },
     "gate": {
-      "require_validated": false,
       "fast_experimental": true
     },
     "rewrite": {

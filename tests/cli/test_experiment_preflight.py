@@ -12,7 +12,6 @@ def _config(*, language: str = "cpp", dataset: str = "humanevalpack") -> dict:
     return {
         "method": {
             "name": "gated_semantic_window_v1",
-            "gate": {"require_validated": True},
             "rewrite": {"strategy": "model_semantic_window"},
         },
         "generation": {"language": language, "dataset": dataset},
@@ -36,11 +35,12 @@ def test_preflight_accepts_supported_pairs(language: str, dataset: str) -> None:
     validate_experiment_config(config, language, dataset, "full")
 
 
-def test_preflight_allows_explicit_unvalidated_gate_candidate_diagnostic() -> None:
+def test_preflight_tolerates_removed_gate_validation_keys() -> None:
     config = _config(language="python", dataset="humaneval")
     config["method"]["rewrite"]["strategy"] = "python_ast_equivalent"
-    config["method"]["gate"]["require_validated"] = False
+    config["method"]["gate"] = {"require_validated": True}
     config["experiment"]["allow_unvalidated_gate_candidate"] = True
+    config["gate_validate"] = {"contract_version": "wfcllm-gate-validation/v1"}
 
     validate_experiment_config(config, "python", "humaneval", "full")
 

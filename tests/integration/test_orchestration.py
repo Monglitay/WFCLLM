@@ -382,8 +382,18 @@ def test_gate_phases_are_allowed_without_changing_legacy_main_phase_constant():
     from wfcllm.orchestration.state import GATE_PHASES
 
     assert PHASES == ["generate", "calibrate", "detect", "report", "audit"]
-    assert GATE_PHASES == ["gate-data", "gate-train", "gate-validate"]
+    assert GATE_PHASES == ["gate-data", "gate-train"]
     assert all(phase in ALL_PHASES for phase in GATE_PHASES)
+
+
+def test_gate_validate_phase_is_removed_from_all_registries():
+    from wfcllm.cli.arguments import build_parser
+    from wfcllm.orchestration.state import ALL_PHASES, GATE_PHASES
+
+    assert "gate-validate" not in GATE_PHASES
+    assert "gate-validate" not in ALL_PHASES
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--phase", "gate-validate"])
 
 
 def test_gated_method_uses_configured_fast_phase_sequence(tmp_path):
@@ -403,7 +413,7 @@ def test_gated_method_uses_configured_fast_phase_sequence(tmp_path):
     ]
 
 
-def test_gated_generate_run_phase_requires_validated_bundle_before_dispatch(tmp_path):
+def test_gated_generate_run_phase_requires_gate_bundle_before_dispatch(tmp_path):
     from wfcllm.method.presets import GATED_SEMANTIC_WINDOW_V1_NAME, load_method_preset
 
     orchestrator = PhaseOrchestrator(
@@ -413,7 +423,7 @@ def test_gated_generate_run_phase_requires_validated_bundle_before_dispatch(tmp_
         resolved_config=load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME).to_dict(),
     )
 
-    with pytest.raises(ValueError, match="validated gate bundle"):
+    with pytest.raises(ValueError, match="gate bundle prerequisite failed"):
         orchestrator.run_phase("generate")
 
 
@@ -467,7 +477,7 @@ def test_completed_gate_phase_is_not_skipped_when_input_hash_changes(tmp_path):
     assert ran == [True]
 
 
-@pytest.mark.parametrize("phase", ["gate-data", "gate-train", "gate-validate"])
+@pytest.mark.parametrize("phase", ["gate-data", "gate-train"])
 def test_completed_gate_phase_skips_only_when_complete_output_tree_is_unchanged(tmp_path, phase):
     import hashlib
     from wfcllm.cli.runners import _safe_tree_hash
@@ -479,7 +489,6 @@ def test_completed_gate_phase_skips_only_when_complete_output_tree_is_unchanged(
     manifest_name = {
         "gate-data": "manifest.json",
         "gate-train": "candidate_bundle_manifest.json",
-        "gate-validate": "gate_bundle_manifest.json",
     }[phase]
     manifest = output / manifest_name
     manifest.write_text("stable")

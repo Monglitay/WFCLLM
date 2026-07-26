@@ -1,9 +1,6 @@
 {
   "method": {
     "name": "gated_semantic_window_v1",
-    "gate": {
-      "require_validated": true
-    },
     "semantic": {
       "lsh": {
         "d": 12,
@@ -31,7 +28,6 @@
     "default_phases": [
       "gate-data",
       "gate-train",
-      "gate-validate",
       "generate",
       "calibrate",
       "detect",

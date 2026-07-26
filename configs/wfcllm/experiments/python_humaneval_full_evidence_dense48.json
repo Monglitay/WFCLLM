@@ -5,9 +5,6 @@
       "contract_version": "python-statement-window/v1",
       "max_units": 1
     },
-    "gate": {
-      "require_validated": true
-    },
     "rewrite": {
       "strategy": "python_ast_equivalent",
       "max_attempts": 48,

@@ -44,7 +44,6 @@ class GatedGenerationPipelineConfig:
     embedding_passes: int = 1
     fail_fast: bool = False
     experimental_only: bool = False
-    unvalidated_gate_candidate: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.output_dir, Path) or not isinstance(self.bundle_path, Path):
@@ -74,12 +73,6 @@ class GatedGenerationPipelineConfig:
             raise ValueError("fail_fast must be boolean")
         if type(self.experimental_only) is not bool:
             raise ValueError("experimental_only must be boolean")
-        if type(self.unvalidated_gate_candidate) is not bool:
-            raise ValueError("unvalidated_gate_candidate must be boolean")
-        if self.experimental_only and self.unvalidated_gate_candidate:
-            raise ValueError(
-                "experimental_only and unvalidated_gate_candidate are exclusive"
-            )
 
 
 class GatedGenerationPipeline:
@@ -158,32 +151,19 @@ class GatedGenerationPipeline:
 
     @staticmethod
     def _validate_bundle(bundle: Any, config: GatedGenerationPipelineConfig) -> None:
-        summary = getattr(bundle, "validation_summary", None)
-        experimental = (
-            config.experimental_only
-            and getattr(bundle, "experimental_only", False) is True
-            and isinstance(summary, Mapping)
-            and summary.get("validated") is False
-            and summary.get("experimental_only") is True
-            and summary.get("diagnostic_only") is True
-            and summary.get("not_official_method") is True
-        )
-        unvalidated = (
-            config.unvalidated_gate_candidate
-            and getattr(bundle, "unvalidated_candidate", False) is True
-            and isinstance(summary, Mapping)
-            and summary.get("validated") is False
-            and summary.get("validation_skipped_by_protocol") is True
-            and summary.get("unvalidated_candidate") is True
-            and summary.get("diagnostic_only") is False
-            and summary.get("not_official_method") is False
-        )
-        if not isinstance(summary, Mapping) or (
-            summary.get("validated") is not True
-            and not experimental
-            and not unvalidated
-        ):
-            raise ValueError("gate bundle must be validated")
+        if getattr(bundle, "experimental_only", False) is True:
+            summary = getattr(bundle, "validation_summary", None)
+            experimental = (
+                config.experimental_only
+                and isinstance(summary, Mapping)
+                and summary.get("experimental_only") is True
+                and summary.get("diagnostic_only") is True
+                and summary.get("not_official_method") is True
+            )
+            if not experimental:
+                raise ValueError(
+                    "experimental gate candidates require explicit diagnostic acceptance"
+                )
         manifest = getattr(bundle, "manifest", None)
         if getattr(manifest, "window_contract_version", None) != config.parser_contract:
             raise ValueError("parser contract hash/version mismatch")
@@ -418,15 +398,10 @@ class GatedGenerationPipeline:
             root / "generation" / "manifest.json",
             {
                 "schema_version": "wfcllm-gated-generation-manifest/v1",
-                "formal": not (
-                    self._config.experimental_only
-                    or self._config.unvalidated_gate_candidate
-                ),
+                "formal": not self._config.experimental_only,
                 "experimental_only": self._config.experimental_only,
                 "diagnostic_only": self._config.experimental_only,
                 "not_official_method": self._config.experimental_only,
-                "gate_validation_skipped": self._config.unvalidated_gate_candidate,
-                "unvalidated_gate_candidate": self._config.unvalidated_gate_candidate,
                 "gate_bundle_sha256": self._config.bundle_sha256,
                 "parser_contract": self._config.parser_contract,
                 "gate_input_contract": self._config.gate_input_contract,

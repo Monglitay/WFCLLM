@@ -20,6 +20,12 @@ def test_parser_rejects_unknown_phase():
         parser.parse_args(["--phase", "nonexistent"])
 
 
+def test_parser_rejects_removed_gate_validate_phase():
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--phase", "gate-validate"])
+
+
 def test_parser_status_flag():
     parser = build_parser()
     args = parser.parse_args(["--status"])
@@ -207,8 +213,9 @@ def test_external_validated_bundle_hash_is_bound_across_main_phases(tmp_path, mo
     from wfcllm.orchestration.state import RunStateManager
 
     bundle = tmp_path / "bundle"
-    bundle.mkdir()
-    (bundle / "formal.bin").write_bytes(b"formal")
+    (bundle / "tokenizer").mkdir(parents=True)
+    (bundle / "gate_float.pt").write_bytes(b"formal")
+    (bundle / "tokenizer" / "tokenizer.json").write_text("{}", encoding="utf-8")
     config = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME).to_dict()
     config["method"]["gate"]["bundle_path"] = str(bundle)
     config["method"]["gate"]["bundle_sha256"] = _safe_tree_hash(bundle)
@@ -229,7 +236,6 @@ def test_external_validated_bundle_hash_is_bound_across_main_phases(tmp_path, mo
         secret_key_file=str(deployment), secret_key_env=None,
         _gated_detection_pipeline=pipeline,
     )
-    monkeypatch.setattr("wfcllm.gate.bundle.GateBundle.load", lambda path: object())
     monkeypatch.setattr(
         "wfcllm.detection.gated_pipeline.load_gated_calibration_artifact",
         lambda path: object(),
@@ -243,6 +249,109 @@ def test_external_validated_bundle_hash_is_bound_across_main_phases(tmp_path, mo
     assert hashes == {config["method"]["gate"]["bundle_sha256"]}
 
 
+def _write_candidate_bundle(run_dir, config):
+    """Publish a minimal formal gate-train candidate bundle for runner tests."""
+    from wfcllm.cli.runners import _safe_tree_hash
+    from wfcllm.gate.production import experiment_contract_hash
+
+    candidate = run_dir / "gate-train" / "candidate_bundle"
+    (candidate / "tokenizer").mkdir(parents=True)
+    (candidate / "gate_float.pt").write_bytes(b"candidate-weights")
+    (candidate / "tokenizer" / "tokenizer.json").write_text("{}", encoding="utf-8")
+    candidate_hash = _safe_tree_hash(candidate)
+    manifest = {
+        "schema_version": "wfcllm-gate-train-candidate/v1",
+        "config_hash": experiment_contract_hash(config),
+        "candidate_bundle_sha256": candidate_hash,
+        "diagnostic_test_backend": False,
+        "experimental_only": False,
+        "diagnostic_only": False,
+        "not_official_method": False,
+        "formal_eligible": True,
+    }
+    (run_dir / "gate-train" / "candidate_bundle_manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    return candidate, candidate_hash
+
+
+def test_gated_main_phases_resolve_single_gate_train_candidate_bundle(tmp_path, monkeypatch):
+    import argparse
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from wfcllm.cli.runners import (
+        resolve_gate_bundle,
+        run_calibrate,
+        run_detect,
+        run_generate,
+    )
+    from wfcllm.method.presets import GATED_SEMANTIC_WINDOW_V1_NAME, load_method_preset
+    from wfcllm.orchestration.state import RunStateManager
+
+    config = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME).to_dict()
+    run_dir = tmp_path / "run"
+    candidate, candidate_hash = _write_candidate_bundle(run_dir, config)
+    deployment = tmp_path / "deployment.key"
+    deployment.write_bytes(b"deployment")
+    negative = tmp_path / "negative.jsonl"
+    positive = tmp_path / "positive.jsonl"
+    for path in (negative, positive):
+        path.write_text("", encoding="utf-8")
+    calibration = tmp_path / "calibration.json"
+    calibration.write_text("{}", encoding="utf-8")
+    pipeline = SimpleNamespace(calibrate_jsonl=MagicMock(), detect_jsonl=MagicMock())
+    args = argparse.Namespace(
+        _config_cache=config,
+        run_dir=str(run_dir), run_id=None,
+        negative_input=str(negative), input=str(positive), calibration=str(calibration),
+        positive_details=str(tmp_path / "details.jsonl"),
+        secret_key_file=str(deployment), secret_key_env=None,
+        _gated_detection_pipeline=pipeline,
+    )
+    monkeypatch.setattr(
+        "wfcllm.detection.gated_pipeline.load_gated_calibration_artifact",
+        lambda path: object(),
+    )
+    state = RunStateManager(tmp_path / "state.json")
+
+    assert run_generate(args, state) == 0
+    assert run_calibrate(args, state) == 0
+    assert run_detect(args, state) == 0
+
+    resolved_path, resolved_hash = resolve_gate_bundle(args)
+    assert resolved_path == candidate
+    assert resolved_hash == candidate_hash
+    hashes = {
+        state.get(phase, "gate_bundle_sha256")
+        for phase in ("generate", "calibrate", "detect")
+    }
+    assert hashes == {candidate_hash}
+
+
+def test_candidate_bundle_hash_mismatch_cannot_reach_generate(tmp_path):
+    import argparse
+    from wfcllm.cli.runners import run_generate
+    from wfcllm.method.presets import GATED_SEMANTIC_WINDOW_V1_NAME, load_method_preset
+    from wfcllm.orchestration.state import RunStateManager
+
+    config = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME).to_dict()
+    run_dir = tmp_path / "run"
+    candidate, _candidate_hash = _write_candidate_bundle(run_dir, config)
+    (candidate / "gate_float.pt").write_bytes(b"tampered-weights")
+    deployment = tmp_path / "deployment.key"
+    deployment.write_bytes(b"deployment")
+    args = argparse.Namespace(
+        _config_cache=config,
+        run_dir=str(run_dir), run_id=None,
+        secret_key_file=str(deployment), secret_key_env=None,
+    )
+    state = RunStateManager(tmp_path / "state.json")
+
+    with pytest.raises(ValueError, match="hash mismatch"):
+        run_generate(args, state)
+    assert state.is_done("generate") is False
+
+
 def test_external_bundle_hash_mismatch_is_rejected_before_model_load(tmp_path, monkeypatch):
     import argparse
     from wfcllm.cli.runners import run_generate
@@ -250,8 +359,8 @@ def test_external_bundle_hash_mismatch_is_rejected_before_model_load(tmp_path, m
     from wfcllm.orchestration.state import RunStateManager
 
     bundle = tmp_path / "bundle"
-    bundle.mkdir()
-    (bundle / "formal.bin").write_bytes(b"formal")
+    (bundle / "tokenizer").mkdir(parents=True)
+    (bundle / "gate_float.pt").write_bytes(b"formal")
     config = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME).to_dict()
     config["method"]["gate"]["bundle_path"] = str(bundle)
     config["method"]["gate"]["bundle_sha256"] = "0" * 64
@@ -259,32 +368,23 @@ def test_external_bundle_hash_mismatch_is_rejected_before_model_load(tmp_path, m
     deployment.write_bytes(b"deployment")
     args = argparse.Namespace(_config_cache=config, run_dir=str(tmp_path / "run"), run_id=None, secret_key_file=str(deployment), secret_key_env=None)
     loaded = []
-    monkeypatch.setattr("wfcllm.gate.bundle.GateBundle.load", lambda path: loaded.append(path))
+    monkeypatch.setattr(
+        "wfcllm.gate.production.LocalCandidateRuntimeGateBundle.__init__",
+        lambda self, **kwargs: loaded.append(kwargs) or None,
+    )
 
     with pytest.raises(ValueError, match="hash mismatch"):
         run_generate(args, RunStateManager(tmp_path / "state.json"))
     assert loaded == []
 
 
-def test_gate_validate_input_hash_changes_with_holdout_key(tmp_path):
+def test_removed_gate_validate_phase_has_no_input_hash(tmp_path):
     from wfcllm.cli.runners import compute_phase_input_hash
 
     args, _source = _gate_args(tmp_path, None)
-    run = Path(args.run_dir)
-    data = run / "gate-data"
-    candidate = run / "gate-train" / "candidate_bundle"
-    candidate.mkdir(parents=True)
-    data.mkdir(parents=True)
-    (data / "manifest.json").write_text("data")
-    (candidate / "model.bin").write_bytes(b"candidate")
-    (candidate.parent / "candidate_bundle_manifest.json").write_text("candidate")
 
-    before = compute_phase_input_hash(args, "gate-validate")
-    assert "holdout_key_bank" not in args._gate_runtime_secrets
-    Path(args.holdout_key_bank_file).write_bytes(b"different-holdout-runtime-secret")
-    after = compute_phase_input_hash(args, "gate-validate")
-
-    assert before != after
+    with pytest.raises(ValueError, match="unsupported for phase"):
+        compute_phase_input_hash(args, "gate-validate")
 
 
 def test_real_main_gate_data_reports_missing_production_runtime_path(tmp_path):
@@ -328,7 +428,6 @@ def test_real_main_gate_data_reports_missing_production_runtime_path(tmp_path):
     ("phase", "expected"),
     [
         ("gate-train", "requires the gate-data manifest"),
-        ("gate-validate", "requires the gate-data manifest"),
     ],
 )
 def test_real_main_gate_phase_reports_specific_missing_local_resource(
@@ -358,7 +457,7 @@ def test_real_main_gate_phase_reports_specific_missing_local_resource(
     assert expected in result.stderr
 
 
-@pytest.mark.parametrize("phase", ["gate-data", "gate-train", "gate-validate"])
+@pytest.mark.parametrize("phase", ["gate-data", "gate-train"])
 def test_entry_main_requires_production_runtime_for_each_gate_phase(
     tmp_path, monkeypatch, capsys, phase
 ):
@@ -715,21 +814,22 @@ def test_parser_accepts_adaptive_watermark_and_extract_flags():
     assert args.strict_contract is True
 
 
-def test_unvalidated_gate_candidate_accepts_full_validated_training_config_hash():
+def test_resolver_ignores_removed_gate_validation_keys():
     from copy import deepcopy
     from pathlib import Path
 
     from wfcllm.cli.config_resolver import load_config, resolve_method_config
-    from wfcllm.cli.runners import _unvalidated_candidate_config_hash_matches
-    from wfcllm.gate.production import experiment_contract_hash
 
-    validated_config = resolve_method_config(
-        load_config(Path("configs/wfcllm/experiments/python_humaneval_full.json"))
-    )
-    trained_hash = experiment_contract_hash(validated_config)
+    raw = load_config(Path("configs/wfcllm/experiments/python_humaneval_full.json"))
+    clean_resolved = resolve_method_config(raw)
 
-    runtime_config = deepcopy(validated_config)
-    runtime_config["method"]["gate"]["require_validated"] = False
-    runtime_config.setdefault("experiment", {})["allow_unvalidated_gate_candidate"] = True
+    legacy = deepcopy(raw)
+    legacy["gate_validate"] = {"contract_version": "wfcllm-gate-validation/v1"}
+    legacy["method"].setdefault("gate", {})["require_validated"] = True
+    legacy["experiment"]["allow_unvalidated_gate_candidate"] = True
 
-    assert _unvalidated_candidate_config_hash_matches(trained_hash, runtime_config)
+    legacy_resolved = resolve_method_config(legacy)
+
+    assert legacy_resolved == clean_resolved
+    assert "gate_validate" not in legacy_resolved
+    assert "require_validated" not in legacy_resolved["method"]["gate"]

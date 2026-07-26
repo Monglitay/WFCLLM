@@ -201,11 +201,6 @@ fi
 GATE_TRAIN_ARGS+=("${GATE_TRAIN_OVERRIDES[@]}")
 run_phase gate-train "${GATE_TRAIN_ARGS[@]}"
 
-if [[ "${WFCLLM_PROFILE}" == "full" ]]; then
-  env "${OFFLINE[@]}" CUDA_VISIBLE_DEVICES="" "${RUN_PY[@]}" run.py \
-    --phase gate-validate "${COMMON[@]}" --model-device cpu --gate-device cpu
-fi
-
 run_phase generate --model-device cuda --gate-device cpu --sample-limit "${SAMPLE_LIMIT}"
 
 CALIBRATION="${RUN_DIR}/calibration/reference_calibration.json"

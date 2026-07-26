@@ -4,7 +4,7 @@ import json
 from copy import deepcopy
 from pathlib import Path
 
-from wfcllm.cli.runners import _unvalidated_candidate_config_hash_matches
+from wfcllm.cli.runners import _candidate_config_hash_matches
 from wfcllm.gate.production import experiment_contract_hash
 
 
@@ -27,23 +27,32 @@ def _legacy_generation_hash(config: dict) -> str:
 def test_candidate_accepts_exact_current_contract_hash() -> None:
     config = _current_config()
 
-    assert _unvalidated_candidate_config_hash_matches(
+    assert _candidate_config_hash_matches(
         experiment_contract_hash(config), config
     )
 
 
-def test_candidate_accepts_only_frozen_generation_upgrade_from_legacy_hash() -> None:
+def test_candidate_rejects_legacy_generation_hash() -> None:
+    """The frozen generation-only upgrade shim is retired with gate-validate."""
     config = _current_config()
 
-    assert _unvalidated_candidate_config_hash_matches(
+    assert not _candidate_config_hash_matches(
         _legacy_generation_hash(config), config
     )
 
 
-def test_candidate_rejects_legacy_hash_when_gate_contract_changes() -> None:
+def test_candidate_rejects_hash_when_gate_contract_changes() -> None:
     config = _current_config()
-    legacy_hash = _legacy_generation_hash(config)
+    trained_hash = experiment_contract_hash(config)
     changed = deepcopy(config)
     changed["method"]["gate"]["max_input_tokens"] += 1
 
-    assert not _unvalidated_candidate_config_hash_matches(legacy_hash, changed)
+    assert not _candidate_config_hash_matches(trained_hash, changed)
+
+
+def test_fast_profile_accepts_any_recorded_candidate_hash() -> None:
+    config = _current_config()
+    config["experiment"] = {"profile": "fast"}
+
+    assert _candidate_config_hash_matches("0" * 64, config)
+    assert not _candidate_config_hash_matches(None, config)

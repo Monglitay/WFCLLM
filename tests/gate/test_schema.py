@@ -10,7 +10,7 @@ from typing import get_type_hints
 
 import pytest
 
-from wfcllm.gate.config import GateDataConfig, GateTrainConfig, GateValidateConfig
+from wfcllm.gate.config import GateDataConfig, GateTrainConfig
 from wfcllm.gate.schema import (
     GATE_DATA_SCHEMA_VERSION,
     CandidateObservation,
@@ -586,7 +586,6 @@ def test_candidate_observation_rejects_non_finite_lsh_numbers(value: float) -> N
 def test_gate_configs_use_the_frozen_first_version_contract() -> None:
     data = GateDataConfig()
     train = GateTrainConfig()
-    validate = GateValidateConfig()
 
     assert (
         data.training_key_count,
@@ -596,13 +595,6 @@ def test_gate_configs_use_the_frozen_first_version_contract() -> None:
     ) == (32, 8, 3, (1, 3))
     assert train.max_tokens == 256
     assert train.base_model_path == Path("data/models/codet5-base")
-    assert (
-        validate.decision_agreement_min,
-        validate.float_quantized_accepted_set_agreement_min,
-        validate.formal_accepted_span_consensus_min,
-        validate.suitable_false_positive_rate_max,
-        validate.batch_sizes,
-    ) == (0.999, 0.999, 1.0, 0.05, (1,))
 
 
 @pytest.mark.parametrize(
@@ -615,16 +607,6 @@ def test_gate_configs_use_the_frozen_first_version_contract() -> None:
         (GateDataConfig, "rewrite_budgets", (1, 2)),
         (GateTrainConfig, "max_tokens", 513),
         (GateTrainConfig, "max_tokens", 512.0),
-        (GateValidateConfig, "decision_agreement_min", 0.998),
-        (GateValidateConfig, "decision_agreement_min", Decimal("0.999")),
-        (
-            GateValidateConfig,
-            "float_quantized_accepted_set_agreement_min",
-            0.998,
-        ),
-        (GateValidateConfig, "formal_accepted_span_consensus_min", 0.999),
-        (GateValidateConfig, "suitable_false_positive_rate_max", 0.051),
-        (GateValidateConfig, "batch_sizes", (1, 2, 4)),
     ],
 )
 def test_gate_configs_reject_contract_drift(

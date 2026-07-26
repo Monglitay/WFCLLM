@@ -19,7 +19,6 @@ import re
 import stat
 import sys
 from collections.abc import Mapping
-from copy import deepcopy
 from pathlib import Path
 
 from wfcllm.cli.config_resolver import load_config
@@ -148,7 +147,7 @@ def run_generate(args: argparse.Namespace, state: RunStateManager) -> int:
     config = get_config(args)
     if _is_gated(config):
         _runtime_secret(args, "deployment")
-        _path, bundle_hash = resolve_validated_gate_bundle(args)
+        _path, bundle_hash = resolve_gate_bundle(args)
         pipeline = _optional_gated_generation_pipeline(args)
         output_path = pipeline.run() if pipeline is not None else None
         state.mark_done(
@@ -156,7 +155,6 @@ def run_generate(args: argparse.Namespace, state: RunStateManager) -> int:
             method=_GATED_METHOD,
             gate_bundle_sha256=bundle_hash,
             output_path=(str(output_path) if output_path is not None else None),
-            **_unvalidated_artifact_markers(config),
         )
     else:
         state.mark_done("generate", method=EVIDENCE_RETRY_SEED7X3_NAME)
@@ -191,10 +189,10 @@ def run_calibrate(args: argparse.Namespace, state: RunStateManager) -> int:
     config = get_config(args)
     if _is_gated(config):
         _runtime_secret(args, "deployment")
-        _path, bundle_hash = resolve_validated_gate_bundle(args)
+        _path, bundle_hash = resolve_gate_bundle(args)
         generated_hash = state.get("generate", "gate_bundle_sha256")
         if generated_hash != bundle_hash:
-            raise ValueError("calibrate requires the same validated gate bundle as generate")
+            raise ValueError("calibrate requires the same gate bundle as generate")
         negative_input = getattr(args, "negative_input", None)
         if negative_input is None:
             raise ValueError("gated calibrate requires --negative-input")
@@ -220,7 +218,6 @@ def run_calibrate(args: argparse.Namespace, state: RunStateManager) -> int:
             detector_mode="wfcllm-gated-semantic-window/v1",
             gate_bundle_sha256=bundle_hash,
             calibration_path=(str(calibration_path) if calibration_path else None),
-            **_unvalidated_artifact_markers(config),
         )
     else:
         state.mark_done("calibrate")
@@ -278,11 +275,11 @@ def run_detect(args: argparse.Namespace, state: RunStateManager) -> int:
     config = get_config(args)
     if _is_gated(config):
         _runtime_secret(args, "deployment")
-        _path, bundle_hash = resolve_validated_gate_bundle(args)
+        _path, bundle_hash = resolve_gate_bundle(args)
         if state.get("generate", "gate_bundle_sha256") != bundle_hash:
-            raise ValueError("detect requires the same validated gate bundle as generate")
+            raise ValueError("detect requires the same gate bundle as generate")
         if state.get("calibrate", "gate_bundle_sha256") != bundle_hash:
-            raise ValueError("detect requires the same validated gate bundle as calibrate")
+            raise ValueError("detect requires the same gate bundle as calibrate")
         detector_input = getattr(args, "input", None)
         if detector_input is None:
             raise ValueError("gated detect requires --input")
@@ -312,7 +309,6 @@ def run_detect(args: argparse.Namespace, state: RunStateManager) -> int:
             detector_mode="wfcllm-gated-semantic-window/v1",
             gate_bundle_sha256=bundle_hash,
             details_path=(str(details_path) if details_path else None),
-            **_unvalidated_artifact_markers(config),
         )
     else:
         state.mark_done("detect")
@@ -365,7 +361,6 @@ def run_report(args: argparse.Namespace, state: RunStateManager) -> int:
                 {
                     "method": _GATED_METHOD,
                     "detector_mode": "wfcllm-gated-semantic-window/v1",
-                    **_unvalidated_artifact_markers(config),
                     **report_fields,
                 },
             )
@@ -373,7 +368,6 @@ def run_report(args: argparse.Namespace, state: RunStateManager) -> int:
             "report",
             method=_GATED_METHOD,
             detector_mode="wfcllm-gated-semantic-window/v1",
-            **_unvalidated_artifact_markers(config),
             **report_fields,
         )
     else:
@@ -421,11 +415,6 @@ def run_audit(args: argparse.Namespace, state: RunStateManager) -> int:
         run_dir / "gate-train" / "training_metrics.jsonl",
         run_dir / "gate-train" / "development_summary.json",
         run_dir / "gate-train" / "candidate_bundle_manifest.json",
-        run_dir / "gate-validate" / "validation_summary.json",
-        run_dir / "gate-validate" / "agreement_details.jsonl",
-        run_dir / "gate-validate" / "gate_bundle_manifest.json",
-        run_dir / "gate-validate" / "bundle" / "manifest.json",
-        run_dir / "gate-validate" / "bundle" / "validation_summary.json",
         run_dir / "generation" / "audit.jsonl",
         run_dir / "generation" / "candidate_sidecar.jsonl",
         run_dir / "calibration" / "reference_calibration.json",
@@ -716,56 +705,6 @@ def run_gate_train(args: argparse.Namespace, state: RunStateManager) -> int:
     return 0
 
 
-def run_gate_validate(args: argparse.Namespace, state: RunStateManager) -> int:
-    from wfcllm.gate.pipeline import GateValidatePipelineConfig, run_gate_validate as pipeline
-
-    config = _require_gated_config(args)
-    dependencies = _formal_gate_dependencies(args, "gate-validate")
-    run_dir = _gate_run_dir(args, config)
-    data_dir = run_dir / "gate-data"
-    candidate = run_dir / "gate-train" / "candidate_bundle"
-    _load_formal_json(data_dir / "manifest.json", "gate-data")
-    _load_formal_json(run_dir / "gate-train" / "candidate_bundle_manifest.json", "gate-train")
-    from wfcllm.gate.production import experiment_contract_hash
-
-    resolved_hash = experiment_contract_hash(config)
-    input_hash = compute_phase_input_hash(args, "gate-validate")
-    result = pipeline(
-        GateValidatePipelineConfig(run_dir, candidate, data_dir, resolved_hash),
-        dependencies,
-    )
-    if not result.validated or result.manifest_path is None or result.bundle is None:
-        raise ValueError("gate-validate did not publish a validated formal gate bundle")
-    expected_contract = config["method"]["windowing"]["contract_version"]
-    if result.bundle.manifest.window_contract_version != expected_contract:
-        raise ValueError("validated gate bundle window contract mismatch")
-    expected_output, expected_manifest = _require_expected_gate_result_paths(
-        args, "gate-validate", result.output_dir, result.manifest_path
-    )
-    publication = _load_formal_json(expected_manifest, "gate-validate")
-    if publication.get("config_hash") != resolved_hash:
-        raise ValueError("gate-validate publication config hash mismatch")
-    _require_same_input_hash(args, "gate-validate", input_hash)
-    expected_bundle = expected_output / "bundle"
-    actual_bundle = Path(result.bundle.root) if hasattr(result.bundle, "root") else expected_bundle
-    if _canonical_local_path(actual_bundle) != expected_bundle:
-        raise ValueError("gate-validate result bundle path does not match the current run")
-    bundle_path, bundle_hash = _validate_bundle_publication(expected_bundle, publication)
-    state.mark_done(
-        "gate-validate",
-        config_hash=resolved_hash,
-        input_hash=input_hash,
-        output_manifest_hash=_safe_file_hash(expected_manifest),
-        manifest_path=str(expected_manifest),
-        output_artifact_path=str(expected_output),
-        output_artifact_hash=_stable_tree_hash(expected_output),
-        bundle_path=str(bundle_path),
-        bundle_sha256=bundle_hash,
-    )
-    print("=== WFCLLM gate-validate ===")
-    return 0
-
-
 def compute_phase_input_hash(args: argparse.Namespace, phase: str) -> str:
     """Hash the resolved config plus the immutable inputs consumed by a gate phase."""
 
@@ -810,73 +749,33 @@ def compute_phase_input_hash(args: argparse.Namespace, phase: str) -> str:
                 )
             )
         )
-    elif phase == "gate-validate":
-        parts.append(bytes.fromhex(_safe_tree_hash(run_dir / "gate-data")))
-        parts.append(bytes.fromhex(_safe_tree_hash(run_dir / "gate-train" / "candidate_bundle")))
-        parts.append(bytes.fromhex(_safe_file_hash(run_dir / "gate-train" / "candidate_bundle_manifest.json")))
-        parts.append(
-            hashlib.sha256(
-                _runtime_secret(args, "holdout_key_bank", refresh=True)
-            ).digest()
-        )
     else:
         raise ValueError(f"input hashing is unsupported for phase {phase!r}")
     return hashlib.sha256(b"wfcllm-phase-input/v1\0" + b"".join(parts)).hexdigest()
 
 
-def _unvalidated_candidate_config_hash_matches(
+def _candidate_config_hash_matches(
     expected_hash: object,
     config: Mapping[str, object],
 ) -> bool:
-    """Accept the frozen generation-only upgrade without weakening gate checks."""
+    """Bind the gate-train candidate manifest to the resolved experiment config."""
 
     from wfcllm.gate.production import experiment_contract_hash
 
     if not isinstance(expected_hash, str):
         return False
     if config.get("experiment", {}).get("profile") == "fast":
-        return isinstance(expected_hash, str)
-    if expected_hash == experiment_contract_hash(config):
         return True
-
-    validated_runtime_config = deepcopy(dict(config))
-    method = validated_runtime_config.get("method")
-    gate = method.get("gate") if isinstance(method, Mapping) else None
-    if isinstance(gate, Mapping) and gate.get("require_validated") is False:
-        validated_runtime_config["method"] = deepcopy(dict(method))
-        validated_runtime_config["method"]["gate"] = deepcopy(dict(gate))
-        validated_runtime_config["method"]["gate"]["require_validated"] = True
-        experiment = validated_runtime_config.get("experiment")
-        if isinstance(experiment, Mapping):
-            validated_runtime_config["experiment"] = deepcopy(dict(experiment))
-            validated_runtime_config["experiment"].pop(
-                "allow_unvalidated_gate_candidate", None
-            )
-        if expected_hash == experiment_contract_hash(validated_runtime_config):
-            return True
-
-    generation_value = config.get("generation")
-    if not isinstance(generation_value, Mapping):
-        return False
-    if (
-        generation_value.get("max_new_tokens") != 512
-        or generation_value.get("temperature") != 0.0
-        or generation_value.get("program_finalizer")
-        != "humaneval_target_function_v1"
-    ):
-        return False
-
-    legacy_config = dict(config)
-    legacy_generation = dict(generation_value)
-    legacy_generation["max_new_tokens"] = 256
-    legacy_generation["temperature"] = 0.25
-    legacy_generation.pop("program_finalizer", None)
-    legacy_config["generation"] = legacy_generation
-    return expected_hash == experiment_contract_hash(legacy_config)
+    return expected_hash == experiment_contract_hash(config)
 
 
-def resolve_validated_gate_bundle(args: argparse.Namespace) -> tuple[Path, str]:
-    """Resolve a formal bundle or the explicitly enabled experimental candidate."""
+def resolve_gate_bundle(args: argparse.Namespace) -> tuple[Path, str]:
+    """Resolve the hash-bound gate bundle consumed by generate/calibrate/detect.
+
+    An externally referenced bundle (``method.gate.bundle_path`` plus
+    ``bundle_sha256``) takes precedence; otherwise the gate-train candidate
+    bundle of the current run is resolved through its publication manifest.
+    """
 
     config = _require_gated_config(args)
     gate = config["method"]["gate"]
@@ -884,67 +783,40 @@ def resolve_validated_gate_bundle(args: argparse.Namespace) -> tuple[Path, str]:
     configured_hash = gate.get("bundle_sha256")
     if configured_path is not None:
         if not isinstance(configured_path, str) or not isinstance(configured_hash, str):
-            raise ValueError("external validated gate bundle path/hash are required together")
+            raise ValueError("external gate bundle path/hash are required together")
         path = Path(configured_path)
         actual = _safe_tree_hash(path)
         if actual != configured_hash:
-            raise ValueError("validated gate bundle hash mismatch")
-        from wfcllm.gate.bundle import GateBundle
-
-        GateBundle.load(path)
+            raise ValueError("external gate bundle hash mismatch")
+        _require_candidate_bundle_layout(path)
         if _safe_tree_hash(path) != actual:
-            raise ValueError("validated gate bundle changed while loading")
+            raise ValueError("external gate bundle changed while loading")
         return path, actual
 
-    if gate.get("require_validated") is False:
-        run_dir = _gate_run_dir(args, config)
-        candidate = run_dir / "gate-train" / "candidate_bundle"
-        publication = _load_json_object(
-            run_dir / "gate-train" / "candidate_bundle_manifest.json"
-        )
-        if _uses_fast_experimental_gate_training(config):
-            _require_experimental_manifest(publication, "gate-train")
-        else:
-            _require_formal_manifest(publication, "gate-train")
-        if not _unvalidated_candidate_config_hash_matches(
-            publication.get("config_hash"), config
-        ):
-            raise ValueError("unvalidated gate candidate config hash mismatch")
-        expected = publication.get("candidate_bundle_sha256")
-        actual = _safe_tree_hash(candidate)
-        if expected != actual:
-            raise ValueError("unvalidated gate candidate hash mismatch")
-        return candidate, actual
-
     run_dir = _gate_run_dir(args, config)
-    publication = _load_formal_json(
-        run_dir / "gate-validate" / "gate_bundle_manifest.json", "gate-validate"
+    candidate = run_dir / "gate-train" / "candidate_bundle"
+    publication = _load_json_object(
+        run_dir / "gate-train" / "candidate_bundle_manifest.json"
     )
-    return _validate_bundle_publication(run_dir / "gate-validate" / "bundle", publication)
+    if _uses_fast_experimental_gate_training(config):
+        _require_experimental_manifest(publication, "gate-train")
+    else:
+        _require_formal_manifest(publication, "gate-train")
+    if not _candidate_config_hash_matches(publication.get("config_hash"), config):
+        raise ValueError("gate candidate bundle config hash mismatch")
+    expected = publication.get("candidate_bundle_sha256")
+    actual = _safe_tree_hash(candidate)
+    if expected != actual:
+        raise ValueError("gate candidate bundle hash mismatch")
+    return candidate, actual
 
 
-def _validate_bundle_publication(
-    bundle_path: Path,
-    publication: Mapping[str, object],
-) -> tuple[Path, str]:
-    if (
-        publication.get("validated") is not True
-        or publication.get("diagnostic_test_backend") is not False
-        or publication.get("schema_version") != "wfcllm-gate-validate-publication/v1"
-    ):
-        raise ValueError("validated gate bundle publication is not formal")
-    expected = publication.get("bundle_sha256")
-    if not isinstance(expected, str) or _DIGEST.fullmatch(expected) is None:
-        raise ValueError("validated gate bundle publication hash is invalid")
-    actual = _safe_tree_hash(bundle_path)
-    if actual != expected:
-        raise ValueError("validated gate bundle hash mismatch")
-    from wfcllm.gate.bundle import GateBundle
+def _require_candidate_bundle_layout(path: Path) -> None:
+    """Require the minimal gate bundle layout before any model load."""
 
-    GateBundle.load(bundle_path)
-    if _safe_tree_hash(bundle_path) != actual:
-        raise ValueError("validated gate bundle changed while loading")
-    return bundle_path, actual
+    _reject_symlink_path(path)
+    if not (path / "gate_float.pt").is_file() or not (path / "tokenizer").is_dir():
+        raise ValueError("gate bundle must contain gate_float.pt and tokenizer/")
 
 
 def _require_gated_config(args: argparse.Namespace) -> dict:
@@ -962,35 +834,14 @@ def _is_gated(config: object) -> bool:
     )
 
 
-def _uses_unvalidated_gate_candidate(config: Mapping[str, object]) -> bool:
-    method = config.get("method")
-    gate = method.get("gate") if isinstance(method, Mapping) else None
-    return (
-        isinstance(gate, Mapping)
-        and gate.get("require_validated") is False
-        and gate.get("bundle_path") is None
-    )
-
-
 def _uses_fast_experimental_gate_training(config: Mapping[str, object]) -> bool:
     method = config.get("method")
     gate = method.get("gate") if isinstance(method, Mapping) else None
     return (
-        _uses_unvalidated_gate_candidate(config)
-        and isinstance(gate, Mapping)
+        isinstance(gate, Mapping)
+        and gate.get("bundle_path") is None
         and gate.get("fast_experimental") is True
     )
-
-
-def _unvalidated_artifact_markers(
-    config: Mapping[str, object],
-) -> dict[str, bool]:
-    if not _uses_unvalidated_gate_candidate(config):
-        return {}
-    return {
-        "gate_validation_skipped": True,
-        "unvalidated_gate_candidate": True,
-    }
 
 
 def _require_gated_detection_pipeline(args: argparse.Namespace):
@@ -1092,9 +943,8 @@ def _load_gated_generation_samples(
 def _build_local_gated_generation_pipeline(args: argparse.Namespace):
     from wfcllm.detection.gated_windows import GatedWindowExtractor
     from wfcllm.gate.production import (
+        LocalCandidateRuntimeGateBundle,
         LocalHFProgramGenerator,
-        LocalRuntimeGateBundle,
-        LocalUnvalidatedRuntimeGateBundle,
         build_local_semantic_window_scorer,
         load_local_causal_rewriter,
         local_semantic_runtime_hash,
@@ -1113,24 +963,14 @@ def _build_local_gated_generation_pipeline(args: argparse.Namespace):
 
     config = _require_gated_config(args)
     options = _local_hf_runtime_options(args, config, "generate")
-    bundle_path, bundle_hash = resolve_validated_gate_bundle(args)
+    bundle_path, bundle_hash = resolve_gate_bundle(args)
     deployment_key = _runtime_secret(args, "deployment")
-    unvalidated = _uses_unvalidated_gate_candidate(config)
-    runtime_type = (
-        LocalUnvalidatedRuntimeGateBundle if unvalidated else LocalRuntimeGateBundle
-    )
-    runtime_bundle = runtime_type(
+    runtime_bundle = LocalCandidateRuntimeGateBundle(
         root=bundle_path,
         base_model_path=options.gate_base_model_path,
         bundle_sha256=bundle_hash,
-        **(
-            {
-                "max_tokens": int(config["method"]["gate"]["max_input_tokens"]),
-                "window_contract_version": options.window_contract_version,
-            }
-            if unvalidated
-            else {}
-        ),
+        max_tokens=int(config["method"]["gate"]["max_input_tokens"]),
+        window_contract_version=options.window_contract_version,
     )
     generation = config.get("generation")
     if not isinstance(generation, Mapping):
@@ -1160,7 +1000,6 @@ def _build_local_gated_generation_pipeline(args: argparse.Namespace):
     max_units_value = windowing.get("max_units")
     extractor = GatedWindowExtractor(
         runtime_bundle,
-        allow_unvalidated=unvalidated,
         defer_unreliable_until_max_units=windowing.get(
             "defer_unreliable_until_max_units",
             False,
@@ -1242,7 +1081,6 @@ def _build_local_gated_generation_pipeline(args: argparse.Namespace):
                 "file" if getattr(args, "secret_key_file", None) else "environment"
             ),
             embedding_passes=int(generation.get("embedding_passes", 1)),
-            unvalidated_gate_candidate=unvalidated,
         ),
         base_model=program,
         generator=generator,
@@ -1250,7 +1088,7 @@ def _build_local_gated_generation_pipeline(args: argparse.Namespace):
         deployment_key=deployment_key,
         program_finalizer=program_finalizer,
         program_finalizer_name=program_finalizer_name,
-        bundle_loader=(lambda _path: runtime_bundle) if unvalidated else None,
+        bundle_loader=lambda _path: runtime_bundle,
     )
 
 
@@ -1262,32 +1100,21 @@ def _build_local_gated_detection_pipeline(args: argparse.Namespace):
     from wfcllm.detection.gated_windows import GatedWindowExtractor
     from wfcllm.detection.scoring import GatedWindowScorer
     from wfcllm.gate.production import (
-        LocalRuntimeGateBundle,
-        LocalUnvalidatedRuntimeGateBundle,
+        LocalCandidateRuntimeGateBundle,
         build_local_semantic_window_scorer,
         local_semantic_runtime_hash,
     )
 
     config = _require_gated_config(args)
     options = _local_hf_runtime_options(args, config, "detect")
-    bundle_path, bundle_hash = resolve_validated_gate_bundle(args)
+    bundle_path, bundle_hash = resolve_gate_bundle(args)
     deployment_key = _runtime_secret(args, "deployment")
-    unvalidated = _uses_unvalidated_gate_candidate(config)
-    runtime_type = (
-        LocalUnvalidatedRuntimeGateBundle if unvalidated else LocalRuntimeGateBundle
-    )
-    runtime_bundle = runtime_type(
+    runtime_bundle = LocalCandidateRuntimeGateBundle(
         root=bundle_path,
         base_model_path=options.gate_base_model_path,
         bundle_sha256=bundle_hash,
-        **(
-            {
-                "max_tokens": int(config["method"]["gate"]["max_input_tokens"]),
-                "window_contract_version": options.window_contract_version,
-            }
-            if unvalidated
-            else {}
-        ),
+        max_tokens=int(config["method"]["gate"]["max_input_tokens"]),
+        window_contract_version=options.window_contract_version,
     )
     negative_hash = getattr(args, "_gated_negative_corpus_hash", None)
     if not isinstance(negative_hash, str) or _DIGEST.fullmatch(negative_hash) is None:
@@ -1310,7 +1137,6 @@ def _build_local_gated_detection_pipeline(args: argparse.Namespace):
     return GatedDetectionPipeline(
         extractor=GatedWindowExtractor(
             runtime_bundle,
-            allow_unvalidated=unvalidated,
             defer_unreliable_until_max_units=windowing.get(
                 "defer_unreliable_until_max_units",
                 False,
@@ -1389,7 +1215,6 @@ def _gate_run_dir(args: argparse.Namespace, config: Mapping[str, object]) -> Pat
 _GATE_MANIFEST_NAMES = {
     "gate-data": "manifest.json",
     "gate-train": "candidate_bundle_manifest.json",
-    "gate-validate": "gate_bundle_manifest.json",
 }
 
 
@@ -1471,15 +1296,6 @@ def _local_hf_runtime_options(
         if isinstance(semantic_lsh, Mapping)
         else "semantic_lsh"
     )
-    if (
-        isinstance(gate, Mapping)
-        and gate.get("require_validated") is True
-        and semantic_rule != "semantic_lsh"
-    ):
-        raise ValueError(
-            "formal runtime requires semantic_lsh; keyed text regions are "
-            "forbidden implicit carriers"
-        )
     top_level_gamma = (
         semantic_lsh.get("lsh_gamma", 0.25)
         if isinstance(semantic_lsh, Mapping)
@@ -1939,7 +1755,6 @@ def run_phase(phase: str, args: argparse.Namespace, state: RunStateManager) -> i
         "generate": run_generate,
         "gate-data": run_gate_data,
         "gate-train": run_gate_train,
-        "gate-validate": run_gate_validate,
         "calibrate": run_calibrate,
         "detect": run_detect,
         "report": run_report,

@@ -52,21 +52,6 @@ def validate_experiment_config(
     if rewrite.get("strategy") == "keyed_text_region":
         raise ValueError("carrier rewrite strategy is forbidden")
 
-    require_validated = _mapping(method, "gate", prefix="method").get(
-        "require_validated"
-    )
-    expected_validated = profile == "full"
-    explicit_unvalidated_diagnostic = (
-        profile == "full"
-        and require_validated is False
-        and experiment.get("allow_unvalidated_gate_candidate") is True
-    )
-    if require_validated is not expected_validated and not explicit_unvalidated_diagnostic:
-        raise ValueError(
-            "method.gate.require_validated must be "
-            f"{expected_validated!r} for profile={profile!r}"
-        )
-
 
 def load_and_validate_experiment_config(
     path: Path,

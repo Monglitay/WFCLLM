@@ -10,7 +10,6 @@ from wfcllm.gate.pipeline import (
     SplitGroup,
     run_gate_data,
     run_gate_train,
-    run_gate_validate,
 )
 
 __all__ = [
@@ -25,5 +24,4 @@ __all__ = [
     "serialize_gate_input",
     "run_gate_data",
     "run_gate_train",
-    "run_gate_validate",
 ]

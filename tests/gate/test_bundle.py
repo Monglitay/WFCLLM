@@ -16,7 +16,7 @@ from wfcllm.gate.bundle import (
     TokenizerSnapshot,
     quantize_gate_model_dynamic,
 )
-from wfcllm.gate.validation import GateValidationThresholds
+from wfcllm.gate.bundle import GateValidationThresholds
 
 
 class TinyGate(nn.Module):
@@ -719,13 +719,6 @@ def test_predictor_deserializes_each_artifact_once_and_keeps_only_runtime_seals(
     assert not hasattr(predictor._quantized, "expected_state")
     assert not hasattr(predictor._float, "expected_state")
 
-    import wfcllm.gate.validation as validation_module
-
-    monkeypatch.setattr(
-        validation_module,
-        "_states_equal",
-        lambda *_: (_ for _ in ()).throw(AssertionError("full scan forbidden")),
-    )
     assert predictor.predict("formal input").stable is True
     second = bundle.stable_predictor(_controlled_loader)
     assert load_count == 2

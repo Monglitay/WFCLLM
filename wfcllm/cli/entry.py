@@ -25,7 +25,6 @@ from wfcllm.cli.runners import (
     run_generate,
     run_gate_data,
     run_gate_train,
-    run_gate_validate,
     run_legacy_ablation,
     run_legacy_build_entropy_profile,
     run_legacy_extract,
@@ -65,7 +64,6 @@ def _cmd_reset(state: RunStateManager) -> None:
 def _populate_phase_registry(reg: PhaseRegistry) -> None:
     reg.register("gate-data", run_gate_data)
     reg.register("gate-train", run_gate_train)
-    reg.register("gate-validate", run_gate_validate)
     reg.register("generate", run_generate)
     reg.register("calibrate", run_calibrate)
     reg.register("detect", run_detect)

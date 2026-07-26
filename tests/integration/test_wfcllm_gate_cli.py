@@ -31,7 +31,8 @@ def _provenance(payload: dict, resolved: dict) -> dict:
 def test_help_lists_all_low_level_subcommands() -> None:
     result = _run("--help")
     assert result.returncode == 0
-    assert all(name in result.stdout for name in ("data", "train", "validate"))
+    assert all(name in result.stdout for name in ("data", "train"))
+    assert "validate" not in result.stdout
 
 
 def test_fake_data_runs_offline_and_marks_diagnostic(tmp_path: Path) -> None:
@@ -93,23 +94,15 @@ def test_cli_rejects_config_through_ancestor_symlink(tmp_path: Path) -> None:
     assert "symlink" in result.stderr.lower()
 
 
-def test_fake_validate_cannot_publish_formal_manifest(tmp_path: Path) -> None:
-    candidate = tmp_path / "candidate"
-    data = tmp_path / "data"
-    candidate.mkdir()
-    data.mkdir()
-    (data / "manifest.json").write_text("{}\n", encoding="utf-8")
+def test_removed_validate_subcommand_is_rejected(tmp_path: Path) -> None:
     config = tmp_path / "validate.json"
-    out = tmp_path / "out"
-    config.write_text(json.dumps(_provenance({"output_root": str(out), "candidate_bundle": str(candidate), "data_dir": str(data)}, {"method": "diagnostic-validate"})), encoding="utf-8")
+    config.write_text("{}", encoding="utf-8")
     result = _run("validate", "--backend", "fake", "--config", str(config))
-    assert result.returncode == 0, result.stderr
-    summary = json.loads((out / "gate-validate" / "failed_validation_summary.json").read_text())
-    assert summary["diagnostic_test_backend"] is True
-    assert not (out / "gate-validate" / "gate_bundle_manifest.json").exists()
+    assert result.returncode != 0
+    assert "invalid choice" in result.stderr
 
 
-def test_fake_backend_completes_data_train_validate_offline_without_formal_publication(tmp_path: Path) -> None:
+def test_fake_backend_completes_data_train_offline_without_formal_publication(tmp_path: Path) -> None:
     training_keys = tmp_path / "training.json"
     holdout_keys = tmp_path / "holdout.json"
     training_keys.write_text("[]", encoding="utf-8")
@@ -141,9 +134,4 @@ def test_fake_backend_completes_data_train_validate_offline_without_formal_publi
     assert train_manifest["diagnostic_test_backend"] is True
     assert train_manifest["formal_eligible"] is False
     assert (full_root / "gate-train" / "development_summary.json").exists()
-
-    validate_config = tmp_path / "validate-e2e.json"
-    validate_config.write_text(json.dumps({"output_root": str(full_root), "candidate_bundle": str(full_root / "gate-train" / "candidate_bundle"), "data_dir": str(full_root / "gate-data"), "resolved_config": resolved, "config_hash": config_hash}), encoding="utf-8")
-    validated = _run("validate", "--backend", "fake", "--config", str(validate_config))
-    assert validated.returncode == 0, validated.stderr
-    assert not (full_root / "gate-validate" / "gate_bundle_manifest.json").exists()
+    assert not (full_root / "gate-validate").exists()

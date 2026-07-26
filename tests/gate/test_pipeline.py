@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-import shutil
 import types
 import weakref
 from collections import OrderedDict
@@ -16,7 +15,6 @@ from torch import nn
 
 import wfcllm.gate.pipeline as gate_pipeline
 from wfcllm.gate.feasibility import FEASIBILITY_THRESHOLD_ITEMS, FeasibilityGroup, evaluate_gate_data_feasibility
-from wfcllm.gate.bundle import GateBundle, quantize_gate_model_dynamic, sha256_file
 from wfcllm.gate.data import LshProbeResult
 from wfcllm.gate.dependencies import (
     PRODUCTION_GATE_ADAPTER_CAPABILITIES,
@@ -25,12 +23,6 @@ from wfcllm.gate.dependencies import (
 )
 from wfcllm.gate.schema import CandidateObservation
 from wfcllm.gate.labels import build_gate_labels
-from wfcllm.gate.validation import (
-    GateConfusionMatrix,
-    GateProcessAttestation,
-    GateValidationSummary,
-    GateValidationThresholds,
-)
 from wfcllm.gate.pipeline import (
     GateDataPipelineConfig,
     CandidateTrajectoryGroup,
@@ -41,12 +33,9 @@ from wfcllm.gate.pipeline import (
     SplitGroup,
     GatePipelineGroup,
     GateTrainPipelineConfig,
-    GateValidatePipelineConfig,
     KeyBankSnapshot,
-    ValidationOutcome,
     run_gate_data,
     run_gate_train,
-    run_gate_validate,
     _validate_formal_candidate_tree,
 )
 
@@ -63,10 +52,6 @@ class TinyPipelineGate(nn.Module):
     def forward(self, *, input_features: torch.Tensor) -> object:
         logits = self.projection(input_features)
         return types.SimpleNamespace(close_logits=logits[:, 0], suitable_logits=logits[:, 1])
-
-
-def _group_digest(values: tuple[str, ...]) -> str:
-    return hashlib.sha256(json.dumps(sorted(values), separators=(",", ":")).encode()).hexdigest()
 
 
 def _group(index: int, *, scale: str = "pilot") -> GatePipelineGroup:
@@ -153,7 +138,6 @@ class FakeDependencies:
         self.groups = groups
         self.calls: list[str] = []
         self.train_called = False
-        self.validate_called = False
         self.generated_count = 0
 
     def load_source_manifest(self, config):
@@ -211,71 +195,6 @@ class FakeDependencies:
         (tokenizer / "tokenizer.json").write_text('{"version":1}\n', encoding="utf-8")
         return {"backend": "fake", "candidate_sha256": _sha("candidate")}
 
-    def validate_candidate(self, *, config, candidate_bundle, data_manifest, threshold_fit_group_ids, agreement_group_ids, output_dir):
-        self.validate_called = True
-        inputs = output_dir / "_inputs"
-        inputs.mkdir()
-        model = TinyPipelineGate().eval()
-        state = torch.load(candidate_bundle / "gate_float.pt", weights_only=True, map_location="cpu")
-        model.load_state_dict(state, strict=True)
-        quantized = quantize_gate_model_dynamic(model)
-        float_path = candidate_bundle / "gate_float.pt"
-        int8_path = inputs / "int8.pt"
-        torch.save(quantized.state_dict(), int8_path)
-        tokenizer = candidate_bundle / "tokenizer"
-        fit_digest = _group_digest(threshold_fit_group_ids)
-        agreement_digest = _group_digest(agreement_group_ids)
-        thresholds = GateValidationThresholds(0.4, 0.6, 0.8, 0.02, 512, fit_digest)
-        modes = tuple(
-            f"cpu-{precision}-batch-{batch}-{order}"
-            for precision in ("float", "int8")
-            for batch in (1,)
-            for order in ("original",)
-        )
-        attestations = tuple(
-            GateProcessAttestation(
-                mode_name=mode,
-                pids=(1000 + index * 2, 1001 + index * 2),
-                device="cpu",
-                precision=mode.split("-", 2)[1],
-                artifact_name="gate_float.pt" if "-float-" in mode else "gate_int8.pt",
-                artifact_sha256=sha256_file(float_path) if "-float-" in mode else sha256_file(int8_path),
-            )
-            for index, mode in enumerate(modes)
-        )
-        summary = GateValidationSummary(
-            contract_version="wfcllm-gate-validation/v1",
-            validated=True,
-            decision_agreement=1.0,
-            float_quantized_accepted_set_agreement=1.0,
-            formal_accepted_span_consensus=1.0,
-            suitable_false_positive_rate=0.0,
-            gpu_status="not_available",
-            validation_scope="cpu",
-            mode_names=modes,
-            threshold_fit_group_digest=fit_digest,
-            agreement_group_digest=agreement_digest,
-            thresholds=thresholds,
-            forced_uncertain_count=0,
-            formal_accepted_spans=((agreement_group_ids[0], "example-1", 0, 2),),
-            formal_confusion=GateConfusionMatrix(tp=1, tn=1, fp=0, fn=0),
-            process_attestations=attestations,
-        )
-        bundle = GateBundle.create(
-            root=output_dir / "bundle",
-            validated_float_artifact=float_path,
-            validated_int8_artifact=int8_path,
-            tokenizer_source=tokenizer,
-            validation_summary=summary.to_dict(),
-            model_architecture="tiny-dual-head",
-            base_model_id="data/models/tiny-local",
-            thresholds=thresholds,
-            training_data_manifest_sha256=sha256_file(config.data_dir / "manifest.json"),
-            training_key_bank_id=data_manifest["training_key_bank_id"],
-            holdout_key_bank_id=data_manifest["holdout_key_bank_id"],
-        )
-        shutil.rmtree(inputs)
-        return ValidationOutcome(validated=True, summary=summary, bundle=bundle)
 
 
 class ControlledProductionPipelineAdapter:
@@ -324,9 +243,6 @@ class ControlledProductionPipelineAdapter:
 
     def train_candidate(self, **kwargs):
         return self.backend.train_candidate(**kwargs)
-
-    def validate_candidate(self, **kwargs):
-        return self.backend.validate_candidate(**kwargs)
 
 
 def _data_config(tmp_path: Path, *, scale: str = "pilot", pilot: Path | None = None) -> GateDataPipelineConfig:
@@ -1071,73 +987,6 @@ def test_gate_train_enforces_independent_group_minima_before_trainer(tmp_path: P
             GateTrainPipelineConfig(tmp_path / "mutating-snapshot-trainer", full.output_dir, _sha("config"), pilot.feasibility_path),
             mutating_snapshot_trainer,
         )
-    for index, artifact_name in enumerate(full.manifest["artifacts"]):
-        artifact = full.output_dir / artifact_name
-        original = artifact.read_bytes()
-        for mutation in ("delete", "tamper"):
-            if mutation == "delete":
-                artifact.unlink()
-            else:
-                artifact.write_bytes(original + b"tamper")
-            blocked = FakeDependencies(())
-            with pytest.raises(ValueError, match="artifact|hash|missing|group index"):
-                run_gate_validate(
-                    GateValidatePipelineConfig(
-                        tmp_path / f"blocked-validation-{index}-{mutation}",
-                        result.candidate_bundle_path,
-                        full.output_dir,
-                        _sha("config"),
-                    ),
-                    blocked,
-                )
-            assert blocked.validate_called is False
-            artifact.write_bytes(original)
-    original_candidate_model = (result.candidate_bundle_path / "gate_float.pt").read_bytes()
-    mutating_original_validator = FakeDependencies(())
-    mutating_original_validator.validate_candidate = lambda **kwargs: (
-        (result.candidate_bundle_path / "gate_float.pt").write_bytes(original_candidate_model + b"tamper"),
-        ValidationOutcome(False, {"validated": False}, None),
-    )[-1]
-    with pytest.raises(ValueError, match="mutated formal"):
-        run_gate_validate(
-            GateValidatePipelineConfig(tmp_path / "mutating-original-validator", result.candidate_bundle_path, full.output_dir, _sha("config")),
-            mutating_original_validator,
-        )
-    (result.candidate_bundle_path / "gate_float.pt").write_bytes(original_candidate_model)
-    mutating_snapshot_validator = FakeDependencies(())
-    def mutate_snapshot_candidate(**kwargs):
-        (kwargs["candidate_bundle"] / "extra-secret.txt").write_text("forbidden", encoding="utf-8")
-        return ValidationOutcome(False, {"validated": False}, None)
-    mutating_snapshot_validator.validate_candidate = mutate_snapshot_candidate
-    with pytest.raises(ValueError, match="allowlist|mutated formal"):
-        run_gate_validate(
-            GateValidatePipelineConfig(tmp_path / "mutating-snapshot-validator", result.candidate_bundle_path, full.output_dir, _sha("config")),
-            mutating_snapshot_validator,
-        )
-    assert not (tmp_path / "mutating-original-validator" / "gate-validate" / "gate_bundle_manifest.json").exists()
-    assert not (tmp_path / "mutating-snapshot-validator" / "gate-validate" / "gate_bundle_manifest.json").exists()
-    marker_deps = FakeDependencies(())
-    marker_deps.validate_candidate = lambda **kwargs: (
-        (kwargs["output_dir"] / "bundle").mkdir(),
-        (kwargs["output_dir"] / "bundle" / "marker").write_text("not-a-bundle", encoding="utf-8"),
-        ValidationOutcome(True, {"validated": True}, object()),
-    )[-1]
-    with pytest.raises(ValueError, match="GateValidationSummary"):
-        run_gate_validate(
-            GateValidatePipelineConfig(tmp_path / "bad-validation", result.candidate_bundle_path, full.output_dir, _sha("config")),
-            marker_deps,
-        )
-    validation = run_gate_validate(
-        GateValidatePipelineConfig(full_dir, result.candidate_bundle_path, full.output_dir, _sha("config")),
-        train_deps,
-    )
-    assert validation.validated is True
-    assert validation.bundle is not None
-    assert validation.manifest_path is not None and validation.manifest_path.exists()
-    assert {path.name for path in validation.output_dir.iterdir()} == {
-        "bundle",
-        "gate_bundle_manifest.json",
-    }
 
 
 def test_gate_train_rejects_tampered_grouped_data_before_trainer(tmp_path: Path) -> None:
@@ -1156,25 +1005,3 @@ def test_gate_train_rejects_tampered_grouped_data_before_trainer(tmp_path: Path)
             deps,
         )
     assert deps.train_called is False
-
-
-def test_gate_validate_failure_never_overwrites_old_valid_bundle(tmp_path: Path) -> None:
-    validate_root = tmp_path / "validation"
-    old_bundle = validate_root / "gate-validate" / "bundle"
-    old_bundle.mkdir(parents=True)
-    (old_bundle / "old").write_text("preserve", encoding="utf-8")
-    candidate = tmp_path / "candidate"
-    candidate.mkdir()
-    data = tmp_path / "data"
-    data.mkdir()
-    (data / "manifest.json").write_text("{}\n", encoding="utf-8")
-    deps = FakeDependencies(())
-    deps.diagnostic_test_backend = True
-    deps.validate_candidate = lambda **kwargs: ValidationOutcome(False, {"validated": False}, None)
-    result = run_gate_validate(
-        GateValidatePipelineConfig(validate_root, candidate, data, _sha("config")), deps
-    )
-    assert result.validated is False
-    assert result.failed_summary_path is not None
-    assert (old_bundle / "old").read_text(encoding="utf-8") == "preserve"
-    assert not (validate_root / "gate-validate" / "gate_bundle_manifest.json").exists()

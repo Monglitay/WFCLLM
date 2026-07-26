@@ -17,8 +17,9 @@ def _gated_runner_args(tmp_path):
     from wfcllm.method.presets import GATED_SEMANTIC_WINDOW_V1_NAME, load_method_preset
 
     bundle = tmp_path / "bundle"
-    bundle.mkdir()
-    (bundle / "formal.bin").write_bytes(b"formal")
+    (bundle / "tokenizer").mkdir(parents=True)
+    (bundle / "gate_float.pt").write_bytes(b"formal")
+    (bundle / "tokenizer" / "tokenizer.json").write_text("{}", encoding="utf-8")
     config = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME).to_dict()
     config["method"]["gate"]["bundle_path"] = str(bundle)
     config["method"]["gate"]["bundle_sha256"] = _safe_tree_hash(bundle)
@@ -52,7 +53,6 @@ def test_unified_gated_runners_dispatch_to_gated_pipeline(tmp_path, monkeypatch)
     from wfcllm.orchestration.state import RunStateManager
 
     args, pipeline, config = _gated_runner_args(tmp_path)
-    monkeypatch.setattr("wfcllm.gate.bundle.GateBundle.load", lambda path: object())
     state = RunStateManager(tmp_path / "state.json")
     state.mark_done("generate", gate_bundle_sha256=config["method"]["gate"]["bundle_sha256"])
 
@@ -74,7 +74,6 @@ def test_unified_gated_calibrate_requires_negative_input(tmp_path, monkeypatch) 
 
     args, pipeline, config = _gated_runner_args(tmp_path)
     args.negative_input = None
-    monkeypatch.setattr("wfcllm.gate.bundle.GateBundle.load", lambda path: object())
     state = RunStateManager(tmp_path / "state.json")
     state.mark_done("generate", gate_bundle_sha256=config["method"]["gate"]["bundle_sha256"])
 
@@ -89,7 +88,6 @@ def test_unified_gated_detect_requires_input(tmp_path, monkeypatch) -> None:
     from wfcllm.orchestration.state import RunStateManager
 
     args, pipeline, config = _gated_runner_args(tmp_path)
-    monkeypatch.setattr("wfcllm.gate.bundle.GateBundle.load", lambda path: object())
     monkeypatch.setattr(
         "wfcllm.detection.gated_pipeline.load_gated_calibration_artifact",
         lambda path: object(),

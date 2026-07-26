@@ -18,7 +18,10 @@ except ImportError:  # pragma: no cover - exercised only on platforms without fl
 
 # Phase name source-of-truth for the new WFCLLM mainline.
 PHASES = ["generate", "calibrate", "detect", "report", "audit"]
-GATE_PHASES = ["gate-data", "gate-train", "gate-validate"]
+GATE_PHASES = ["gate-data", "gate-train"]
+# Historical phases dropped from the mainline; old state files may still
+# contain their rows, which are ignored on load instead of rejected.
+_REMOVED_PHASES = frozenset({"gate-validate"})
 OPTIONAL_PHASES = ["encoder", "posthoc-pass-report", "diagnostic-selector"]
 LEGACY_PHASES = [
     "legacy-watermark",
@@ -151,6 +154,8 @@ class RunStateManager:
             raise ValueError("run state root must be an object")
         result: dict[str, dict[str, Any]] = {}
         for phase, row in value.items():
+            if isinstance(phase, str) and phase in _REMOVED_PHASES:
+                continue
             if not isinstance(phase, str) or phase not in ALL_PHASES:
                 raise ValueError("run state contains an unknown phase")
             if not isinstance(row, dict):

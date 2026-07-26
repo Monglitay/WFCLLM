@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Thin offline CLI for the three low-level semantic-gate pipelines."""
+"""Thin offline CLI for the low-level semantic-gate data/train pipelines."""
 
 from __future__ import annotations
 
@@ -22,12 +22,9 @@ from wfcllm.gate.pipeline import (  # noqa: E402
     GateDataPipelineConfig,
     GatePipelineGroup,
     GateTrainPipelineConfig,
-    GateValidatePipelineConfig,
     KeyBankSnapshot,
-    ValidationOutcome,
     run_gate_data,
     run_gate_train,
-    run_gate_validate,
 )
 from wfcllm.gate.feasibility import FEASIBILITY_THRESHOLD_ITEMS  # noqa: E402
 from wfcllm.gate.data import LshProbeResult  # noqa: E402
@@ -41,7 +38,7 @@ _MAX_CONFIG_BYTES = 1024 * 1024
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Offline semantic-gate artifact pipelines")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for name in ("data", "train", "validate"):
+    for name in ("data", "train"):
         child = subparsers.add_parser(name)
         child.add_argument("--config", type=Path, required=True)
         child.add_argument("--backend", choices=("real", "fake"), default="real")
@@ -80,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             result = run_gate_data(config, dependencies)
             output = {"manifest_path": str(result.manifest_path), "group_count": result.group_count, "diagnostic_test_backend": args.backend == "fake"}
-        elif args.command == "train":
+        else:
             config = GateTrainPipelineConfig(
                 output_root=_required_path(raw, "output_root"),
                 data_dir=_required_path(raw, "data_dir"),
@@ -89,15 +86,6 @@ def main(argv: list[str] | None = None) -> int:
             )
             result = run_gate_train(config, dependencies)
             output = {"candidate_bundle": str(result.candidate_bundle_path), "diagnostic_test_backend": args.backend == "fake"}
-        else:
-            config = GateValidatePipelineConfig(
-                output_root=_required_path(raw, "output_root"),
-                candidate_bundle=_required_path(raw, "candidate_bundle"),
-                data_dir=_required_path(raw, "data_dir"),
-                config_hash=_digest_value(raw, "config_hash"),
-            )
-            result = run_gate_validate(config, dependencies)
-            output = {"validated": result.validated, "diagnostic_test_backend": args.backend == "fake"}
         print(json.dumps(output, allow_nan=False, sort_keys=True, separators=(",", ":")))
         return 0
     except (OSError, UnicodeError, ValueError, RuntimeError) as exc:
@@ -180,9 +168,6 @@ class _FakeDependencies:
         marker = {"diagnostic_test_backend": True, "formal_eligible": False, "data_manifest_sha256": _sha_path(config.data_dir / "manifest.json")}
         (output_dir / "diagnostic_candidate.json").write_text(json.dumps(marker, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
         return marker
-
-    def validate_candidate(self, *, config, candidate_bundle, data_manifest, threshold_fit_group_ids, agreement_group_ids, output_dir):
-        return ValidationOutcome(False, {"validated": False, "reason": "diagnostic fake backends cannot publish formal bundles"}, None)
 
 
 @lru_cache(maxsize=2)

@@ -189,7 +189,7 @@ def test_experimental_generation_is_marked_non_formal(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("change", "message"),
     [
-        ({"validated": False}, "validated"),
+        ({"experimental": True}, "diagnostic acceptance"),
         ({"parser": "wrong"}, "parser"),
         ({"gate": "wrong"}, "gate input"),
         ({"tokenizer": "0" * 64}, "tokenizer"),
@@ -199,8 +199,8 @@ def test_pipeline_rejects_invalid_or_mismatched_bundle(
     tmp_path: Path, change: dict[str, object], message: str
 ) -> None:
     bundle = _bundle()
-    if "validated" in change:
-        bundle.validation_summary["validated"] = change["validated"]
+    if "experimental" in change:
+        bundle.experimental_only = True
     if "parser" in change:
         bundle.manifest.window_contract_version = change["parser"]
     if "gate" in change:

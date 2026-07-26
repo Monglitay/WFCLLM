@@ -4,9 +4,6 @@
     "windowing": {
       "contract_version": "python-statement-window/v1"
     },
-    "gate": {
-      "require_validated": true
-    },
     "rewrite": {
       "strategy": "python_ast_equivalent",
       "ast_variant_budget": 48,

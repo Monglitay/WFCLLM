@@ -44,6 +44,107 @@ _SENSITIVE_TOKENS = frozenset(
 
 
 @dataclass(frozen=True)
+class GateValidationThresholds:
+    """Frozen decision thresholds bound into a published gate bundle.
+
+    Migrated from the retired wfcllm.gate.validation module; the bundle
+    contract keeps consuming fitted thresholds recorded in historical
+    validation summaries.
+    """
+
+    close_low: float
+    close_high: float
+    suitable_accept: float
+    max_probability_delta: float
+    max_tokens: int
+    threshold_fit_group_digest: str
+
+    def validate(self) -> None:
+        for name in (
+            "close_low",
+            "close_high",
+            "suitable_accept",
+            "max_probability_delta",
+        ):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or not 0.0 <= value <= 1.0
+            ):
+                raise ValueError(f"{name} must be a probability in [0, 1]")
+        if self.close_low >= self.close_high:
+            raise ValueError("close thresholds must leave a non-empty uncertain region")
+        if type(self.max_tokens) is not int or not 1 <= self.max_tokens <= 512:
+            raise ValueError("max_tokens must be an integer from 1 through 512")
+        if (
+            not isinstance(self.threshold_fit_group_digest, str)
+            or len(self.threshold_fit_group_digest) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in self.threshold_fit_group_digest
+            )
+        ):
+            raise ValueError("threshold_fit_group_digest must be a SHA-256 digest")
+
+
+def _walk_tensors(value: Any):
+    if isinstance(value, Mapping):
+        for child in value.values():
+            yield from _walk_tensors(child)
+    elif isinstance(value, (tuple, list)):
+        for child in value:
+            yield from _walk_tensors(child)
+    elif isinstance(value, torch.Tensor):
+        yield value
+
+
+def _precision_modules(
+    model: torch.nn.Module, precision: str
+) -> tuple[torch.nn.Module, ...]:
+    if precision == "float":
+        return tuple(
+            module for module in model.modules() if isinstance(module, torch.nn.Linear)
+        )
+    return tuple(
+        module
+        for module in model.modules()
+        if "quantized.dynamic" in type(module).__module__
+        and type(module).__name__ == "Linear"
+    )
+
+
+def _validate_bound_model_structure(
+    model: torch.nn.Module, *, precision: str, device: str
+) -> None:
+    modules = _precision_modules(model, precision)
+    float_linears = tuple(
+        module for module in model.modules() if isinstance(module, torch.nn.Linear)
+    )
+    quantized_linears = tuple(
+        module
+        for module in model.modules()
+        if "quantized.dynamic" in type(module).__module__
+        and type(module).__name__ == "Linear"
+    )
+    if precision == "float" and (not float_linears or quantized_linears):
+        raise ValueError("float artifact predictor precision structure mismatch")
+    if precision == "int8" and (not quantized_linears or float_linears):
+        raise ValueError("int8 artifact predictor precision structure mismatch")
+    runtime_device = "cuda" if device == "gpu" else "cpu"
+    state_tensors = tuple(_walk_tensors(model.state_dict()))
+    if not state_tensors or any(
+        tensor.device.type != runtime_device for tensor in state_tensors
+    ):
+        raise ValueError("predictor model parameter device mismatch")
+    if precision == "int8" and not any(tensor.is_quantized for tensor in state_tensors):
+        raise ValueError("int8 predictor contains no qint8 artifact weights")
+    if not modules:
+        raise ValueError("predictor has no inspectable precision modules")
+
+
+@dataclass(frozen=True)
 class TokenizerSnapshot:
     """Immutable, hash-bound tokenizer contents exposed to controlled adapters."""
 
@@ -316,8 +417,6 @@ class GateBundle:
         _validate_summary(validation_summary)
         if not validation_summary["validated"]:
             raise ValueError("formal bundle requires validated=true")
-        from wfcllm.gate.validation import GateValidationThresholds
-
         if not isinstance(thresholds, GateValidationThresholds):
             raise ValueError("thresholds must be fitted GateValidationThresholds")
         thresholds.validate()
@@ -574,11 +673,6 @@ def _verify_predictor_adapter(
         raise ValueError("bundle adapter must implement controlled encode_input")
     if getattr(value, "tokenizer_sha256", None) != tokenizer_sha256:
         raise ValueError("bundle adapter tokenizer snapshot attestation mismatch")
-    from wfcllm.gate.validation import (
-        _precision_modules,
-        _validate_bound_model_structure,
-    )
-
     _validate_bound_model_structure(model, precision=precision, device="cpu")
     if _state_content_digest(model.state_dict()) != expected_content_digest:
         raise ValueError("bundle adapter model state does not match artifact content")
@@ -595,8 +689,6 @@ def _verify_predictor_adapter(
 def _run_verified_adapter(
     verified: _VerifiedPredictorAdapter, serialized_input: str
 ) -> tuple[float, float]:
-    from wfcllm.gate.validation import _walk_tensors
-
     _validate_runtime_seal(verified.adapter.model, verified.runtime_seal)
     inputs = verified.adapter.encode_input(serialized_input)
     if not isinstance(inputs, Mapping) or not inputs:
@@ -1141,8 +1233,6 @@ def _validate_summary(value: object) -> None:
     )
     if value["threshold_fit_group_digest"] == value["agreement_group_digest"]:
         raise ValueError("validation summary grouped subsets must differ")
-    from wfcllm.gate.validation import GateValidationThresholds
-
     thresholds = value["thresholds"]
     expected_threshold_keys = set(GateValidationThresholds.__dataclass_fields__)
     if not isinstance(thresholds, Mapping) or set(thresholds) != expected_threshold_keys:

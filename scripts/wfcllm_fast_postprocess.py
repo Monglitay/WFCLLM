@@ -73,7 +73,6 @@ def main(argv: list[str] | None = None) -> int:
         negative_rows = [asdict(result) for result in negative_results]
         diagnostics = {
             "schema_version": "wfcllm-window-diagnostics/v1",
-            "gate_validation_skipped": True,
             "minimum_reliable_windows": artifact.minimum_reliable_windows,
             "target_fpr": artifact.target_fpr,
             "positive": _summarize_window_details(positive_rows),
