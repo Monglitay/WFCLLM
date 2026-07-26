@@ -51,10 +51,44 @@ def test_mbpp_adapter_name():
     assert datasets.get("mbpp").name == "mbpp"
 
 
+def test_mbpp_adapter_uses_interface_aware_generation_prompt(monkeypatch, tmp_path):
+    from wfcllm.datasets.mbpp import MBPPAdapter
+
+    monkeypatch.setattr(
+        "wfcllm.datasets.mbpp.load_mbpp_generation_samples",
+        lambda _path: [
+            {
+                "id": "mbpp/1",
+                "prompt": (
+                    "Natural task.\n\nInterface requirements:\n"
+                    "Define the function exactly named `target`."
+                ),
+                "generated_code": "def target(arg1):\n    return arg1\n",
+                "interface_extraction_status": "interface_aware",
+                "interface_function_name": "target",
+                "interface_positional_arities": [1],
+                "interface_parameter_names": ["items"],
+                "interface_helper_classes": [],
+            }
+        ],
+    )
+
+    sample = next(MBPPAdapter(dataset_path=str(tmp_path)).iter_samples("python"))
+
+    assert sample.prompt.endswith("exactly named `target`.")
+    assert sample.metadata == {
+        "interface_extraction_status": "interface_aware",
+        "interface_function_name": "target",
+        "interface_positional_arities": [1],
+        "interface_parameter_names": ["items"],
+        "interface_helper_classes": [],
+    }
+
+
 def test_humanevalpack_supports_cpp_and_java():
     from wfcllm import datasets
     adapter = datasets.get("humanevalpack")
-    assert set(adapter.supported_languages) == {"java", "cpp"}
+    assert set(adapter.supported_languages) == {"java", "cpp", "js"}
 
 
 def test_humanevalpack_loads_cpp_samples_from_local_cache(monkeypatch, tmp_path):
@@ -96,6 +130,29 @@ def test_humanevalpack_loads_cpp_samples_from_local_cache(monkeypatch, tmp_path)
     assert samples[0].task_id == "HumanEvalPack/0"
     assert samples[0].canonical_solution.endswith("}")
     assert samples[0].metadata["entry_point"] == "add"
+
+
+def test_humanevalpack_prefers_local_jsonl_fixture(monkeypatch, tmp_path):
+    from wfcllm.datasets.humanevalpack import HumanEvalPackAdapter
+
+    def fail_load_dataset(*_args, **_kwargs):
+        raise AssertionError("HF loader should not be used when local JSONL exists")
+
+    monkeypatch.setattr("datasets.load_dataset", fail_load_dataset)
+    local_dir = tmp_path / "humanevalpack" / "java"
+    local_dir.mkdir(parents=True)
+    (local_dir / "test.jsonl").write_text(
+        '{"task_id":"Java/local-0","prompt":"class Solution {",'
+        '"canonical_solution":" int f(){ return 1; }","entry_point":"f"}\n',
+        encoding="utf-8",
+    )
+
+    samples = list(HumanEvalPackAdapter(str(tmp_path)).iter_samples("java"))
+
+    assert len(samples) == 1
+    assert samples[0].task_id == "Java/local-0"
+    assert samples[0].language == "java"
+    assert samples[0].metadata["entry_point"] == "f"
 
 
 def test_humanevalpack_get_sample_can_disambiguate_language(monkeypatch, tmp_path):

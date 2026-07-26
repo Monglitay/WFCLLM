@@ -7,6 +7,7 @@ import pytest
 
 from wfcllm.datasets.loaders.local import (
     SUPPORTED_DATASETS,
+    load_mbpp_generation_samples,
     load_prompts,
     load_reference_solutions,
 )
@@ -87,6 +88,46 @@ class TestLoadPrompts:
 
         with pytest.raises(ValueError, match="sample_limit must be non-negative"):
             load_prompts("humaneval", "data/datasets", sample_limit=-1)
+
+
+@patch("wfcllm.datasets.loaders.local.load_dataset")
+def test_mbpp_generation_samples_keep_only_sanitized_interface_metadata(
+    mock_load,
+) -> None:
+    mock_load.return_value = {
+        "test": [
+            {
+                "task_id": 601,
+                "text": "Find the maximum chain length from pairs.",
+                "code": (
+                    "def max_chain_length(pairs, n):\n"
+                    "    secret_reference_value = 987654\n"
+                    "    return secret_reference_value\n"
+                ),
+                "test_list": [
+                    "assert max_chain_length([Pair(5, 24)], 4) == 3",
+                ],
+            }
+        ]
+    }
+
+    rows = load_mbpp_generation_samples("data/datasets")
+
+    assert len(rows) == 1
+    assert rows[0]["id"] == "mbpp/601"
+    assert rows[0]["interface_extraction_status"] == "interface_aware"
+    assert rows[0]["interface_function_name"] == "max_chain_length"
+    assert rows[0]["interface_positional_arities"] == [2]
+    assert rows[0]["interface_parameter_names"] == ["pairs", "n"]
+    assert rows[0]["interface_helper_classes"] == ["Pair"]
+    assert rows[0]["prompt"].startswith("class Pair:")
+    assert "def max_chain_length(pairs, n):" in rows[0]["prompt"]
+    serialized = repr(rows[0])
+    assert "assert max_chain_length" not in serialized
+    assert "Pair(5, 24)" not in serialized
+    assert "== 3" not in serialized
+    assert "987654" not in rows[0]["prompt"]
+    assert "secret_reference_value" not in rows[0]["prompt"]
 
 
 class TestLoadReferenceSolutions:

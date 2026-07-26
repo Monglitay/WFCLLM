@@ -1,6 +1,7 @@
 """Hugging Face cache-backed adapter for C++ and Java HumanEvalPack configs."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Iterator
 
@@ -35,15 +36,9 @@ class HumanEvalPackAdapter(DatasetAdapter):
         raise KeyError(f"HumanEvalPack task_id not found{qualifier}: {task_id!r}")
 
     def _load_split(self, language: str):
-        local_jsonl = self._dataset_path / "humanevalpack" / language / "test.jsonl"
-        if local_jsonl.is_file():
-            import json
-
-            return [
-                json.loads(line)
-                for line in local_jsonl.read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            ]
+        local = self._local_jsonl_split(language)
+        if local is not None:
+            return local
 
         from datasets import load_dataset
 
@@ -58,6 +53,35 @@ class HumanEvalPackAdapter(DatasetAdapter):
                 f"HumanEvalPack language={language!r} has no 'test' split"
             )
         return dataset["test"]
+
+    def _local_jsonl_split(self, language: str) -> list[dict[str, object]] | None:
+        candidates = (
+            self._dataset_path / "humanevalpack" / language / "test.jsonl",
+            self._dataset_path / "humanevalpack" / f"{language}.jsonl",
+        )
+        for path in candidates:
+            if not path.exists():
+                continue
+            rows: list[dict[str, object]] = []
+            for line_number, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(),
+                start=1,
+            ):
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        f"local HumanEvalPack {language} line {line_number} is invalid JSON"
+                    ) from exc
+                if not isinstance(row, dict):
+                    raise ValueError(
+                        f"local HumanEvalPack {language} line {line_number} must be an object"
+                    )
+                rows.append(row)
+            return rows
+        return None
 
     def _validate_language(self, language: str) -> None:
         if language not in self.supported_languages:

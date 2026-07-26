@@ -1,10 +1,15 @@
 """MBPPAdapter — wraps wfcllm.datasets.loaders.local.load_prompts."""
 from __future__ import annotations
 
+import logging
 from typing import Iterator
 
 from wfcllm.datasets.adapter import CodeSample, DatasetAdapter
+from wfcllm.datasets.loaders.local import load_mbpp_generation_samples
 from wfcllm.datasets.registry import register
+
+
+logger = logging.getLogger(__name__)
 
 
 @register("mbpp")
@@ -16,21 +21,42 @@ class MBPPAdapter(DatasetAdapter):
         self._dataset_path = dataset_path
 
     def iter_samples(self, language: str | None = None) -> Iterator[CodeSample]:
-        from wfcllm.datasets.loaders.local import load_reference_solutions
-
         if language is not None and language not in self.supported_languages:
             raise ValueError(
                 f"MBPPAdapter does not support language={language!r}; "
                 f"supported={self.supported_languages}"
             )
-        rows = load_reference_solutions("mbpp", self._dataset_path)
+        rows = load_mbpp_generation_samples(self._dataset_path)
+        interface_aware = sum(
+            row["interface_extraction_status"] == "interface_aware" for row in rows
+        )
+        logger.info(
+            "MBPP interface extraction interface_aware=%d fallback=%d total=%d",
+            interface_aware,
+            len(rows) - interface_aware,
+            len(rows),
+        )
         for row in rows:
             yield CodeSample(
                 task_id=row["id"],
                 prompt=row["prompt"],
                 canonical_solution=row["generated_code"],
                 language="python",
-                metadata={},
+                metadata={
+                    "interface_extraction_status": row[
+                        "interface_extraction_status"
+                    ],
+                    "interface_function_name": row["interface_function_name"],
+                    "interface_positional_arities": row[
+                        "interface_positional_arities"
+                    ],
+                    "interface_parameter_names": row[
+                        "interface_parameter_names"
+                    ],
+                    "interface_helper_classes": row[
+                        "interface_helper_classes"
+                    ],
+                },
             )
 
     def get_sample(self, task_id: str) -> CodeSample:

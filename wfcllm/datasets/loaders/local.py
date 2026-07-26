@@ -7,6 +7,7 @@ from pathlib import Path
 from datasets import load_dataset
 
 from wfcllm.datasets.constants import SUPPORTED_DATASETS
+from wfcllm.datasets.mbpp_interface import build_mbpp_generation_prompt
 
 
 def load_prompts(
@@ -76,6 +77,54 @@ def _slice_prompt_rows(
         rows = rows[sample_offset:]
     if sample_limit is not None:
         rows = rows[:sample_limit]
+    return rows
+
+
+def load_mbpp_generation_samples(dataset_path: str) -> list[dict]:
+    """Load MBPP rows with leakage-safe callable interface prompts."""
+    path = str(Path(dataset_path) / "mbpp")
+    ds = load_dataset(
+        "google-research-datasets/mbpp",
+        "full",
+        cache_dir=path,
+        download_mode="reuse_cache_if_exists",
+    )
+    rows = []
+    for split in ds:
+        for item in ds[split]:
+            prompt, interface = build_mbpp_generation_prompt(
+                item["text"],
+                item["test_list"],
+                reference_code=item["code"],
+            )
+            rows.append(
+                {
+                    "id": f"mbpp/{item['task_id']}",
+                    "prompt": prompt,
+                    "generated_code": item["code"],
+                    "interface_extraction_status": (
+                        "interface_aware" if interface is not None else "fallback"
+                    ),
+                    "interface_function_name": (
+                        interface.function_name if interface is not None else None
+                    ),
+                    "interface_positional_arities": (
+                        list(interface.positional_arities)
+                        if interface is not None
+                        else []
+                    ),
+                    "interface_parameter_names": (
+                        list(interface.parameter_names)
+                        if interface is not None
+                        else []
+                    ),
+                    "interface_helper_classes": (
+                        list(interface.helper_classes)
+                        if interface is not None
+                        else []
+                    ),
+                }
+            )
     return rows
 
 
