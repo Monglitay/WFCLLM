@@ -22,6 +22,17 @@ def test_validate_final_code_record_exact_accepts_only_four_fields() -> None:
     assert code_from_record(record) == "def foo():\n    return 1\n"
 
 
+def test_validate_final_code_record_accepts_humanevalpack_rows() -> None:
+    record = {
+        "id": "CPP/0",
+        "dataset": "humanevalpack",
+        "prompt": "bool f(){\n",
+        "final_code": "bool f(){ return true; }\n",
+    }
+
+    validate_final_code_record_exact(record)
+
+
 @pytest.mark.parametrize(
     "extra_field",
     [

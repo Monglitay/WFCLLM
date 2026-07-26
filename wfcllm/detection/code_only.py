@@ -5,7 +5,7 @@ from typing import Any
 
 
 OFFICIAL_DETECTOR_INPUT_FIELDS = {"id", "dataset", "prompt", "final_code"}
-SUPPORTED_OFFICIAL_DATASETS = {"humaneval", "mbpp"}
+SUPPORTED_OFFICIAL_DATASETS = {"humaneval", "mbpp", "humanevalpack"}
 
 FORBIDDEN_DETECTOR_INPUT_FIELDS = {
     "artifact_type",
