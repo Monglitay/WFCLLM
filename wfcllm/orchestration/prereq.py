@@ -74,18 +74,28 @@ def ensure_gate_phase_prerequisites(
 
     from wfcllm.cli.runners import (
         _gate_run_dir,
+        _load_json_object,
         _load_formal_json,
         _reject_symlink_path,
+        _require_experimental_manifest,
+        _uses_fast_experimental_gate_training,
         resolve_validated_gate_bundle,
     )
 
+    fast_experimental = _uses_fast_experimental_gate_training(config)
     if phase in {"gate-train", "gate-validate"}:
         run_dir = _gate_run_dir(args, config)
         data_manifest = run_dir / "gate-data" / "manifest.json"
         _reject_symlink_path(data_manifest)
         if not data_manifest.is_file():
             raise ValueError(f"{phase} requires the gate-data manifest")
-        _load_formal_json(data_manifest, "gate-data")
+        if fast_experimental and phase == "gate-train":
+            _require_experimental_manifest(
+                _load_json_object(data_manifest),
+                "gate-data",
+            )
+        else:
+            _load_formal_json(data_manifest, "gate-data")
     if phase == "gate-validate":
         run_dir = _gate_run_dir(args, config)
         candidate = run_dir / "gate-train" / "candidate_bundle"
