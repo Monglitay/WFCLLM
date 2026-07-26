@@ -328,6 +328,17 @@ def test_supplement_decoding_overrides_come_from_calibration_config(
     assert kwargs["max_new_tokens"] == 64
     assert kwargs["top_p"] == config["generation"]["top_p"]
     assert kwargs["seed"] == config["generation"]["seed"]
+    # The remaining decoding surface matches the generate-side construction:
+    # rewrite_* comes from method.rewrite via the shared runtime options,
+    # quantization/dtype/prompt-mode come from the generation section.
+    rewrite = config["method"]["rewrite"]
+    assert kwargs["rewrite_max_new_tokens"] == rewrite["max_new_tokens"]
+    assert kwargs["rewrite_generation_attempts"] == rewrite["generation_attempts"]
+    assert kwargs["rewrite_temperature"] == rewrite["temperature"]
+    assert kwargs["rewrite_top_p"] == rewrite["top_p"]
+    assert kwargs["load_in_4bit"] == config["generation"]["load_in_4bit"]
+    assert kwargs["torch_dtype"] == config["generation"]["torch_dtype"]
+    assert kwargs["program_prompt_mode"] == config["generation"]["prompt_mode"]
     manifest = json.loads(
         (run_dir / "calibration" / "negative_corpus_manifest.json").read_text(
             encoding="utf-8"

@@ -87,11 +87,19 @@ if [[ -n "${GATE_EARLY_STOPPING_PATIENCE}" ]]; then
 fi
 
 env "${OFFLINE[@]}" "${CONDA_EXE}" run -p "${CONDA_ENVS_PATH}/WFCLLM" python run.py \
+  --phase encoder --config "${PILOT_CONFIG}" --run-dir "${PILOT_RUN}" \
+  --state-file "${PILOT_STATE}" "${PILOT_COMMON[@]}"
+
+env "${OFFLINE[@]}" "${CONDA_EXE}" run -p "${CONDA_ENVS_PATH}/WFCLLM" python run.py \
   --phase gate-data --config "${PILOT_CONFIG}" --run-dir "${PILOT_RUN}" \
   --state-file "${PILOT_STATE}" \
   --model-device cuda --gate-device cuda "${PILOT_COMMON[@]}"
 
 PILOT_FEASIBILITY="${PILOT_RUN}/gate-data/feasibility_summary.json"
+env "${OFFLINE[@]}" "${CONDA_EXE}" run -p "${CONDA_ENVS_PATH}/WFCLLM" python run.py \
+  --phase encoder --config "${FULL_CONFIG}" --run-dir "${FULL_RUN}" \
+  --state-file "${FULL_STATE}" "${FULL_COMMON[@]}"
+
 env "${OFFLINE[@]}" "${CONDA_EXE}" run -p "${CONDA_ENVS_PATH}/WFCLLM" python run.py \
   --phase gate-data --config "${FULL_CONFIG}" --run-dir "${FULL_RUN}" \
   --state-file "${FULL_STATE}" --pilot-feasibility "${PILOT_FEASIBILITY}" \

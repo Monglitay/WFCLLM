@@ -358,6 +358,65 @@ def test_top_level_layout_probes_nested_run_directory(tmp_path) -> None:
     assert record["tpr"] == pytest.approx(1.0)
 
 
+@pytest.mark.parametrize(
+    "rule",
+    [
+        "pooled_negative_quantile_threshold/v1",
+        "pooled_negative_empirical_binomial_surprisal/v1",
+        "pooled_negative_empirical_standardized_hit_surplus/v1",
+    ],
+)
+def test_pooled_calibration_rule_fills_dilution_caveat(tmp_path, rule) -> None:
+    run_dir = tmp_path / "pooled-rule"
+    report = _standard_report(
+        ids=["HumanEval/0"],
+        decisions=["watermarked"],
+        hit_rates=[0.9],
+        buckets={"2": [0.1]},
+        target_fpr=0.05,
+        minimum_reliable_windows=2,
+        window_contract_version="python-statement-window/v1",
+    )
+    report["calibration"]["empirical_p_value_rule"] = rule
+    _write_json(run_dir / "reports" / "reference_report.json", report)
+
+    record = extract_metric_contract(run_dir)
+
+    assert (
+        "pooled calibration background may include insufficient-window "
+        "sentinel values; the empirical threshold was calibrated against "
+        "a diluted population relative to detect-time (historical semantics)"
+    ) in record["caveats"]
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        None,
+        "right_tail_plus_one/v1",
+        "pooled_negative_binomial_right_tail/v1",
+    ],
+)
+def test_non_pooled_calibration_rules_have_no_dilution_caveat(tmp_path, rule) -> None:
+    run_dir = tmp_path / "non-pooled-rule"
+    report = _standard_report(
+        ids=["HumanEval/0"],
+        decisions=["watermarked"],
+        hit_rates=[0.9],
+        buckets={"2": [0.1]},
+        target_fpr=0.05,
+        minimum_reliable_windows=2,
+        window_contract_version="python-statement-window/v1",
+    )
+    if rule is not None:
+        report["calibration"]["empirical_p_value_rule"] = rule
+    _write_json(run_dir / "reports" / "reference_report.json", report)
+
+    record = extract_metric_contract(run_dir)
+
+    assert not any("diluted population" in caveat for caveat in record["caveats"])
+
+
 def test_missing_gate_manifest_yields_null_eligibility_and_caveat(tmp_path) -> None:
     run_dir = tmp_path / "no-gate-data"
     report = _standard_report(

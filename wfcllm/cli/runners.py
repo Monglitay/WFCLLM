@@ -1416,6 +1416,9 @@ def _build_local_gated_detection_pipeline(args: argparse.Namespace):
         calibration_group_by=str(
             calibration.get("group_by", "reliable_window_count")
         ),
+        calibration_pool_excludes_insufficient=bool(
+            calibration.get("pool_excludes_insufficient", False)
+        ),
     )
 
 

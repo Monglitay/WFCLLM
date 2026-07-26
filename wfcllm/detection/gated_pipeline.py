@@ -34,7 +34,19 @@ EMPIRICAL_STANDARDIZED_HIT_SURPLUS_RULE = (
     "pooled_negative_empirical_standardized_hit_surplus/v1"
 )
 _INSUFFICIENT_STATISTIC_FLOOR = -1e300
+# Surprisal is mathematically non-negative, so 0.0 is its domain lower bound
+# and sorts identically to the historical -1e300 floor while satisfying the
+# artifact's non-negative background check.
+_INSUFFICIENT_SURPRISAL_SENTINEL = 0.0
 QUANTILE_THRESHOLD_RULE = "pooled_negative_quantile_threshold/v1"
+_POOLED_CALIBRATION_GROUPS = frozenset(
+    {
+        "pooled_reliable_hit_rate",
+        "pooled_reliable_hit_rate_quantile",
+        "pooled_empirical_binomial_surprisal",
+        "pooled_empirical_standardized_hit_surplus",
+    }
+)
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -234,6 +246,7 @@ class GatedDetectionPipeline:
         bindings: GatedDetectionBindings,
         target_fpr: float = 0.05,
         calibration_group_by: str = "reliable_window_count",
+        calibration_pool_excludes_insufficient: bool = False,
     ) -> None:
         if not callable(getattr(extractor, "extract", None)):
             raise ValueError("extractor must expose final-code extract")
@@ -257,11 +270,18 @@ class GatedDetectionPipeline:
             "pooled_empirical_standardized_hit_surplus",
         }:
             raise ValueError("unsupported gated calibration grouping")
+        if type(calibration_pool_excludes_insufficient) is not bool:
+            raise ValueError(
+                "calibration_pool_excludes_insufficient must be a bool"
+            )
         self._extractor = extractor
         self._scorer = scorer
         self._bindings = bindings
         self._target_fpr = float(target_fpr)
         self._calibration_group_by = calibration_group_by
+        self._calibration_pool_excludes_insufficient = (
+            calibration_pool_excludes_insufficient
+        )
 
     def calibrate(
         self,
@@ -273,6 +293,21 @@ class GatedDetectionPipeline:
         for record in records:
             validate_final_code_record_exact(record)
             scores.append(self._score_record(record))
+        if (
+            self._calibration_pool_excludes_insufficient
+            and self._calibration_group_by in _POOLED_CALIBRATION_GROUPS
+        ):
+            # Opt-in consistency mode: insufficient-window records are the
+            # very records detect() answers with insufficient_evidence, so
+            # they are skipped entirely instead of entering the pool as
+            # sentinels.  The default (False) keeps the historical
+            # reproduction semantics.
+            scores = [
+                score
+                for score in scores
+                if score.reliable_window_count
+                >= self._scorer.minimum_reliable_windows
+            ]
         buckets: dict[str, list[float]] = {}
         null_hit_probability: float | None = None
         count_statistic_group = self._calibration_group_by in {
@@ -289,6 +324,15 @@ class GatedDetectionPipeline:
             null_hit_probability = (null_hits + 1.0) / (
                 null_trials + 2.0
             )
+            surprisal_group = (
+                self._calibration_group_by
+                == "pooled_empirical_binomial_surprisal"
+            )
+            insufficient_sentinel = (
+                _INSUFFICIENT_SURPRISAL_SENTINEL
+                if surprisal_group
+                else _INSUFFICIENT_STATISTIC_FLOOR
+            )
             bucket = str(self._scorer.minimum_reliable_windows)
             buckets[bucket] = [
                 (
@@ -298,8 +342,7 @@ class GatedDetectionPipeline:
                             score.reliable_window_count,
                             null_hit_probability,
                         )
-                        if self._calibration_group_by
-                        == "pooled_empirical_binomial_surprisal"
+                        if surprisal_group
                         else _standardized_hit_surplus(
                             score.hit_count,
                             score.reliable_window_count,
@@ -308,7 +351,7 @@ class GatedDetectionPipeline:
                     )
                     if score.reliable_window_count
                     >= self._scorer.minimum_reliable_windows
-                    else _INSUFFICIENT_STATISTIC_FLOOR
+                    else insufficient_sentinel
                 )
                 for score in scores
             ]

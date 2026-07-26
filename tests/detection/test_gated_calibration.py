@@ -219,6 +219,176 @@ def test_empirical_standardized_hit_surplus_uses_negative_null_and_sample_tail()
     assert result.p_value == pytest.approx(1 / 21)
 
 
+def test_binomial_surprisal_calibration_survives_insufficient_negative_record() -> None:
+    """One insufficient-window negative must not break surprisal calibration.
+
+    The sentinel for insufficient records is 0.0 — the domain lower bound of
+    the surprisal statistic (all real surprisals are >= 0) — so it keeps the
+    same ordering position as the historical -1e300 floor while satisfying
+    the artifact's non-negative domain check.
+    """
+    pipeline = GatedDetectionPipeline(
+        extractor=_Extractor(),
+        scorer=GatedWindowScorer(
+            semantic_scorer=_Semantic(),
+            minimum_reliable_windows=2,
+        ),
+        bindings=_bindings(),
+        target_fpr=0.05,
+        calibration_group_by="pooled_empirical_binomial_surprisal",
+    )
+    negatives = [
+        *(_row(index, "hit miss") for index in range(20)),
+        _row(20, "miss"),
+    ]
+
+    artifact = pipeline.calibrate(negatives)
+
+    assert artifact.empirical_p_value_rule == EMPIRICAL_BINOMIAL_SURPRISAL_RULE
+    bucket = artifact.reliable_window_count_buckets["2"]
+    # The sentinel enters the pool and counts in the denominator.
+    assert len(bucket) == 21
+    assert bucket[-1] == 0.0
+    assert all(value > 0.0 for value in bucket[:20])
+    # The insufficient record's reliable window still feeds the null estimate.
+    assert artifact.null_hit_probability == pytest.approx(21 / 43)
+    assert GatedCalibrationArtifact.from_dict(artifact.to_dict()) == artifact
+
+
+def test_standardized_hit_surplus_keeps_historical_floor_sentinel() -> None:
+    pipeline = GatedDetectionPipeline(
+        extractor=_Extractor(),
+        scorer=GatedWindowScorer(
+            semantic_scorer=_Semantic(),
+            minimum_reliable_windows=2,
+        ),
+        bindings=_bindings(),
+        target_fpr=0.05,
+        calibration_group_by="pooled_empirical_standardized_hit_surplus",
+    )
+    negatives = [
+        *(_row(index, "miss miss") for index in range(20)),
+        _row(20, "miss"),
+    ]
+
+    artifact = pipeline.calibrate(negatives)
+
+    bucket = artifact.reliable_window_count_buckets["2"]
+    assert len(bucket) == 21
+    assert bucket[-1] == -1e300
+
+
+def test_pooled_calibration_default_counts_insufficient_sentinels() -> None:
+    pipeline = GatedDetectionPipeline(
+        extractor=_Extractor(),
+        scorer=GatedWindowScorer(
+            semantic_scorer=_Semantic(),
+            minimum_reliable_windows=2,
+        ),
+        bindings=_bindings(),
+        target_fpr=0.5,
+        calibration_group_by="pooled_reliable_hit_rate",
+    )
+    negatives = [
+        _row(0, "hit miss"),
+        _row(1, "hit hit"),
+        _row(2, "miss"),
+        _row(3, "miss"),
+    ]
+
+    artifact = pipeline.calibrate(negatives)
+
+    # Historical semantics: insufficient records enter the pool as 0.0.
+    assert artifact.reliable_window_count_buckets["2"] == (0.5, 1.0, 0.0, 0.0)
+    assert artifact.thresholds_by_reliable_window_count["2"] == pytest.approx(0.0)
+
+
+def test_pool_excludes_insufficient_restricts_hit_rate_pool_to_sufficient() -> None:
+    pipeline = GatedDetectionPipeline(
+        extractor=_Extractor(),
+        scorer=GatedWindowScorer(
+            semantic_scorer=_Semantic(),
+            minimum_reliable_windows=2,
+        ),
+        bindings=_bindings(),
+        target_fpr=0.5,
+        calibration_group_by="pooled_reliable_hit_rate",
+        calibration_pool_excludes_insufficient=True,
+    )
+    sufficient = [_row(0, "hit miss"), _row(1, "hit hit")]
+    negatives = [*sufficient, _row(2, "miss"), _row(3, "miss")]
+
+    artifact = pipeline.calibrate(negatives)
+
+    # No sentinel dilution: the threshold comes from the sufficient subset only.
+    assert artifact.reliable_window_count_buckets["2"] == (0.5, 1.0)
+    assert artifact.thresholds_by_reliable_window_count["2"] == pytest.approx(0.5)
+    assert artifact == pipeline.calibrate(sufficient)
+
+
+def test_pool_excludes_insufficient_restricts_count_statistic_pool() -> None:
+    def build(excludes: bool) -> GatedDetectionPipeline:
+        return GatedDetectionPipeline(
+            extractor=_Extractor(),
+            scorer=GatedWindowScorer(
+                semantic_scorer=_Semantic(),
+                minimum_reliable_windows=2,
+            ),
+            bindings=_bindings(),
+            target_fpr=0.05,
+            calibration_group_by="pooled_empirical_binomial_surprisal",
+            calibration_pool_excludes_insufficient=excludes,
+        )
+
+    sufficient = [_row(index, "hit miss") for index in range(20)]
+    negatives = [*sufficient, _row(20, "miss")]
+
+    excluded = build(True).calibrate(negatives)
+    included = build(False).calibrate(negatives)
+
+    assert len(excluded.reliable_window_count_buckets["2"]) == 20
+    assert 0.0 not in excluded.reliable_window_count_buckets["2"]
+    assert excluded == build(True).calibrate(sufficient)
+    assert len(included.reliable_window_count_buckets["2"]) == 21
+    assert included.reliable_window_count_buckets["2"][-1] == 0.0
+
+
+def test_pool_excludes_insufficient_restricts_quantile_pool() -> None:
+    def build(excludes: bool) -> GatedDetectionPipeline:
+        return GatedDetectionPipeline(
+            extractor=_Extractor(),
+            scorer=GatedWindowScorer(
+                semantic_scorer=_Semantic(),
+                minimum_reliable_windows=2,
+            ),
+            bindings=_bindings(),
+            target_fpr=0.5,
+            calibration_group_by="pooled_reliable_hit_rate_quantile",
+            calibration_pool_excludes_insufficient=excludes,
+        )
+
+    negatives = [_row(0, "hit miss"), _row(1, "hit hit"), _row(2, "miss")]
+
+    excluded = build(True).calibrate(negatives)
+    included = build(False).calibrate(negatives)
+
+    assert excluded.reliable_window_count_buckets["2"] == (0.5, 1.0)
+    assert included.reliable_window_count_buckets["2"] == (0.5, 1.0, 0.0)
+
+
+def test_pool_excludes_insufficient_rejects_non_bool() -> None:
+    with pytest.raises(ValueError, match="calibration_pool_excludes_insufficient"):
+        GatedDetectionPipeline(
+            extractor=_Extractor(),
+            scorer=GatedWindowScorer(
+                semantic_scorer=_Semantic(),
+                minimum_reliable_windows=2,
+            ),
+            bindings=_bindings(),
+            calibration_pool_excludes_insufficient=1,
+        )
+
+
 def test_hash_mismatch_is_rejected() -> None:
     pipeline = GatedDetectionPipeline(
         extractor=_Extractor(),

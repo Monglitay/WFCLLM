@@ -40,6 +40,16 @@ _STATEMENT_WINDOW_MARKER = "-statement-window/"
 _PYTHON_DATASETS = {"humaneval", "mbpp"}
 _HUMANEVALPACK_ID_PREFIXES = {"js", "javascript", "java", "cpp", "c++", "go", "rust"}
 _PASS_MISSING_CAVEAT = "pass evaluation artifacts not present in run dir"
+_POOLED_DILUTION_RULES = {
+    "pooled_negative_quantile_threshold/v1",
+    "pooled_negative_empirical_binomial_surprisal/v1",
+    "pooled_negative_empirical_standardized_hit_surplus/v1",
+}
+_POOLED_DILUTION_CAVEAT = (
+    "pooled calibration background may include insufficient-window sentinel "
+    "values; the empirical threshold was calibrated against a diluted "
+    "population relative to detect-time (historical semantics)"
+)
 
 
 def _load_json_object(path: Path) -> dict[str, Any] | None:
@@ -451,6 +461,8 @@ def _extract_standard(
     record["minimum_reliable_windows"] = calibration.get("minimum_reliable_windows")
     record["key_identifier_sha256"] = calibration.get("key_identifier_sha256")
     record["semantic_encoder_sha256"] = calibration.get("semantic_encoder_sha256")
+    if calibration.get("empirical_p_value_rule") in _POOLED_DILUTION_RULES:
+        caveats.append(_POOLED_DILUTION_CAVEAT)
 
     gate_manifest = _first_existing_json(
         [

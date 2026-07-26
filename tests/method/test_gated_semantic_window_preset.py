@@ -594,6 +594,31 @@ def test_gated_preset_rejects_invalid_target_negative_count(target) -> None:
         replace(preset, calibration=calibration)
 
 
+@pytest.mark.parametrize("value", [True, False])
+def test_gated_preset_accepts_optional_calibration_pool_exclusion_flag(
+    value: bool,
+) -> None:
+    preset = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME)
+    calibration = deepcopy(preset.to_dict()["calibration"])
+    calibration["pool_excludes_insufficient"] = value
+
+    tuned = replace(preset, calibration=calibration)
+
+    assert tuned.calibration["pool_excludes_insufficient"] is value
+
+
+@pytest.mark.parametrize("value", [1, 0, "true", None])
+def test_gated_preset_rejects_non_bool_calibration_pool_exclusion_flag(
+    value,
+) -> None:
+    preset = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME)
+    calibration = deepcopy(preset.to_dict()["calibration"])
+    calibration["pool_excludes_insufficient"] = value
+
+    with pytest.raises(ValueError, match="pool_excludes_insufficient"):
+        replace(preset, calibration=calibration)
+
+
 @pytest.mark.parametrize(
     ("supplement", "match"),
     [

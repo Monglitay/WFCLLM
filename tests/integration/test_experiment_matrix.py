@@ -64,6 +64,50 @@ def test_experiment_entry_and_config_contract(
     )
 
 
+def test_external_bundle_experiment_config_resolves_four_main_phases() -> None:
+    config_path = (
+        ROOT
+        / "configs"
+        / "wfcllm"
+        / "experiments"
+        / "python_humaneval_full_evidence_dense48_external_gate.json"
+    )
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert config["method"]["gate"]["bundle_path"]
+    assert config["method"]["gate"]["bundle_sha256"]
+
+    resolved = resolve_method_config(config)
+
+    assert resolved["runtime"]["default_phases"] == [
+        "generate",
+        "calibrate",
+        "detect",
+        "report",
+    ]
+
+
+def test_local_bundle_experiment_configs_keep_seven_phase_sequence() -> None:
+    for name in (
+        "python_humaneval_full_evidence_dense48.json",
+        "cpp_humanevalpack_fast.json",
+    ):
+        config_path = ROOT / "configs" / "wfcllm" / "experiments" / name
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        assert config["method"].get("gate", {}).get("bundle_path") is None
+
+        resolved = resolve_method_config(config)
+
+        assert resolved["runtime"]["default_phases"] == [
+            "encoder",
+            "gate-data",
+            "gate-train",
+            "generate",
+            "calibrate",
+            "detect",
+            "report",
+        ], name
+
+
 def test_matrix_contains_only_the_eight_supported_entries() -> None:
     wrappers = sorted(
         path.name

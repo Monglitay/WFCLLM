@@ -303,7 +303,6 @@ gate 可以理解为“窗口选择器”。它决定什么时候关闭窗口，
 ```json
 "method": {
   "gate": {
-    "require_validated": true,
     "uncertain_boundary_policy": "close_and_skip",
     "max_input_tokens": 256
   }
@@ -322,7 +321,6 @@ max_input_tokens
 
 | 参数 | 当前值/含义 | 影响什么 | 怎么影响 |
 | --- | --- | --- | --- |
-| `gate.require_validated` | full 配置为 `true` | 实验可信度 | `true` 表示必须使用验证过的 gate bundle。更严格，避免拿未验证 gate 直接跑正式结果。 |
 | `gate.uncertain_boundary_policy` | `close_and_skip` | Pass@1、嵌入率 | gate 不确定时关闭窗口并跳过。更保守，Pass 更稳，但嵌入率可能下降。 |
 | `gate.max_input_tokens` | `256` | gate 输入长度、速度 | gate 每次最多看多少 token。太小会缺上下文，太大更慢。 |
 | `close_low` | 代码阈值 | 窗口长度 | close 分数低于它时倾向继续等下一个语句。 |
@@ -566,32 +564,21 @@ gate-train 是训练门控模型。
 
 想让 gate 更激进，可以降低误判惩罚或 suitable 阈值；想保 Pass，更应保持保守。
 
-### 12. gate-validate 参数
+### 12. gated 阶段序列
 
-gate-validate 是正式使用 gate 前的检查。
+gated 预设不再有独立的 gate-validate 阶段（ADR 0007）。默认阶段序列由配置解析得到：
 
-配置位置：
-
-```json
-"gate_validate": {
-  "formal_quantization": "torch-dynamic-qint8-linear",
-  "acceptance_thresholds": {
-    "decision_agreement_min": 0.999,
-    "float_quantized_accepted_set_agreement_min": 0.999,
-    "formal_accepted_span_consensus_min": 1.0,
-    "suitable_false_positive_rate_max": 0.05
-  }
-}
+```text
+encoder -> gate-data -> gate-train -> generate -> calibrate -> detect -> report
 ```
 
-| 参数 | 当前值 | 影响什么 | 怎么影响 |
-| --- | --- | --- | --- |
-| `decision_agreement_min` | `0.999` | gate 稳定性 | 不同加载/精度下决策要高度一致。 |
-| `float_quantized_accepted_set_agreement_min` | `0.999` | 部署一致性 | float 和量化版本选出的窗口要几乎一致。 |
-| `formal_accepted_span_consensus_min` | `1.0` | 窗口边界一致性 | 正式接受的 span 必须完全一致。 |
-| `suitable_false_positive_rate_max` | `0.05` | Pass@1 风险 | gate 把危险窗口选中的比例不能太高。 |
+full 档在此之后追加 `audit` 阶段；fast 档跳过 audit。
 
-这些阈值越严格，正式通过验证的 gate 越可靠，但也更容易验证失败。
+要点：
+
+- `encoder`：按数据集从本次 run 的 gate 源 catalog 训练语义编码器（ADR 0006），是 gate-data 的前置条件；也可用 `--semantic-encoder-checkpoint-path` 显式提供 checkpoint。
+- gate-train 产出的候选 bundle 是唯一解析入口：generate、calibrate、detect 都通过同一个 publication manifest 解析并做哈希绑定校验，不存在"先验证再放行"的独立阶段。
+- 使用外部 bundle 时（`method.gate.bundle_path` + `bundle_sha256`），序列从 `generate` 开始，只跑四个主阶段（generate/calibrate/detect/report），且必须显式提供语义编码器 checkpoint。
 
 ### 13. 这次结果里几个关键诊断口径
 

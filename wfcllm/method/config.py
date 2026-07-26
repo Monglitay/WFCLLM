@@ -304,7 +304,11 @@ class WFCLLMMethodPreset:
             "target_fpr",
             "posthoc_pass_at_1_noninferiority_absolute_drop_max",
         }
-        calibration_optional_keys = {"target_negative_count", "supplement"}
+        calibration_optional_keys = {
+            "target_negative_count",
+            "supplement",
+            "pool_excludes_insufficient",
+        }
         self._require_exact_keys(
             self.calibration,
             calibration_required_keys
@@ -625,6 +629,16 @@ class WFCLLMMethodPreset:
                 "predeclared 5% FPR statistic"
             )
         self._validate_calibration_negative_supplement()
+        pool_excludes_insufficient = self.calibration.get(
+            "pool_excludes_insufficient"
+        )
+        if (
+            "pool_excludes_insufficient" in self.calibration
+            and not isinstance(pool_excludes_insufficient, bool)
+        ):
+            raise ValueError(
+                "calibration.pool_excludes_insufficient must be a bool"
+            )
         run_root = self.artifacts.get("run_root")
         if (
             not isinstance(run_root, str)

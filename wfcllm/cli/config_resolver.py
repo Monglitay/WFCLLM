@@ -132,15 +132,26 @@ def _resolve_experiment_matrix_config(
         "parser_boundary",
     ]
     merged["gate_data"]["scale"] = "pilot" if profile == "fast" else "full"
-    merged["runtime"]["default_phases"] = [
-        "encoder",
-        "gate-data",
-        "gate-train",
-        "generate",
-        "calibrate",
-        "detect",
-        "report",
-    ]
+    # Mirror the non-matrix semantics of wfcllm.method.config: a hash-bound
+    # external gate bundle starts at the four main phases, everything else
+    # runs the full local seven-phase chain.
+    if method.get("gate", {}).get("bundle_path") is not None:
+        merged["runtime"]["default_phases"] = [
+            "generate",
+            "calibrate",
+            "detect",
+            "report",
+        ]
+    else:
+        merged["runtime"]["default_phases"] = [
+            "encoder",
+            "gate-data",
+            "gate-train",
+            "generate",
+            "calibrate",
+            "detect",
+            "report",
+        ]
     return merged
 
 
