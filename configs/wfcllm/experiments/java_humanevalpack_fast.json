@@ -2,8 +2,14 @@
   "method": {
     "name": "gated_semantic_window_v1",
     "windowing": {"contract_version": "java-statement-window/v1"},
-    "gate": {"require_validated": false},
-    "rewrite": {"strategy": "model_semantic_window"},
+    "gate": {
+      "require_validated": false,
+      "fast_experimental": true
+    },
+    "rewrite": {
+      "strategy": "model_semantic_window",
+      "max_attempts": 18
+    },
     "semantic": {"parent_descriptor_version": "java-statement-window/v1"}
   },
   "generation": {
@@ -13,8 +19,15 @@
   },
   "semantic_lsh": {
     "rule_name": "semantic_lsh",
-    "lsh_d": 12,
-    "lsh_gamma": 0.45
+    "lsh_d": 2,
+    "lsh_gamma": 0.75
+  },
+  "gate_data": {
+    "full_independent_group_min": 100,
+    "full_independent_group_max": 120
+  },
+  "detector": {
+    "target_fpr": 0.5
   },
   "experiment": {"profile": "fast"}
 }

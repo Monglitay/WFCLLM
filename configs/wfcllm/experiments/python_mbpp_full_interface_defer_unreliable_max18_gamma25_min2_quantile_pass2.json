@@ -1,0 +1,44 @@
+{
+  "method": {
+    "name": "gated_semantic_window_v1",
+    "windowing": {
+      "contract_version": "python-statement-window/v1",
+      "defer_unreliable_until_max_units": true
+    },
+    "gate": {
+      "require_validated": true
+    },
+    "rewrite": {
+      "strategy": "python_ast_equivalent",
+      "max_attempts": 18
+    },
+    "semantic": {
+      "parent_descriptor_version": "python-statement-window/v1"
+    }
+  },
+  "generation": {
+    "language": "python",
+    "dataset": "mbpp",
+    "max_new_tokens": 256,
+    "temperature": 0.0,
+    "top_p": 0.95,
+    "prompt_mode": "mbpp_chat",
+    "program_finalizer": "mbpp_target_function_v1",
+    "embedding_passes": 2
+  },
+  "semantic_lsh": {
+    "rule_name": "semantic_lsh",
+    "lsh_d": 12,
+    "lsh_gamma": 0.25
+  },
+  "detector": {
+    "minimum_reliable_windows": 2
+  },
+  "calibration": {
+    "method": "pooled_negative_quantile_threshold",
+    "group_by": "pooled_reliable_hit_rate_quantile"
+  },
+  "experiment": {
+    "profile": "full"
+  }
+}

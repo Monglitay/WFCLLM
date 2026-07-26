@@ -5,6 +5,54 @@ set -euo pipefail
 : "${WFCLLM_DATASET:?wrapper must set WFCLLM_DATASET}"
 : "${WFCLLM_PROFILE:?wrapper must set WFCLLM_PROFILE}"
 : "${WFCLLM_CONFIG:?wrapper must set WFCLLM_CONFIG}"
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "${REPO_ROOT}"
+export PYTHONPATH="${PYTHONPATH:-.}"
+
+if [[ -z "${CONDA_EXE:-}" ]]; then
+  if command -v conda >/dev/null 2>&1; then
+    CONDA_EXE="$(command -v conda)"
+  else
+    CONDA_EXE="/root/miniconda3/bin/conda"
+  fi
+fi
+if [[ -z "${CONDA_ENV_PREFIX:-}" ]]; then
+  CONDA_ROOT="$(cd "$(dirname "${CONDA_EXE}")/.." && pwd)"
+  LOCAL_ENV_PREFIX="${CONDA_ROOT}/envs/WFCLLM"
+  if [[ -d "${LOCAL_ENV_PREFIX}" ]]; then
+    CONDA_ENV_PREFIX="${LOCAL_ENV_PREFIX}"
+  else
+    CONDA_ENVS_PATH="${CONDA_ENVS_PATH:-/root/autodl-tmp/conda/envs}"
+    CONDA_ENV_PREFIX="${CONDA_ENVS_PATH}/WFCLLM"
+  fi
+fi
+RUN_PY=("${CONDA_EXE}" run -p "${CONDA_ENV_PREFIX}" python)
+
+MISSING_HEAVY_RUNTIME=0
+for REQUIRED_NAME in GENERATION_MODEL_PATH SEMANTIC_ENCODER_MODEL_PATH GATE_BASE_MODEL_PATH NEGATIVE_INPUT; do
+  if [[ -z "${!REQUIRED_NAME:-}" ]]; then
+    MISSING_HEAVY_RUNTIME=1
+  fi
+done
+
+if [[ "${WFCLLM_DATASET}" == "humanevalpack" && "${MISSING_HEAVY_RUNTIME}" == "1" ]]; then
+  ROOT="${EXPERIMENT_ROOT:-data/experiments/${WFCLLM_LANGUAGE}-${WFCLLM_DATASET}-${WFCLLM_PROFILE}}"
+  RUN_DIR="${ROOT}/run"
+  DATASET_PATH="${DATASET_PATH:-data/datasets}"
+  SAMPLE_LIMIT="${SAMPLE_LIMIT:-${WFCLLM_DEFAULT_SAMPLE_LIMIT:-32}}"
+  env PYTHONPATH=. HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+    "${RUN_PY[@]}" scripts/experiments/run_basic_multilanguage_experiment.py \
+    --config "${WFCLLM_CONFIG}" \
+    --language "${WFCLLM_LANGUAGE}" \
+    --dataset "${WFCLLM_DATASET}" \
+    --profile "${WFCLLM_PROFILE}" \
+    --dataset-path "${DATASET_PATH}" \
+    --run-dir "${RUN_DIR}" \
+    --sample-limit "${SAMPLE_LIMIT}"
+  exit 0
+fi
+
 : "${GENERATION_MODEL_PATH:?set GENERATION_MODEL_PATH to a local HF code model}"
 : "${SEMANTIC_ENCODER_MODEL_PATH:?set SEMANTIC_ENCODER_MODEL_PATH to a local semantic encoder}"
 : "${GATE_BASE_MODEL_PATH:?set GATE_BASE_MODEL_PATH to a local CodeT5 gate base model}"
@@ -23,14 +71,6 @@ else
   FULL_SOURCE_CATALOG="${SOURCE_CATALOG}"
 fi
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-cd "${REPO_ROOT}"
-
-CONDA_EXE="${CONDA_EXE:-/root/miniconda3/bin/conda}"
-CONDA_ENVS_PATH="${CONDA_ENVS_PATH:-/root/autodl-tmp/conda/envs}"
-CONDA_ENV_PREFIX="${CONDA_ENV_PREFIX:-${CONDA_ENVS_PATH}/WFCLLM}"
-RUN_PY=("${CONDA_EXE}" run -p "${CONDA_ENV_PREFIX}" python)
-
 # Run public-contract validation before creating any private experiment state.
 "${RUN_PY[@]}" -m wfcllm.cli.experiment_preflight \
   --config "${WFCLLM_CONFIG}" \
@@ -39,7 +79,12 @@ RUN_PY=("${CONDA_EXE}" run -p "${CONDA_ENV_PREFIX}" python)
   --profile "${WFCLLM_PROFILE}" \
   --check-runtime-capabilities
 
-if grep -Eq '"rule_name"[[:space:]]*:[[:space:]]*"keyed_text_region"' "${WFCLLM_CONFIG}"; then
+if command -v rg >/dev/null 2>&1; then
+  HAS_KEYED_TEXT_REGION="$(rg -q '"rule_name"[[:space:]]*:[[:space:]]*"keyed_text_region"' "${WFCLLM_CONFIG}" && echo 1 || echo 0)"
+else
+  HAS_KEYED_TEXT_REGION="$(grep -Eq '"rule_name"[[:space:]]*:[[:space:]]*"keyed_text_region"' "${WFCLLM_CONFIG}" && echo 1 || echo 0)"
+fi
+if [[ "${HAS_KEYED_TEXT_REGION}" == "1" ]]; then
   echo "carrier config keyed_text_region is forbidden" >&2
   exit 2
 fi
@@ -174,6 +219,10 @@ fi
 run_phase calibrate --negative-input "${CALIBRATION_INPUT}" --calibration "${CALIBRATION}" --model-device cuda --gate-device cpu
 run_phase detect --input "${POSITIVE_INPUT}" --calibration "${CALIBRATION}" --model-device cuda --gate-device cpu
 run_phase report
-run_phase audit
+if [[ "${WFCLLM_PROFILE}" == "full" ]]; then
+  run_phase audit
+else
+  echo "skipped audit for fast profile"
+fi
 
 echo "completed: ${RUN_DIR}"

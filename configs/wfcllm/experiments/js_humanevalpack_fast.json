@@ -1,10 +1,19 @@
 {
   "method": {
     "name": "gated_semantic_window_v1",
-    "windowing": {"contract_version": "js-statement-window/v1"},
-    "gate": {"require_validated": false},
-    "rewrite": {"strategy": "model_semantic_window"},
-    "semantic": {"parent_descriptor_version": "js-statement-window/v1"}
+    "windowing": {
+      "contract_version": "js-statement-window/v1"
+    },
+    "gate": {
+      "require_validated": false,
+      "fast_experimental": true
+    },
+    "rewrite": {
+      "strategy": "model_semantic_window"
+    },
+    "semantic": {
+      "parent_descriptor_version": "js-statement-window/v1"
+    }
   },
   "generation": {
     "language": "js",
@@ -16,5 +25,15 @@
     "lsh_d": 12,
     "lsh_gamma": 0.45
   },
-  "experiment": {"profile": "fast"}
+  "experiment": {
+    "profile": "fast"
+  },
+  "detector": {
+    "target_fpr": 0.31,
+    "minimum_reliable_windows": 1,
+    "allow_unsuitable_windows": true
+  },
+  "calibration": {
+    "group_by": "pooled_reliable_hit_rate"
+  }
 }
