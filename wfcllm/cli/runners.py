@@ -567,6 +567,18 @@ def run_report(args: argparse.Namespace, state: RunStateManager) -> int:
         }
         report_fields = {name: metrics.get(name) for name in sorted(allowed_metrics)}
 
+        generation_section = (
+            config.get("generation") if isinstance(config, Mapping) else None
+        )
+        if not isinstance(generation_section, Mapping):
+            generation_section = {}
+        model_path_value = getattr(args, "generation_model_path", None)
+        report_fields["dataset"] = generation_section.get("dataset")
+        report_fields["language"] = str(generation_section.get("language", "python"))
+        report_fields["generation_model"] = (
+            Path(str(model_path_value)).name if model_path_value else None
+        )
+
         posthoc = getattr(args, "_posthoc_pass_report", None)
         run_dir_value = getattr(args, "run_dir", None)
         if posthoc is None and run_dir_value is not None:

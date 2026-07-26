@@ -483,6 +483,73 @@ def test_gated_report_records_required_metrics_and_posthoc_marker(tmp_path: Path
     assert state.get("report", "posthoc_pass_report")["posthoc_only"] is True
 
 
+def test_gated_report_carries_dataset_language_and_model_identity(
+    tmp_path: Path,
+) -> None:
+    state = RunStateManager(tmp_path / "identity-state.json")
+    config = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME).to_dict()
+    config["generation"] = dict(config.get("generation") or {})
+    config["generation"].update({"dataset": "humanevalpack", "language": "js"})
+    run_dir = tmp_path / "run"
+    args = argparse.Namespace(
+        _config_cache=config,
+        run_dir=str(run_dir),
+        generation_model_path="/models/deepseek-coder-1.3b-instruct",
+        _gated_report_metrics={
+            "gate_coverage": 0.5,
+            "hit_count": 1,
+            "miss_count": 1,
+            "abstain_count": 0,
+            "rewrite_cost": {"attempts": 1},
+            "detection_curve": [],
+            "calibration": {"target_fpr": 0.31},
+        },
+    )
+
+    assert run_report(args, state) == 0
+
+    payload = json.loads(
+        (run_dir / "reports" / "reference_report.json").read_text(encoding="utf-8")
+    )
+    assert payload["dataset"] == "humanevalpack"
+    assert payload["language"] == "js"
+    assert payload["generation_model"] == "deepseek-coder-1.3b-instruct"
+    assert "/models/" not in json.dumps(payload)
+    assert state.get("report", "dataset") == "humanevalpack"
+    assert state.get("report", "language") == "js"
+    assert state.get("report", "generation_model") == "deepseek-coder-1.3b-instruct"
+
+
+def test_gated_report_identity_fields_default_without_model_path(
+    tmp_path: Path,
+) -> None:
+    state = RunStateManager(tmp_path / "identity-default-state.json")
+    config = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME).to_dict()
+    run_dir = tmp_path / "run"
+    args = argparse.Namespace(
+        _config_cache=config,
+        run_dir=str(run_dir),
+        _gated_report_metrics={
+            "gate_coverage": 0.5,
+            "hit_count": 1,
+            "miss_count": 1,
+            "abstain_count": 0,
+            "rewrite_cost": {"attempts": 1},
+            "detection_curve": [],
+            "calibration": {"target_fpr": 0.05},
+        },
+    )
+
+    assert run_report(args, state) == 0
+
+    payload = json.loads(
+        (run_dir / "reports" / "reference_report.json").read_text(encoding="utf-8")
+    )
+    assert payload["dataset"] == config["generation"]["dataset"]
+    assert payload["language"] == config["generation"].get("language", "python")
+    assert payload["generation_model"] is None
+
+
 def test_gated_report_counts_selected_rewrites_without_claiming_unknown_attempts(
     tmp_path: Path,
 ) -> None:
