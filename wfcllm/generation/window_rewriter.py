@@ -7,10 +7,11 @@ from dataclasses import dataclass, replace
 import hashlib
 import io
 import json
+import re
 import token
 import textwrap
 import tokenize
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from wfcllm.gate.data import RewriteCandidate, RewriteRequest
 from wfcllm.windowing import (
@@ -210,6 +211,202 @@ class KeyBlindAstEquivalentWindowRewriter:
             parsed,
             semantic_validation_rule=validation_rule,
             semantic_equivalence_certified=certified,
+        )
+
+    @staticmethod
+    def _candidate_from_parsed(
+        request: RewriteRequest,
+        parsed: ParsedRewrite,
+    ) -> RewriteCandidate:
+        prefix_bytes = len(request.completed_prefix.encode("utf-8"))
+        end_byte = prefix_bytes + len(parsed.text.encode("utf-8"))
+        return RewriteCandidate(
+            code=parsed.text,
+            parse_status=parsed.parse_status,
+            unit_count=parsed.unit_count,
+            same_parent_scope=parsed.same_parent_scope,
+            boundary_span=(prefix_bytes, end_byte),
+            generation_seed_id=parsed.generation_seed_id,
+            rewrite_config_id=parsed.rewrite_config_id,
+        )
+
+
+class KeyBlindCppEquivalentWindowRewriter:
+    """Emit conservative C++ variants without consulting keys or LSH outcomes."""
+
+    validation_rule = "cpp-keyblind-equivalent/v1"
+
+    def __init__(
+        self,
+        *,
+        extractor: StatementUnitExtractor,
+        window_contract_version: str,
+    ) -> None:
+        self._extractor = extractor
+        self._window_contract_version = window_contract_version
+
+    def rewrite_windows(
+        self,
+        request: RewriteRequest,
+        *,
+        candidate_indices: tuple[int, ...],
+    ) -> tuple[ParsedRewrite, ...]:
+        if candidate_indices != (1, 2, 3):
+            raise ValueError(
+                "candidate_indices must equal the public trajectory (1, 2, 3)"
+            )
+        return tuple(
+            self.rewrite_window(request, candidate_index=index)
+            for index in candidate_indices
+        )
+
+    def rewrite_many(
+        self,
+        request: RewriteRequest,
+        *,
+        candidate_indices: tuple[int, ...],
+    ) -> tuple[RewriteCandidate, ...]:
+        return tuple(
+            self._candidate_from_parsed(request, parsed)
+            for parsed in self.rewrite_windows(
+                request,
+                candidate_indices=candidate_indices,
+            )
+        )
+
+    def rewrite(
+        self, request: RewriteRequest, *, candidate_index: int
+    ) -> RewriteCandidate:
+        return self._candidate_from_parsed(
+            request,
+            self.rewrite_window(request, candidate_index=candidate_index),
+        )
+
+    def rewrite_window(
+        self, request: RewriteRequest, *, candidate_index: int
+    ) -> ParsedRewrite:
+        _validate_call(request, candidate_index)
+        text = _cpp_equivalent_variant(
+            request.original_window,
+            candidate_index=candidate_index,
+        )
+        generation = RewriteGeneration(
+            token_ids=(),
+            text=text,
+            generation_seed_id=(
+                "public-key-blind-cpp:"
+                + hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+            ),
+            rewrite_config_id=f"public-key-blind-cpp-equivalent/v1:{candidate_index}",
+        )
+        parsed = _parse_generation(
+            request,
+            generation,
+            extractor=self._extractor,
+            window_contract_version=self._window_contract_version,
+        )
+        return replace(
+            parsed,
+            semantic_validation_rule=self.validation_rule,
+            semantic_equivalence_certified=text != request.original_window,
+        )
+
+    @staticmethod
+    def _candidate_from_parsed(
+        request: RewriteRequest,
+        parsed: ParsedRewrite,
+    ) -> RewriteCandidate:
+        prefix_bytes = len(request.completed_prefix.encode("utf-8"))
+        end_byte = prefix_bytes + len(parsed.text.encode("utf-8"))
+        return RewriteCandidate(
+            code=parsed.text,
+            parse_status=parsed.parse_status,
+            unit_count=parsed.unit_count,
+            same_parent_scope=parsed.same_parent_scope,
+            boundary_span=(prefix_bytes, end_byte),
+            generation_seed_id=parsed.generation_seed_id,
+            rewrite_config_id=parsed.rewrite_config_id,
+        )
+
+
+class KeyBlindJavaEquivalentWindowRewriter:
+    """Emit conservative Java variants without consulting keys or LSH outcomes."""
+
+    validation_rule = "java-keyblind-equivalent/v1"
+
+    def __init__(
+        self,
+        *,
+        extractor: StatementUnitExtractor,
+        window_contract_version: str,
+    ) -> None:
+        self._extractor = extractor
+        self._window_contract_version = window_contract_version
+
+    def rewrite_windows(
+        self,
+        request: RewriteRequest,
+        *,
+        candidate_indices: tuple[int, ...],
+    ) -> tuple[ParsedRewrite, ...]:
+        if candidate_indices != (1, 2, 3):
+            raise ValueError(
+                "candidate_indices must equal the public trajectory (1, 2, 3)"
+            )
+        return tuple(
+            self.rewrite_window(request, candidate_index=index)
+            for index in candidate_indices
+        )
+
+    def rewrite_many(
+        self,
+        request: RewriteRequest,
+        *,
+        candidate_indices: tuple[int, ...],
+    ) -> tuple[RewriteCandidate, ...]:
+        return tuple(
+            self._candidate_from_parsed(request, parsed)
+            for parsed in self.rewrite_windows(
+                request,
+                candidate_indices=candidate_indices,
+            )
+        )
+
+    def rewrite(
+        self, request: RewriteRequest, *, candidate_index: int
+    ) -> RewriteCandidate:
+        return self._candidate_from_parsed(
+            request,
+            self.rewrite_window(request, candidate_index=candidate_index),
+        )
+
+    def rewrite_window(
+        self, request: RewriteRequest, *, candidate_index: int
+    ) -> ParsedRewrite:
+        _validate_call(request, candidate_index)
+        text = _java_equivalent_variant(
+            request.original_window,
+            candidate_index=candidate_index,
+        )
+        generation = RewriteGeneration(
+            token_ids=(),
+            text=text,
+            generation_seed_id=(
+                "public-key-blind-java:"
+                + hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+            ),
+            rewrite_config_id=f"public-key-blind-java-equivalent/v1:{candidate_index}",
+        )
+        parsed = _parse_generation(
+            request,
+            generation,
+            extractor=self._extractor,
+            window_contract_version=self._window_contract_version,
+        )
+        return replace(
+            parsed,
+            semantic_validation_rule=self.validation_rule,
+            semantic_equivalence_certified=text != request.original_window,
         )
 
     @staticmethod
@@ -467,6 +664,481 @@ def python_literal_equivalent(reference: str, candidate: str) -> bool:
     return ast.dump(reference_tree, include_attributes=False) == ast.dump(
         folded,
         include_attributes=False,
+    )
+
+
+def _java_equivalent_variant(text: str, *, candidate_index: int) -> str:
+    body = text.rstrip()
+    trailing = text[len(body):]
+    variants = (
+        _java_parenthesize_return,
+        _java_ternary_return,
+        lambda value: _java_boolean_return(value, operator="&&"),
+        lambda value: _java_boolean_return(value, operator="||"),
+        _java_boolean_object_ternary_return,
+        _java_parenthesize_condition,
+        lambda value: _java_boolean_condition(value, operator="&&"),
+        lambda value: _java_boolean_condition(value, operator="||"),
+        _java_parenthesize_initializer_or_assignment,
+        lambda value: _java_boolean_initializer_or_assignment(value, operator="&&"),
+        lambda value: _java_boolean_initializer_or_assignment(value, operator="||"),
+    )
+    transform = variants[(candidate_index - 1) % len(variants)]
+    if "\n" not in body:
+        transformed = transform(body)
+        return transformed + trailing
+    return _java_transform_first_matching_line(text, transform)
+
+
+def _java_transform_first_matching_line(
+    text: str,
+    transform: Callable[[str], str],
+) -> str:
+    lines = text.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        body = line.rstrip()
+        trailing = line[len(body):]
+        transformed = transform(body) + trailing
+        if transformed != line:
+            return "".join((*lines[:index], transformed, *lines[index + 1:]))
+    return text
+
+
+def _java_parenthesize_return(text: str) -> str:
+    match = re.match(r"^(\s*return\s+)(.+?)(\s*;\s*)$", text, re.DOTALL)
+    if not match:
+        return text
+    expression = match.group(2).strip()
+    if not _java_safe_expression(expression):
+        return text
+    return f"{match.group(1)}({expression}){match.group(3)}"
+
+
+def _java_ternary_return(text: str) -> str:
+    match = re.match(r"^(\s*return\s+)(.+?)(\s*;\s*)$", text, re.DOTALL)
+    if not match:
+        return text
+    expression = match.group(2).strip()
+    if not _java_safe_expression(expression):
+        return text
+    return f"{match.group(1)}(true ? ({expression}) : ({expression})){match.group(3)}"
+
+
+def _java_boolean_object_ternary_return(text: str) -> str:
+    match = re.match(r"^(\s*return\s+)(.+?)(\s*;\s*)$", text, re.DOTALL)
+    if not match:
+        return text
+    expression = match.group(2).strip()
+    if not _java_safe_expression(expression):
+        return text
+    return (
+        f"{match.group(1)}(Boolean.TRUE ? ({expression}) : ({expression}))"
+        f"{match.group(3)}"
+    )
+
+
+def _java_boolean_return(text: str, *, operator: str) -> str:
+    if operator not in {"&&", "||"}:
+        raise ValueError("unsupported boolean return operator")
+    match = re.match(r"^(\s*return\s+)(.+?)(\s*;\s*)$", text, re.DOTALL)
+    if not match:
+        return text
+    expression = match.group(2).strip()
+    if not _java_boolean_expression(expression):
+        return text
+    identity = "true" if operator == "&&" else "false"
+    return f"{match.group(1)}(({expression}) {operator} {identity}){match.group(3)}"
+
+
+def _java_parenthesize_condition(text: str) -> str:
+    match = re.match(
+        r"^(\s*(?:if|while)\s*\()(.+?)(\)(?:\s*\{)?\s*)$",
+        text,
+        re.DOTALL,
+    )
+    if match:
+        condition = match.group(2).strip()
+        if not condition:
+            return text
+        return f"{match.group(1)}({condition}){match.group(3)}"
+    match = re.match(
+        r"^(\s*for\s*\()(.*?;)(.*?)(;.*?\)(?:\s*\{)?\s*)$",
+        text,
+        re.DOTALL,
+    )
+    if not match:
+        return text
+    condition = match.group(3).strip()
+    if not condition:
+        return text
+    return f"{match.group(1)}{match.group(2)} ({condition}){match.group(4)}"
+
+
+def _java_boolean_condition(text: str, *, operator: str) -> str:
+    if operator not in {"&&", "||"}:
+        raise ValueError("unsupported boolean condition operator")
+    identity = "true" if operator == "&&" else "false"
+    match = re.match(
+        r"^(\s*(?:if|while)\s*\()(.+?)(\)(?:\s*\{)?\s*)$",
+        text,
+        re.DOTALL,
+    )
+    if match:
+        condition = match.group(2).strip()
+        if not condition:
+            return text
+        return f"{match.group(1)}(({condition}) {operator} {identity}){match.group(3)}"
+    match = re.match(
+        r"^(\s*for\s*\()(.*?;)(.*?)(;.*?\)(?:\s*\{)?\s*)$",
+        text,
+        re.DOTALL,
+    )
+    if not match:
+        return text
+    condition = match.group(3).strip()
+    if not condition:
+        return text
+    return f"{match.group(1)}{match.group(2)} (({condition}) {operator} {identity}){match.group(4)}"
+
+
+def _java_parenthesize_initializer_or_assignment(text: str) -> str:
+    match = _java_initializer_or_assignment(text)
+    if not match:
+        return text
+    expression = match.group(2).strip()
+    if not _java_safe_expression(expression):
+        return text
+    return f"{match.group(1)}({expression}){match.group(3)}"
+
+
+def _java_boolean_initializer_or_assignment(text: str, *, operator: str) -> str:
+    if operator not in {"&&", "||"}:
+        raise ValueError("unsupported boolean initializer operator")
+    match = re.match(
+        r"^(\s*(?:(?:final\s+)?boolean\s+\w+|[A-Za-z_]\w*)\s*=\s*)"
+        r"(.+?)(\s*;\s*)$",
+        text,
+        re.DOTALL,
+    )
+    if not match:
+        return text
+    expression = match.group(2).strip()
+    if not _java_boolean_expression(expression):
+        return text
+    identity = "true" if operator == "&&" else "false"
+    return f"{match.group(1)}(({expression}) {operator} {identity}){match.group(3)}"
+
+
+def _java_initializer_or_assignment(text: str) -> re.Match[str] | None:
+    declaration = re.match(
+        r"^(\s*(?:final\s+)?(?:boolean|byte|short|int|long|float|double|char|"
+        r"String|[A-Z]\w*(?:<[^;=]+>)?(?:\[\])?)\s+\w+\s*=\s*)"
+        r"(.+?)(\s*;\s*)$",
+        text,
+        re.DOTALL,
+    )
+    if declaration:
+        return declaration
+    return re.match(
+        r"^(\s*[A-Za-z_]\w*(?:(?:\.[A-Za-z_]\w*)|(?:\[[^\]]+\]))*\s*=\s*)"
+        r"(.+?)(\s*;\s*)$",
+        text,
+        re.DOTALL,
+    )
+
+
+def _java_safe_expression(expression: str) -> bool:
+    value = expression.strip()
+    if not value or value.startswith("{") or "->" in value:
+        return False
+    if re.search(r"\bnew\b.*\{", value):
+        return False
+    return True
+
+
+def _java_boolean_expression(expression: str) -> bool:
+    value = expression.strip()
+    if not _java_safe_expression(value):
+        return False
+    if value in {"true", "false"}:
+        return True
+    return bool(
+        re.search(r"(?:==|!=|<=|>=|&&|\|\||[<>])", value)
+        or re.match(r"!\s*[A-Za-z_(]", value)
+    )
+
+
+def _cpp_equivalent_variant(text: str, *, candidate_index: int) -> str:
+    body = text.rstrip()
+    trailing = text[len(body):]
+    variants = (
+        _cpp_parenthesize_return,
+        _cpp_parenthesize_condition,
+        _cpp_parenthesize_initializer_or_assignment,
+        lambda value: _cpp_comment_return(value, tag="r1"),
+        lambda value: _cpp_comment_condition(value, tag="c1"),
+        lambda value: _cpp_comment_initializer_or_assignment(value, tag="a1"),
+        lambda value: _cpp_ternary_return(value),
+        lambda value: _cpp_boolean_condition(value, operator="&&"),
+        lambda value: _cpp_ternary_initializer_or_assignment(value),
+        lambda value: _cpp_comment_return(value, tag="r2"),
+        lambda value: _cpp_boolean_condition(value, operator="||"),
+        lambda value: _cpp_comment_initializer_or_assignment(value, tag="a2"),
+        _cpp_comma_return,
+        _cpp_comma_condition,
+        _cpp_comma_initializer_or_assignment,
+        _cpp_sizeof_return,
+        _cpp_not_not_condition,
+        _cpp_sizeof_initializer_or_assignment,
+    )
+    transform = variants[(candidate_index - 1) % len(variants)]
+    if "\n" not in body:
+        transformed = transform(body)
+        return transformed + trailing
+    return _cpp_transform_first_matching_line(text, transform)
+
+
+def _cpp_transform_first_matching_line(
+    text: str,
+    transform: Callable[[str], str],
+) -> str:
+    lines = text.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        body = line.rstrip()
+        trailing = line[len(body):]
+        transformed = transform(body) + trailing
+        if transformed != line:
+            return "".join((*lines[:index], transformed, *lines[index + 1:]))
+    return text
+
+
+def _cpp_parenthesize_return(text: str) -> str:
+    match = re.match(r"^(\s*return\s+)(.+?)(\s*;?\s*)$", text, re.DOTALL)
+    if not match:
+        return text
+    expression = match.group(2).strip()
+    if not expression:
+        return text
+    return f"{match.group(1)}({expression}){match.group(3)}"
+
+
+def _cpp_comment_return(text: str, *, tag: str) -> str:
+    match = re.match(r"^(\s*return\s+)(.+?)(\s*;?\s*)$", text, re.DOTALL)
+    if not match:
+        return text
+    expression = match.group(2).strip()
+    if not expression:
+        return text
+    return f"{match.group(1)}/* wfcllm:{tag} */ {expression}{match.group(3)}"
+
+
+def _cpp_ternary_return(text: str) -> str:
+    match = re.match(r"^(\s*return\s+)(.+?)(\s*;?\s*)$", text, re.DOTALL)
+    if not match:
+        return text
+    expression = match.group(2).strip()
+    if not expression:
+        return text
+    return f"{match.group(1)}(true ? ({expression}) : ({expression})){match.group(3)}"
+
+
+def _cpp_comma_return(text: str) -> str:
+    match = re.match(r"^(\s*return\s+)(.+?)(\s*;?\s*)$", text, re.DOTALL)
+    if not match:
+        return text
+    expression = match.group(2).strip()
+    if not expression:
+        return text
+    return f"{match.group(1)}((void)0, {expression}){match.group(3)}"
+
+
+def _cpp_sizeof_return(text: str) -> str:
+    match = re.match(r"^(\s*return\s+)(.+?)(\s*;?\s*)$", text, re.DOTALL)
+    if not match:
+        return text
+    expression = match.group(2).strip()
+    if not expression:
+        return text
+    return (
+        f"{match.group(1)}((void)sizeof({expression}), {expression})"
+        f"{match.group(3)}"
+    )
+
+
+def _cpp_parenthesize_condition(text: str) -> str:
+    match = re.match(
+        r"^(\s*(?:if|while|switch)\s*\()(.+?)(\)(?:\s*\{)?\s*)$",
+        text,
+        re.DOTALL,
+    )
+    if match:
+        condition = match.group(2).strip()
+        if not condition:
+            return text
+        return f"{match.group(1)}({condition}){match.group(3)}"
+    match = re.match(
+        r"^(\s*for\s*\()(.*?;)(.*?)(;.*?\)(?:\s*\{)?\s*)$",
+        text,
+        re.DOTALL,
+    )
+    if not match:
+        return text
+    condition = match.group(3).strip()
+    if not condition:
+        return text
+    return f"{match.group(1)}{match.group(2)} ({condition}){match.group(4)}"
+
+
+def _cpp_comment_condition(text: str, *, tag: str) -> str:
+    match = re.match(
+        r"^(\s*(?:if|while|switch)\s*\()(.+?)(\)(?:\s*\{)?\s*)$",
+        text,
+        re.DOTALL,
+    )
+    if match:
+        condition = match.group(2).strip()
+        if not condition:
+            return text
+        return f"{match.group(1)}/* wfcllm:{tag} */ {condition}{match.group(3)}"
+    match = re.match(
+        r"^(\s*for\s*\()(.*?;)(.*?)(;.*?\)(?:\s*\{)?\s*)$",
+        text,
+        re.DOTALL,
+    )
+    if not match:
+        return text
+    condition = match.group(3).strip()
+    if not condition:
+        return text
+    return f"{match.group(1)}{match.group(2)} /* wfcllm:{tag} */ {condition}{match.group(4)}"
+
+
+def _cpp_boolean_condition(text: str, *, operator: str) -> str:
+    if operator not in {"&&", "||"}:
+        raise ValueError("unsupported boolean condition operator")
+    match = re.match(
+        r"^(\s*(?:if|while)\s*\()(.+?)(\)(?:\s*\{)?\s*)$",
+        text,
+        re.DOTALL,
+    )
+    if match:
+        condition = match.group(2).strip()
+        if not condition:
+            return text
+        identity = "true" if operator == "&&" else "false"
+        return f"{match.group(1)}(({condition}) {operator} {identity}){match.group(3)}"
+    match = re.match(
+        r"^(\s*for\s*\()(.*?;)(.*?)(;.*?\)(?:\s*\{)?\s*)$",
+        text,
+        re.DOTALL,
+    )
+    if not match:
+        return text
+    condition = match.group(3).strip()
+    if not condition:
+        return text
+    identity = "true" if operator == "&&" else "false"
+    return f"{match.group(1)}{match.group(2)} (({condition}) {operator} {identity}){match.group(4)}"
+
+
+def _cpp_comma_condition(text: str) -> str:
+    match = re.match(
+        r"^(\s*(?:if|while|switch)\s*\()(.+?)(\)(?:\s*\{)?\s*)$",
+        text,
+        re.DOTALL,
+    )
+    if match:
+        condition = match.group(2).strip()
+        if not condition:
+            return text
+        return f"{match.group(1)}((void)0, {condition}){match.group(3)}"
+    match = re.match(
+        r"^(\s*for\s*\()(.*?;)(.*?)(;.*?\)(?:\s*\{)?\s*)$",
+        text,
+        re.DOTALL,
+    )
+    if not match:
+        return text
+    condition = match.group(3).strip()
+    if not condition:
+        return text
+    return f"{match.group(1)}{match.group(2)} ((void)0, {condition}){match.group(4)}"
+
+
+def _cpp_not_not_condition(text: str) -> str:
+    match = re.match(
+        r"^(\s*(?:if|while)\s*\()(.+?)(\)(?:\s*\{)?\s*)$",
+        text,
+        re.DOTALL,
+    )
+    if match:
+        condition = match.group(2).strip()
+        if not condition:
+            return text
+        return f"{match.group(1)}(!!({condition})){match.group(3)}"
+    match = re.match(
+        r"^(\s*for\s*\()(.*?;)(.*?)(;.*?\)(?:\s*\{)?\s*)$",
+        text,
+        re.DOTALL,
+    )
+    if not match:
+        return text
+    condition = match.group(3).strip()
+    if not condition:
+        return text
+    return f"{match.group(1)}{match.group(2)} (!!({condition})){match.group(4)}"
+
+
+def _cpp_parenthesize_initializer_or_assignment(text: str) -> str:
+    match = re.match(r"^(\s*[^;=<>!]+?\s=\s*)(.+?)(\s*;?\s*)$", text, re.DOTALL)
+    if not match:
+        return text
+    expression = match.group(2).strip()
+    if not expression or expression.startswith("{"):
+        return text
+    return f"{match.group(1)}({expression}){match.group(3)}"
+
+
+def _cpp_comment_initializer_or_assignment(text: str, *, tag: str) -> str:
+    match = re.match(r"^(\s*[^;=<>!]+?\s=\s*)(.+?)(\s*;?\s*)$", text, re.DOTALL)
+    if not match:
+        return text
+    expression = match.group(2).strip()
+    if not expression or expression.startswith("{"):
+        return text
+    return f"{match.group(1)}/* wfcllm:{tag} */ {expression}{match.group(3)}"
+
+
+def _cpp_ternary_initializer_or_assignment(text: str) -> str:
+    match = re.match(r"^(\s*[^;=<>!]+?\s=\s*)(.+?)(\s*;?\s*)$", text, re.DOTALL)
+    if not match:
+        return text
+    expression = match.group(2).strip()
+    if not expression or expression.startswith("{"):
+        return text
+    return f"{match.group(1)}(true ? ({expression}) : ({expression})){match.group(3)}"
+
+
+def _cpp_comma_initializer_or_assignment(text: str) -> str:
+    match = re.match(r"^(\s*[^;=<>!]+?\s=\s*)(.+?)(\s*;?\s*)$", text, re.DOTALL)
+    if not match:
+        return text
+    expression = match.group(2).strip()
+    if not expression or expression.startswith("{"):
+        return text
+    return f"{match.group(1)}((void)0, {expression}){match.group(3)}"
+
+
+def _cpp_sizeof_initializer_or_assignment(text: str) -> str:
+    match = re.match(r"^(\s*[^;=<>!]+?\s=\s*)(.+?)(\s*;?\s*)$", text, re.DOTALL)
+    if not match:
+        return text
+    expression = match.group(2).strip()
+    if not expression or expression.startswith("{"):
+        return text
+    return (
+        f"{match.group(1)}((void)sizeof({expression}), {expression})"
+        f"{match.group(3)}"
     )
 
 
@@ -806,17 +1478,29 @@ def _descriptor(
 ) -> ParentDescriptor:
     return ParentDescriptor(
         contract_version=window_contract_version,
-        ancestor_node_types=unit.parent_path[:-1],
+        ancestor_node_types=_descriptor_ancestor_node_types(unit),
         direct_parent_type=unit.direct_parent_type,
         first_unit_ordinal=unit.direct_child_ordinal,
         compound_header_role="header" if unit.compound_header else "body",
     )
 
 
+def _descriptor_ancestor_node_types(unit: Any) -> tuple[str, ...]:
+    ancestor_node_types = unit.parent_path[:-1]
+    while (
+        ancestor_node_types
+        and ancestor_node_types[-1] == unit.direct_parent_type
+    ):
+        ancestor_node_types = ancestor_node_types[:-1]
+    return ancestor_node_types
+
+
 __all__ = [
     "CausalWindowRewriter",
     "KeyBlindAstEquivalentWindowRewriter",
     "KeyBlindWhitespaceWindowRewriter",
+    "KeyBlindCppEquivalentWindowRewriter",
+    "KeyBlindJavaEquivalentWindowRewriter",
     "ParsedRewrite",
     "RewriteGeneration",
     "python_ast_equivalent",

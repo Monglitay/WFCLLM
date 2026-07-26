@@ -6,9 +6,12 @@ from wfcllm.generation.gated_generator import GatedGenerator, RewriteTokens
 from wfcllm.generation.window_rewriter import (
     CausalWindowRewriter,
     KeyBlindAstEquivalentWindowRewriter,
+    KeyBlindCppEquivalentWindowRewriter,
+    KeyBlindJavaEquivalentWindowRewriter,
     RewriteGeneration,
 )
 from wfcllm.windowing import GateScores, GateThresholds, WindowPartitioner
+from wfcllm.windowing.multilanguage import get_statement_unit_extractor
 
 
 class Gate:
@@ -245,6 +248,122 @@ def test_ast_equivalence_certificate_overrides_low_encoder_cosine() -> None:
     assert result.candidates[1].semantic_preservation_passed is True
     assert result.candidates[1].semantic_validation_rule == "python-ast-equivalent/v1"
     assert result.final_code != "label = 'ready'\ncount = 10\nreturn_value = (label, count)\n"
+
+
+def test_cpp_keyblind_equivalence_certificate_overrides_low_encoder_cosine() -> None:
+    scorer = Scorer([False, True] * 20, semantic_passes=[False] * 20)
+    extractor = get_statement_unit_extractor("cpp")
+    generator = GatedGenerator(
+        partitioner=WindowPartitioner(
+            Gate(),
+            GateThresholds(0.2, 0.7, 0.8),
+            lambda text: len(text),
+            window_contract_version="cpp-statement-window/v1",
+        ),
+        scorer=scorer,
+        rewriter=KeyBlindCppEquivalentWindowRewriter(
+            extractor=extractor,
+            window_contract_version="cpp-statement-window/v1",
+        ),
+        max_rewrites=3,
+        extractor=extractor,
+    )
+
+    result = generator.generate(
+        prompt="",
+        original="int add(int a, int b) {\n  int sum = a + b;\n  return sum;\n}\n",
+    )
+
+    selected = [row for row in result.audit if row.selected_candidate_index > 0]
+    certified_candidates = [
+        row
+        for row in result.candidates
+        if row.semantic_validation_rule == "cpp-keyblind-equivalent/v1"
+    ]
+    assert selected
+    assert selected[0].semantic_validation_rule == "cpp-keyblind-equivalent/v1"
+    assert certified_candidates[0].semantic_reference_cosine == 0.5
+    assert certified_candidates[0].semantic_preservation_passed is True
+    assert result.final_code != "int add(int a, int b) {\n  int sum = a + b;\n  return sum;\n}\n"
+
+
+def test_fast_profile_can_select_certified_cpp_rewrite_without_lsh_hit() -> None:
+    scorer = Scorer([False] * 20, semantic_passes=[False] * 20)
+    extractor = get_statement_unit_extractor("cpp")
+    generator = GatedGenerator(
+        partitioner=WindowPartitioner(
+            Gate(),
+            GateThresholds(0.2, 0.7, 0.8),
+            lambda text: len(text),
+            window_contract_version="cpp-statement-window/v1",
+        ),
+        scorer=scorer,
+        rewriter=KeyBlindCppEquivalentWindowRewriter(
+            extractor=extractor,
+            window_contract_version="cpp-statement-window/v1",
+        ),
+        max_rewrites=18,
+        extractor=extractor,
+        accept_certified_rewrite_without_hit=True,
+    )
+
+    result = generator.generate(
+        prompt="",
+        original="int add(int a, int b) {\n  int sum = a + b;\n  return sum;\n}\n",
+    )
+
+    selected = [row for row in result.audit if row.selected_candidate_index > 0]
+    selected_candidates = [row for row in result.candidates if row.selected]
+    assert selected
+    assert selected[0].semantic_validation_rule == "cpp-keyblind-equivalent/v1"
+    assert any(
+        row.candidate_index > 0 and row.semantic_hit is False
+        for row in selected_candidates
+    )
+
+
+def test_fast_profile_can_select_certified_java_rewrite_without_lsh_hit() -> None:
+    scorer = Scorer([False] * 20, semantic_passes=[False] * 20)
+    extractor = get_statement_unit_extractor("java")
+    generator = GatedGenerator(
+        partitioner=WindowPartitioner(
+            Gate(),
+            GateThresholds(0.2, 0.7, 0.8),
+            lambda text: len(text),
+            window_contract_version="java-statement-window/v1",
+        ),
+        scorer=scorer,
+        rewriter=KeyBlindJavaEquivalentWindowRewriter(
+            extractor=extractor,
+            window_contract_version="java-statement-window/v1",
+        ),
+        max_rewrites=18,
+        extractor=extractor,
+        accept_certified_rewrite_without_hit=True,
+    )
+
+    result = generator.generate(
+        prompt="",
+        original=(
+            "class Solution {\n"
+            "  int add(int a, int b) {\n"
+            "    int sum = a + b;\n"
+            "    return sum;\n"
+            "  }\n"
+            "}\n"
+        ),
+    )
+
+    selected = [row for row in result.audit if row.selected_candidate_index > 0]
+    selected_candidates = [row for row in result.candidates if row.selected]
+    assert selected
+    assert selected[0].semantic_validation_rule == "java-keyblind-equivalent/v1"
+    assert any(
+        row.candidate_index > 0
+        and row.semantic_hit is False
+        and row.evaluation_status == "fast_certified_rewrite_selected"
+        for row in selected_candidates
+    )
 
 
 def test_batched_online_trajectory_retains_every_candidate_sidecar() -> None:

@@ -27,6 +27,18 @@ from wfcllm.windowing import (
     WindowPartitioner,
 )
 
+CERTIFIED_REWRITE_SEMANTIC_RULES = frozenset(
+    {
+        "python-ast-equivalent/v1",
+        "python-literal-equivalent/v1",
+        "cpp-keyblind-equivalent/v1",
+        "java-keyblind-equivalent/v1",
+    }
+)
+SEMANTIC_VALIDATION_RULES = frozenset(
+    {"identity/v1", "encoder-cosine/v1", *CERTIFIED_REWRITE_SEMANTIC_RULES}
+)
+
 
 @dataclass(frozen=True)
 class ByteSpan:
@@ -216,12 +228,7 @@ class GatedCandidateAudit:
                 raise ValueError("semantic cosine must be finite and in [-1, 1]")
             if not isinstance(passed, bool):
                 raise ValueError("semantic decision must be a bool")
-            if semantic_rule not in {
-                "identity/v1",
-                "encoder-cosine/v1",
-                "python-ast-equivalent/v1",
-                "python-literal-equivalent/v1",
-            }:
+            if semantic_rule not in SEMANTIC_VALIDATION_RULES:
                 raise ValueError("unknown semantic validation rule")
             if semantic_rule == "encoder-cosine/v1" and passed is not (
                 float(cosine) >= 0.90
@@ -264,6 +271,7 @@ class GatedCandidateAudit:
             "structure_rejected",
             "semantic_rejected",
             "keyed_lsh_evaluated",
+            "fast_certified_rewrite_selected",
             "generated_not_evaluated_after_accept",
             "gate_skipped",
         }
@@ -274,6 +282,7 @@ class GatedCandidateAudit:
             "structure_rejected": (False, None, False),
             "semantic_rejected": (True, False, False),
             "keyed_lsh_evaluated": (True, True, True),
+            "fast_certified_rewrite_selected": (True, True, True),
             "generated_not_evaluated_after_accept": (None, None, False),
             "gate_skipped": (True, True, False),
         }[self.evaluation_status]
@@ -292,12 +301,23 @@ class GatedCandidateAudit:
             raise ValueError("candidate parser facts contradict structure_ok")
         if self.selected and self.evaluation_status == "generated_not_evaluated_after_accept":
             raise ValueError("an unevaluated candidate cannot be selected")
-        if self.selected and self.candidate_index > 0 and (
-            self.evaluation_status != "keyed_lsh_evaluated"
-            or self.semantic_hit is not True
-            or self.semantic_stable is not True
+        if (
+            self.selected
+            and self.candidate_index > 0
+            and self.evaluation_status == "keyed_lsh_evaluated"
+            and (self.semantic_hit is not True or self.semantic_stable is not True)
         ):
             raise ValueError("a selected rewrite must be a stable semantic hit")
+        if (
+            self.selected
+            and self.candidate_index > 0
+            and self.evaluation_status == "fast_certified_rewrite_selected"
+            and (
+                self.semantic_preservation_passed is not True
+                or self.semantic_validation_rule not in CERTIFIED_REWRITE_SEMANTIC_RULES
+            )
+        ):
+            raise ValueError("a fast selected rewrite must be certified")
 
 
 class WholeWindowRewriter(Protocol):
@@ -323,6 +343,7 @@ class GatedGenerator:
         max_rewrites: int,
         extractor: Any | None = None,
         model_context: Any | None = None,
+        accept_certified_rewrite_without_hit: bool = False,
     ) -> None:
         if not isinstance(partitioner, WindowPartitioner):
             raise ValueError("partitioner must be a WindowPartitioner")
@@ -341,6 +362,9 @@ class GatedGenerator:
         self._extractor = extractor or PythonStatementUnitExtractor()
         self._window_contract_version = partitioner.window_contract_version
         self._model_context = model_context
+        self._accept_certified_rewrite_without_hit = bool(
+            accept_certified_rewrite_without_hit
+        )
 
     def generate(
         self,
@@ -485,10 +509,7 @@ class GatedGenerator:
                             semantic_preservation_passed = bool(
                                 semantic_comparison.passed
                             )
-                        elif candidate_rule in {
-                            "python-ast-equivalent/v1",
-                            "python-literal-equivalent/v1",
-                        }:
+                        elif candidate_rule in CERTIFIED_REWRITE_SEMANTIC_RULES:
                             semantic_validation_rule = candidate_rule
                             semantic_preservation_passed = bool(
                                 candidate.semantic_equivalence_certified
@@ -502,12 +523,22 @@ class GatedGenerator:
                                 window_text=candidate_semantic_text,
                                 parent_descriptor=window.parent_descriptor.canonical,
                             )
+                    force_accept = (
+                        self._accept_certified_rewrite_without_hit
+                        and checked is not None
+                        and semantic_preservation_passed is True
+                        and candidate.text != rewrite_window
+                    )
                     controller.observe(
                         _attempt(
                             candidate_index,
                             suitable=checked is not None,
                             structure_ok=checked is not None,
-                            evidence=evidence,
+                            evidence=(
+                                _forced_hit_evidence(evidence)
+                                if force_accept
+                                else evidence
+                            ),
                         )
                     )
                     window_candidate_audit.append(
@@ -530,6 +561,8 @@ class GatedGenerator:
                                 if checked is None
                                 else "semantic_rejected"
                                 if semantic_preservation_passed is False
+                                else "fast_certified_rewrite_selected"
+                                if force_accept
                                 else "keyed_lsh_evaluated"
                             ),
                         )
@@ -818,6 +851,28 @@ def _attempt(
     )
 
 
+def _forced_hit_evidence(evidence: Any | None) -> Any:
+    if evidence is None:
+        return type(
+            "ForcedEvidence",
+            (),
+            {
+                "hit": True,
+                "stable": True,
+                "margin": 1.0,
+            },
+        )()
+    return type(
+        "ForcedEvidence",
+        (),
+        {
+            "hit": True,
+            "stable": bool(getattr(evidence, "stable", True)),
+            "margin": float(getattr(evidence, "margin", 1.0)),
+        },
+    )()
+
+
 def _candidate_audit(
     *,
     window_index: int,
@@ -894,11 +949,21 @@ def _descriptor(
 ) -> ParentDescriptor:
     return ParentDescriptor(
         contract_version=window_contract_version,
-        ancestor_node_types=unit.parent_path[:-1],
+        ancestor_node_types=_descriptor_ancestor_node_types(unit),
         direct_parent_type=unit.direct_parent_type,
         first_unit_ordinal=unit.direct_child_ordinal,
         compound_header_role="header" if unit.compound_header else "body",
     )
+
+
+def _descriptor_ancestor_node_types(unit: Any) -> tuple[str, ...]:
+    ancestor_node_types = unit.parent_path[:-1]
+    while (
+        ancestor_node_types
+        and ancestor_node_types[-1] == unit.direct_parent_type
+    ):
+        ancestor_node_types = ancestor_node_types[:-1]
+    return ancestor_node_types
 
 
 def _consume_trailing_layout(source: bytes, end_byte: int) -> int:
