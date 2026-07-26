@@ -36,6 +36,15 @@ def test_preflight_accepts_supported_pairs(language: str, dataset: str) -> None:
     validate_experiment_config(config, language, dataset, "full")
 
 
+def test_preflight_allows_explicit_unvalidated_gate_candidate_diagnostic() -> None:
+    config = _config(language="python", dataset="humaneval")
+    config["method"]["rewrite"]["strategy"] = "python_ast_equivalent"
+    config["method"]["gate"]["require_validated"] = False
+    config["experiment"]["allow_unvalidated_gate_candidate"] = True
+
+    validate_experiment_config(config, "python", "humaneval", "full")
+
+
 def test_preflight_rejects_unsupported_pair() -> None:
     config = _config(language="cpp", dataset="mbpp")
 

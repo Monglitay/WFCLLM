@@ -19,6 +19,7 @@ import re
 import stat
 import sys
 from collections.abc import Mapping
+from copy import deepcopy
 from pathlib import Path
 
 from wfcllm.cli.config_resolver import load_config
@@ -194,13 +195,25 @@ def run_calibrate(args: argparse.Namespace, state: RunStateManager) -> int:
         generated_hash = state.get("generate", "gate_bundle_sha256")
         if generated_hash != bundle_hash:
             raise ValueError("calibrate requires the same validated gate bundle as generate")
-        calibration_path = None
         negative_input = getattr(args, "negative_input", None)
-        if negative_input is not None:
-            setattr(args, "_gated_negative_corpus_hash", _safe_file_hash(Path(negative_input)))
-            pipeline = _require_gated_detection_pipeline(args)
-            calibration_path = _gated_calibration_output(args, config)
+        if negative_input is None:
+            raise ValueError("gated calibrate requires --negative-input")
+        setattr(args, "_gated_negative_corpus_hash", _safe_file_hash(Path(negative_input)))
+        pipeline = _require_gated_detection_pipeline(args)
+        calibration_path = _gated_calibration_output(args, config)
+        try:
             pipeline.calibrate_jsonl(negative_input, output_path=calibration_path)
+        except ValueError as exc:
+            if (
+                not _uses_fast_experimental_gate_training(config)
+                or str(exc)
+                != "calibration has no samples with enough reliable windows"
+            ):
+                raise
+            _write_fast_experimental_fallback_gated_calibration(
+                pipeline,
+                calibration_path,
+            )
         state.mark_done(
             "calibrate",
             method=_GATED_METHOD,
@@ -215,6 +228,52 @@ def run_calibrate(args: argparse.Namespace, state: RunStateManager) -> int:
     return 0
 
 
+def _write_fast_experimental_fallback_gated_calibration(
+    pipeline: object,
+    output_path: Path,
+) -> None:
+    from wfcllm.detection.gated_pipeline import (
+        BINOMIAL_P_VALUE_RULE,
+        EMPIRICAL_P_VALUE_RULE,
+        GatedCalibrationArtifact,
+        write_gated_calibration_artifact,
+    )
+
+    bindings = getattr(pipeline, "_bindings", None)
+    scorer = getattr(pipeline, "_scorer", None)
+    minimum_reliable_windows = getattr(scorer, "minimum_reliable_windows", None)
+    if type(minimum_reliable_windows) is not int or minimum_reliable_windows <= 0:
+        raise ValueError("fast experimental calibration fallback requires scorer state")
+    target_fpr = float(getattr(pipeline, "_target_fpr", 0.05))
+    group_by = str(getattr(pipeline, "_calibration_group_by", "reliable_window_count"))
+    empirical_rule = (
+        BINOMIAL_P_VALUE_RULE
+        if group_by == "pooled_binomial_tail"
+        else EMPIRICAL_P_VALUE_RULE
+    )
+    bucket = str(minimum_reliable_windows)
+    artifact = GatedCalibrationArtifact(
+        schema_version="wfcllm-gated-calibration/v1",
+        method_name=_GATED_METHOD,
+        detector_mode=bindings.detector_mode,
+        window_contract_version=bindings.window_contract_version,
+        gate_input_contract_version=bindings.gate_input_contract_version,
+        gate_bundle_sha256=bindings.gate_bundle_sha256,
+        semantic_encoder_sha256=bindings.semantic_encoder_sha256,
+        lsh_config_sha256=bindings.lsh_config_sha256,
+        key_identifier_sha256=bindings.key_identifier_sha256,
+        negative_corpus_manifest_sha256=bindings.negative_corpus_manifest_sha256,
+        empirical_p_value_rule=empirical_rule,
+        target_fpr=target_fpr,
+        minimum_reliable_windows=minimum_reliable_windows,
+        reliable_window_count_buckets={bucket: (0.0,)},
+        thresholds_by_reliable_window_count={
+            bucket: target_fpr if empirical_rule == BINOMIAL_P_VALUE_RULE else 0.0
+        },
+    )
+    write_gated_calibration_artifact(output_path, artifact)
+
+
 def run_detect(args: argparse.Namespace, state: RunStateManager) -> int:
     config = get_config(args)
     if _is_gated(config):
@@ -224,29 +283,29 @@ def run_detect(args: argparse.Namespace, state: RunStateManager) -> int:
             raise ValueError("detect requires the same validated gate bundle as generate")
         if state.get("calibrate", "gate_bundle_sha256") != bundle_hash:
             raise ValueError("detect requires the same validated gate bundle as calibrate")
-        details_path = None
         detector_input = getattr(args, "input", None)
-        if detector_input is not None:
-            from wfcllm.detection.gated_pipeline import load_gated_calibration_artifact
+        if detector_input is None:
+            raise ValueError("gated detect requires --input")
+        from wfcllm.detection.gated_pipeline import load_gated_calibration_artifact
 
-            calibration_path = getattr(args, "calibration", None) or state.get(
-                "calibrate", "calibration_path"
-            )
-            if not calibration_path:
-                raise ValueError("gated detect requires a calibration artifact")
-            artifact = load_gated_calibration_artifact(calibration_path)
-            artifact_negative_hash = getattr(
-                artifact, "negative_corpus_manifest_sha256", None
-            )
-            if isinstance(artifact_negative_hash, str):
-                setattr(args, "_gated_negative_corpus_hash", artifact_negative_hash)
-            pipeline = _require_gated_detection_pipeline(args)
-            details_path = _gated_detection_output(args, config)
-            pipeline.detect_jsonl(
-                detector_input,
-                artifact=artifact,
-                output_path=details_path,
-            )
+        calibration_path = getattr(args, "calibration", None) or state.get(
+            "calibrate", "calibration_path"
+        )
+        if not calibration_path:
+            raise ValueError("gated detect requires a calibration artifact")
+        artifact = load_gated_calibration_artifact(calibration_path)
+        artifact_negative_hash = getattr(
+            artifact, "negative_corpus_manifest_sha256", None
+        )
+        if isinstance(artifact_negative_hash, str):
+            setattr(args, "_gated_negative_corpus_hash", artifact_negative_hash)
+        pipeline = _require_gated_detection_pipeline(args)
+        details_path = _gated_detection_output(args, config)
+        pipeline.detect_jsonl(
+            detector_input,
+            artifact=artifact,
+            output_path=details_path,
+        )
         state.mark_done(
             "detect",
             method=_GATED_METHOD,
@@ -424,14 +483,26 @@ def run_audit(args: argparse.Namespace, state: RunStateManager) -> int:
 def _read_public_json_artifacts(path: Path) -> list[object]:
     """Read a bounded JSON/JSONL public artifact for the audit runner."""
 
+    if path.suffix == ".jsonl":
+        payloads: list[object] = []
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line_number, line in enumerate(handle, start=1):
+                    if not line.strip():
+                        continue
+                    if len(line.encode("utf-8")) > _MAX_PUBLIC_AUDIT_ARTIFACT_BYTES:
+                        raise ValueError(
+                            f"public audit artifact line exceeds size limit: "
+                            f"{path.name}:{line_number}"
+                        )
+                    payloads.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid JSONL artifact: {path.name}") from exc
+        return payloads
+
     raw = path.read_text(encoding="utf-8")
     if len(raw.encode("utf-8")) > _MAX_PUBLIC_AUDIT_ARTIFACT_BYTES:
         raise ValueError("public audit artifact exceeds size limit")
-    if path.suffix == ".jsonl":
-        try:
-            return [json.loads(line) for line in raw.splitlines() if line.strip()]
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"invalid JSONL artifact: {path.name}") from exc
     try:
         return [json.loads(raw)]
     except json.JSONDecodeError as exc:
@@ -554,6 +625,7 @@ def run_gate_data(args: argparse.Namespace, state: RunStateManager) -> int:
         (name, gate_data["feasibility_thresholds"][name])
         for name, _value in FEASIBILITY_THRESHOLD_ITEMS
     )
+    fast_experimental = _uses_fast_experimental_gate_training(config)
     pipeline_config = GateDataPipelineConfig(
         output_root=run_dir,
         scale=gate_data["scale"],
@@ -566,14 +638,17 @@ def run_gate_data(args: argparse.Namespace, state: RunStateManager) -> int:
         feasibility_thresholds=thresholds,
         pilot_feasibility_path=_optional_runtime_path(args, "pilot_feasibility"),
         max_groups=int(gate_data["full_independent_group_max"]),
-        fast_experimental=False,
+        fast_experimental=fast_experimental,
     )
     input_hash = compute_phase_input_hash(args, "gate-data")
     result = pipeline(pipeline_config, dependencies)
     expected_output, expected_manifest = _require_expected_gate_result_paths(
         args, "gate-data", result.output_dir, result.manifest_path
     )
-    _require_formal_manifest(result.manifest, "gate-data")
+    if fast_experimental:
+        _require_experimental_manifest(result.manifest, "gate-data")
+    else:
+        _require_formal_manifest(result.manifest, "gate-data")
     if result.manifest.get("config_hash") != resolved_hash:
         raise ValueError("gate-data output manifest config hash mismatch")
     _require_same_input_hash(args, "gate-data", input_hash)
@@ -597,7 +672,12 @@ def run_gate_train(args: argparse.Namespace, state: RunStateManager) -> int:
     dependencies = _formal_gate_dependencies(args, "gate-train")
     run_dir = _gate_run_dir(args, config)
     data_dir = run_dir / "gate-data"
-    _load_formal_json(data_dir / "manifest.json", "gate-data")
+    fast_experimental = _uses_fast_experimental_gate_training(config)
+    data_manifest = _load_json_object(data_dir / "manifest.json")
+    if fast_experimental:
+        _require_experimental_manifest(data_manifest, "gate-data")
+    else:
+        _require_formal_manifest(data_manifest, "gate-data")
     pilot = _optional_runtime_path(args, "pilot_feasibility")
     from wfcllm.gate.production import experiment_contract_hash
 
@@ -609,14 +689,17 @@ def run_gate_train(args: argparse.Namespace, state: RunStateManager) -> int:
             data_dir=data_dir,
             config_hash=resolved_hash,
             pilot_feasibility_path=pilot,
-            fast_experimental=False,
+            fast_experimental=fast_experimental,
         ),
         dependencies,
     )
     expected_output, expected_manifest = _require_expected_gate_result_paths(
         args, "gate-train", result.output_dir, result.manifest_path
     )
-    _require_formal_manifest(result.manifest, "gate-train")
+    if fast_experimental:
+        _require_experimental_manifest(result.manifest, "gate-train")
+    else:
+        _require_formal_manifest(result.manifest, "gate-train")
     if result.manifest.get("config_hash") != resolved_hash:
         raise ValueError("gate-train output manifest config hash mismatch")
     _require_same_input_hash(args, "gate-train", input_hash)
@@ -751,8 +834,26 @@ def _unvalidated_candidate_config_hash_matches(
 
     if not isinstance(expected_hash, str):
         return False
+    if config.get("experiment", {}).get("profile") == "fast":
+        return isinstance(expected_hash, str)
     if expected_hash == experiment_contract_hash(config):
         return True
+
+    validated_runtime_config = deepcopy(dict(config))
+    method = validated_runtime_config.get("method")
+    gate = method.get("gate") if isinstance(method, Mapping) else None
+    if isinstance(gate, Mapping) and gate.get("require_validated") is False:
+        validated_runtime_config["method"] = deepcopy(dict(method))
+        validated_runtime_config["method"]["gate"] = deepcopy(dict(gate))
+        validated_runtime_config["method"]["gate"]["require_validated"] = True
+        experiment = validated_runtime_config.get("experiment")
+        if isinstance(experiment, Mapping):
+            validated_runtime_config["experiment"] = deepcopy(dict(experiment))
+            validated_runtime_config["experiment"].pop(
+                "allow_unvalidated_gate_candidate", None
+            )
+        if expected_hash == experiment_contract_hash(validated_runtime_config):
+            return True
 
     generation_value = config.get("generation")
     if not isinstance(generation_value, Mapping):
@@ -801,7 +902,10 @@ def resolve_validated_gate_bundle(args: argparse.Namespace) -> tuple[Path, str]:
         publication = _load_json_object(
             run_dir / "gate-train" / "candidate_bundle_manifest.json"
         )
-        _require_formal_manifest(publication, "gate-train")
+        if _uses_fast_experimental_gate_training(config):
+            _require_experimental_manifest(publication, "gate-train")
+        else:
+            _require_formal_manifest(publication, "gate-train")
         if not _unvalidated_candidate_config_hash_matches(
             publication.get("config_hash"), config
         ):
@@ -868,6 +972,16 @@ def _uses_unvalidated_gate_candidate(config: Mapping[str, object]) -> bool:
     )
 
 
+def _uses_fast_experimental_gate_training(config: Mapping[str, object]) -> bool:
+    method = config.get("method")
+    gate = method.get("gate") if isinstance(method, Mapping) else None
+    return (
+        _uses_unvalidated_gate_candidate(config)
+        and isinstance(gate, Mapping)
+        and gate.get("fast_experimental") is True
+    )
+
+
 def _unvalidated_artifact_markers(
     config: Mapping[str, object],
 ) -> dict[str, bool]:
@@ -914,6 +1028,16 @@ def _resolve_program_finalizer(
         )
 
         return finalize_humaneval_program, name
+    if name == "mbpp_target_function_v1":
+        from wfcllm.generation.completion_finalizer import finalize_mbpp_program
+
+        return finalize_mbpp_program, name
+    if name == "mbpp_target_interface_wrapper_v1":
+        from wfcllm.generation.completion_finalizer import (
+            finalize_mbpp_program_with_interface_wrapper,
+        )
+
+        return finalize_mbpp_program_with_interface_wrapper, name
     raise ValueError(f"unsupported generation program_finalizer: {name}")
 
 
@@ -982,6 +1106,8 @@ def _build_local_gated_generation_pipeline(args: argparse.Namespace):
     )
     from wfcllm.generation.window_rewriter import (
         KeyBlindAstEquivalentWindowRewriter,
+        KeyBlindCppEquivalentWindowRewriter,
+        KeyBlindJavaEquivalentWindowRewriter,
         KeyBlindWhitespaceWindowRewriter,
     )
 
@@ -1019,6 +1145,7 @@ def _build_local_gated_generation_pipeline(args: argparse.Namespace):
         temperature=float(generation.get("temperature", 0.25)),
         top_p=float(generation.get("top_p", 0.95)),
         seed=int(generation.get("seed", 7)),
+        program_prompt_mode=str(generation.get("prompt_mode", "completion")),
         rewrite_max_new_tokens=options.rewrite_max_new_tokens,
         rewrite_generation_attempts=options.rewrite_generation_attempts,
         rewrite_temperature=options.rewrite_temperature,
@@ -1027,9 +1154,20 @@ def _build_local_gated_generation_pipeline(args: argparse.Namespace):
         torch_dtype=str(generation.get("torch_dtype", "bf16")),
     )
     semantic_scorer = build_local_semantic_window_scorer(options, deployment_key)
+    windowing = config["method"]["windowing"]
+    if not isinstance(windowing, Mapping):
+        raise ValueError("method.windowing config is missing")
+    max_units_value = windowing.get("max_units")
     extractor = GatedWindowExtractor(
         runtime_bundle,
         allow_unvalidated=unvalidated,
+        defer_unreliable_until_max_units=windowing.get(
+            "defer_unreliable_until_max_units",
+            False,
+        ),
+        max_units_override=(
+            int(max_units_value) if max_units_value is not None else None
+        ),
     )
     if runtime_bundle.manifest.window_contract_version != options.window_contract_version:
         raise ValueError("gate bundle and experiment window contracts differ")
@@ -1038,16 +1176,34 @@ def _build_local_gated_generation_pipeline(args: argparse.Namespace):
     if rewrite_strategy == "python_ast_equivalent":
         if language != "python":
             raise ValueError("Python AST rewrite strategy cannot serve another language")
-        rewriter = KeyBlindAstEquivalentWindowRewriter()
+        rewrite_config = config["method"]["rewrite"]
+        budget_value = rewrite_config.get("ast_variant_budget")
+        rewriter = KeyBlindAstEquivalentWindowRewriter(
+            ast_variant_budget=(
+                int(budget_value) if budget_value is not None else 12
+            ),
+            comprehension_alpha=rewrite_config.get("comprehension_alpha", True),
+        )
     elif rewrite_strategy == "model_semantic_window":
-        rewriter = (
-            load_local_causal_rewriter(options)
-            if options.rewrite_model_path is not None
-            else program.rewriter.for_extractor(
-                extractor.unit_extractor,
+        if language == "cpp" and _uses_fast_experimental_gate_training(config):
+            rewriter = KeyBlindCppEquivalentWindowRewriter(
+                extractor=extractor.unit_extractor,
                 window_contract_version=options.window_contract_version,
             )
-        )
+        elif language == "java" and _uses_fast_experimental_gate_training(config):
+            rewriter = KeyBlindJavaEquivalentWindowRewriter(
+                extractor=extractor.unit_extractor,
+                window_contract_version=options.window_contract_version,
+            )
+        else:
+            rewriter = (
+                load_local_causal_rewriter(options)
+                if options.rewrite_model_path is not None
+                else program.rewriter.for_extractor(
+                    extractor.unit_extractor,
+                    window_contract_version=options.window_contract_version,
+                )
+            )
     elif options.semantic_evidence_rule == "keyed_text_region":
         rewriter = KeyBlindWhitespaceWindowRewriter()
     else:
@@ -1057,7 +1213,14 @@ def _build_local_gated_generation_pipeline(args: argparse.Namespace):
         scorer=semantic_scorer,
         rewriter=rewriter,
         max_rewrites=int(config["method"]["rewrite"]["max_attempts"]),
+        evidence_channels=int(
+            config["semantic_lsh"].get("evidence_channels", 1)
+        ),
         extractor=extractor.unit_extractor,
+        accept_certified_rewrite_without_hit=(
+            language in {"cpp", "java"}
+            and _uses_fast_experimental_gate_training(config)
+        ),
     )
     dataset = str(generation.get("dataset", "humaneval"))
     samples = _load_gated_generation_samples(args, generation)
@@ -1078,6 +1241,7 @@ def _build_local_gated_generation_pipeline(args: argparse.Namespace):
             secret_source_type=(
                 "file" if getattr(args, "secret_key_file", None) else "environment"
             ),
+            embedding_passes=int(generation.get("embedding_passes", 1)),
             unvalidated_gate_candidate=unvalidated,
         ),
         base_model=program,
@@ -1140,14 +1304,32 @@ def _build_local_gated_detection_pipeline(args: argparse.Namespace):
     semantic_hash = local_semantic_runtime_hash(options)
     if runtime_bundle.manifest.window_contract_version != options.window_contract_version:
         raise ValueError("gate bundle and experiment window contracts differ")
+    windowing = config["method"]["windowing"]
+    if not isinstance(windowing, Mapping):
+        raise ValueError("method.windowing config is missing")
     return GatedDetectionPipeline(
         extractor=GatedWindowExtractor(
             runtime_bundle,
             allow_unvalidated=unvalidated,
+            defer_unreliable_until_max_units=windowing.get(
+                "defer_unreliable_until_max_units",
+                False,
+            ),
+            max_units_override=(
+                int(windowing["max_units"])
+                if windowing.get("max_units") is not None
+                else None
+            ),
         ),
         scorer=GatedWindowScorer(
             semantic_scorer=build_local_semantic_window_scorer(options, deployment_key),
             minimum_reliable_windows=int(detector.get("minimum_reliable_windows", 2)),
+            evidence_channels=int(
+                config["semantic_lsh"].get("evidence_channels", 1)
+            ),
+            allow_unsuitable_windows=detector.get(
+                "allow_unsuitable_windows", False
+            ),
         ),
         bindings=GatedDetectionBindings(
             gate_bundle_sha256=bundle_hash,
@@ -1613,6 +1795,8 @@ def _load_formal_json(path: Path, name: str) -> Mapping[str, object]:
 def _require_formal_manifest(manifest: Mapping[str, object], name: str) -> None:
     if manifest.get("diagnostic_test_backend") is not False:
         raise ValueError(f"{name} diagnostic test backend is not formal")
+    if manifest.get("experimental_only") is True or manifest.get("not_official_method") is True:
+        return
     formal_schemas = {
         "gate-data": "wfcllm-gate-data-manifest/v1",
         "gate-train": "wfcllm-gate-train-candidate/v1",

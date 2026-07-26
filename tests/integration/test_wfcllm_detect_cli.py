@@ -5,16 +5,16 @@ from collections import Counter
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 import scripts.wfcllm_detect as detect_cli
 
 
-def test_unified_gated_runners_dispatch_to_gated_pipeline(tmp_path, monkeypatch) -> None:
+def _gated_runner_args(tmp_path):
     import argparse
     from types import SimpleNamespace
 
-    from wfcllm.cli.runners import _safe_tree_hash, run_calibrate, run_detect
+    from wfcllm.cli.runners import _safe_tree_hash
     from wfcllm.method.presets import GATED_SEMANTIC_WINDOW_V1_NAME, load_method_preset
-    from wfcllm.orchestration.state import RunStateManager
 
     bundle = tmp_path / "bundle"
     bundle.mkdir()
@@ -28,25 +28,36 @@ def test_unified_gated_runners_dispatch_to_gated_pipeline(tmp_path, monkeypatch)
     positive.write_text("", encoding="utf-8")
     calibration = tmp_path / "calibration.json"
     calibration.write_text("{}", encoding="utf-8")
-    pipeline = SimpleNamespace(
-        calibrate_jsonl=MagicMock(), detect_jsonl=MagicMock()
-    )
+    pipeline = SimpleNamespace(calibrate_jsonl=MagicMock(), detect_jsonl=MagicMock())
     deployment = tmp_path / "deployment.key"
     deployment.write_bytes(b"deployment-secret")
     args = argparse.Namespace(
-        _config_cache=config, run_dir=str(tmp_path / "run"), run_id=None,
-        negative_input=str(negative), input=None, calibration=str(calibration),
+        _config_cache=config,
+        run_dir=str(tmp_path / "run"),
+        run_id=None,
+        negative_input=str(negative),
+        input=str(positive),
+        calibration=str(calibration),
         positive_details=str(tmp_path / "details.jsonl"),
-        secret_key_file=str(deployment), secret_key_env=None,
+        secret_key_file=str(deployment),
+        secret_key_env=None,
         _gated_detection_pipeline=pipeline,
     )
+    return args, pipeline, config
+
+
+def test_unified_gated_runners_dispatch_to_gated_pipeline(tmp_path, monkeypatch) -> None:
+    from wfcllm.cli.runners import run_calibrate, run_detect
+    from wfcllm.method.presets import GATED_SEMANTIC_WINDOW_V1_NAME
+    from wfcllm.orchestration.state import RunStateManager
+
+    args, pipeline, config = _gated_runner_args(tmp_path)
     monkeypatch.setattr("wfcllm.gate.bundle.GateBundle.load", lambda path: object())
     state = RunStateManager(tmp_path / "state.json")
     state.mark_done("generate", gate_bundle_sha256=config["method"]["gate"]["bundle_sha256"])
 
     assert run_calibrate(args, state) == 0
     pipeline.calibrate_jsonl.assert_called_once()
-    args.input = str(positive)
     monkeypatch.setattr(
         "wfcllm.detection.gated_pipeline.load_gated_calibration_artifact",
         lambda path: object(),
@@ -55,6 +66,43 @@ def test_unified_gated_runners_dispatch_to_gated_pipeline(tmp_path, monkeypatch)
     pipeline.detect_jsonl.assert_called_once()
     assert state.get("detect", "method") == GATED_SEMANTIC_WINDOW_V1_NAME
     assert state.get("detect", "detector_mode") == "wfcllm-gated-semantic-window/v1"
+
+
+def test_unified_gated_calibrate_requires_negative_input(tmp_path, monkeypatch) -> None:
+    from wfcllm.cli.runners import run_calibrate
+    from wfcllm.orchestration.state import RunStateManager
+
+    args, pipeline, config = _gated_runner_args(tmp_path)
+    args.negative_input = None
+    monkeypatch.setattr("wfcllm.gate.bundle.GateBundle.load", lambda path: object())
+    state = RunStateManager(tmp_path / "state.json")
+    state.mark_done("generate", gate_bundle_sha256=config["method"]["gate"]["bundle_sha256"])
+
+    with pytest.raises(ValueError, match="--negative-input"):
+        run_calibrate(args, state)
+    pipeline.calibrate_jsonl.assert_not_called()
+    assert state.is_done("calibrate") is False
+
+
+def test_unified_gated_detect_requires_input(tmp_path, monkeypatch) -> None:
+    from wfcllm.cli.runners import run_calibrate, run_detect
+    from wfcllm.orchestration.state import RunStateManager
+
+    args, pipeline, config = _gated_runner_args(tmp_path)
+    monkeypatch.setattr("wfcllm.gate.bundle.GateBundle.load", lambda path: object())
+    monkeypatch.setattr(
+        "wfcllm.detection.gated_pipeline.load_gated_calibration_artifact",
+        lambda path: object(),
+    )
+    state = RunStateManager(tmp_path / "state.json")
+    state.mark_done("generate", gate_bundle_sha256=config["method"]["gate"]["bundle_sha256"])
+    assert run_calibrate(args, state) == 0
+    args.input = None
+
+    with pytest.raises(ValueError, match="--input"):
+        run_detect(args, state)
+    pipeline.detect_jsonl.assert_not_called()
+    assert state.is_done("detect") is False
 
 
 def test_calibrate_cli_maps_detector_args_and_writes_artifact(tmp_path: Path) -> None:

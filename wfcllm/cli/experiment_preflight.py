@@ -56,7 +56,12 @@ def validate_experiment_config(
         "require_validated"
     )
     expected_validated = profile == "full"
-    if require_validated is not expected_validated:
+    explicit_unvalidated_diagnostic = (
+        profile == "full"
+        and require_validated is False
+        and experiment.get("allow_unvalidated_gate_candidate") is True
+    )
+    if require_validated is not expected_validated and not explicit_unvalidated_diagnostic:
         raise ValueError(
             "method.gate.require_validated must be "
             f"{expected_validated!r} for profile={profile!r}"

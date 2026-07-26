@@ -6,7 +6,10 @@ from pathlib import Path
 import pytest
 
 from wfcllm.cli.runners import _resolve_program_finalizer
-from wfcllm.generation.completion_finalizer import finalize_humaneval_program
+from wfcllm.generation.completion_finalizer import (
+    finalize_humaneval_program,
+    finalize_mbpp_program_with_interface_wrapper,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -27,6 +30,15 @@ def test_resolves_explicit_no_finalizer() -> None:
 
     assert finalizer is None
     assert name == "none"
+
+
+def test_resolves_mbpp_interface_wrapper_finalizer() -> None:
+    finalizer, name = _resolve_program_finalizer(
+        {"program_finalizer": "mbpp_target_interface_wrapper_v1"}
+    )
+
+    assert finalizer is finalize_mbpp_program_with_interface_wrapper
+    assert name == "mbpp_target_interface_wrapper_v1"
 
 
 def test_rejects_unknown_finalizer() -> None:

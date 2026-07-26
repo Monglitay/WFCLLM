@@ -18,6 +18,8 @@ MATRIX = (
     ("cpp", "humanevalpack", "fast"),
     ("java", "humanevalpack", "full"),
     ("java", "humanevalpack", "fast"),
+    ("js", "humanevalpack", "full"),
+    ("js", "humanevalpack", "fast"),
 )
 
 
@@ -55,6 +57,7 @@ def test_experiment_entry_and_config_contract(
         "python": "oss_python",
         "cpp": "oss_cpp",
         "java": "oss_java",
+        "js": "oss_js",
     }[language] in resolved["gate_data"]["sources"]
     assert resolved["gate_data"]["scale"] == (
         "full" if profile == "full" else "pilot"

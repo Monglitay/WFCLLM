@@ -200,6 +200,8 @@ def test_main_orchestration_rejects_diagnostic_gate_dependencies(tmp_path, monke
 
 def test_external_validated_bundle_hash_is_bound_across_main_phases(tmp_path, monkeypatch):
     import argparse
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
     from wfcllm.cli.runners import _safe_tree_hash, run_calibrate, run_detect, run_generate
     from wfcllm.method.presets import GATED_SEMANTIC_WINDOW_V1_NAME, load_method_preset
     from wfcllm.orchestration.state import RunStateManager
@@ -212,12 +214,26 @@ def test_external_validated_bundle_hash_is_bound_across_main_phases(tmp_path, mo
     config["method"]["gate"]["bundle_sha256"] = _safe_tree_hash(bundle)
     deployment = tmp_path / "deployment.key"
     deployment.write_bytes(b"deployment")
+    negative = tmp_path / "negative.jsonl"
+    positive = tmp_path / "positive.jsonl"
+    calibration = tmp_path / "calibration.json"
+    for path in (negative, positive):
+        path.write_text("", encoding="utf-8")
+    calibration.write_text("{}", encoding="utf-8")
+    pipeline = SimpleNamespace(calibrate_jsonl=MagicMock(), detect_jsonl=MagicMock())
     args = argparse.Namespace(
         _config_cache=config,
         run_dir=str(tmp_path / "run"), run_id=None,
+        negative_input=str(negative), input=str(positive), calibration=str(calibration),
+        positive_details=str(tmp_path / "details.jsonl"),
         secret_key_file=str(deployment), secret_key_env=None,
+        _gated_detection_pipeline=pipeline,
     )
     monkeypatch.setattr("wfcllm.gate.bundle.GateBundle.load", lambda path: object())
+    monkeypatch.setattr(
+        "wfcllm.detection.gated_pipeline.load_gated_calibration_artifact",
+        lambda path: object(),
+    )
     state = RunStateManager(tmp_path / "state.json")
 
     assert run_generate(args, state) == 0
@@ -697,3 +713,23 @@ def test_parser_accepts_adaptive_watermark_and_extract_flags():
     assert args.profile_id == "python__demo__v1"
     assert args.adaptive_detection_mode == "prefer-adaptive"
     assert args.strict_contract is True
+
+
+def test_unvalidated_gate_candidate_accepts_full_validated_training_config_hash():
+    from copy import deepcopy
+    from pathlib import Path
+
+    from wfcllm.cli.config_resolver import load_config, resolve_method_config
+    from wfcllm.cli.runners import _unvalidated_candidate_config_hash_matches
+    from wfcllm.gate.production import experiment_contract_hash
+
+    validated_config = resolve_method_config(
+        load_config(Path("configs/wfcllm/experiments/python_humaneval_full.json"))
+    )
+    trained_hash = experiment_contract_hash(validated_config)
+
+    runtime_config = deepcopy(validated_config)
+    runtime_config["method"]["gate"]["require_validated"] = False
+    runtime_config.setdefault("experiment", {})["allow_unvalidated_gate_candidate"] = True
+
+    assert _unvalidated_candidate_config_hash_matches(trained_hash, runtime_config)
