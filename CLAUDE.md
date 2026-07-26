@@ -34,12 +34,15 @@ The live phases are:
 
 Running without `--phase` executes the `PHASES` sequence from `wfcllm/orchestration/state.py`. Keep config `runtime.default_phases` aligned with that source of truth until orchestration explicitly supports config-driven phase sequencing. `--status` and run state handling belong to `wfcllm.orchestration`.
 
-The gated preset resolves a config-driven eight-stage sequence:
-`gate-data`, `gate-train`, `gate-validate`, `generate`, `calibrate`, `detect`,
-`report`, `audit`. With a hash-bound externally validated bundle it starts at
-`generate` and retains the five main phases. Fake backends are restricted to
-controlled tests/diagnostics, must carry the complete non-formal marker, and
-must never publish a formal validated bundle.
+The gated preset resolves a config-driven sequence:
+`encoder`, `gate-data`, `gate-train`, `generate`, `calibrate`, `detect`,
+`report`, plus `audit` for full-profile runs. There is no gate-validate
+stage (ADR 0007): generate, calibrate and detect all resolve gate-train's
+candidate bundle through one entry. The semantic encoder is trained per
+dataset from the run's gate source catalog (ADR 0006). With a hash-bound
+external bundle the sequence starts at `generate` with an explicit
+semantic-encoder checkpoint. Fake backends are restricted to controlled
+tests/diagnostics and must carry the complete non-formal marker.
 
 ## Method Rules
 
@@ -52,7 +55,7 @@ must never publish a formal validated bundle.
 - Gate-data may use structure, key-independent multi-training-key LSH
   aggregates, margin/stability, and rewrite budgets. Parser validity is not a
   code-quality signal. Correctness/pass/test outcomes remain posthoc only.
-- The detector reads official four-field final-code input, a validated bundle,
+- The detector reads official four-field final-code input, the resolved gate bundle,
   and frozen calibration artifacts; it never reads gate-data, checkpoints,
   generation audit rows, or candidate sidecars.
 
@@ -118,7 +121,7 @@ HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/ -v
 - Check `git status --short` before editing.
 - Do not revert unrelated user changes.
 - Do not commit local models, datasets, checkpoints, large run artifacts, or generated logs.
-- Also do not commit gate-data, key banks, validated bundles, generated JSONL,
+- Also do not commit gate-data, key banks, gate bundles, generated JSONL,
   or contents of `data/runs/`.
 - Commit format is `<type>: <description>`.
 - Allowed commit types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`.
