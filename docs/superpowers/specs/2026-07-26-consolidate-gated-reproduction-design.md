@@ -59,6 +59,34 @@ AutoDL 实例随时可能回收，端口每次重启都变。我需要在它消�
 
 ## Implementation Decisions
 
+### 要复现的流水线阶段序列
+
+权威来源是编排状态模块的阶段清单与 gated 实验编排脚本。阶段分四类：五个主阶段、三个 gate 阶段、三个可选阶段、六个 legacy 阶段。gated 预设解析出的是一条八阶段序列：
+
+```
+[上游]  encoder ─────────────► semantic encoder checkpoint
+                                        │
+                                        ▼
+        gate-data ──► gate-train ──► gate-validate ──► Gate Bundle
+                                        │
+                                        ▼
+        generate ──► calibrate ──► detect ──► report ──► audit
+```
+
+- `gate-data` 在编排脚本里被调用多次（含全量规模），产出分组索引、切分与 manifest，并执行 feasibility 准入判定。
+- `gate-validate` 是准入闸门。七个 Reproduction Target 基本都未通过它，这是它们 Formal Eligible 为假的机制来源。
+- `calibrate` 是独立阶段且在 `detect` 之前：阈值由负样本校准得出，不是检测器内部行为。负样本语料一变，`detect` 的数字必然跟着变。
+- 带 hash 绑定的外部已验证 Gate Bundle 时，实验链可从 `generate` 起跑并保留五个主阶段 —— 这是仓库明文支持的模式，历史上有目标据此复用了别的 run 的 bundle。
+- pass 率评测不是阶段，走独立的 HumanEval 执行摘要路径；事后 pass 报告虽属可选阶段，但只能作为事后效用报告并携带完整标记。
+
+### semantic encoder 改为每数据集一个
+
+- 历史上七个目标共用同一个 encoder checkpoint。它由一个独立脚本训练，不经 `encoder` 阶段（故各 run 的该阶段状态均为未完成），训练语料是一份通用 local-only 源码目录，不属于任何 benchmark 数据集 —— 该 encoder 从未见过 C++、Java 或 JavaScript。
+- 我们改为每个数据集各训一个 encoder（见 ADR 0006）。训练器本身无需改动：它的入口参数就是源码 catalog，而 catalog 本来按语言分。
+- `encoder` 须从可选阶段提升为 gated 实验链的必经阶段；编排脚本需要增加该步。
+- 受影响行的重跑数字与历史值的差异是方法改变导致的系统性变化，不是随机漂移；「跑出差不多的数字」这一口径对它们不再适用。
+- 实施时须确认按语言切分后的语料是否足够：某语言的 gate 源目录仅数百条，而 encoder 训练器默认的训练组上限为一千二百组。
+
 ### 范围与血脉
 
 - 本轮只收敛 Gated Lineage。Semantic-V3 Lineage 的 v3 语义实验推到后续轮次（见 ADR 0005）。
@@ -77,6 +105,8 @@ AutoDL 实例随时可能回收，端口每次重启都变。我需要在它消�
 - 新增评测侧模块，暴露一个提取入口：输入一个 run 目录，输出一条 Metric Contract 记录。
 - 记录字段至少包含：run 标识、数据集、语言、生成模型、样本数、`target_fpr`、`minimum_reliable_windows`、TPR（并标明是否为 Conditional TPR 及其资格规则）、pass 率、AUROC、Key Identifier、结果资格三元组（Formal Eligible / Diagnostic Only / Experimental Only）、是否带 Experimental Bypass、以及一个自由文本的口径警示列表。
 - 身份（数据集、语言、模型）必须能从 run 产物自行推导，不得依赖报告里的新字段 —— 七个历史目标的报告已固化、无法回填。可用证据包括 gate 数据 manifest 里的解析器契约版本、source manifest、以及启动脚本里的环境变量。
+- 该提取器读取 gate 数据 manifest 以推导身份，这不违反「检测器绝不读 gate-data」的规则：它是事后报告工具，不在检测路径上。实施时须保证它不成为检测器输入的泄漏通道 —— 它只读、只产出报告，绝不回写任何检测器可见的产物。
+- 记录还须包含 semantic encoder 标识，因为该标识参与检测器身份契约，且每数据集一个 encoder 之后它逐行不同（见 ADR 0006）。
 - 四个 JavaScript 评测脚本折进这一条缝，不各自成缝。它们写死的绕过声明、目标阈值、重生成模型名与模式，改为从 run 产物读取或从配置注入。
 - 报告生成无条件输出，达标与否只作为字段记录，不得以未达标为由拒绝写出（见 ADR 0003）。
 - pass 率复用仓库里已有的 HumanEval 执行摘要能力，不把易失盘上的 pass@10 脚本当作新代码搬入。
@@ -196,6 +226,12 @@ GPU 型号未能确认 —— 非交互 shell 下 `nvidia-smi` 权限被拒。
 
 服务器 A 为 AutoDL 实例，SSH 端口每次重启都会变化；本地 SSH 配置里记录的端口已过期。持久卷使用率 88%（剩余约 11 GB），因此禁止任何服务器端打包或克隆。
 
+### 工作分支的 CLAUDE.md 落后于 main
+
+被 rsync 到本地的那条血脉分支落后 `main` 三十余个提交，其 `CLAUDE.md` 因此缺了五组正好管着本轮工作的规则：gated 预设属实验性且不得基于 fake/offline 接线测试声称有效；gated 八阶段序列与「fake backend 绝不可发布 formal validated bundle」；检测器只读官方四字段输入、已验证 bundle 与冻结校准产物，绝不读 gate-data、checkpoint、生成审计行或候选 sidecar；gated 真跑所需的私有 key bank 与 runtime deployment key 要求，以及不得把密钥材料写入 config、run state、日志、manifest 或报告；git 卫生上不得提交 gate-data、key bank、已验证 bundle、生成的 JSONL 与 run 目录内容。
+
+实施须以 `main` 的完整规则为准，而不是工作副本里那份陈旧版本。本轮的取物策略已对照核过：密钥出库、产物不取、Gate Bundle 不取三项与上述规则一致。
+
 ### 已落地的文档
 
-领域词汇表与五条架构决策记录已在本轮写入仓库（尚未提交）：词汇表覆盖水印密钥、Gate、结果资格、三副本收敛四组共 21 个术语；决策记录覆盖 Archival Tag 表达方式、不归档 Gate Bundle、统一 Metric Contract、收敛落在 `main`、以及本轮范围与诊断资格。本 spec 不重复其内容。
+领域词汇表与六条架构决策记录已在本轮写入仓库：词汇表覆盖水印密钥、Gate、结果资格、三副本收敛四组共 21 个术语；决策记录覆盖 Archival Tag 表达方式、不归档 Gate Bundle、统一 Metric Contract、收敛落在 `main`、本轮范围与诊断资格、以及 semantic encoder 改为每数据集一个。本 spec 不重复其内容。
