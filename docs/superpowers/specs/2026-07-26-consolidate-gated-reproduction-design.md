@@ -59,25 +59,41 @@ AutoDL 实例随时可能回收，端口每次重启都变。我需要在它消�
 
 ## Implementation Decisions
 
-### 要复现的流水线阶段序列
+### 要实现的流水线阶段序列
 
-权威来源是编排状态模块的阶段清单与 gated 实验编排脚本。阶段分四类：五个主阶段、三个 gate 阶段、三个可选阶段、六个 legacy 阶段。gated 预设解析出的是一条八阶段序列：
+目标序列为八阶段，对每个数据集各走一遍：
 
 ```
-[上游]  encoder ─────────────► semantic encoder checkpoint
-                                        │
-                                        ▼
-        gate-data ──► gate-train ──► gate-validate ──► Gate Bundle
-                                        │
-                                        ▼
-        generate ──► calibrate ──► detect ──► report ──► audit
+每个数据集 ∈ { HumanEval, MBPP, HumanEvalPack-C++ / Java / JavaScript }
+
+  encoder ──► gate-data ──► gate-train ──► Gate Bundle
+                                              │
+                                              ▼
+  generate ──► calibrate ──► detect ──► report ──► audit
+
+  ＋ pass 率评测（独立路径，不是阶段）
+  ＋ Metric Contract 提取（每个 run 输出一行）
 ```
 
-- `gate-data` 在编排脚本里被调用多次（含全量规模），产出分组索引、切分与 manifest，并执行 feasibility 准入判定。
-- `gate-validate` 是准入闸门。七个 Reproduction Target 基本都未通过它，这是它们 Formal Eligible 为假的机制来源。
+相对历史实现的三处改动：
+
+- **`encoder` 从可选阶段提升为必经阶段，且每个数据集各训一个**（见 ADR 0006）。历史实现里它根本不在实验链上。
+- **`gate-validate` 整体去掉**（见 ADR 0007）。手稿中不存在该准入闸门；随之删除的还有 float 与量化一致性检查、[[Suitable False Positive Rate]] 准入上限、gate 数据 feasibility 准入，以及正式合格与仅供诊断的 bundle 发布二分。
+- **`calibrate` 自主补充负样本**（见 ADR 0008）。历史实现要求外部预制负样本语料并通过参数传入。
+
+其余阶段的性质：
+
+- `gate-data` 在历史编排脚本里被调用多次（含全量规模），产出分组索引、切分与 manifest。
 - `calibrate` 是独立阶段且在 `detect` 之前：阈值由负样本校准得出，不是检测器内部行为。负样本语料一变，`detect` 的数字必然跟着变。
-- 带 hash 绑定的外部已验证 Gate Bundle 时，实验链可从 `generate` 起跑并保留五个主阶段 —— 这是仓库明文支持的模式，历史上有目标据此复用了别的 run 的 bundle。
 - pass 率评测不是阶段，走独立的 HumanEval 执行摘要路径；事后 pass 报告虽属可选阶段，但只能作为事后效用报告并携带完整标记。
+
+### calibrate 自主补充负样本
+
+- `calibrate` 须能在负样本语料不足或缺失时，自行从同一生成模型产出未加水印的补全来补齐，而不是依赖外部预制文件。手稿的表述正是「在留出的未加水印生成上按目标假阳率校准」。
+- 目标负样本数由配置给出。补齐后的语料须记录来源构成：外部提供多少条、自动生成多少条、生成所用模型与解码配置。该构成进入校准产物，使阈值可追溯。
+- 负样本必须与正样本评测集不重叠 —— 「留出」是硬要求，不是建议。
+- 补充过程不得使用 pass / 测试 / 正确性代理做筛选，这是仓库对校准阶段的既有禁令。生成即采用。
+- 现有的负样本语料指纹字段继续保留并覆盖补齐后的完整语料，使校准产物与其负样本一一对应。
 
 ### semantic encoder 改为每数据集一个
 
@@ -152,6 +168,22 @@ AutoDL 实例随时可能回收，端口每次重启都变。我需要在它消�
 - 断言运行侧产出的报告包含数据集、语言、生成模型三项字段且取值正确。
 - 断言该字段缺失时提取器仍能工作（向后兼容七个历史目标）。
 - 先例：`tests/integration/` 下既有的 detect / generate CLI 测试。
+
+### 缝三：calibrate 的负样本补齐
+
+- 断言外部语料条数低于目标值时补齐被触发、达到目标值时不被触发。
+- 断言补齐后的来源构成被如实记录（外部条数、生成条数、模型与解码配置），且负样本语料指纹覆盖补齐后的完整语料。
+- 断言补齐产出的负样本与正样本评测集不重叠。
+- 断言补齐过程不读取任何 pass / 测试 / 正确性信号 —— 以缺失这些信号的输入跑通即可证明。
+- 生成模型在测试中以桩替代，遵循仓库既有的模型边界打桩惯例。
+- 先例：`tests/detection/test_gated_calibration.py` 与 `tests/integration/` 下的 detect CLI 测试。
+
+### 移除 gate-validate 的回归防护
+
+- 断言八阶段序列里不再出现该阶段，且以该阶段名调用时被拒绝。
+- 断言 `generate` / `calibrate` / `detect` 直接从 `gate-train` 的候选 bundle 取用，且三者取到的是同一个 bundle。
+- 断言历史产物里残留的「门控验证已跳过」「未验证候选 bundle」两个标记不再由新 run 产生。
+- 先例：`tests/integration/test_orchestration.py`、`tests/integration/test_cli_resolution.py`。原 `tests/gate/test_validation.py` 整体删除。
 
 ### 复用的既有缝
 
@@ -234,4 +266,16 @@ GPU 型号未能确认 —— 非交互 shell 下 `nvidia-smi` 权限被拒。
 
 ### 已落地的文档
 
-领域词汇表与六条架构决策记录已在本轮写入仓库：词汇表覆盖水印密钥、Gate、结果资格、三副本收敛四组共 21 个术语；决策记录覆盖 Archival Tag 表达方式、不归档 Gate Bundle、统一 Metric Contract、收敛落在 `main`、本轮范围与诊断资格、以及 semantic encoder 改为每数据集一个。本 spec 不重复其内容。
+领域词汇表与八条架构决策记录已在本轮写入仓库：词汇表覆盖水印密钥、Gate、结果资格、三副本收敛四组共 21 个术语；决策记录覆盖 Archival Tag 表达方式、不归档 Gate Bundle、统一 Metric Contract、收敛落在 `main`、本轮范围与诊断资格、semantic encoder 改为每数据集一个、去掉 gate-validate、以及 calibrate 自主补充负样本。本 spec 不重复其内容。
+
+### 已量出的 gate-validate 移除影响面
+
+可整块删除约 2100 行：门控验证模块本体约 1039 行、门控流水线里的验证入口与其发布 manifest 版本常量、门控配置里的四个准入阈值数据类、CLI 侧的阶段入口。
+
+需同步修改的注册与编排点六处：编排状态模块的 gate 阶段清单、编排前置检查、CLI 入口注册、配置解析器、门控包导出、CLI 分派表。
+
+方法配置是硬约束：方法配置模块把门控验证段当作必需段并强制其存在且取固定值，预设里也带着该段，方法产物模块定了它的产物路径契约 —— 因此所有 gated 配置都要去掉这一段。
+
+最麻烦的一处是 bundle 解析路径。现在 `generate` / `calibrate` / `detect` 经由「解析已验证 bundle」入口取 bundle，并按配置在「未验证候选」与「已验证」两个运行时 bundle 类之间二选一，同时往输出打两个标记。移除后须让该入口直接解析 `gate-train` 的候选 bundle，二选一分支收敛为一条，两个运行时类合一，两个标记连带删除；生成侧那条「实验性」与「未验证候选」互斥断言随之消失。
+
+审计侧检查门控验证发布 schema 的那处需要移除。三个 shell 脚本与一个门控 CLI 脚本引用了该阶段。测试侧十八个文件涉及相关概念，其中门控验证专测整体删除，其余修改断言。

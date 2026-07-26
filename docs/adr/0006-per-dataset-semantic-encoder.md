@@ -6,9 +6,16 @@ status: accepted
 
 历史上七个 Reproduction Target 共用同一个 semantic encoder checkpoint。它由一个独立脚本训练而成 —— 不经 `encoder` 阶段，因此各 run 的 `encoder` 阶段状态一律为未完成 —— 训练语料是一份通用的 local-only 源码目录，不属于任何 benchmark 数据集。也就是说这个共用 encoder 从未见过 C++、Java 或 JavaScript，却被用于这三种语言的实验。我们改为每个数据集各训一个 encoder。
 
+## 与当前手稿的刻意分歧
+
+当前手稿把语义编码器描述为冻结的：正文两处写明它是 frozen semantic encoder、frozen CodeT5-base，投影矩阵是 fixed public projection matrix；手稿中被训练的是门控自身的结构编码器与 closure / suitability 两个预测头，不是语义编码器。手稿因此没有语义编码器训练这一步，更没有按数据集分别训练。
+
+我们仍然选择保留并按数据集拆分语义编码器训练，并由手稿侧补写 method 章节来对齐。这是刻意分歧，不是实现缺陷 —— 对照手稿审读代码的人不应把它当作 bug。补写手稿前，代码与手稿在这一点上不一致的状态是已知且被接受的。
+
 ## Considered Options
 
 - **沿用共用 encoder**：与历史数字同口径，重跑差异只来自随机性。但它把跨语言迁移这个缺陷原样保留 —— 用只见过一种语言的语义投影去判断另外三种语言的窗口能否承载水印。
+- **按手稿去掉编码器训练、改用冻结基座加固定投影**：代码与手稿立刻一致，流水线少一个阶段。已否决 —— 但这意味着手稿必须补写，见上。
 
 ## Consequences
 
