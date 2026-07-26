@@ -126,8 +126,22 @@ class KeyBlindAstEquivalentWindowRewriter:
 
     validation_rule = "python-ast-equivalent/v1"
 
-    def __init__(self, *, extractor: PythonStatementUnitExtractor | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        extractor: PythonStatementUnitExtractor | None = None,
+        ast_variant_budget: int = 12,
+        comprehension_alpha: bool = True,
+    ) -> None:
+        # ast_variant_budget=12 with alpha reproduces the nocarrier trajectory;
+        # 48 without alpha reproduces the opencoder dense48 trajectory.
+        if type(ast_variant_budget) is not int or ast_variant_budget < 1:
+            raise ValueError("ast_variant_budget must be a positive integer")
+        if not isinstance(comprehension_alpha, bool):
+            raise ValueError("comprehension_alpha must be a bool")
         self._extractor = extractor or PythonStatementUnitExtractor()
+        self.ast_variant_budget = ast_variant_budget
+        self.comprehension_alpha = comprehension_alpha
 
     def rewrite_windows(
         self,
@@ -170,13 +184,13 @@ class KeyBlindAstEquivalentWindowRewriter:
         self, request: RewriteRequest, *, candidate_index: int
     ) -> ParsedRewrite:
         _validate_call(request, candidate_index)
-        if candidate_index <= 12:
+        if candidate_index <= self.ast_variant_budget:
             validation_rule = self.validation_rule
             text = _ast_equivalent_variant(
                 request.original_window,
                 candidate_index=candidate_index,
             )
-            if candidate_index >= 4:
+            if self.comprehension_alpha and candidate_index >= 4:
                 alpha_variant = _comprehension_alpha_variant(
                     request.original_window,
                     candidate_index=candidate_index,
@@ -191,6 +205,7 @@ class KeyBlindAstEquivalentWindowRewriter:
             text = _literal_equivalent_variant(
                 request.original_window,
                 candidate_index=candidate_index,
+                first_literal_index=self.ast_variant_budget + 1,
             )
         text = _preserve_trailing_layout(request.original_window, text)
         if validation_rule == self.validation_rule:
@@ -649,14 +664,77 @@ def _parse_generation(
     )
 
 
+_COMPOUND_HEADER_AST_TYPES = (
+    ast.AsyncFor,
+    ast.AsyncWith,
+    ast.For,
+    ast.If,
+    ast.While,
+    ast.With,
+)
+
+
+def _compound_header_scaffold(source: str) -> str | None:
+    """Complete an expression-bearing header solely for local AST validation."""
+
+    stripped = source.lstrip()
+    if not stripped or not source.rstrip().endswith(":"):
+        return None
+    supported_prefixes = (
+        "async for ",
+        "async with ",
+        "for ",
+        "if ",
+        "while ",
+        "with ",
+    )
+    if stripped.startswith("elif "):
+        offset = len(source) - len(stripped)
+        source = source[:offset] + "if  " + source[offset + len("elif") :]
+    elif not stripped.startswith(supported_prefixes):
+        return None
+    return source.rstrip() + "\n    pass\n"
+
+
+def _parse_ast_window(source: str) -> ast.Module:
+    """Parse a complete window or a conservatively scaffolded compound header."""
+
+    dedented = textwrap.dedent(source)
+    try:
+        return ast.parse(dedented, type_comments=True)
+    except (SyntaxError, ValueError, TypeError) as original_error:
+        scaffold = _compound_header_scaffold(dedented)
+        if scaffold is None:
+            raise original_error
+        tree = ast.parse(scaffold, type_comments=True)
+        if (
+            len(tree.body) != 1
+            or not isinstance(tree.body[0], _COMPOUND_HEADER_AST_TYPES)
+            or len(tree.body[0].body) != 1
+            or not isinstance(tree.body[0].body[0], ast.Pass)
+            or getattr(tree.body[0], "orelse", [])
+        ):
+            raise original_error
+        return tree
+
+
+def _window_tree(text: str) -> ast.Module:
+    # Synthetic-function wrapping (nocarrier) handles exact parser slices;
+    # the elif scaffold (opencoder) covers headers the wrapper cannot parse.
+    try:
+        return _wrap_window_source(text).tree
+    except (SyntaxError, ValueError, TypeError):
+        return _parse_ast_window(text)
+
+
 def python_ast_equivalent(reference: str, candidate: str) -> bool:
     """Return true only for windows with identical parsed Python ASTs."""
 
     if not isinstance(reference, str) or not isinstance(candidate, str):
         raise ValueError("reference and candidate must be strings")
     try:
-        reference_tree = _wrap_window_source(reference).tree
-        candidate_tree = _wrap_window_source(candidate).tree
+        reference_tree = _window_tree(reference)
+        candidate_tree = _window_tree(candidate)
     except (SyntaxError, ValueError, TypeError):
         return False
     return ast.dump(reference_tree, include_attributes=False) == ast.dump(
@@ -1373,14 +1451,19 @@ def _comprehension_alpha_variant(text: str, *, candidate_index: int) -> str:
     )
 
 
-def _literal_equivalent_variant(text: str, *, candidate_index: int) -> str:
+def _literal_equivalent_variant(
+    text: str,
+    *,
+    candidate_index: int,
+    first_literal_index: int = 13,
+) -> str:
     prefix = _common_indentation(text)
     dedented = textwrap.dedent(text)
     try:
         tree = ast.parse(dedented, type_comments=True)
     except (SyntaxError, ValueError, TypeError):
         return text
-    literal_trajectory_index = candidate_index - 13
+    literal_trajectory_index = candidate_index - first_literal_index
     transformer = _LiteralVariantTransformer(
         literal_trajectory_index % 6,
         occurrence=literal_trajectory_index // 6,
@@ -1663,15 +1746,17 @@ def _rewrite_first_integer(text: str) -> str:
 
 def _parenthesize_first_expression(text: str, *, depth: int) -> str:
     try:
-        tree = ast.parse(text, type_comments=True)
+        tree = _parse_ast_window(text)
     except (SyntaxError, ValueError, TypeError):
         return text
+    source_line_count = len(text.splitlines())
     candidates = [
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.expr)
         and hasattr(node, "lineno")
         and hasattr(node, "end_lineno")
+        and node.end_lineno <= source_line_count
     ]
     if not candidates:
         return text

@@ -52,6 +52,32 @@ class Scorer:
         )()
 
 
+class ChannelScorer(Scorer):
+    def __init__(self, channel_hits: list[tuple[bool, bool]]) -> None:
+        super().__init__([])
+        self.channel_hits = iter(channel_hits)
+
+    def score_channels(
+        self, *, window_text: str, parent_descriptor: str, channel_count: int
+    ):
+        self.scored_texts.append(window_text)
+        self.scored_parents.append(parent_descriptor)
+        assert channel_count == 2
+        return tuple(
+            type(
+                "Evidence",
+                (),
+                {
+                    "hit": hit,
+                    "stable": True,
+                    "margin": 1.0,
+                    "signature": (1, 0, 1),
+                },
+            )()
+            for hit in next(self.channel_hits)
+        )
+
+
 class Rewriter:
     def __init__(self, texts: list[str]) -> None:
         self.texts = texts
@@ -170,6 +196,26 @@ def test_selected_rewrite_preserves_source_separator_after_window() -> None:
     assert result.final_code == "x = 10\ny = 20\nz = 30\n"
     assert result.audit[0].selected_candidate_index == 1
     assert len(set(scorer.scored_parents)) == 1
+
+
+def test_online_selection_requires_every_configured_evidence_channel() -> None:
+    scorer = ChannelScorer(
+        [(True, False), (True, False), (True, True)]
+    )
+    generator = GatedGenerator(
+        partitioner=WindowPartitioner(
+            Gate(), GateThresholds(0.2, 0.7, 0.8), lambda text: len(text)
+        ),
+        scorer=scorer,
+        rewriter=Rewriter(["x = 2\ny = 2\nz = 3\n", "x = 1\ny = 3\nz = 3\n"]),
+        max_rewrites=2,
+        evidence_channels=2,
+    )
+
+    result = generator.generate(prompt="", original="x = 1\ny = 2\nz = 3\n")
+
+    assert result.audit[0].selected_candidate_index == 2
+    assert result.final_code == "x = 1\ny = 3\nz = 3\n"
 
 
 def test_rewrites_must_be_one_to_three_units_and_same_parent() -> None:

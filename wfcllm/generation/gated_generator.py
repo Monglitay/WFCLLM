@@ -145,6 +145,14 @@ class GatedGenerationResult:
 
 
 @dataclass(frozen=True)
+class _CombinedSemanticEvidence:
+    hit: bool
+    stable: bool
+    margin: float
+    signature: tuple[int, ...]
+
+
+@dataclass(frozen=True)
 class GatedCandidateAudit:
     """One public candidate attempt; never used as detector input."""
 
@@ -342,6 +350,7 @@ class GatedGenerator:
         scorer: SemanticWindowScorer | Any,
         rewriter: WholeWindowRewriter | Any,
         max_rewrites: int,
+        evidence_channels: int = 1,
         extractor: Any | None = None,
         model_context: Any | None = None,
         accept_certified_rewrite_without_hit: bool = False,
@@ -356,10 +365,23 @@ class GatedGenerator:
             raise ValueError("rewriter must define rewrite_window or rewrite_generation")
         if type(max_rewrites) is not int or max_rewrites < 0:
             raise ValueError("max_rewrites must be a non-negative integer")
+        if (
+            isinstance(evidence_channels, bool)
+            or not isinstance(evidence_channels, int)
+            or not 1 <= evidence_channels <= 4
+        ):
+            raise ValueError("evidence_channels must be an integer in [1, 4]")
+        if evidence_channels > 1 and not callable(
+            getattr(scorer, "score_channels", None)
+        ):
+            raise ValueError(
+                "multi-channel scorer must define score_channels"
+            )
         self._partitioner = partitioner
         self._scorer = scorer
         self._rewriter = rewriter
         self._max_rewrites = max_rewrites
+        self._evidence_channels = evidence_channels
         self._extractor = extractor or PythonStatementUnitExtractor()
         self._window_contract_version = partitioner.window_contract_version
         self._model_context = model_context
@@ -794,10 +816,38 @@ class GatedGenerator:
         return units, closed
 
     def _score(self, *, window_text: str, parent_descriptor: str) -> Any:
-        evidence = self._scorer.score(
-            window_text=window_text,
-            parent_descriptor=parent_descriptor,
-        )
+        if self._evidence_channels == 1:
+            evidence = self._scorer.score(
+                window_text=window_text,
+                parent_descriptor=parent_descriptor,
+            )
+        else:
+            channels = self._scorer.score_channels(
+                window_text=window_text,
+                parent_descriptor=parent_descriptor,
+                channel_count=self._evidence_channels,
+            )
+            if (
+                not isinstance(channels, tuple)
+                or len(channels) != self._evidence_channels
+                or any(
+                    not all(
+                        hasattr(item, name)
+                        for name in ("hit", "stable", "margin", "signature")
+                    )
+                    for item in channels
+                )
+            ):
+                raise ValueError(
+                    "semantic channel evidence count does not match config"
+                )
+            stable = all(bool(item.stable) for item in channels)
+            evidence = _CombinedSemanticEvidence(
+                hit=stable and all(bool(item.hit) for item in channels),
+                stable=stable,
+                margin=min(float(item.margin) for item in channels),
+                signature=tuple(channels[0].signature),
+            )
         if not all(hasattr(evidence, name) for name in ("hit", "stable", "margin")):
             raise ValueError("semantic scorer returned incomplete evidence")
         return evidence

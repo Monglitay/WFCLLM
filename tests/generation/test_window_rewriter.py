@@ -247,6 +247,82 @@ def test_ast_equivalent_rewriter_emits_three_distinct_certified_variants() -> No
     )
 
 
+def test_ast_equivalent_rewriter_certifies_incomplete_compound_headers() -> None:
+    for header in (
+        "if item > 0:\n",
+        "for item in items:\n",
+        "while item > 0:\n",
+    ):
+        request = RewriteRequest(
+            prompt="",
+            completed_prefix="",
+            original_window=header,
+            canonical_parent=(
+                "python-statement-window/v1||parent=module|ordinal=0|role=header"
+            ),
+            window_start_unit_id="0",
+            window_length=1,
+            structural_boundary=StructuralBoundary(
+                0,
+                len(header.encode("utf-8")),
+                0,
+                "module",
+                ("0",),
+                False,
+                False,
+            ),
+        )
+
+        variants = KeyBlindAstEquivalentWindowRewriter().rewrite_windows(
+            request,
+            candidate_indices=(1, 2, 3),
+        )
+
+        assert len({variant.text for variant in variants}) == 3
+        assert all(variant.text != header for variant in variants)
+        assert all(variant.semantic_equivalence_certified is True for variant in variants)
+        assert all(variant.parse_status == "ok" for variant in variants)
+        assert all(variant.unit_count == 1 for variant in variants)
+        assert all(variant.same_parent_scope is True for variant in variants)
+
+
+def test_ast_equivalence_supports_elif_header_and_fails_closed_else_try() -> None:
+    assert python_ast_equivalent("elif item > 0:\n", "elif (item > 0):\n") is True
+    assert python_ast_equivalent("else:\n", "else:  # public variant\n") is False
+    assert python_ast_equivalent("try:\n", "try:  # public variant\n") is False
+
+
+def test_ast_equivalent_rewriter_supports_opencoder_trajectory_through_r48() -> None:
+    rewriter = KeyBlindAstEquivalentWindowRewriter(
+        ast_variant_budget=48,
+        comprehension_alpha=False,
+    )
+
+    variant = rewriter.rewrite_window(_request(), candidate_index=48)
+
+    assert variant.text != _request().original_window
+    assert variant.semantic_validation_rule == "python-ast-equivalent/v1"
+    assert variant.semantic_equivalence_certified is True
+    assert python_ast_equivalent(_request().original_window, variant.text)
+
+
+def test_literal_equivalent_rewriter_adds_distinct_variants_after_r48_budget() -> None:
+    rewriter = KeyBlindAstEquivalentWindowRewriter(
+        ast_variant_budget=48,
+        comprehension_alpha=False,
+    )
+    variants = tuple(
+        rewriter.rewrite_window(_request(), candidate_index=index)
+        for index in range(49, 55)
+    )
+
+    assert len({variant.text for variant in variants}) == 6
+    assert all(
+        variant.semantic_validation_rule == "python-literal-equivalent/v1"
+        for variant in variants
+    )
+
+
 def test_ast_equivalence_rejects_behavior_changes_seen_in_attempt14() -> None:
     assert python_ast_equivalent("arr.sort()\n", "arr.sort(reverse=True)\n") is False
     assert python_ast_equivalent("return y\n", "return y - 1\n") is False
