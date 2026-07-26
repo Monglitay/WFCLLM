@@ -30,6 +30,7 @@ from wfcllm.windowing import (
 CERTIFIED_REWRITE_SEMANTIC_RULES = frozenset(
     {
         "python-ast-equivalent/v1",
+        "python-comprehension-alpha-equivalent/v1",
         "python-literal-equivalent/v1",
         "cpp-keyblind-equivalent/v1",
         "java-keyblind-equivalent/v1",

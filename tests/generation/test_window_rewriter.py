@@ -7,6 +7,7 @@ from wfcllm.generation.window_rewriter import (
     KeyBlindWhitespaceWindowRewriter,
     RewriteGeneration,
     python_ast_equivalent,
+    python_comprehension_alpha_equivalent,
     python_literal_equivalent,
 )
 
@@ -222,7 +223,7 @@ def test_ast_equivalent_rewriter_emits_three_distinct_certified_variants() -> No
             "    return label, count\n"
         ),
         canonical_parent=(
-            "python-statement-window/v1|module/function_definition/block|"
+            "python-statement-window/v1|module/function_definition|"
             "parent=block|ordinal=0|role=body"
         ),
         window_start_unit_id="0",
@@ -265,6 +266,76 @@ def test_ast_equivalent_rewriter_preserves_indentation_and_window_length() -> No
     assert all(variant.same_parent_scope is True for variant in variants)
 
 
+def test_ast_rewriter_handles_source_slice_with_first_indent_in_prefix() -> None:
+    request = RewriteRequest(
+        prompt="",
+        completed_prefix="def f(nums):\n    ",
+        original_window=(
+            '"""Filter the even numbers.\n'
+            "    Return a list.\n"
+            '    """\n'
+            "    return list(filter(lambda x: x % 2 == 0, nums))\n"
+        ),
+        canonical_parent=(
+            "python-statement-window/v1|module/function_definition|"
+            "parent=block|ordinal=0|role=body"
+        ),
+        window_start_unit_id="0",
+        window_length=2,
+        structural_boundary=StructuralBoundary(
+            17, 134, 1, "block", ("0", "1"), False, False
+        ),
+    )
+
+    variants = KeyBlindAstEquivalentWindowRewriter().rewrite_windows(
+        request,
+        candidate_indices=(1, 2, 3),
+    )
+
+    assert len({variant.text for variant in variants}) == 3
+    assert all(variant.text != request.original_window for variant in variants)
+    assert all(variant.parse_status == "ok" for variant in variants)
+    assert all(variant.unit_count == 2 for variant in variants)
+    assert all(variant.same_parent_scope is True for variant in variants)
+    assert all(variant.semantic_equivalence_certified is True for variant in variants)
+    assert all(
+        python_ast_equivalent(request.original_window, variant.text)
+        for variant in variants
+    )
+
+
+def test_ast_rewriter_certifies_compound_header_with_synthetic_body() -> None:
+    request = RewriteRequest(
+        prompt="",
+        completed_prefix="def f(nums):\n    ",
+        original_window="for num in nums:",
+        canonical_parent=(
+            "python-statement-window/v1|module/function_definition|"
+            "parent=block|ordinal=0|role=header"
+        ),
+        window_start_unit_id="0",
+        window_length=1,
+        structural_boundary=StructuralBoundary(
+            17, 33, 1, "block", ("0",), False, False
+        ),
+    )
+
+    variants = KeyBlindAstEquivalentWindowRewriter().rewrite_windows(
+        request,
+        candidate_indices=(1, 2, 3),
+    )
+
+    assert len({variant.text for variant in variants}) == 3
+    assert all(variant.text != request.original_window for variant in variants)
+    assert all(variant.parse_status == "ok" for variant in variants)
+    assert all(variant.same_parent_scope is True for variant in variants)
+    assert all(variant.semantic_equivalence_certified is True for variant in variants)
+    assert all(
+        python_ast_equivalent(request.original_window, variant.text)
+        for variant in variants
+    )
+
+
 def test_ast_equivalent_rewriter_exposes_gate_data_candidate_interface() -> None:
     results = KeyBlindAstEquivalentWindowRewriter().rewrite_many(
         _request(), candidate_indices=(1, 2, 3)
@@ -288,6 +359,57 @@ def test_ast_equivalent_rewriter_supports_bounded_online_retry_beyond_r3() -> No
     assert all(variant.semantic_equivalence_certified is True for variant in variants)
     assert variants[-1].rewrite_config_id.endswith(":12")
     assert all(variant.text.endswith("\n") for variant in variants)
+
+
+def test_rewriter_uses_certified_comprehension_alpha_variants_after_r3() -> None:
+    request = RewriteRequest(
+        prompt="",
+        completed_prefix="def f(items):\n",
+        original_window=(
+            "    positives = [item * item for item in items if item > 0]\n"
+            "    return positives\n"
+        ),
+        canonical_parent=(
+            "python-statement-window/v1|module/function_definition/block|"
+            "parent=block|ordinal=0|role=body"
+        ),
+        window_start_unit_id="0",
+        window_length=2,
+        structural_boundary=StructuralBoundary(
+            14, 93, 1, "block", ("0", "1"), False, False
+        ),
+    )
+    rewriter = KeyBlindAstEquivalentWindowRewriter()
+
+    fourth = rewriter.rewrite_window(request, candidate_index=4)
+    fifth = rewriter.rewrite_window(request, candidate_index=5)
+
+    assert fourth.text != fifth.text
+    assert "_wfcllm_comp_4" in fourth.text
+    assert "_wfcllm_comp_5" in fifth.text
+    assert fourth.semantic_validation_rule == "python-comprehension-alpha-equivalent/v1"
+    assert fourth.semantic_equivalence_certified is True
+    assert fifth.semantic_equivalence_certified is True
+    assert python_comprehension_alpha_equivalent(
+        request.original_window, fourth.text
+    )
+
+
+def test_comprehension_alpha_prover_rejects_behavior_changes() -> None:
+    reference = "return [item * item for item in items if item > 0]\n"
+
+    assert python_comprehension_alpha_equivalent(
+        reference,
+        "return [renamed * renamed for renamed in items if renamed > 0]\n",
+    )
+    assert not python_comprehension_alpha_equivalent(
+        reference,
+        "return [renamed + renamed for renamed in items if renamed > 0]\n",
+    )
+    assert not python_comprehension_alpha_equivalent(
+        reference,
+        "return [renamed * renamed for renamed in reversed(items) if renamed > 0]\n",
+    )
 
 
 def test_literal_equivalence_prover_accepts_identities_and_rejects_changes() -> None:

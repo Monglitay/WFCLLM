@@ -176,6 +176,16 @@ class KeyBlindAstEquivalentWindowRewriter:
                 request.original_window,
                 candidate_index=candidate_index,
             )
+            if candidate_index >= 4:
+                alpha_variant = _comprehension_alpha_variant(
+                    request.original_window,
+                    candidate_index=candidate_index,
+                )
+                if alpha_variant != request.original_window:
+                    validation_rule = (
+                        "python-comprehension-alpha-equivalent/v1"
+                    )
+                    text = alpha_variant
         else:
             validation_rule = "python-literal-equivalent/v1"
             text = _literal_equivalent_variant(
@@ -183,10 +193,18 @@ class KeyBlindAstEquivalentWindowRewriter:
                 candidate_index=candidate_index,
             )
         text = _preserve_trailing_layout(request.original_window, text)
-        if candidate_index <= 12:
+        if validation_rule == self.validation_rule:
             certified = (
                 text != request.original_window
                 and python_ast_equivalent(request.original_window, text)
+            )
+        elif validation_rule == "python-comprehension-alpha-equivalent/v1":
+            certified = (
+                text != request.original_window
+                and python_comprehension_alpha_equivalent(
+                    request.original_window,
+                    text,
+                )
             )
         else:
             certified = (
@@ -637,8 +655,8 @@ def python_ast_equivalent(reference: str, candidate: str) -> bool:
     if not isinstance(reference, str) or not isinstance(candidate, str):
         raise ValueError("reference and candidate must be strings")
     try:
-        reference_tree = ast.parse(textwrap.dedent(reference), type_comments=True)
-        candidate_tree = ast.parse(textwrap.dedent(candidate), type_comments=True)
+        reference_tree = _wrap_window_source(reference).tree
+        candidate_tree = _wrap_window_source(candidate).tree
     except (SyntaxError, ValueError, TypeError):
         return False
     return ast.dump(reference_tree, include_attributes=False) == ast.dump(
@@ -653,8 +671,8 @@ def python_literal_equivalent(reference: str, candidate: str) -> bool:
     if not isinstance(reference, str) or not isinstance(candidate, str):
         raise ValueError("reference and candidate must be strings")
     try:
-        reference_tree = ast.parse(textwrap.dedent(reference), type_comments=True)
-        candidate_tree = ast.parse(textwrap.dedent(candidate), type_comments=True)
+        reference_tree = _wrap_window_source(reference).tree
+        candidate_tree = _wrap_window_source(candidate).tree
     except (SyntaxError, ValueError, TypeError):
         return False
     if _docstring_values(reference_tree) != _docstring_values(candidate_tree):
@@ -1142,28 +1160,217 @@ def _cpp_sizeof_initializer_or_assignment(text: str) -> str:
     )
 
 
+def python_comprehension_alpha_equivalent(
+    reference: str,
+    candidate: str,
+) -> bool:
+    """Prove equivalence modulo simple, comprehension-local target renaming."""
+
+    if not isinstance(reference, str) or not isinstance(candidate, str):
+        raise ValueError("reference and candidate must be strings")
+    try:
+        reference_tree = ast.parse(textwrap.dedent(reference), type_comments=True)
+        candidate_tree = ast.parse(textwrap.dedent(candidate), type_comments=True)
+    except (SyntaxError, ValueError, TypeError):
+        return False
+    reference_normalizer = _ComprehensionAlphaNormalizer()
+    candidate_normalizer = _ComprehensionAlphaNormalizer()
+    reference_tree = reference_normalizer.visit(reference_tree)
+    candidate_tree = candidate_normalizer.visit(candidate_tree)
+    if (
+        not reference_normalizer.supported
+        or not candidate_normalizer.supported
+        or _docstring_values(reference_tree) != _docstring_values(candidate_tree)
+    ):
+        return False
+    ast.fix_missing_locations(reference_tree)
+    ast.fix_missing_locations(candidate_tree)
+    return ast.dump(reference_tree, include_attributes=False) == ast.dump(
+        candidate_tree,
+        include_attributes=False,
+    )
+
+
 def _ast_equivalent_variant(text: str, *, candidate_index: int) -> str:
-    prefix = _common_indentation(text)
-    dedented = textwrap.dedent(text)
-    if not dedented.strip():
+    if not text.strip():
         return text
 
     mode = (candidate_index - 1) % 3
     if mode == 0:
-        transformed = _rewrite_first_string(dedented)
+        transformed = _rewrite_first_string(text)
     elif mode == 1:
-        transformed = _rewrite_first_integer(dedented)
+        transformed = _rewrite_first_integer(text)
     else:
-        transformed = _rewrite_first_string(dedented)
+        transformed = _rewrite_first_string(text)
         transformed = _rewrite_first_integer(transformed)
-    transformed = _parenthesize_first_expression(
+    transformed = _parenthesize_first_window_expression(
         transformed,
         depth=candidate_index,
     )
 
-    if not python_ast_equivalent(dedented, transformed):
+    if not python_ast_equivalent(text, transformed):
         return text
-    return _restore_indentation(transformed, prefix)
+    return transformed
+
+
+@dataclass(frozen=True)
+class _WrappedWindowSource:
+    """A parseable synthetic function around an exact parser window slice."""
+
+    header: str
+    prepared: str
+    injected_indent: str
+    injection_mode: str
+    suffix: str
+    tree: ast.Module
+
+    @property
+    def source(self) -> str:
+        return self.header + self.prepared + self.suffix
+
+    def unwrap(self, transformed_source: str) -> str:
+        if not transformed_source.startswith(self.header):
+            raise ValueError("transformed window lost its synthetic header")
+        prepared = transformed_source[len(self.header) :]
+        if self.suffix:
+            if not prepared.endswith(self.suffix):
+                raise ValueError("transformed window lost its synthetic body")
+            prepared = prepared[: -len(self.suffix)]
+        if self.injection_mode == "none":
+            return prepared
+        if self.injection_mode == "first":
+            if not prepared.startswith(self.injected_indent):
+                raise ValueError("transformed window lost its first-line indent")
+            return prepared[len(self.injected_indent) :]
+        if self.injection_mode == "all":
+            output: list[str] = []
+            for line in prepared.splitlines(keepends=True):
+                if line.strip():
+                    if not line.startswith(self.injected_indent):
+                        raise ValueError(
+                            "transformed window lost its synthetic indentation"
+                        )
+                    line = line[len(self.injected_indent) :]
+                output.append(line)
+            return "".join(output)
+        raise ValueError("unknown synthetic window injection mode")
+
+
+def _wrap_window_source(text: str) -> _WrappedWindowSource:
+    """Make a parser window independently parseable without changing its AST.
+
+    Parser byte spans begin at the first statement token, so the first line of
+    a function-body window has no leading indentation while later source lines
+    retain it.  A synthetic function restores only the indentation omitted by
+    that byte-span convention.  An isolated compound header also receives a
+    synthetic ``pass`` solely outside the returned candidate text.
+    """
+
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("window text must be non-empty")
+    lines = text.splitlines(keepends=True)
+    first_line = next((line for line in lines if line.strip()), "")
+    first_indent = first_line[: len(first_line) - len(first_line.lstrip(" \t"))]
+    subsequent_indents = [
+        line[: len(line) - len(line.lstrip(" \t"))]
+        for line in lines[1:]
+        if line.strip()
+    ]
+    header = "def __wfcllm_synthetic_window__():\n"
+    if first_indent:
+        injected_indent = first_indent
+        injection_mode = "none"
+        prepared = text
+    elif any(not indent for indent in subsequent_indents):
+        injected_indent = "    "
+        injection_mode = "all"
+        prepared = "".join(
+            injected_indent + line if line.strip() else line
+            for line in lines
+        )
+    else:
+        injected_indent = (
+            min(subsequent_indents, key=len)
+            if subsequent_indents
+            else "    "
+        )
+        injection_mode = "first"
+        prepared = injected_indent + text
+
+    suffix = ""
+    source = header + prepared
+    try:
+        tree = ast.parse(source, type_comments=True)
+    except (SyntaxError, ValueError, TypeError):
+        if not text.rstrip().endswith(":"):
+            raise
+        suffix = (
+            ("" if source.endswith(("\n", "\r")) else "\n")
+            + injected_indent
+            + "    pass\n"
+        )
+        tree = ast.parse(source + suffix, type_comments=True)
+    return _WrappedWindowSource(
+        header=header,
+        prepared=prepared,
+        injected_indent=injected_indent,
+        injection_mode=injection_mode,
+        suffix=suffix,
+        tree=tree,
+    )
+
+
+def _parenthesize_first_window_expression(text: str, *, depth: int) -> str:
+    try:
+        wrapped = _wrap_window_source(text)
+    except (SyntaxError, ValueError, TypeError):
+        return text
+    transformed = _parenthesize_first_expression(wrapped.source, depth=depth)
+    try:
+        return wrapped.unwrap(transformed)
+    except ValueError:
+        return text
+
+
+def _comprehension_alpha_variant(text: str, *, candidate_index: int) -> str:
+    prefix = _common_indentation(text)
+    dedented = textwrap.dedent(text)
+    try:
+        tree = ast.parse(dedented, type_comments=True)
+    except (SyntaxError, ValueError, TypeError):
+        return text
+    candidates = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp))
+        and _simple_comprehension_binding(node) is not None
+    ]
+    if not candidates:
+        return text
+    selected = candidates[(candidate_index - 4) % len(candidates)]
+    old_name = _simple_comprehension_binding(selected)
+    if old_name is None:
+        return text
+    used_names = {
+        node.id for node in ast.walk(tree) if isinstance(node, ast.Name)
+    }
+    new_name = f"_wfcllm_comp_{candidate_index}"
+    if new_name in used_names:
+        return text
+    _rename_simple_comprehension(selected, old_name, new_name)
+    ast.fix_missing_locations(tree)
+    try:
+        transformed = ast.unparse(tree)
+    except (TypeError, ValueError, RecursionError):
+        return text
+    if text.endswith(("\n", "\r")):
+        transformed += "\n"
+    candidate = _restore_indentation(transformed, prefix)
+    return (
+        candidate
+        if python_comprehension_alpha_equivalent(text, candidate)
+        else text
+    )
 
 
 def _literal_equivalent_variant(text: str, *, candidate_index: int) -> str:
@@ -1190,6 +1397,109 @@ def _literal_equivalent_variant(text: str, *, candidate_index: int) -> str:
         transformed += "\n"
     candidate = _restore_indentation(transformed, prefix)
     return candidate if python_literal_equivalent(text, candidate) else text
+
+
+_COMPREHENSION_TYPES = (
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+)
+_NESTED_SCOPE_TYPES = (
+    ast.Lambda,
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+)
+
+
+def _simple_comprehension_binding(node: ast.AST) -> str | None:
+    generators = getattr(node, "generators", None)
+    if not isinstance(generators, list) or len(generators) != 1:
+        return None
+    generator = generators[0]
+    if (
+        not isinstance(generator, ast.comprehension)
+        or not isinstance(generator.target, ast.Name)
+        or generator.is_async
+    ):
+        return None
+    fields = _comprehension_bound_fields(node, generator)
+    if any(
+        isinstance(descendant, _NESTED_SCOPE_TYPES)
+        for field in fields
+        for descendant in ast.walk(field)
+    ):
+        return None
+    return generator.target.id
+
+
+def _comprehension_bound_fields(
+    node: ast.AST,
+    generator: ast.comprehension,
+) -> tuple[ast.AST, ...]:
+    values: list[ast.AST] = list(generator.ifs)
+    if isinstance(node, ast.DictComp):
+        values.extend((node.key, node.value))
+    else:
+        values.append(node.elt)
+    return tuple(values)
+
+
+def _rename_simple_comprehension(
+    node: ast.AST,
+    old_name: str,
+    new_name: str,
+) -> None:
+    generator = node.generators[0]
+    generator.target.id = new_name
+    renamer = _MatchingLoadNameRenamer(old_name, new_name)
+    for field in _comprehension_bound_fields(node, generator):
+        renamer.visit(field)
+
+
+class _MatchingLoadNameRenamer(ast.NodeTransformer):
+    def __init__(self, old_name: str, new_name: str) -> None:
+        self.old_name = old_name
+        self.new_name = new_name
+
+    def visit_Name(self, node: ast.Name):
+        if isinstance(node.ctx, ast.Load) and node.id == self.old_name:
+            node.id = self.new_name
+        return node
+
+
+class _ComprehensionAlphaNormalizer(ast.NodeTransformer):
+    def __init__(self) -> None:
+        self.count = 0
+        self.supported = True
+
+    def _normalize(self, node: ast.AST):
+        old_name = _simple_comprehension_binding(node)
+        if old_name is None:
+            self.supported = False
+            return self.generic_visit(node)
+        placeholder = f"_wfcllm_normalized_comp_{self.count}"
+        self.count += 1
+        generator = node.generators[0]
+        generator.iter = self.visit(generator.iter)
+        _rename_simple_comprehension(node, old_name, placeholder)
+        for field in _comprehension_bound_fields(node, generator):
+            self.visit(field)
+        return node
+
+    def visit_ListComp(self, node: ast.ListComp):
+        return self._normalize(node)
+
+    def visit_SetComp(self, node: ast.SetComp):
+        return self._normalize(node)
+
+    def visit_DictComp(self, node: ast.DictComp):
+        return self._normalize(node)
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp):
+        return self._normalize(node)
 
 
 def _preserve_trailing_layout(reference: str, candidate: str) -> str:
