@@ -139,6 +139,7 @@ _GATED_SEMANTIC_WINDOW_V1 = WFCLLMMethodPreset(
         "lsh_gamma": 0.5,
         "semantic_margin": 0.0,
         "use_ordinal_keying": False,
+        "evidence_channels": 1,
     },
     detector={
         "mode": "wfcllm-gated-semantic-window/v1",

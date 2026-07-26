@@ -237,6 +237,59 @@ class SemanticWindowScorer:
             stable=stable,
         )
 
+    def score_channels(
+        self,
+        *,
+        window_text: str,
+        parent_descriptor: str,
+        channel_count: int,
+    ) -> tuple[SemanticWindowEvidence, ...]:
+        """Score domain-separated keyed regions from one public embedding."""
+
+        if (
+            isinstance(channel_count, bool)
+            or not isinstance(channel_count, int)
+            or not 1 <= channel_count <= 4
+        ):
+            raise ValueError("channel_count must be an integer in [1, 4]")
+        first = self.score(
+            window_text=window_text,
+            parent_descriptor=parent_descriptor,
+        )
+        output = [first]
+        for channel in range(1, channel_count):
+            descriptor = (
+                f"{parent_descriptor}|wfcllm-evidence-channel={channel}"
+            )
+            allowed = self._keying.derive_descriptor(
+                contract_version=self._contract_version,
+                parent_descriptor=descriptor,
+                k=self._k,
+            )
+            dimension = _validate_allowed_set(
+                allowed, expected_size=self._k
+            )
+            if len(first.signature) != dimension:
+                raise ValueError(
+                    "lsh_signature dimension does not match allowed set"
+                )
+            region_id = self._keying.descriptor_region_id(
+                contract_version=self._contract_version,
+                parent_descriptor=descriptor,
+                k=self._k,
+                allowed=allowed,
+            )
+            output.append(
+                SemanticWindowEvidence(
+                    signature=first.signature,
+                    allowed_region_id=region_id,
+                    hit=first.stable and first.signature in allowed,
+                    margin=first.margin,
+                    stable=first.stable,
+                )
+            )
+        return tuple(output)
+
 
 def _validate_signature(signature: object, *, field_name: str) -> None:
     if not isinstance(signature, tuple) or not signature:

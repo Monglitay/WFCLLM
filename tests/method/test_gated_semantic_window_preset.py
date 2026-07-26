@@ -96,6 +96,91 @@ def test_gated_preset_contains_frozen_contracts_and_thresholds() -> None:
     assert preset.detector["target_fpr"] == 0.05
 
 
+def test_gated_preset_accepts_bounded_evidence_dense_runtime_overrides() -> None:
+    preset = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME)
+    method = deepcopy(preset.to_dict()["method"])
+    method["windowing"]["max_units"] = 1
+    method["rewrite"]["max_attempts"] = 48
+
+    tuned = replace(preset, method=method)
+
+    assert tuned.method["windowing"]["max_units"] == 1
+    assert tuned.method["rewrite"]["max_attempts"] == 48
+
+    method["rewrite"]["max_attempts"] = 49
+    with pytest.raises(ValueError, match="max_attempts"):
+        replace(preset, method=method)
+
+
+def test_gated_preset_accepts_two_channels_with_pooled_empirical_calibration() -> None:
+    preset = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME)
+    semantic_lsh = deepcopy(preset.to_dict()["semantic_lsh"])
+    semantic_lsh["evidence_channels"] = 2
+    calibration = deepcopy(preset.to_dict()["calibration"])
+    calibration.update(
+        {
+            "method": "pooled_negative_empirical_right_tail",
+            "group_by": "pooled_reliable_hit_rate",
+        }
+    )
+
+    tuned = replace(
+        preset,
+        semantic_lsh=semantic_lsh,
+        calibration=calibration,
+    )
+
+    assert tuned.semantic_lsh["evidence_channels"] == 2
+    assert tuned.calibration["group_by"] == "pooled_reliable_hit_rate"
+
+
+def test_gated_preset_accepts_empirically_calibrated_binomial_surprisal() -> None:
+    preset = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME)
+    tuned = replace(
+        preset,
+        calibration={
+            **preset.calibration,
+            "method": "pooled_negative_empirical_binomial_surprisal",
+            "group_by": "pooled_empirical_binomial_surprisal",
+        },
+    )
+
+    assert (
+        tuned.calibration["method"]
+        == "pooled_negative_empirical_binomial_surprisal"
+    )
+
+
+def test_gated_preset_accepts_empirical_standardized_hit_surplus() -> None:
+    preset = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME)
+    tuned = replace(
+        preset,
+        calibration={
+            **preset.calibration,
+            "method": "pooled_negative_empirical_standardized_hit_surplus",
+            "group_by": "pooled_empirical_standardized_hit_surplus",
+        },
+    )
+
+    assert (
+        tuned.calibration["group_by"]
+        == "pooled_empirical_standardized_hit_surplus"
+    )
+
+
+@pytest.mark.parametrize("channels", [0, 5])
+def test_gated_preset_rejects_out_of_range_evidence_channels(channels: int) -> None:
+    preset = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME)
+    with pytest.raises(ValueError, match="evidence_channels"):
+        replace(
+            preset,
+            semantic_lsh={
+                **preset.semantic_lsh,
+                "evidence_channels": channels,
+            },
+        )
+
+
 def test_gated_preset_is_deep_copied_between_loads() -> None:
     first = load_method_preset(GATED_SEMANTIC_WINDOW_V1_NAME)
     with pytest.raises(TypeError):

@@ -299,6 +299,7 @@ class WFCLLMMethodPreset:
                 "lsh_gamma",
                 "semantic_margin",
                 "use_ordinal_keying",
+                "evidence_channels",
             },
             "semantic_lsh",
         )
@@ -388,8 +389,12 @@ class WFCLLMMethodPreset:
             raise ValueError("method.windowing.enabled must be true")
         if windowing.get("contract_version") != "python-statement-window/v1":
             raise ValueError("method.windowing.contract_version is incompatible")
-        if windowing.get("max_units") != 3:
-            raise ValueError("method.windowing.max_units must equal 3")
+        max_units = windowing.get("max_units")
+        if (
+            type(max_units) is not int
+            or not 1 <= max_units <= 3
+        ):
+            raise ValueError("method.windowing.max_units must be an integer from 1 through 3")
         if windowing.get("max_preceding_units") != 3:
             raise ValueError("method.windowing.max_preceding_units must equal 3")
         if windowing.get("compound_header_singleton") is not True:
@@ -448,13 +453,20 @@ class WFCLLMMethodPreset:
             rewrite,
             {
                 "candidate_zero": "original_window",
-                "max_attempts": 3,
                 "experiment_budgets": [1, 3],
                 "key_blind": True,
                 "candidate_selection": "fixed-key-blind-abc-trajectory/v1",
             },
             "method.rewrite",
         )
+        max_attempts = rewrite.get("max_attempts")
+        if (
+            type(max_attempts) is not int
+            or not 3 <= max_attempts <= 48
+        ):
+            raise ValueError(
+                "method.rewrite.max_attempts must be an integer from 3 through 48"
+            )
         rewrite_temperature = rewrite.get("temperature")
         if (
             isinstance(rewrite_temperature, bool)
@@ -570,6 +582,15 @@ class WFCLLMMethodPreset:
             },
             "semantic_lsh",
         )
+        evidence_channels = self.semantic_lsh.get("evidence_channels")
+        if (
+            isinstance(evidence_channels, bool)
+            or not isinstance(evidence_channels, int)
+            or not 1 <= evidence_channels <= 4
+        ):
+            raise ValueError(
+                "semantic_lsh.evidence_channels must be an integer in [1, 4]"
+            )
         self._require_fixed_values(
             self.detector,
             {
@@ -584,13 +605,37 @@ class WFCLLMMethodPreset:
         self._require_fixed_values(
             self.calibration,
             {
-                "method": "pooled_negative_binomial_right_tail",
-                "group_by": "pooled_binomial_tail",
                 "target_fpr": 0.05,
                 "posthoc_pass_at_1_noninferiority_absolute_drop_max": 0.02,
             },
             "calibration",
         )
+        calibration_contract = (
+            self.calibration.get("method"),
+            self.calibration.get("group_by"),
+        )
+        if calibration_contract not in {
+            (
+                "pooled_negative_binomial_right_tail",
+                "pooled_binomial_tail",
+            ),
+            (
+                "pooled_negative_empirical_right_tail",
+                "pooled_reliable_hit_rate",
+            ),
+            (
+                "pooled_negative_empirical_binomial_surprisal",
+                "pooled_empirical_binomial_surprisal",
+            ),
+            (
+                "pooled_negative_empirical_standardized_hit_surplus",
+                "pooled_empirical_standardized_hit_surplus",
+            ),
+        }:
+            raise ValueError(
+                "calibration method/group_by must select one supported "
+                "predeclared 5% FPR statistic"
+            )
         run_root = self.artifacts.get("run_root")
         if (
             not isinstance(run_root, str)

@@ -76,7 +76,8 @@
     "lsh_d": 1,
     "lsh_gamma": 0.5,
     "semantic_margin": 0.0,
-    "use_ordinal_keying": false
+    "use_ordinal_keying": false,
+    "evidence_channels": 1
   },
   "detector": {
     "mode": "wfcllm-gated-semantic-window/v1",

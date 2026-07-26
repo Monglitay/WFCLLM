@@ -127,6 +127,56 @@ def test_complete_normalized_window_is_verified_once_as_one_embedding() -> None:
     assert evidence.margin == pytest.approx(0.42)
 
 
+class _ChannelKeying(_FakeKeying):
+    def derive_descriptor(
+        self,
+        *,
+        contract_version: str,
+        parent_descriptor: str,
+        k: int,
+    ) -> frozenset[tuple[int, ...]]:
+        self.calls.append((contract_version, parent_descriptor, k))
+        if parent_descriptor.endswith("wfcllm-evidence-channel=1"):
+            return frozenset({(0, 0, 0, 1)})
+        return frozenset({(1, 0, 1, 0)})
+
+
+def test_channel_scoring_reuses_one_embedding_with_domain_separated_regions() -> None:
+    verifier = _FakeVerifier(
+        _FakeVerifyResult(
+            passed=True,
+            min_margin=0.42,
+            lsh_signature=(1, 0, 1, 0),
+            in_valid_set=True,
+        )
+    )
+    keying = _ChannelKeying(frozenset({(1, 0, 1, 0)}))
+    scorer = SemanticWindowScorer(
+        verifier=verifier,
+        keying=keying,
+        contract_version="python-statement-window/v1",
+        k=1,
+        margin=0.1,
+    )
+
+    evidence = scorer.score_channels(
+        window_text="return x",
+        parent_descriptor="descriptor",
+        channel_count=2,
+    )
+
+    assert len(verifier.calls) == 1
+    assert [item.hit for item in evidence] == [True, False]
+    assert keying.calls == [
+        ("python-statement-window/v1", "descriptor", 1),
+        (
+            "python-statement-window/v1",
+            "descriptor|wfcllm-evidence-channel=1",
+            1,
+        ),
+    ]
+
+
 def test_stable_signature_outside_allowed_set_is_a_stable_miss() -> None:
     scorer, _, _ = _scorer(
         _FakeVerifyResult(
