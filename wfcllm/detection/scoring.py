@@ -57,6 +57,8 @@ class GatedWindowScorer:
         *,
         semantic_scorer: object,
         minimum_reliable_windows: int,
+        evidence_channels: int = 1,
+        allow_unsuitable_windows: bool = False,
     ) -> None:
         if not callable(getattr(semantic_scorer, "score", None)):
             raise ValueError("semantic_scorer must expose score")
@@ -66,55 +68,105 @@ class GatedWindowScorer:
             or minimum_reliable_windows <= 0
         ):
             raise ValueError("minimum_reliable_windows must be positive")
+        if (
+            isinstance(evidence_channels, bool)
+            or not isinstance(evidence_channels, int)
+            or not 1 <= evidence_channels <= 4
+        ):
+            raise ValueError("evidence_channels must be an integer in [1, 4]")
+        if evidence_channels > 1 and not callable(
+            getattr(semantic_scorer, "score_channels", None)
+        ):
+            raise ValueError(
+                "multi-channel semantic_scorer must expose score_channels"
+            )
+        if type(allow_unsuitable_windows) is not bool:
+            raise ValueError("allow_unsuitable_windows must be a bool")
         self._semantic_scorer = semantic_scorer
         self.minimum_reliable_windows = minimum_reliable_windows
+        self.evidence_channels = evidence_channels
+        self.allow_unsuitable_windows = allow_unsuitable_windows
 
     def score(self, windows: list[object] | tuple[object, ...]) -> GatedSampleScore:
         hits = misses = abstains = 0
         details: list[GatedWindowEvidence] = []
         for window in windows:
-            if getattr(window, "suitable", None) is not True:
+            if (
+                not self.allow_unsuitable_windows
+                and getattr(window, "suitable", None) is not True
+            ):
                 continue
             text = _gated_window_text(window)
             descriptor = _gated_parent_descriptor(window)
-            result = self._semantic_scorer.score(
-                window_text=text,
-                parent_descriptor=descriptor,
-            )
-            stable = getattr(result, "stable", None)
-            hit = getattr(result, "hit", None)
-            margin = getattr(result, "margin", None)
-            if not isinstance(stable, bool) or not isinstance(hit, bool):
-                raise ValueError("semantic evidence must define boolean stable and hit")
-            if (
-                isinstance(margin, bool)
-                or not isinstance(margin, (int, float))
-                or not math.isfinite(float(margin))
-                or float(margin) < 0.0
-            ):
-                raise ValueError("semantic evidence margin must be finite and non-negative")
-            if not stable:
-                status = "abstain"
-                abstains += 1
-            elif hit:
-                status = "hit"
-                hits += 1
-            else:
-                status = "miss"
-                misses += 1
-            details.append(
-                GatedWindowEvidence(
-                    start_byte=_optional_int(window, "start_byte", 0),
-                    end_byte=_optional_int(window, "end_byte", 0),
+            results = (
+                self._semantic_scorer.score_channels(
+                    window_text=text,
                     parent_descriptor=descriptor,
-                    close_probability=_gate_probability(window, "close_probability"),
-                    suitable_probability=_gate_probability(
-                        window, "suitable_probability"
+                    channel_count=self.evidence_channels,
+                )
+                if self.evidence_channels > 1
+                else (
+                    self._semantic_scorer.score(
+                        window_text=text,
+                        parent_descriptor=descriptor,
                     ),
-                    status=status,
-                    margin=float(margin),
                 )
             )
+            if (
+                not isinstance(results, tuple)
+                or len(results) != self.evidence_channels
+            ):
+                raise ValueError(
+                    "semantic channel evidence count does not match config"
+                )
+            for channel, result in enumerate(results):
+                stable = getattr(result, "stable", None)
+                hit = getattr(result, "hit", None)
+                margin = getattr(result, "margin", None)
+                if not isinstance(stable, bool) or not isinstance(hit, bool):
+                    raise ValueError(
+                        "semantic evidence must define boolean stable and hit"
+                    )
+                if (
+                    isinstance(margin, bool)
+                    or not isinstance(margin, (int, float))
+                    or not math.isfinite(float(margin))
+                    or float(margin) < 0.0
+                ):
+                    raise ValueError(
+                        "semantic evidence margin must be finite and non-negative"
+                    )
+                if not stable:
+                    status = "abstain"
+                    abstains += 1
+                elif hit:
+                    status = "hit"
+                    hits += 1
+                else:
+                    status = "miss"
+                    misses += 1
+                evidence_descriptor = (
+                    descriptor
+                    if channel == 0
+                    else (
+                        f"{descriptor}|wfcllm-evidence-channel={channel}"
+                    )
+                )
+                details.append(
+                    GatedWindowEvidence(
+                        start_byte=_optional_int(window, "start_byte", 0),
+                        end_byte=_optional_int(window, "end_byte", 0),
+                        parent_descriptor=evidence_descriptor,
+                        close_probability=_gate_probability(
+                            window, "close_probability"
+                        ),
+                        suitable_probability=_gate_probability(
+                            window, "suitable_probability"
+                        ),
+                        status=status,
+                        margin=float(margin),
+                    )
+                )
         reliable = hits + misses
         return GatedSampleScore(
             hit_count=hits,

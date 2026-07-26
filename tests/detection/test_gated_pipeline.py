@@ -73,6 +73,58 @@ def test_gated_scorer_uses_only_stable_suitable_windows() -> None:
     assert score.hit_rate == 0.5
 
 
+class _ChannelSemantic:
+    def score(self, *, window_text: str, parent_descriptor: str):
+        raise AssertionError("multi-channel scoring must use score_channels")
+
+    def score_channels(
+        self, *, window_text: str, parent_descriptor: str, channel_count: int
+    ):
+        assert window_text == "hit"
+        assert parent_descriptor.endswith("role=body")
+        assert channel_count == 2
+        return (
+            SimpleNamespace(hit=True, stable=True, margin=0.5),
+            SimpleNamespace(hit=False, stable=True, margin=0.4),
+        )
+
+
+def test_gated_scorer_counts_each_configured_evidence_channel() -> None:
+    scorer = GatedWindowScorer(
+        semantic_scorer=_ChannelSemantic(),
+        minimum_reliable_windows=2,
+        evidence_channels=2,
+    )
+
+    score = scorer.score([_Window(True, "hit")])
+
+    assert (score.hit_count, score.miss_count, score.abstain_count) == (1, 1, 0)
+    assert score.reliable_window_count == 2
+    assert len(score.evidence) == 2
+    assert score.evidence[0].parent_descriptor.endswith("role=body")
+    assert score.evidence[1].parent_descriptor.endswith(
+        "role=body|wfcllm-evidence-channel=1"
+    )
+
+
+def test_gated_scorer_can_count_unsuitable_windows_for_experimental_detection() -> None:
+    scorer = GatedWindowScorer(
+        semantic_scorer=_Semantic(),
+        minimum_reliable_windows=1,
+        allow_unsuitable_windows=True,
+    )
+
+    score = scorer.score(
+        [
+            _Window(False, "hit"),
+            _Window(False, "miss"),
+        ]
+    )
+
+    assert (score.hit_count, score.miss_count) == (1, 1)
+    assert score.reliable_window_count == 2
+
+
 def test_insufficient_reliable_windows_abstains() -> None:
     scorer = GatedWindowScorer(semantic_scorer=_Semantic(), minimum_reliable_windows=2)
     assert scorer.detect([_Window(True, "hit")]).decision == "insufficient_evidence"

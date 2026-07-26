@@ -34,6 +34,7 @@ class RecoveredGatedWindow:
     parent_descriptor: ParentDescriptor
     start_byte: int
     end_byte: int
+    window_text: str
     gate_scores: GateScores | None
     gate_decision: GateDecision
     close_reason: CloseReason
@@ -42,14 +43,30 @@ class RecoveredGatedWindow:
     previous_context: tuple[StatementUnit, ...]
 
     @classmethod
-    def from_semantic_window(cls, window: SemanticWindow) -> RecoveredGatedWindow:
+    def from_semantic_window(
+        cls,
+        window: SemanticWindow,
+        *,
+        source_bytes: bytes,
+    ) -> RecoveredGatedWindow:
         if not isinstance(window, SemanticWindow):
             raise ValueError("window must be a SemanticWindow")
+        if not isinstance(source_bytes, bytes):
+            raise ValueError("source_bytes must be bytes")
+        try:
+            window_text = source_bytes[window.start_byte : window.end_byte].decode(
+                "utf-8"
+            )
+        except UnicodeDecodeError as exc:
+            raise ValueError("window byte span is not valid UTF-8") from exc
+        if not window_text.strip():
+            raise ValueError("window byte span must contain non-empty source")
         return cls(
             units=window.units,
             parent_descriptor=window.parent_descriptor,
             start_byte=window.start_byte,
             end_byte=window.end_byte,
+            window_text=window_text,
             gate_scores=window.gate_scores,
             gate_decision=window.gate_decision,
             close_reason=window.close_reason,
@@ -100,6 +117,8 @@ class GatedWindowExtractor:
         *,
         allow_experimental: bool = False,
         allow_unvalidated: bool = False,
+        defer_unreliable_until_max_units: bool = False,
+        max_units_override: int | None = None,
     ) -> None:
         self._bundle = bundle
         self._config = config
@@ -107,8 +126,24 @@ class GatedWindowExtractor:
             raise ValueError("allow_experimental must be a bool")
         if type(allow_unvalidated) is not bool:
             raise ValueError("allow_unvalidated must be a bool")
+        if type(defer_unreliable_until_max_units) is not bool:
+            raise ValueError("defer_unreliable_until_max_units must be a bool")
         manifest = _validate_bundle(
             bundle, config, allow_experimental, allow_unvalidated
+        )
+        bundle_max_units = getattr(manifest, "max_units", 3)
+        if max_units_override is not None and (
+            type(max_units_override) is not int
+            or not 1 <= max_units_override <= bundle_max_units
+        ):
+            raise ValueError(
+                "max_units_override must be a positive integer and cannot "
+                "exceed the bundle maximum"
+            )
+        runtime_max_units = (
+            bundle_max_units
+            if max_units_override is None
+            else max_units_override
         )
         predictor = _bound_stable_predictor(bundle)
         tokenizer_counter = _tokenizer_counter(bundle)
@@ -130,11 +165,14 @@ class GatedWindowExtractor:
                 close_low=manifest.close_low_threshold,
                 close_high=manifest.close_high_threshold,
                 suitable_accept=manifest.suitable_accept_threshold,
-                max_units=getattr(manifest, "max_units", 3),
+                max_units=runtime_max_units,
                 max_input_tokens=manifest.max_tokens,
             ),
             tokenizer_counter=tokenizer_counter,
             window_contract_version=contract,
+            defer_unreliable_until_max_units=(
+                defer_unreliable_until_max_units
+            ),
         )
 
     def extract(self, final_code: str) -> GatedWindowExtraction:
@@ -143,15 +181,26 @@ class GatedWindowExtractor:
         units = self.unit_extractor.extract(final_code)
         partitioned = self.partitioner.partition(units)
         return GatedWindowExtraction(
-            windows=self.project_windows(partitioned.windows),
+            windows=self.project_windows(
+                partitioned.windows,
+                source_bytes=final_code.encode("utf-8"),
+            ),
             skipped_context=partitioned.skipped_context,
         )
 
     @staticmethod
     def project_windows(
         windows: Sequence[SemanticWindow],
+        *,
+        source_bytes: bytes,
     ) -> tuple[RecoveredGatedWindow, ...]:
-        return tuple(RecoveredGatedWindow.from_semantic_window(item) for item in windows)
+        return tuple(
+            RecoveredGatedWindow.from_semantic_window(
+                item,
+                source_bytes=source_bytes,
+            )
+            for item in windows
+        )
 
 
 def gate_bundle_tree_sha256(root: Path) -> str:

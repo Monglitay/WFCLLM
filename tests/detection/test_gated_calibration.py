@@ -7,7 +7,10 @@ import pytest
 
 from wfcllm.detection.gated_pipeline import (
     BINOMIAL_P_VALUE_RULE,
+    EMPIRICAL_BINOMIAL_SURPRISAL_RULE,
+    EMPIRICAL_STANDARDIZED_HIT_SURPLUS_RULE,
     EMPIRICAL_P_VALUE_RULE,
+    QUANTILE_THRESHOLD_RULE,
     GatedCalibrationArtifact,
     GatedDetectionBindings,
     GatedDetectionPipeline,
@@ -85,6 +88,38 @@ def test_pooled_calibration_keeps_target_fpr_with_variable_window_counts() -> No
     assert len(artifact.reliable_window_count_buckets["2"]) == 3
 
 
+def test_pooled_quantile_threshold_uses_negative_only_fpr_boundary() -> None:
+    pipeline = GatedDetectionPipeline(
+        extractor=_Extractor(),
+        scorer=GatedWindowScorer(
+            semantic_scorer=_Semantic(),
+            minimum_reliable_windows=3,
+        ),
+        bindings=_bindings(),
+        target_fpr=0.05,
+        calibration_group_by="pooled_reliable_hit_rate_quantile",
+    )
+    negatives = [
+        *(_row(index, "miss miss miss miss") for index in range(18)),
+        _row(18, "hit hit hit miss"),
+        _row(19, "hit hit hit hit"),
+    ]
+
+    artifact = pipeline.calibrate(negatives)
+    negative_results = pipeline.detect(negatives, artifact=artifact)
+    below, boundary = pipeline.detect(
+        [_row(20, "hit hit hit miss"), _row(21, "hit hit hit hit")],
+        artifact=artifact,
+    )
+
+    assert artifact.empirical_p_value_rule == QUANTILE_THRESHOLD_RULE
+    assert artifact.thresholds_by_reliable_window_count == {"3": 1.0}
+    assert sum(result.is_watermarked for result in negative_results) == 1
+    assert below.decision == "not_watermarked"
+    assert boundary.decision == "watermarked"
+    assert boundary.p_value > 0.05
+
+
 def test_pooled_binomial_calibration_uses_window_level_negative_null() -> None:
     pipeline = GatedDetectionPipeline(
         extractor=_Extractor(),
@@ -128,6 +163,60 @@ def test_pooled_binomial_detection_separates_long_hits_from_short_chance_hits() 
     assert short.p_value == pytest.approx(0.25)
     assert long.decision == "watermarked"
     assert long.p_value == pytest.approx(1 / 1024)
+
+
+def test_empirical_binomial_surprisal_calibrates_sample_level_count_score() -> None:
+    pipeline = GatedDetectionPipeline(
+        extractor=_Extractor(),
+        scorer=GatedWindowScorer(
+            semantic_scorer=_Semantic(),
+            minimum_reliable_windows=2,
+        ),
+        bindings=_bindings(),
+        target_fpr=0.05,
+        calibration_group_by="pooled_empirical_binomial_surprisal",
+    )
+    negatives = [_row(index, "miss miss") for index in range(20)]
+
+    artifact = pipeline.calibrate(negatives)
+    result = pipeline.detect(
+        [_row(21, "hit hit hit hit")],
+        artifact=artifact,
+    )[0]
+
+    assert artifact.empirical_p_value_rule == EMPIRICAL_BINOMIAL_SURPRISAL_RULE
+    assert artifact.null_hit_probability == pytest.approx(1 / 42)
+    assert len(artifact.reliable_window_count_buckets["2"]) == 20
+    assert result.decision == "watermarked"
+    assert result.p_value == pytest.approx(1 / 21)
+
+
+def test_empirical_standardized_hit_surplus_uses_negative_null_and_sample_tail() -> None:
+    pipeline = GatedDetectionPipeline(
+        extractor=_Extractor(),
+        scorer=GatedWindowScorer(
+            semantic_scorer=_Semantic(),
+            minimum_reliable_windows=2,
+        ),
+        bindings=_bindings(),
+        target_fpr=0.05,
+        calibration_group_by="pooled_empirical_standardized_hit_surplus",
+    )
+    negatives = [_row(index, "miss miss") for index in range(20)]
+
+    artifact = pipeline.calibrate(negatives)
+    result = pipeline.detect(
+        [_row(21, "hit hit hit hit")],
+        artifact=artifact,
+    )[0]
+
+    assert (
+        artifact.empirical_p_value_rule
+        == EMPIRICAL_STANDARDIZED_HIT_SURPLUS_RULE
+    )
+    assert artifact.null_hit_probability == pytest.approx(1 / 42)
+    assert result.decision == "watermarked"
+    assert result.p_value == pytest.approx(1 / 21)
 
 
 def test_hash_mismatch_is_rejected() -> None:

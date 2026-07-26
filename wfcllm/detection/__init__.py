@@ -34,6 +34,7 @@ from wfcllm.detection.gated_windows import (
 )
 from wfcllm.detection.gated_pipeline import (
     EMPIRICAL_P_VALUE_RULE,
+    QUANTILE_THRESHOLD_RULE,
     GATED_CALIBRATION_SCHEMA_VERSION,
     GATED_METHOD_NAME,
     GatedCalibrationArtifact,
@@ -138,4 +139,5 @@ __all__ = [
     "write_gated_calibration_artifact",
     "write_detection_report",
     "EMPIRICAL_P_VALUE_RULE",
+    "QUANTILE_THRESHOLD_RULE",
 ]

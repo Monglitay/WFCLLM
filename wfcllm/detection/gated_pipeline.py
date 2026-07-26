@@ -27,6 +27,14 @@ GATED_METHOD_NAME = "gated_semantic_window_v1"
 GATED_CALIBRATION_SCHEMA_VERSION = "wfcllm-gated-calibration/v1"
 EMPIRICAL_P_VALUE_RULE = "right_tail_plus_one/v1"
 BINOMIAL_P_VALUE_RULE = "pooled_negative_binomial_right_tail/v1"
+EMPIRICAL_BINOMIAL_SURPRISAL_RULE = (
+    "pooled_negative_empirical_binomial_surprisal/v1"
+)
+EMPIRICAL_STANDARDIZED_HIT_SURPLUS_RULE = (
+    "pooled_negative_empirical_standardized_hit_surplus/v1"
+)
+_INSUFFICIENT_STATISTIC_FLOOR = -1e300
+QUANTILE_THRESHOLD_RULE = "pooled_negative_quantile_threshold/v1"
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -74,6 +82,7 @@ class GatedCalibrationArtifact:
     empirical_p_value_rule: str
     target_fpr: float
     minimum_reliable_windows: int
+    null_hit_probability: float | None
     reliable_window_count_buckets: dict[str, tuple[float, ...]]
     thresholds_by_reliable_window_count: dict[str, float]
 
@@ -95,6 +104,9 @@ class GatedCalibrationArtifact:
         if self.empirical_p_value_rule not in {
             EMPIRICAL_P_VALUE_RULE,
             BINOMIAL_P_VALUE_RULE,
+            EMPIRICAL_BINOMIAL_SURPRISAL_RULE,
+            EMPIRICAL_STANDARDIZED_HIT_SURPLUS_RULE,
+            QUANTILE_THRESHOLD_RULE,
         }:
             raise ValueError("empirical p-value rule mismatch")
         if not isinstance(self.target_fpr, (int, float)) or not 0 < self.target_fpr < 1:
@@ -107,21 +119,67 @@ class GatedCalibrationArtifact:
             raise ValueError("calibration buckets and thresholds must match")
         if not self.reliable_window_count_buckets:
             raise ValueError("calibration requires reliable-window buckets")
+        count_statistic_rule = self.empirical_p_value_rule in {
+            EMPIRICAL_BINOMIAL_SURPRISAL_RULE,
+            EMPIRICAL_STANDARDIZED_HIT_SURPLUS_RULE,
+        }
+        surprisal_rule = (
+            self.empirical_p_value_rule
+            == EMPIRICAL_BINOMIAL_SURPRISAL_RULE
+        )
+        if count_statistic_rule:
+            if (
+                isinstance(self.null_hit_probability, bool)
+                or not isinstance(self.null_hit_probability, (int, float))
+                or not 0.0 < self.null_hit_probability < 1.0
+            ):
+                raise ValueError(
+                    "count-statistic calibration requires null_hit_probability"
+                )
+        elif self.null_hit_probability is not None:
+            raise ValueError(
+                "null_hit_probability is reserved for count-statistic calibration"
+            )
         for label, values in self.reliable_window_count_buckets.items():
             if not label.isdigit() or int(label) < self.minimum_reliable_windows:
                 raise ValueError("invalid reliable-window bucket")
-            if not values or any(not 0.0 <= value <= 1.0 for value in values):
-                raise ValueError("invalid background hit-rate distribution")
+            if not values or any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or (surprisal_rule and float(value) < 0.0)
+                or (
+                    not count_statistic_rule
+                    and not 0.0 <= float(value) <= 1.0
+                )
+                for value in values
+            ):
+                raise ValueError("invalid background statistic distribution")
             threshold = self.thresholds_by_reliable_window_count[label]
-            if not 0.0 <= threshold <= 1.0:
+            if (
+                isinstance(threshold, bool)
+                or not isinstance(threshold, (int, float))
+                or not math.isfinite(float(threshold))
+                or (surprisal_rule and float(threshold) < 0.0)
+                or (
+                    not count_statistic_rule
+                    and not 0.0 <= float(threshold) <= 1.0
+                )
+            ):
                 raise ValueError("invalid empirical threshold")
 
     @classmethod
     def from_dict(cls, value: object) -> GatedCalibrationArtifact:
         fields = set(cls.__dataclass_fields__)
-        if not isinstance(value, Mapping) or set(value) != fields:
+        if not isinstance(value, Mapping):
             raise ValueError("gated calibration artifact schema mismatch")
         payload = dict(value)
+        # Pre-multichannel artifacts (nocarrier/cpp runs) predate this field;
+        # absence means the non-count-statistic rules, i.e. None.
+        if "null_hit_probability" not in payload:
+            payload["null_hit_probability"] = None
+        if set(payload) != fields:
+            raise ValueError("gated calibration artifact schema mismatch")
         buckets = payload.get("reliable_window_count_buckets")
         if not isinstance(buckets, Mapping):
             raise ValueError("calibration buckets must be an object")
@@ -193,7 +251,10 @@ class GatedDetectionPipeline:
         if calibration_group_by not in {
             "reliable_window_count",
             "pooled_reliable_hit_rate",
+            "pooled_reliable_hit_rate_quantile",
             "pooled_binomial_tail",
+            "pooled_empirical_binomial_surprisal",
+            "pooled_empirical_standardized_hit_surplus",
         }:
             raise ValueError("unsupported gated calibration grouping")
         self._extractor = extractor
@@ -208,12 +269,59 @@ class GatedDetectionPipeline:
         *,
         output_path: str | Path | None = None,
     ) -> GatedCalibrationArtifact:
-        buckets: dict[str, list[float]] = {}
+        scores: list[GatedSampleScore] = []
         for record in records:
             validate_final_code_record_exact(record)
-            score = self._score_record(record)
+            scores.append(self._score_record(record))
+        buckets: dict[str, list[float]] = {}
+        null_hit_probability: float | None = None
+        count_statistic_group = self._calibration_group_by in {
+            "pooled_empirical_binomial_surprisal",
+            "pooled_empirical_standardized_hit_surplus",
+        }
+        if count_statistic_group:
+            null_hits = sum(score.hit_count for score in scores)
+            null_trials = sum(score.reliable_window_count for score in scores)
+            if null_trials <= 0:
+                raise ValueError(
+                    "calibration has no reliable windows for null estimate"
+                )
+            null_hit_probability = (null_hits + 1.0) / (
+                null_trials + 2.0
+            )
+            bucket = str(self._scorer.minimum_reliable_windows)
+            buckets[bucket] = [
+                (
+                    (
+                        _binomial_surprisal(
+                            score.hit_count,
+                            score.reliable_window_count,
+                            null_hit_probability,
+                        )
+                        if self._calibration_group_by
+                        == "pooled_empirical_binomial_surprisal"
+                        else _standardized_hit_surplus(
+                            score.hit_count,
+                            score.reliable_window_count,
+                            null_hit_probability,
+                        )
+                    )
+                    if score.reliable_window_count
+                    >= self._scorer.minimum_reliable_windows
+                    else _INSUFFICIENT_STATISTIC_FLOOR
+                )
+                for score in scores
+            ]
+        for score in (
+            ()
+            if count_statistic_group
+            else scores
+        ):
             if score.reliable_window_count < self._scorer.minimum_reliable_windows:
-                if self._calibration_group_by == "pooled_reliable_hit_rate":
+                if self._calibration_group_by in {
+                    "pooled_reliable_hit_rate",
+                    "pooled_reliable_hit_rate_quantile",
+                }:
                     bucket = str(self._scorer.minimum_reliable_windows)
                     buckets.setdefault(bucket, []).append(0.0)
                 continue
@@ -225,7 +333,11 @@ class GatedDetectionPipeline:
             else:
                 bucket = (
                     str(self._scorer.minimum_reliable_windows)
-                    if self._calibration_group_by == "pooled_reliable_hit_rate"
+                    if self._calibration_group_by
+                    in {
+                        "pooled_reliable_hit_rate",
+                        "pooled_reliable_hit_rate_quantile",
+                    }
                     else str(score.reliable_window_count)
                 )
                 buckets.setdefault(bucket, []).append(score.hit_rate)
@@ -246,18 +358,39 @@ class GatedDetectionPipeline:
             empirical_p_value_rule=(
                 BINOMIAL_P_VALUE_RULE
                 if self._calibration_group_by == "pooled_binomial_tail"
+                else EMPIRICAL_BINOMIAL_SURPRISAL_RULE
+                if self._calibration_group_by
+                == "pooled_empirical_binomial_surprisal"
+                else EMPIRICAL_STANDARDIZED_HIT_SURPLUS_RULE
+                if self._calibration_group_by
+                == "pooled_empirical_standardized_hit_surplus"
+                else QUANTILE_THRESHOLD_RULE
+                if self._calibration_group_by
+                == "pooled_reliable_hit_rate_quantile"
                 else EMPIRICAL_P_VALUE_RULE
             ),
             target_fpr=self._target_fpr,
             minimum_reliable_windows=self._scorer.minimum_reliable_windows,
+            null_hit_probability=null_hit_probability,
             reliable_window_count_buckets=frozen_buckets,
             thresholds_by_reliable_window_count=(
                 {key: self._target_fpr for key in frozen_buckets}
                 if self._calibration_group_by == "pooled_binomial_tail"
-                else {
-                    key: _empirical_threshold(values, self._target_fpr)
-                    for key, values in frozen_buckets.items()
-                }
+                else (
+                    {
+                        key: _inclusive_empirical_threshold(
+                            values,
+                            self._target_fpr,
+                        )
+                        for key, values in frozen_buckets.items()
+                    }
+                    if self._calibration_group_by
+                    == "pooled_reliable_hit_rate_quantile"
+                    else {
+                        key: _empirical_threshold(values, self._target_fpr)
+                        for key, values in frozen_buckets.items()
+                    }
+                )
             ),
         )
         if output_path is not None:
@@ -326,13 +459,49 @@ class GatedDetectionPipeline:
                     null_hit_probability,
                     artifact.target_fpr,
                 )
+                observed_statistic = score.hit_rate
+            elif (
+                artifact.empirical_p_value_rule
+                == EMPIRICAL_BINOMIAL_SURPRISAL_RULE
+            ):
+                assert artifact.null_hit_probability is not None
+                observed_statistic = _binomial_surprisal(
+                    score.hit_count,
+                    score.reliable_window_count,
+                    artifact.null_hit_probability,
+                )
+                p_value = empirical_right_tail_plus_one(
+                    observed_statistic, background
+                )
+            elif (
+                artifact.empirical_p_value_rule
+                == EMPIRICAL_STANDARDIZED_HIT_SURPLUS_RULE
+            ):
+                assert artifact.null_hit_probability is not None
+                observed_statistic = _standardized_hit_surplus(
+                    score.hit_count,
+                    score.reliable_window_count,
+                    artifact.null_hit_probability,
+                )
+                p_value = empirical_right_tail_plus_one(
+                    observed_statistic, background
+                )
             else:
+                observed_statistic = score.hit_rate
                 p_value = empirical_right_tail_plus_one(score.hit_rate, background)
-            decision = (
-                "watermarked"
-                if p_value <= artifact.target_fpr and score.hit_rate >= threshold
-                else "not_watermarked"
-            )
+            if artifact.empirical_p_value_rule == QUANTILE_THRESHOLD_RULE:
+                decision = (
+                    "watermarked"
+                    if score.hit_rate >= threshold
+                    else "not_watermarked"
+                )
+            else:
+                decision = (
+                    "watermarked"
+                    if p_value <= artifact.target_fpr
+                    and observed_statistic >= threshold
+                    else "not_watermarked"
+                )
         return GatedDetectionResult(
             id=str(record["id"]),
             method_name=GATED_METHOD_NAME,
@@ -388,6 +557,25 @@ def binomial_right_tail(hits: int, trials: int, hit_probability: float) -> float
     )
 
 
+def _binomial_surprisal(
+    hits: int, trials: int, hit_probability: float
+) -> float:
+    tail = binomial_right_tail(hits, trials, hit_probability)
+    return -math.log10(max(tail, 1e-300))
+
+
+def _standardized_hit_surplus(
+    hits: int, trials: int, hit_probability: float
+) -> float:
+    if type(hits) is not int or type(trials) is not int or not 0 <= hits <= trials:
+        raise ValueError("binomial counts are invalid")
+    if trials <= 0:
+        raise ValueError("standardized hit surplus requires positive trials")
+    if not 0.0 < hit_probability < 1.0:
+        raise ValueError("binomial hit probability must be in (0, 1)")
+    return (hits - hit_probability * trials) / math.sqrt(trials)
+
+
 def _binomial_hit_rate_threshold(
     trials: int, hit_probability: float, target_fpr: float
 ) -> float:
@@ -401,6 +589,24 @@ def _empirical_threshold(values: Sequence[float], target_fpr: float) -> float:
     ordered = sorted(float(value) for value in values)
     index = max(0, math.ceil((1.0 - target_fpr) * len(ordered)) - 1)
     return ordered[index]
+
+
+def _inclusive_empirical_threshold(
+    values: Sequence[float],
+    target_fpr: float,
+) -> float:
+    ordered = tuple(sorted(float(value) for value in values))
+    allowed_false_positives = math.floor(target_fpr * len(ordered))
+    if allowed_false_positives < 1:
+        raise ValueError(
+            "quantile calibration requires at least ceil(1 / target_fpr) negatives"
+        )
+    for threshold in sorted(set(ordered)):
+        if sum(value >= threshold for value in ordered) <= allowed_false_positives:
+            return threshold
+    raise ValueError(
+        "negative score ties prevent an inclusive threshold at the target FPR"
+    )
 
 
 def _select_bucket(
@@ -473,7 +679,10 @@ def calibrate_gated_detector(
 
 __all__ = [
     "BINOMIAL_P_VALUE_RULE",
+    "EMPIRICAL_BINOMIAL_SURPRISAL_RULE",
+    "EMPIRICAL_STANDARDIZED_HIT_SURPLUS_RULE",
     "EMPIRICAL_P_VALUE_RULE",
+    "QUANTILE_THRESHOLD_RULE",
     "GATED_CALIBRATION_SCHEMA_VERSION",
     "GATED_METHOD_NAME",
     "GatedCalibrationArtifact",

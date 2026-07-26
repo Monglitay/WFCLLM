@@ -22,6 +22,32 @@ class _StablePredictor:
         )
 
 
+class _BatchingPredictor:
+    def predict(self, _serialized_input: str) -> GateScores:
+        return GateScores(
+            close_probability=0.1,
+            suitable_probability=0.9,
+            stable=True,
+            precision_delta=0.0,
+            decision_agreement=True,
+        )
+
+
+class _DeferredPrefixPredictor:
+    def __init__(self) -> None:
+        self._calls = 0
+
+    def predict(self, _serialized_input: str) -> GateScores:
+        self._calls += 1
+        return GateScores(
+            close_probability=0.1,
+            suitable_probability=0.9,
+            stable=self._calls != 1,
+            precision_delta=0.0,
+            decision_agreement=True,
+        )
+
+
 @dataclass
 class _ValidatedFakeBundle:
     root: Path
@@ -79,6 +105,65 @@ def test_gated_detection_config_is_separate_and_strict(tmp_path: Path) -> None:
         _config(tmp_path, minimum_reliable_windows=0)
 
 
+def test_extractor_can_defer_an_unreliable_prefix_symmetrically(
+    tmp_path: Path,
+) -> None:
+    bundle = _ValidatedFakeBundle(root=tmp_path / "bundle")
+    bundle.stable_gate_predictor = _DeferredPrefixPredictor()
+    extractor = GatedWindowExtractor(
+        bundle,
+        _config(tmp_path),
+        defer_unreliable_until_max_units=True,
+    )
+
+    result = extractor.extract(
+        "def f():\n"
+        "    first = 1\n"
+        "    second = 2\n"
+        "    return first + second\n"
+    )
+
+    assert len(result.windows) == 1
+    assert len(result.windows[0].units) == 3
+    assert result.windows[0].suitable is True
+
+
+def test_extractor_can_use_a_smaller_runtime_window_cap(
+    tmp_path: Path,
+) -> None:
+    bundle = _ValidatedFakeBundle(root=tmp_path / "bundle")
+    bundle.stable_gate_predictor = _BatchingPredictor()
+    extractor = GatedWindowExtractor(
+        bundle,
+        _config(tmp_path),
+        max_units_override=2,
+    )
+
+    result = extractor.extract(
+        "def f():\n"
+        "    first = 1\n"
+        "    second = 2\n"
+        "    third = 3\n"
+        "    return first + second + third\n"
+    )
+
+    assert [len(window.units) for window in result.windows] == [2, 2]
+    assert all(window.suitable for window in result.windows)
+
+
+def test_extractor_rejects_a_runtime_cap_above_bundle_maximum(
+    tmp_path: Path,
+) -> None:
+    bundle = _ValidatedFakeBundle(root=tmp_path / "bundle")
+
+    with pytest.raises(ValueError, match="cannot exceed the bundle maximum"):
+        GatedWindowExtractor(
+            bundle,
+            _config(tmp_path),
+            max_units_override=4,
+        )
+
+
 @pytest.mark.parametrize(
     "source",
     [
@@ -115,7 +200,10 @@ def test_extractor_matches_the_shared_generation_partition_contract(
         for window in windows
     ]
     assert projection(detected.windows) == projection(
-        extractor.project_windows(generated.windows)
+        extractor.project_windows(
+            generated.windows,
+            source_bytes=source.encode("utf-8"),
+        )
     )
 
 
@@ -209,14 +297,21 @@ def test_token_overflow_is_closed_and_skipped(tmp_path: Path) -> None:
 
 
 def test_byte_spans_slice_original_utf8_source(tmp_path: Path) -> None:
-    source = "def f():\n    名称 = 'λ'\n    return 名称\n"
-    result = _extract(tmp_path, source)
+    source = "def f():\n    名称 = 'λ'\n    second = 名称\n    return second\n"
+    bundle = _ValidatedFakeBundle(root=tmp_path / "bundle")
+    bundle.stable_gate_predictor = _BatchingPredictor()
+    result = GatedWindowExtractor(bundle, _config(tmp_path)).extract(source)
     raw = source.encode("utf-8")
 
     for window in result.windows:
-        assert raw[window.byte_span[0] : window.byte_span[1]].decode("utf-8") == (
-            raw[window.start_byte : window.end_byte].decode("utf-8")
-        )
+        exact_source_slice = raw[window.start_byte : window.end_byte].decode("utf-8")
+        assert window.window_text == exact_source_slice
+
+    assert any(
+        "\n    " in window.window_text
+        for window in result.windows
+        if len(window.units) > 1
+    )
 
 
 @pytest.mark.parametrize(
