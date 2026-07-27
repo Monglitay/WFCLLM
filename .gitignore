@@ -39,6 +39,11 @@ htmlcov/
 .tmp/
 .worktrees/
 
+# AI assistant instructions and machine-local context.
+AGENTS.md
+CLAUDE.md
+CONTEXT.md
+
 # Machine-local research and rescue material.
 review-stage/
 figures/
