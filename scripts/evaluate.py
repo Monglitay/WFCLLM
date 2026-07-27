@@ -1,190 +1,54 @@
 #!/usr/bin/env python
-"""Unified offline evaluation entry point.
+"""Posthoc Pass@1 reporting for a completed Gate-only reproduction run."""
 
-Subcommands:
-  exec        compute pass@k (and friends) over JSONL candidate rows
-  detection   build the offline regression report from saved summary + details
-  dual        report archive guidance for the legacy dual-channel harness
-  bench       compute Pass@1, Pass@10, AUROC benchmark reports
-"""
 from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
+import sys
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from wfcllm.evaluation.code_execution import (  # noqa: E402
-    annotate_correctness_from_references,
-    compute_pass_at_k,
-    load_jsonl_records,
-)
-from wfcllm.evaluation.detection_report import (  # noqa: E402
-    build_offline_regression_report,
-    load_detail_artifact,
-    load_summary_artifact,
-    load_watermarked_artifact,
-    write_offline_regression_report,
-)
-
-
-def _cmd_exec(args: argparse.Namespace) -> int:
-    records: list[dict] = []
-    for path in args.inputs:
-        records.extend(load_jsonl_records(path))
-
-    if args.reference is not None:
-        reference_records = load_jsonl_records(args.reference)
-        records = annotate_correctness_from_references(records, reference_records)
-
-    if args.metric == "pass_at_k":
-        k = args.k
-    elif args.metric == "pass_at_1":
-        k = 1
-    elif args.metric == "pass_at_10":
-        k = 10
-    else:
-        raise ValueError(f"unsupported metric: {args.metric}")
-
-    value = compute_pass_at_k(records, k=k)
-    print(json.dumps({
-        "metric": args.metric,
-        "k": k,
-        "value": value,
-        "sample_count": len(records),
-    }, ensure_ascii=False, indent=2))
-    return 0
-
-
-def _cmd_detection(args: argparse.Namespace) -> int:
-    left_watermarked = (
-        load_watermarked_artifact(args.left_watermarked) if args.left_watermarked else None
-    )
-    right_watermarked = (
-        load_watermarked_artifact(args.right_watermarked) if args.right_watermarked else None
-    )
-    report = build_offline_regression_report(
-        left_summary=load_summary_artifact(args.left_summary),
-        left_details=load_detail_artifact(args.left_details),
-        left_watermarked=left_watermarked,
-        right_summary=load_summary_artifact(args.right_summary),
-        right_details=load_detail_artifact(args.right_details),
-        right_watermarked=right_watermarked,
-    )
-    output_path = write_offline_regression_report(args.output, report)
-    print(f"[完成] 离线回归报告已保存至 {output_path}")
-    return 0
-
-
-def _cmd_dual(args: argparse.Namespace) -> int:
-    print(
-        "dual-channel evaluation has been archived; see "
-        "archive/legacy_wfcllm_2026_07/code/dual_channel and "
-        "scripts/legacy/evaluate_dual_channel.py.",
-        file=sys.stderr,
-    )
-    return 1
-
-
-def _cmd_bench(args: argparse.Namespace) -> int:
-    from wfcllm.evaluation.benchmark import BenchmarkConfig, BenchmarkRunner
-
-    config = BenchmarkConfig(
-        dataset=args.dataset,
-        config_path=args.config,
-        dataset_path=args.dataset_path,
-        num_candidates=args.num_candidates,
-        timeout_per_test=args.timeout,
-        watermarked_dirs=args.watermarked_dirs,
-        positive_details=args.positive_details,
-        negative_details=args.negative_details,
-        output_dir=args.output_dir,
-        min_blocks=args.min_blocks,
-    )
-    runner = BenchmarkRunner(config)
-    report = runner.run()
-    print(json.dumps(report, ensure_ascii=False, indent=2))
-    return 0
+from wfcllm.evaluation.code_execution import compute_pass_at_1, load_jsonl_records  # noqa: E402
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="WFCLLM unified offline evaluation entry point.",
-    )
-    subparsers = parser.add_subparsers(dest="subcommand", required=True)
-
-    exec_parser = subparsers.add_parser("exec", help="pass@k from JSONL candidate rows")
-    exec_parser.add_argument("inputs", nargs="+", help="one or more JSONL files of candidates")
-    exec_parser.add_argument(
-        "--metric",
-        choices=["pass_at_1", "pass_at_10", "pass_at_k"],
-        default="pass_at_1",
-    )
-    exec_parser.add_argument("--k", type=int, default=1, help="k for --metric pass_at_k")
-    exec_parser.add_argument(
-        "--reference",
-        default=None,
-        help="optional reference JSONL; if given, candidate rows are re-annotated for correctness",
-    )
-    exec_parser.set_defaults(func=_cmd_exec)
-
-    det_parser = subparsers.add_parser(
-        "detection",
-        help="offline regression report from saved summary + details artifacts",
-    )
-    det_parser.add_argument("--left-summary", required=True)
-    det_parser.add_argument("--left-details", required=True)
-    det_parser.add_argument("--right-summary", required=True)
-    det_parser.add_argument("--right-details", required=True)
-    det_parser.add_argument("--left-watermarked", default=None)
-    det_parser.add_argument("--right-watermarked", default=None)
-    det_parser.add_argument("--output", required=True, help="report JSON output path")
-    det_parser.set_defaults(func=_cmd_detection)
-
-    dual_parser = subparsers.add_parser(
-        "dual",
-        help="legacy dual-channel evaluation guidance",
-    )
-    dual_parser.add_argument("--dataset", default="humaneval", choices=["humaneval", "mbpp"])
-    dual_parser.add_argument("--config", default="configs/base_config.json")
-    dual_parser.add_argument("--output-dir", default="data/eval/legacy-dual-channel")
-    dual_parser.add_argument("--num-candidates", type=int, default=10)
-    dual_parser.set_defaults(func=_cmd_dual)
-
-    bench_parser = subparsers.add_parser(
-        "bench",
-        help="compute Pass@1, Pass@10, AUROC from watermarked candidates + negative corpus",
-    )
-    bench_parser.add_argument(
-        "--dataset", required=True, choices=["humaneval", "mbpp"],
-    )
-    bench_parser.add_argument("--config", default="configs/base_config.json")
-    bench_parser.add_argument("--dataset-path", default="data/datasets")
-    bench_parser.add_argument(
-        "--watermarked-dirs", nargs="+", default=None,
-        help="directories containing watermarked candidate JSONL files",
-    )
-    bench_parser.add_argument("--positive-details", default=None)
-    bench_parser.add_argument("--negative-details", default=None)
-    bench_parser.add_argument("--num-candidates", type=int, default=10)
-    bench_parser.add_argument("--timeout", type=float, default=5.0)
-    bench_parser.add_argument("--output-dir", default="data/eval/benchmark")
-    bench_parser.add_argument(
-        "--min-blocks", type=int, default=0,
-        help="skip records with total_blocks < MIN_BLOCKS",
-    )
-    bench_parser.set_defaults(func=_cmd_bench)
-
+    parser = argparse.ArgumentParser(description="Compute posthoc Pass@1")
+    parser.add_argument("inputs", nargs="+", help="posthoc correctness JSONL")
+    parser.add_argument("--output", help="optional pass_report_posthoc.json path")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    return args.func(args)
+    rows: list[dict] = []
+    for path in args.inputs:
+        rows.extend(load_jsonl_records(path))
+    payload = {
+        "schema_version": "wfcllm-posthoc-pass-report/v1",
+        "metric": "pass@1",
+        "k": 1,
+        "value": compute_pass_at_1(rows),
+        "sample_count": len(rows),
+        "posthoc_only": True,
+        "not_used_for_generation": True,
+        "not_used_for_retry": True,
+        "not_used_for_selection": True,
+        "not_used_for_calibration": True,
+        "not_used_for_detection": True,
+    }
+    if args.output:
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(
+            json.dumps(payload, sort_keys=True, allow_nan=False) + "\n",
+            encoding="utf-8",
+        )
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    return 0
 
 
 if __name__ == "__main__":

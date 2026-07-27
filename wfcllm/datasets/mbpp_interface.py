@@ -47,13 +47,10 @@ class MBPPInterfaceSpec:
     positional_arities: tuple[int, ...]
     keyword_names: tuple[str, ...]
     helper_classes: tuple[str, ...]
-    parameter_names: tuple[str, ...] = ()
 
 
 def extract_mbpp_interface(
     test_list: Sequence[str],
-    *,
-    reference_code: str | None = None,
 ) -> MBPPInterfaceSpec | None:
     """Extract call shape without retaining assertions, arguments, or outputs."""
     primary_calls: list[ast.Call] = []
@@ -118,31 +115,20 @@ def extract_mbpp_interface(
             }
         )
     )
-    parameter_names = _reference_parameter_names(
-        reference_code,
-        function_name=function_name,
-        positional_arities=positional_arities,
-    )
     return MBPPInterfaceSpec(
         function_name=function_name,
         positional_arities=positional_arities,
         keyword_names=keyword_names,
         helper_classes=helper_classes,
-        parameter_names=parameter_names,
     )
 
 
 def build_mbpp_generation_prompt(
     task_text: str,
     test_list: Sequence[str],
-    *,
-    reference_code: str | None = None,
 ) -> tuple[str, MBPPInterfaceSpec | None]:
     """Build a HumanEval-style code prefix from a sanitized call shape."""
-    interface = extract_mbpp_interface(
-        test_list,
-        reference_code=reference_code,
-    )
+    interface = extract_mbpp_interface(test_list)
     if interface is None:
         return task_text, None
 
@@ -180,37 +166,9 @@ def build_mbpp_generation_prompt(
 
 def _signature(interface: MBPPInterfaceSpec) -> str:
     max_arity = max(interface.positional_arities)
-    parameters = (
-        list(interface.parameter_names)
-        if len(interface.parameter_names) == max_arity
-        else [f"arg{index}" for index in range(1, max_arity + 1)]
-    )
+    parameters = [f"arg{index}" for index in range(1, max_arity + 1)]
     parameters.extend(f"{name}=None" for name in interface.keyword_names)
     return f"def {interface.function_name}({', '.join(parameters)}):"
-
-
-def _reference_parameter_names(
-    reference_code: str | None,
-    *,
-    function_name: str,
-    positional_arities: tuple[int, ...],
-) -> tuple[str, ...]:
-    if not isinstance(reference_code, str) or not reference_code:
-        return ()
-    try:
-        tree = ast.parse(reference_code)
-    except SyntaxError:
-        return ()
-    for node in tree.body:
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        if node.name != function_name or node.args.vararg is not None:
-            continue
-        positional = [*node.args.posonlyargs, *node.args.args]
-        names = tuple(argument.arg for argument in positional)
-        if len(names) == max(positional_arities):
-            return names
-    return ()
 
 
 def _primary_calls(node: ast.AST) -> list[ast.Call]:

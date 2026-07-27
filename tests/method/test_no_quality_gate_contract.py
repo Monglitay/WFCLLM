@@ -3,21 +3,9 @@ from __future__ import annotations
 import pytest
 
 from wfcllm.method.contracts import (
-    evidence_retry_key,
     reject_quality_proxy_fields,
     require_diagnostic_marker,
 )
-
-
-class Result:
-    accepted_hit_count = 2
-    closed_without_hit_count = 1
-    fallback_count = 3
-    candidate_count = 8
-
-
-def test_evidence_retry_key_is_exact_spec_tuple() -> None:
-    assert evidence_retry_key(Result(), attempt_index=4) == (2, -1, -3, 8, -4)
 
 
 @pytest.mark.parametrize(
@@ -43,7 +31,7 @@ def test_require_diagnostic_marker_requires_both_marker_fields() -> None:
         {
             "diagnostic_only": True,
             "not_official_method": True,
-            "name": "evidence_only_selector_diagnostic",
+            "name": "fixture-only-artifact",
         }
     )
 

@@ -4,68 +4,13 @@ from copy import deepcopy
 
 from wfcllm.method.config import WFCLLMMethodPreset
 
-EVIDENCE_RETRY_SEED7X3_NAME = "evidence_retry_seed7x3"
 GATED_SEMANTIC_WINDOW_V1_NAME = "gated_semantic_window_v1"
-
-_EVIDENCE_RETRY_SEED7X3 = WFCLLMMethodPreset(
-    method={
-        "name": EVIDENCE_RETRY_SEED7X3_NAME,
-        "strict_no_quality_gate": True,
-        "strict_code_only_detector": True,
-    },
-    generation={
-        "dataset": "humaneval",
-        "max_new_tokens": 256,
-        "temperature": 0.25,
-        "top_p": 0.95,
-        "top_k": 0,
-        "retry_repetition_penalty": 4.0,
-        "torch_dtype": "bf16",
-        "device": "cuda",
-        "seed": 7,
-        "load_in_4bit": True,
-        "prompt_mode": "completion",
-        "max_group_statements": 2,
-        "retry_budget": 2,
-        "statement_retry_budget": 4,
-        "window_retry_budget": 3,
-        "compound_retry_budget": 2,
-        "global_rollback_budget": 180,
-        "max_total_sampled_tokens": 32768,
-        "evidence_retry_attempts": 3,
-        "evidence_retry_seed_stride": 101,
-    },
-    semantic_lsh={
-        "rule_name": "semantic_lsh",
-        "lsh_d": 4,
-        "lsh_gamma": 0.25,
-        "semantic_margin": 0.0,
-        "use_ordinal_keying": False,
-    },
-    detector={
-        "lsh_d": 4,
-        "gamma": 0.25,
-        "semantic_margin": 0.0,
-        "max_group_statements": 2,
-        "min_scoreable_contexts": 1,
-        "min_proxy_windows": 2,
-        "target_fpr": 0.05,
-        "use_ordinal_keying": False,
-        "evidence_mode": "hit_plus_margin",
-        "statistic": "calibrated_context_mean_proxy_penalized",
-        "proxy_penalty_alpha": 0.4,
-    },
-    calibration={},
-    artifacts={"run_root": "data/runs"},
-    runtime={"default_phases": ["generate", "calibrate", "detect", "report", "audit"]},
-)
 
 _GATED_SEMANTIC_WINDOW_V1 = WFCLLMMethodPreset(
     method={
         "name": GATED_SEMANTIC_WINDOW_V1_NAME,
         "strict_no_quality_gate": True,
         "strict_code_only_detector": True,
-        "experimental": True,
         "windowing": {
             "enabled": True,
             "contract_version": "python-statement-window/v1",
@@ -90,9 +35,7 @@ _GATED_SEMANTIC_WINDOW_V1 = WFCLLMMethodPreset(
         },
         "gate": {
             "input_contract_version": "wfcllm-gate-input/v1",
-            "bundle_contract_version": "wfcllm-gate-bundle/v1",
-            "bundle_path": None,
-            "bundle_sha256": None,
+            "candidate_contract_version": "wfcllm-gate-train-candidate/v1",
             "uncertain_boundary_policy": "close_and_skip",
             "max_input_tokens": 256,
         },
@@ -111,10 +54,14 @@ _GATED_SEMANTIC_WINDOW_V1 = WFCLLMMethodPreset(
             "parent_descriptor_version": "python-statement-window/v1",
             "encoder_id": "semantic-encoder-local-v1",
             "lsh": {
-                "d": 1,
-                "gamma": 0.5,
+                "d": 12,
+                "gamma": 0.45,
                 "margin": 0.0,
                 "key_derivation_version": "wfcllm-parent-key/v1",
+            },
+            "preservation": {
+                "rule": "codet5-cosine-to-original/v1",
+                "threshold": 0.9,
             },
         },
     },
@@ -133,9 +80,9 @@ _GATED_SEMANTIC_WINDOW_V1 = WFCLLMMethodPreset(
         "max_total_sampled_tokens": 32768,
     },
     semantic_lsh={
-        "rule_name": "keyed_text_region",
-        "lsh_d": 1,
-        "lsh_gamma": 0.5,
+        "rule_name": "semantic_lsh",
+        "lsh_d": 12,
+        "lsh_gamma": 0.45,
         "semantic_margin": 0.0,
         "use_ordinal_keying": False,
         "evidence_channels": 1,
@@ -151,7 +98,7 @@ _GATED_SEMANTIC_WINDOW_V1 = WFCLLMMethodPreset(
         "method": "pooled_negative_binomial_right_tail",
         "group_by": "pooled_binomial_tail",
         "target_fpr": 0.05,
-        "posthoc_pass_at_1_noninferiority_absolute_drop_max": 0.02,
+        "target_negative_count": 100,
     },
     gate_data={
         "schema_version": "wfcllm-gate-data/v1",
@@ -241,25 +188,14 @@ _GATED_SEMANTIC_WINDOW_V1 = WFCLLMMethodPreset(
             "calibrate",
             "detect",
             "report",
-        ],
-        "external_validated_bundle_phases": [
-            "generate",
-            "calibrate",
-            "detect",
-            "report",
+            "audit",
         ],
     },
 )
 
 
 def load_method_preset(name: str) -> WFCLLMMethodPreset:
-    presets = {
-        EVIDENCE_RETRY_SEED7X3_NAME: _EVIDENCE_RETRY_SEED7X3,
-        GATED_SEMANTIC_WINDOW_V1_NAME: _GATED_SEMANTIC_WINDOW_V1,
-    }
-    try:
-        preset = presets[name]
-    except (KeyError, TypeError) as exc:
+    if name != GATED_SEMANTIC_WINDOW_V1_NAME:
         raise ValueError(f"unknown WFCLLM method preset: {name}")
-    payload = deepcopy(preset.to_dict())
+    payload = deepcopy(_GATED_SEMANTIC_WINDOW_V1.to_dict())
     return WFCLLMMethodPreset(**payload)

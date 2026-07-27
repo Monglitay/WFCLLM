@@ -1,4 +1,4 @@
-"""Watermark key derivation: valid LSH region set from AST topology."""
+"""Descriptor-bound watermark key derivation for semantic windows."""
 
 from __future__ import annotations
 
@@ -6,58 +6,16 @@ import hashlib
 import hmac
 import json
 
-_MISSING = object()
 _REGION_ID_CONTRACT = "semantic-window-region/v1"
 _REGION_ID_DOMAIN = b"semantic-window-region-id\0"
 
 
 class WatermarkKeying:
-    """Derive valid LSH regions from legacy or versioned topology identities.
+    """Derive keyed LSH regions from versioned window descriptors."""
 
-    The legacy ``derive`` seed uses only ``parent_node_type`` and optional
-    ordinal. Window APIs use the full versioned parent descriptor instead.
-    """
-
-    def __init__(self, secret_key: str, d: int, gamma: float | None = None):
+    def __init__(self, secret_key: str, d: int):
         self._key = secret_key.encode("utf-8")
         self._d = d
-        self._legacy_gamma = gamma
-
-    def derive(
-        self,
-        parent_node_type: str,
-        k: int | object = _MISSING,
-        ordinal: int | None = None,
-    ) -> frozenset[tuple[int, ...]]:
-        """Return valid LSH signature set G for a block.
-
-        Args:
-            parent_node_type: AST type of the parent node (e.g. "module", "for_statement").
-
-            k: Number of valid regions to derive. Must satisfy 1 <= k < 2**d.
-                If omitted, legacy mode requires constructor `gamma` and uses
-                `round(gamma * 2**d)`.
-
-            ordinal: Global ordinal of the block within the code (0-based).
-                When provided, each block gets an independent G, eliminating
-                systematic embed-rate bias caused by encoder clustering.
-                When None, falls back to parent_node_type-only seed (legacy).
-
-        Returns:
-            frozenset of d-bit tuples that constitute the valid region set G.
-            A block passes the watermark check iff its LSH signature is in G.
-        """
-        max_regions = 2 ** self._d
-        if k is _MISSING:
-            if self._legacy_gamma is None:
-                raise TypeError("k is required when legacy gamma is not configured")
-            k = round(self._legacy_gamma * max_regions)
-
-        if ordinal is not None:
-            message = f"{parent_node_type}:{ordinal}".encode("utf-8")
-        else:
-            message = parent_node_type.encode("utf-8")
-        return self._derive_from_message(message, k)
 
     def derive_descriptor(
         self,

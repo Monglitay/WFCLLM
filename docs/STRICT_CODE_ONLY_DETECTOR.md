@@ -1,36 +1,28 @@
-# Strict Code-Only Detector
+# Strict Code-only Detector Contract
 
-The official WFCLLM detector consumes final code only. It must not read generation traces, retry traces, audit rows, candidate sidecars, sampling metadata, or posthoc utility reports.
+正式 positive detector input 只有：
 
-## Official Input
-
-Official input exactly:
-
-```json
-{"id": "HumanEval/0", "dataset": "humaneval", "prompt": "...", "final_code": "..."}
+```text
+<run>/inputs/final_code.jsonl
 ```
 
-Each JSONL row must contain exactly these fields:
+每一行必须是 JSON object，并且 key 集合必须精确等于：
 
-- `id`
-- `dataset`
-- `prompt`
-- `final_code`
+```text
+id, dataset, prompt, final_code
+```
 
-## Rejected Inputs
+四个值都是字符串，`id` 非空。缺字段、额外字段、重复 JSON key、非有限数、
+无法解码的 UTF-8、超限文件/行或 symlink 输入都会失败。
 
-Detector input validation rejects rows containing extra method-control or trace fields, including:
+禁止作为 detector input 的内容包括：
 
-- `generated_code`
-- `blocks`
-- `watermark_params`
-- `audit`
-- `audit_only`
-- `audit_event_id`
-- `candidate_sidecar`
-- `raw_attempt_summary`
-- `pass_report`
-- keys beginning with `generation_`
-- keys beginning with `audit_`
+- generation audit；
+- candidate sidecar 与 raw attempt summary；
+- Gate windows、labels、key-bank manifest 或训练指标；
+- pass/test/correctness/quality 字段；
+- canonical solution、reference answer 或执行结果。
 
-The detector may write details and reports, but those outputs are downstream artifacts. They are not valid detector inputs for the same run.
+检测器从 `final_code` 重新解析 statement windows，使用当前 run 的 Gate Bundle、
+semantic encoder、Deployment Key identifier 和 calibration artifact。校准与检测
+必须绑定同一 Bundle、窗口合同、tokenizer、semantic encoder 和 key identifier。

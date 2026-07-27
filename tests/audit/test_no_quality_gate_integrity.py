@@ -89,28 +89,16 @@ def test_no_quality_gate_rejects_conflicting_diagnostic_identity() -> None:
     assert "diagnostic" in str(report["forbidden_path"])
 
 
-@pytest.mark.parametrize(
-    ("identity_field", "identity_value"),
-    [
-        ("artifact_type", "gate-data-jsonl"),
-        ("artifact_type", "validation-summary"),
-        ("schema_version", "wfcllm-gate-data/v1"),
-        ("contract_version", "wfcllm-gate-training-metrics/v1"),
-    ],
-)
-def test_no_quality_gate_rejects_diagnostic_formal_identity_relabeling(
-    identity_field: str,
-    identity_value: str,
-) -> None:
+def test_no_quality_gate_accepts_current_schema_for_complete_test_identity() -> None:
     report = audit_no_quality_gate_payload(
         {
             "diagnostic_test_backend": True,
             "formal_eligible": False,
-            identity_field: identity_value,
+            "diagnostic_only": True,
+            "not_official_method": True,
+            "schema_version": "wfcllm-gate-data-manifest/v1",
             "correctness_score": 0.5,
         }
     )
 
-    assert report["ok"] is False
-    assert "diagnostic" in str(report["forbidden_path"])
-    assert "formal" in str(report["forbidden_path"])
+    assert report == {"ok": True, "forbidden_path": None}

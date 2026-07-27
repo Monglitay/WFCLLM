@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from wfcllm.detection.pipeline import validate_final_code_detector_input_record
+from wfcllm.detection.code_only import validate_final_code_record_exact
 
 
 def test_official_detector_rejects_generated_code_even_with_prompt() -> None:
     with pytest.raises(ValueError, match="generated_code"):
-        validate_final_code_detector_input_record(
+        validate_final_code_record_exact(
             {
                 "id": "HumanEval/0",
                 "dataset": "humaneval",

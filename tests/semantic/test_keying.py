@@ -9,55 +9,6 @@ import pytest
 from wfcllm.semantic.keying import WatermarkKeying
 
 
-def test_legacy_derive_outputs_remain_bit_for_bit_stable() -> None:
-    keying = WatermarkKeying("deployment-secret", d=4)
-
-    assert keying.derive("module", k=4, ordinal=None) == frozenset(
-        {
-            (0, 0, 0, 0),
-            (0, 1, 0, 1),
-            (0, 1, 1, 1),
-            (1, 0, 0, 1),
-        }
-    )
-    assert keying.derive("module", k=4, ordinal=0) == frozenset(
-        {
-            (0, 0, 0, 0),
-            (0, 0, 0, 1),
-            (0, 1, 0, 0),
-            (1, 1, 1, 1),
-        }
-    )
-    assert keying.derive(
-        "function_definition",
-        k=7,
-        ordinal=3,
-    ) == frozenset(
-        {
-            (0, 0, 0, 0),
-            (0, 0, 1, 0),
-            (0, 1, 0, 0),
-            (0, 1, 1, 1),
-            (1, 0, 0, 1),
-            (1, 1, 0, 0),
-            (1, 1, 1, 0),
-        }
-    )
-
-
-def test_legacy_gamma_derive_output_remains_stable() -> None:
-    keying = WatermarkKeying("deployment-secret", d=4, gamma=0.25)
-
-    assert keying.derive("module") == frozenset(
-        {
-            (0, 0, 0, 0),
-            (0, 1, 0, 1),
-            (0, 1, 1, 1),
-            (1, 0, 0, 1),
-        }
-    )
-
-
 def test_descriptor_derivation_is_versioned_and_deterministic() -> None:
     keying = WatermarkKeying("deployment-secret", d=4)
     first = keying.derive_descriptor(

@@ -16,22 +16,18 @@ try:  # Linux/macOS production path. Fail closed elsewhere instead of using an u
 except ImportError:  # pragma: no cover - exercised only on platforms without flock(2)
     fcntl = None  # type: ignore[assignment]
 
-# Phase name source-of-truth for the new WFCLLM mainline.
-PHASES = ["generate", "calibrate", "detect", "report", "audit"]
-GATE_PHASES = ["gate-data", "gate-train"]
-# Historical phases dropped from the mainline; old state files may still
-# contain their rows, which are ignored on load instead of rejected.
-_REMOVED_PHASES = frozenset({"gate-validate"})
-OPTIONAL_PHASES = ["encoder", "posthoc-pass-report", "diagnostic-selector"]
-LEGACY_PHASES = [
-    "legacy-watermark",
-    "legacy-extract",
-    "legacy-token-channel-train",
-    "legacy-build-entropy-profile",
-    "legacy-pretrain",
-    "legacy-ablation",
+# Phase name source of truth for a Fresh Reproduction Run.
+PHASES = [
+    "encoder",
+    "gate-data",
+    "gate-train",
+    "generate",
+    "calibrate",
+    "detect",
+    "report",
+    "audit",
 ]
-ALL_PHASES = PHASES + GATE_PHASES + OPTIONAL_PHASES + LEGACY_PHASES
+ALL_PHASES = PHASES
 
 DEFAULT_STATE_FILE = Path("data/run_state.json")
 _MAX_STATE_BYTES = 16 * 1024 * 1024
@@ -42,13 +38,24 @@ class RunStateManager:
 
     Writers serialize through a sidecar ``.lock`` file, reload while holding the
     lock, merge their phase update, and publish through an fsynced atomic replace.
-    Existing state files containing only the historical five phases remain valid.
+    Only the current eight-phase schema is accepted.
     """
 
     def __init__(self, path: Path = DEFAULT_STATE_FILE) -> None:
         self._path = Path(path)
+        self._existed_at_initialization = self._path.exists()
         self._lock_path = self._path.with_name(f"{self._path.name}.lock")
-        self._data: dict[str, dict[str, Any]] = self._read_locked()
+        self._data: dict[str, dict[str, Any]] = (
+            self._read_locked()
+            if self._existed_at_initialization
+            else self._default_data()
+        )
+
+    @property
+    def existed_at_initialization(self) -> bool:
+        """Whether this manager opened an already-persisted run state."""
+
+        return self._existed_at_initialization
 
     @staticmethod
     def _default_data() -> dict[str, dict[str, Any]]:
@@ -94,6 +101,9 @@ class RunStateManager:
                     os.close(descriptor)
 
     def _read_locked(self) -> dict[str, dict[str, Any]]:
+        self._reject_symlink_path(self._path)
+        if not self._path.exists():
+            return self._default_data()
         with self._locked(exclusive=False):
             return self._load_unlocked()
 
@@ -152,10 +162,12 @@ class RunStateManager:
     def _validate(cls, value: object) -> dict[str, dict[str, Any]]:
         if not isinstance(value, dict):
             raise ValueError("run state root must be an object")
+        if set(value) != set(ALL_PHASES):
+            raise ValueError(
+                "run state must contain exactly the current eight phases"
+            )
         result: dict[str, dict[str, Any]] = {}
         for phase, row in value.items():
-            if isinstance(phase, str) and phase in _REMOVED_PHASES:
-                continue
             if not isinstance(phase, str) or phase not in ALL_PHASES:
                 raise ValueError("run state contains an unknown phase")
             if not isinstance(row, dict):
@@ -243,12 +255,6 @@ class RunStateManager:
                 "completed_at": datetime.now(timezone.utc).isoformat(),
                 **kwargs,
             }
-            self._save_unlocked(data)
-            self._data = data
-
-    def reset(self) -> None:
-        with self._locked(exclusive=True):
-            data = self._default_data()
             self._save_unlocked(data)
             self._data = data
 

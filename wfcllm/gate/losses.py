@@ -30,12 +30,7 @@ class GateLossWeights:
 
 
 def fake_quantize_int8_ste(logits: torch.Tensor) -> torch.Tensor:
-    """Apply fixed symmetric signed-int8 fake quantization with an STE.
-
-    This is deliberately only a training approximation.  Formal bundle
-    publication still requires the independent float/quantized validation
-    matrix.
-    """
+    """Apply fixed symmetric signed-int8 training approximation with an STE."""
 
     _validate_vector("logits", logits)
     clamped = logits.clamp(-_INT8_ABS_MAX, _INT8_ABS_MAX)

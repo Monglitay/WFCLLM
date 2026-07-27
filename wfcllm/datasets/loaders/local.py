@@ -4,10 +4,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from datasets import load_dataset
+from datasets import DownloadConfig, load_dataset
 
 from wfcllm.datasets.constants import SUPPORTED_DATASETS
 from wfcllm.datasets.mbpp_interface import build_mbpp_generation_prompt
+
+
+def _offline_download_config() -> DownloadConfig:
+    return DownloadConfig(local_files_only=True)
 
 
 def load_prompts(
@@ -47,6 +51,7 @@ def load_prompts(
             "openai/openai_humaneval",
             cache_dir=path,
             download_mode="reuse_cache_if_exists",
+            download_config=_offline_download_config(),
         )
         prompts = []
         for split in ds:
@@ -60,6 +65,7 @@ def load_prompts(
         "full",
         cache_dir=path,
         download_mode="reuse_cache_if_exists",
+        download_config=_offline_download_config(),
     )
     prompts = []
     for split in ds:
@@ -88,6 +94,7 @@ def load_mbpp_generation_samples(dataset_path: str) -> list[dict]:
         "full",
         cache_dir=path,
         download_mode="reuse_cache_if_exists",
+        download_config=_offline_download_config(),
     )
     rows = []
     for split in ds:
@@ -95,13 +102,11 @@ def load_mbpp_generation_samples(dataset_path: str) -> list[dict]:
             prompt, interface = build_mbpp_generation_prompt(
                 item["text"],
                 item["test_list"],
-                reference_code=item["code"],
             )
             rows.append(
                 {
                     "id": f"mbpp/{item['task_id']}",
                     "prompt": prompt,
-                    "generated_code": item["code"],
                     "interface_extraction_status": (
                         "interface_aware" if interface is not None else "fallback"
                     ),
@@ -113,62 +118,11 @@ def load_mbpp_generation_samples(dataset_path: str) -> list[dict]:
                         if interface is not None
                         else []
                     ),
-                    "interface_parameter_names": (
-                        list(interface.parameter_names)
-                        if interface is not None
-                        else []
-                    ),
                     "interface_helper_classes": (
                         list(interface.helper_classes)
                         if interface is not None
                         else []
                     ),
-                }
-            )
-    return rows
-
-
-def load_reference_solutions(dataset: str, dataset_path: str) -> list[dict]:
-    """Load prompt/reference-solution pairs from local datasets."""
-    if dataset not in SUPPORTED_DATASETS:
-        raise ValueError(
-            f"dataset must be one of {SUPPORTED_DATASETS}, got '{dataset}'"
-        )
-
-    path = str(Path(dataset_path) / dataset)
-
-    if dataset == "humaneval":
-        ds = load_dataset(
-            "openai/openai_humaneval",
-            cache_dir=path,
-            download_mode="reuse_cache_if_exists",
-        )
-        rows = []
-        for split in ds:
-            for item in ds[split]:
-                rows.append(
-                    {
-                        "id": item["task_id"],
-                        "prompt": item["prompt"],
-                        "generated_code": item["canonical_solution"],
-                    }
-                )
-        return rows
-
-    ds = load_dataset(
-        "google-research-datasets/mbpp",
-        "full",
-        cache_dir=path,
-        download_mode="reuse_cache_if_exists",
-    )
-    rows = []
-    for split in ds:
-        for item in ds[split]:
-            rows.append(
-                {
-                    "id": f"mbpp/{item['task_id']}",
-                    "prompt": item["text"],
-                    "generated_code": item["code"],
                 }
             )
     return rows
@@ -208,6 +162,7 @@ def load_test_cases(dataset: str, dataset_path: str) -> dict[str, TestCase]:
             "openai/openai_humaneval",
             cache_dir=path,
             download_mode="reuse_cache_if_exists",
+            download_config=_offline_download_config(),
         )
         cases: dict[str, TestCase] = {}
         for split in ds:
@@ -226,6 +181,7 @@ def load_test_cases(dataset: str, dataset_path: str) -> dict[str, TestCase]:
         "full",
         cache_dir=path,
         download_mode="reuse_cache_if_exists",
+        download_config=_offline_download_config(),
     )
     cases = {}
     for split in ds:

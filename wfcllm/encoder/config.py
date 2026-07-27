@@ -1,13 +1,13 @@
-"""Configuration for the semantic encoder pretraining pipeline."""
+"""Architecture configuration for the per-dataset semantic projection."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 
-@dataclass
+@dataclass(frozen=True)
 class EncoderConfig:
-    """All hyperparameters and paths for encoder pretraining."""
+    """Architecture fields shared by projection training and runtime loading."""
 
     # Model
     model_name: str = "Salesforce/codet5-base"
@@ -24,26 +24,4 @@ class EncoderConfig:
     # Precision (optional, default BF16)
     use_bf16: bool = True
 
-    # Data
-    data_sources: list[str] = field(default_factory=lambda: ["mbpp", "humaneval"])
     max_seq_length: int = 256
-    negative_ratio: float = 0.5  # fraction of hard negatives vs random negatives
-
-    # Training
-    lr: float = 2e-5
-    batch_size: int = 64
-    epochs: int = 10
-    margin: float = 0.3
-    warmup_ratio: float = 0.1
-    early_stopping_patience: int = 3
-
-    # DataLoader
-    num_workers: int = 8
-    pin_memory: bool = True
-
-    # Paths
-    checkpoint_dir: str = "data/checkpoints/encoder"
-    results_dir: str = "data/results"
-    local_model_dir: str = "data/models"      # 本地模型根目录（离线部署）
-    local_dataset_dir: str = "data/datasets"  # 本地数据集根目录（离线部署）
-    output_model_dir: str = "data/models/encoder"  # 最优模型导出目录

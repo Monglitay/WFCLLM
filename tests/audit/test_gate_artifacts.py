@@ -104,49 +104,35 @@ def test_feasibility_admission_status_is_not_a_code_quality_proxy() -> None:
         )
 
 
-@pytest.mark.parametrize(
-    "markers",
-    [
-        {"diagnostic_test_backend": True, "formal_eligible": False},
-        {"diagnostic_only": True, "not_official_method": True},
-    ],
-)
-def test_explicitly_nonformal_diagnostic_artifact_may_report_quality_results(
-    markers: dict[str, bool],
-) -> None:
-    assert (
-        audit_gate_artifact(
-            {**markers, "results": [{"correctnessScore": 0.5, "test_result": "fail"}]}
-        )
-        is None
-    )
-
-
-def test_allowlisted_diagnostic_artifact_type_may_report_quality_results() -> None:
+def test_complete_nonformal_test_artifact_may_report_quality_results() -> None:
     assert (
         audit_gate_artifact(
             {
+                "diagnostic_test_backend": True,
+                "formal_eligible": False,
                 "diagnostic_only": True,
                 "not_official_method": True,
-                "artifact_type": "diagnostic-report",
-                "schema_version": "diagnostic-report/v1",
-                "correctness_score": 0.5,
+                "results": [{"correctnessScore": 0.5, "test_result": "fail"}],
             }
         )
         is None
     )
 
 
-def test_unknown_diagnostic_artifact_type_fails_closed() -> None:
-    with pytest.raises(ValueError, match="diagnostic.*artifact_type"):
+def test_nonformal_test_artifact_keeps_current_schema_identity() -> None:
+    assert (
         audit_gate_artifact(
             {
+                "diagnostic_test_backend": True,
+                "formal_eligible": False,
                 "diagnostic_only": True,
                 "not_official_method": True,
-                "artifact_type": "unregistered-report",
+                "schema_version": "wfcllm-gate-data-manifest/v1",
                 "correctness_score": 0.5,
             }
         )
+        is None
+    )
 
 
 @pytest.mark.parametrize(
@@ -156,6 +142,8 @@ def test_unknown_diagnostic_artifact_type_fails_closed() -> None:
         {"formal_eligible": False},
         {"diagnostic_only": True},
         {"not_official_method": True},
+        {"diagnostic_test_backend": True, "formal_eligible": False},
+        {"diagnostic_only": True, "not_official_method": True},
     ],
 )
 def test_incomplete_diagnostic_marker_cannot_bypass_formal_quality_audit(
@@ -176,12 +164,11 @@ def test_incomplete_diagnostic_marker_cannot_bypass_formal_quality_audit(
         {"not_official_method": False},
     ],
 )
-def test_partial_formal_marker_does_not_claim_diagnostic_exemption(
+def test_partial_formal_marker_is_rejected_as_ambiguous_identity(
     formal_marker: dict[str, bool],
 ) -> None:
-    audit_gate_artifact(formal_marker)
-    with pytest.raises(ValueError, match="formal quality proxy field"):
-        audit_gate_artifact({**formal_marker, "correctness_score": 0.5})
+    with pytest.raises(ValueError, match="identity is incomplete"):
+        audit_gate_artifact(formal_marker)
 
 
 @pytest.mark.parametrize(
@@ -207,7 +194,7 @@ def test_partial_formal_marker_does_not_claim_diagnostic_exemption(
             "diagnostic_test_backend": True,
             "formal_eligible": False,
             "diagnostic_only": True,
-            "not_official_method": True,
+            "not_official_method": False,
         },
         {"diagnostic_only": True, "not_official_method": False},
     ],
@@ -219,104 +206,14 @@ def test_diagnostic_quality_exemption_rejects_conflicting_identity(
         audit_gate_artifact({**payload, "correctness_score": 0.5})
 
 
-@pytest.mark.parametrize(
-    "artifact_type",
-    [
-        "gate-data-jsonl",
-        "training-metrics",
-        "checkpoint-metadata",
-        "bundle-manifest",
-        "validation-summary",
-        "generation-window-audit",
-        "gated-calibration",
-        "gated-detection-details",
-        "wfcllm_detection_calibration",
-    ],
-)
-def test_diagnostic_marker_cannot_relabel_known_formal_artifact_type(
-    artifact_type: str,
-) -> None:
-    with pytest.raises(ValueError, match="diagnostic.*formal"):
-        audit_gate_artifact(
-            {
-                "diagnostic_test_backend": True,
-                "formal_eligible": False,
-                "artifact_type": artifact_type,
-                "correctness_score": 0.5,
-            }
-        )
-
-
-@pytest.mark.parametrize(
-    ("identity_field", "identity_value"),
-    [
-        ("contract_version", "wfcllm-gate-training-metrics/v1"),
-        ("contract_version", "wfcllm-gate-training-checkpoint/v1"),
-        ("contract_version", "wfcllm-gate-development-summary/v1"),
-        ("contract_version", "wfcllm-gate-bundle/v1"),
-        ("contract_version", "wfcllm-gate-model-state/v1"),
-        ("contract_version", "wfcllm-gate-validation/v1"),
-        ("contract_version", "wfcllm-gate-input/v1"),
-        ("contract_version", "python-statement-window/v1"),
-        ("contract_version", "gate-data-feasibility/v1"),
-        ("schema_version", "wfcllm-gate-data/v1"),
-        ("schema_version", "wfcllm-gate-data-manifest/v1"),
-        ("schema_version", "wfcllm-gate-source-manifest/v1"),
-        ("schema_version", "wfcllm-gate-split/v1"),
-        ("schema_version", "wfcllm-training-key-bank-manifest/v1"),
-        ("schema_version", "wfcllm-gate-train-candidate/v1"),
-        ("schema_version", "wfcllm-gate-validate-publication/v1"),
-        ("schema_version", "wfcllm-gate-candidate-attempts/v2"),
-        ("schema_version", "wfcllm-gate-label/v1"),
-        ("schema_version", "wfcllm-production-gate-adapter/v1"),
-        ("schema_version", "wfcllm-detect-calibration/v1"),
-    ],
-)
-def test_diagnostic_marker_cannot_relabel_task9_to_task12_formal_version(
-    identity_field: str,
-    identity_value: str,
-) -> None:
-    with pytest.raises(ValueError, match="diagnostic.*formal"):
-        audit_gate_artifact(
-            {
-                "diagnostic_only": True,
-                "not_official_method": True,
-                identity_field: identity_value,
-                "correctness_score": 0.5,
-            }
-        )
-
-
-@pytest.mark.parametrize(
-    ("identity_field", "identity_value"),
-    [
-        ("artifact_type", "training-metrics-v2"),
-        ("artifact_type", "wfcllm-future-formal-publication"),
-        ("schema_version", "wfcllm-gate-future-artifact/v99"),
-        ("contract_version", "wfcllm-detect-future-contract/v2"),
-    ],
-)
-def test_diagnostic_marker_fails_closed_for_unknown_formal_like_identity(
-    identity_field: str,
-    identity_value: str,
-) -> None:
-    with pytest.raises(ValueError, match="diagnostic.*formal"):
-        audit_gate_artifact(
-            {
-                "diagnostic_test_backend": True,
-                "formal_eligible": False,
-                identity_field: identity_value,
-                "correctness_score": 0.5,
-            }
-        )
-
-
 def test_diagnostic_marker_never_exempts_secret_material() -> None:
     with pytest.raises(ValueError, match="rawTrainingKey"):
         audit_gate_artifact(
             {
                 "diagnostic_test_backend": True,
                 "formal_eligible": False,
+                "diagnostic_only": True,
+                "not_official_method": True,
                 "rawTrainingKey": "secret",
             }
         )
@@ -448,19 +345,6 @@ def test_unicode_is_allowed_in_values_but_not_interpreted_as_a_key() -> None:
             ],
         },
         {
-            "artifact_type": "bundle-manifest",
-            "validated": True,
-            "float_model_sha256": "c" * 64,
-            "quantized_model_sha256": "d" * 64,
-            "training_key_bank_id": "training-key-bank/v1:sha256:" + "e" * 64,
-        },
-        {
-            "artifact_type": "validation-summary",
-            "decision_agreement": 1.0,
-            "formal_accepted_span_consensus": 1.0,
-            "thresholds": {"close_low": 0.2, "close_high": 0.8},
-        },
-        {
             "artifact_type": "generation-window-audit",
             "audit_only": True,
             "gate_decision": "close",
@@ -469,7 +353,7 @@ def test_unicode_is_allowed_in_values_but_not_interpreted_as_a_key() -> None:
         },
         {
             "artifact_type": "gated-calibration",
-            "reference_negative_count": 200,
+            "negative_count": 200,
             "threshold_at_fpr": 0.42,
             "target_fpr": 0.05,
         },
@@ -485,14 +369,12 @@ def test_unicode_is_allowed_in_values_but_not_interpreted_as_a_key() -> None:
         "gate-data",
         "training-metrics",
         "checkpoint-metadata",
-        "bundle-manifest",
-        "validation-summary",
         "generation-window-audit",
         "gated-calibration",
         "gated-detection-details",
     ],
 )
-def test_gate_artifact_audit_covers_every_formal_artifact_family(
+def test_gate_artifact_audit_covers_current_public_artifact_families(
     artifact: dict[str, object],
 ) -> None:
     assert audit_gate_artifact(artifact) is None
@@ -795,11 +677,13 @@ def test_task9_checkpoint_safe_metadata_names_remain_accepted() -> None:
 def test_diagnostic_checkpoint_metadata_cannot_carry_runtime_state() -> None:
     with pytest.raises(ValueError, match=r"checkpoint_metadata\.weights"):
         audit_gate_artifact(
-            {
-                "diagnostic_test_backend": True,
-                "formal_eligible": False,
-                "checkpoint_metadata": {"weights": [0.1, 0.2]},
-            }
+                {
+                    "diagnostic_test_backend": True,
+                    "formal_eligible": False,
+                    "diagnostic_only": True,
+                    "not_official_method": True,
+                    "checkpoint_metadata": {"weights": [0.1, 0.2]},
+                }
         )
 
 

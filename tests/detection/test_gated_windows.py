@@ -49,14 +49,13 @@ class _DeferredPrefixPredictor:
 
 
 @dataclass
-class _ValidatedFakeBundle:
+class _CurrentFakeBundle:
     root: Path
     bundle_sha256: str = "a" * 64
     tokenizer_sha256: str = "b" * 64
     window_contract_version: str = "python-statement-window/v1"
 
     def __post_init__(self) -> None:
-        self.validation_summary = {"validated": True}
         self.manifest = SimpleNamespace(
             window_contract_version=self.window_contract_version,
             gate_input_contract_version="wfcllm-gate-input/v1",
@@ -86,7 +85,7 @@ def _config(tmp_path: Path, **overrides: object) -> GatedDetectionConfig:
 
 
 def _extract(tmp_path: Path, source: str, **bundle_overrides: object):
-    bundle = _ValidatedFakeBundle(
+    bundle = _CurrentFakeBundle(
         root=tmp_path / "bundle", **bundle_overrides  # type: ignore[arg-type]
     )
     return GatedWindowExtractor(bundle, _config(tmp_path)).extract(source)
@@ -108,7 +107,7 @@ def test_gated_detection_config_is_separate_and_strict(tmp_path: Path) -> None:
 def test_extractor_can_defer_an_unreliable_prefix_symmetrically(
     tmp_path: Path,
 ) -> None:
-    bundle = _ValidatedFakeBundle(root=tmp_path / "bundle")
+    bundle = _CurrentFakeBundle(root=tmp_path / "bundle")
     bundle.stable_gate_predictor = _DeferredPrefixPredictor()
     extractor = GatedWindowExtractor(
         bundle,
@@ -131,7 +130,7 @@ def test_extractor_can_defer_an_unreliable_prefix_symmetrically(
 def test_extractor_can_use_a_smaller_runtime_window_cap(
     tmp_path: Path,
 ) -> None:
-    bundle = _ValidatedFakeBundle(root=tmp_path / "bundle")
+    bundle = _CurrentFakeBundle(root=tmp_path / "bundle")
     bundle.stable_gate_predictor = _BatchingPredictor()
     extractor = GatedWindowExtractor(
         bundle,
@@ -154,7 +153,7 @@ def test_extractor_can_use_a_smaller_runtime_window_cap(
 def test_extractor_rejects_a_runtime_cap_above_bundle_maximum(
     tmp_path: Path,
 ) -> None:
-    bundle = _ValidatedFakeBundle(root=tmp_path / "bundle")
+    bundle = _CurrentFakeBundle(root=tmp_path / "bundle")
 
     with pytest.raises(ValueError, match="cannot exceed the bundle maximum"):
         GatedWindowExtractor(
@@ -182,7 +181,7 @@ def test_extractor_rejects_a_runtime_cap_above_bundle_maximum(
 def test_extractor_matches_the_shared_generation_partition_contract(
     tmp_path: Path, source: str
 ) -> None:
-    bundle = _ValidatedFakeBundle(root=tmp_path / "bundle")
+    bundle = _CurrentFakeBundle(root=tmp_path / "bundle")
     extractor = GatedWindowExtractor(bundle, _config(tmp_path))
 
     detected = extractor.extract(source)
@@ -208,7 +207,7 @@ def test_extractor_matches_the_shared_generation_partition_contract(
 
 
 def test_extractor_is_final_code_only_and_deterministic(tmp_path: Path) -> None:
-    bundle = _ValidatedFakeBundle(root=tmp_path / "bundle")
+    bundle = _CurrentFakeBundle(root=tmp_path / "bundle")
     extractor = GatedWindowExtractor(bundle, _config(tmp_path))
     code = "def f():\n    x = 1\n    return x\n"
 
@@ -222,55 +221,25 @@ def test_extractor_is_final_code_only_and_deterministic(tmp_path: Path) -> None:
 def test_experimental_or_contract_and_hash_mismatched_bundle_is_rejected(
     tmp_path: Path,
 ) -> None:
-    bundle = _ValidatedFakeBundle(root=tmp_path / "bundle")
-    bundle.experimental_only = True
-    with pytest.raises(ValueError, match="diagnostic acceptance"):
-        GatedWindowExtractor(bundle, _config(tmp_path))
-
     with pytest.raises(ValueError, match="bundle hash"):
         GatedWindowExtractor(
-            _ValidatedFakeBundle(root=tmp_path / "bundle", bundle_sha256="e" * 64),
+            _CurrentFakeBundle(root=tmp_path / "bundle", bundle_sha256="e" * 64),
             _config(tmp_path),
         )
 
-    bundle = _ValidatedFakeBundle(root=tmp_path / "bundle")
+    bundle = _CurrentFakeBundle(root=tmp_path / "bundle")
     bundle.manifest.window_contract_version = "other"
     with pytest.raises(ValueError, match="window contract"):
         GatedWindowExtractor(bundle, _config(tmp_path))
 
-    bundle = _ValidatedFakeBundle(root=tmp_path / "bundle")
+    bundle = _CurrentFakeBundle(root=tmp_path / "bundle")
     bundle.manifest.tokenizer_sha256 = "f" * 64
     with pytest.raises(ValueError, match="tokenizer hash"):
         GatedWindowExtractor(bundle, _config(tmp_path))
 
 
-def test_explicit_experimental_mode_accepts_marked_unvalidated_bundle(
-    tmp_path: Path,
-) -> None:
-    bundle = _ValidatedFakeBundle(root=tmp_path / "bundle")
-    bundle.validation_summary = {
-        "validated": False,
-        "experimental_only": True,
-        "diagnostic_only": True,
-        "not_official_method": True,
-    }
-    bundle.experimental_only = True
-
-    extractor = GatedWindowExtractor(
-        bundle,
-        _config(tmp_path),
-        allow_experimental=True,
-    )
-
-    assert extractor.extract("x = 1\n").windows
-
-
-def test_candidate_runtime_bundle_is_accepted_without_validation_summary(
-    tmp_path: Path,
-) -> None:
-    bundle = _ValidatedFakeBundle(root=tmp_path / "bundle")
-    bundle.validation_summary = None
-
+def test_current_candidate_runtime_bundle_is_accepted(tmp_path: Path) -> None:
+    bundle = _CurrentFakeBundle(root=tmp_path / "bundle")
     extractor = GatedWindowExtractor(bundle, _config(tmp_path))
 
     assert extractor.extract("x = 1\n").windows
@@ -287,7 +256,7 @@ def test_token_overflow_is_closed_and_skipped(tmp_path: Path) -> None:
 
 def test_byte_spans_slice_original_utf8_source(tmp_path: Path) -> None:
     source = "def f():\n    名称 = 'λ'\n    second = 名称\n    return second\n"
-    bundle = _ValidatedFakeBundle(root=tmp_path / "bundle")
+    bundle = _CurrentFakeBundle(root=tmp_path / "bundle")
     bundle.stable_gate_predictor = _BatchingPredictor()
     result = GatedWindowExtractor(bundle, _config(tmp_path)).extract(source)
     raw = source.encode("utf-8")
@@ -324,7 +293,7 @@ def test_final_code_extractor_uses_bundle_language_contract(
     source: str,
     expected_type: str,
 ) -> None:
-    bundle = _ValidatedFakeBundle(
+    bundle = _CurrentFakeBundle(
         root=tmp_path / "bundle",
         window_contract_version=contract,
     )

@@ -40,7 +40,6 @@ class MBPPAdapter(DatasetAdapter):
             yield CodeSample(
                 task_id=row["id"],
                 prompt=row["prompt"],
-                canonical_solution=row["generated_code"],
                 language="python",
                 metadata={
                     "interface_extraction_status": row[
@@ -49,9 +48,6 @@ class MBPPAdapter(DatasetAdapter):
                     "interface_function_name": row["interface_function_name"],
                     "interface_positional_arities": row[
                         "interface_positional_arities"
-                    ],
-                    "interface_parameter_names": row[
-                        "interface_parameter_names"
                     ],
                     "interface_helper_classes": row[
                         "interface_helper_classes"

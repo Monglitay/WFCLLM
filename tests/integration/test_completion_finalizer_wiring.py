@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from wfcllm.cli.config_resolver import load_config, resolve_method_config
 from wfcllm.cli.runners import _resolve_program_finalizer
 from wfcllm.generation.completion_finalizer import (
     finalize_humaneval_program,
@@ -13,7 +14,7 @@ from wfcllm.generation.completion_finalizer import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CONFIG_PATH = ROOT / "configs" / "wfcllm" / "gated_semantic_window_v1.json"
+CONFIG_PATH = ROOT / "configs" / "base_config.json"
 
 
 def test_resolves_humaneval_finalizer() -> None:
@@ -47,7 +48,7 @@ def test_rejects_unknown_finalizer() -> None:
 
 
 def test_gated_config_uses_approved_single_generation_contract() -> None:
-    config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    config = resolve_method_config(load_config(CONFIG_PATH))
     generation = config["generation"]
 
     assert generation["max_new_tokens"] == 512

@@ -35,7 +35,6 @@ def _bundle() -> SimpleNamespace:
             gate_input_contract_version="wfcllm-gate-input/v1",
             tokenizer_sha256=_digest("tokenizer"),
         ),
-        validation_summary={"validated": True},
     )
 
 
@@ -111,6 +110,7 @@ def _config(tmp_path: Path) -> GatedGenerationPipelineConfig:
         lsh_config_sha256=_digest("lsh"),
         generation_config_sha256=_digest("generation"),
         secret_source_type="file",
+        diagnostic_test_backend=True,
     )
 
 
@@ -156,18 +156,12 @@ def test_generation_audit_is_sidecar_only(tmp_path: Path) -> None:
     assert candidates[0]["keyed_lsh_scored"] is True
 
 
-def test_experimental_generation_is_marked_non_formal(tmp_path: Path) -> None:
-    bundle = _bundle()
-    bundle.experimental_only = True
-    bundle.validation_summary = {
-        "validated": False,
-        "experimental_only": True,
-        "diagnostic_only": True,
-        "not_official_method": True,
-    }
+def test_production_generation_is_marked_formal_only_when_explicit(
+    tmp_path: Path,
+) -> None:
     pipeline = GatedGenerationPipeline(
-        config=replace(_config(tmp_path), experimental_only=True),
-        bundle_loader=lambda _path: bundle,
+        config=replace(_config(tmp_path), diagnostic_test_backend=False),
+        bundle_loader=lambda _path: _bundle(),
         bundle_hasher=lambda _path: _digest("bundle"),
         base_model=_BaseModel(),
         generator=_Generator(),
@@ -180,16 +174,16 @@ def test_experimental_generation_is_marked_non_formal(tmp_path: Path) -> None:
     manifest = json.loads(
         (tmp_path / "generation" / "manifest.json").read_text(encoding="utf-8")
     )
-    assert manifest["formal"] is False
-    assert manifest["experimental_only"] is True
-    assert manifest["diagnostic_only"] is True
-    assert manifest["not_official_method"] is True
+    assert manifest["formal"] is True
+    assert manifest["diagnostic_test_backend"] is False
+    assert manifest["formal_eligible"] is True
+    assert manifest["diagnostic_only"] is False
+    assert manifest["not_official_method"] is False
 
 
 @pytest.mark.parametrize(
     ("change", "message"),
     [
-        ({"experimental": True}, "diagnostic acceptance"),
         ({"parser": "wrong"}, "parser"),
         ({"gate": "wrong"}, "gate input"),
         ({"tokenizer": "0" * 64}, "tokenizer"),
@@ -199,8 +193,6 @@ def test_pipeline_rejects_invalid_or_mismatched_bundle(
     tmp_path: Path, change: dict[str, object], message: str
 ) -> None:
     bundle = _bundle()
-    if "experimental" in change:
-        bundle.experimental_only = True
     if "parser" in change:
         bundle.manifest.window_contract_version = change["parser"]
     if "gate" in change:
@@ -241,31 +233,26 @@ def test_watermark_failure_retains_original_program_in_full_denominator(
     assert row["sample_generation_failed"] is True
 
 
-def test_base_generation_failure_retains_empty_program_in_full_denominator(
+def test_base_generation_failure_aborts_without_publishing_formal_outputs(
     tmp_path: Path,
 ) -> None:
     class BrokenBase:
         def generate_program(self, **_kwargs):
             raise RuntimeError("model generation failed")
 
-    GatedGenerationPipeline(
-        config=_config(tmp_path),
-        bundle_loader=lambda _p: _bundle(),
-        bundle_hasher=lambda _p: _digest("bundle"),
-        base_model=BrokenBase(),
-        generator=_Generator(),
-        data_adapter=lambda: [{"id": "bad", "prompt": "p"}],
-        deployment_key=b"key",
-    ).run()
+    with pytest.raises(RuntimeError, match="model generation failed"):
+        GatedGenerationPipeline(
+            config=_config(tmp_path),
+            bundle_loader=lambda _p: _bundle(),
+            bundle_hasher=lambda _p: _digest("bundle"),
+            base_model=BrokenBase(),
+            generator=_Generator(),
+            data_adapter=lambda: [{"id": "bad", "prompt": "p"}],
+            deployment_key=b"key",
+        ).run()
 
-    final_rows = _read_jsonl(tmp_path / "inputs" / "final_code.jsonl")
-    assert final_rows[0]["id"] == "bad"
-    assert final_rows[0]["final_code"] == ""
-    manifest = json.loads(
-        (tmp_path / "generation" / "manifest.json").read_text(encoding="utf-8")
-    )
-    assert manifest["sample_count"] == 1
-    assert manifest["sample_failure_count"] == 1
+    assert not (tmp_path / "inputs" / "final_code.jsonl").exists()
+    assert not (tmp_path / "generation" / "manifest.json").exists()
 
 
 def test_each_sample_generates_exactly_one_base_program(tmp_path: Path) -> None:

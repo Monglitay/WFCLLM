@@ -10,7 +10,6 @@ import torch
 
 from wfcllm.encoder.config import EncoderConfig
 from wfcllm.encoder.model import SemanticEncoder
-from wfcllm.semantic.rules import SemanticLshEmbeddingRule
 from wfcllm.semantic.keying import WatermarkKeying
 from wfcllm.semantic.lsh_space import LSHSpace
 
@@ -246,14 +245,13 @@ def resolve_checkpoint_encoder_config(
 def load_semantic_lsh_components(
     *,
     encoder_model_path: str,
-    encoder_checkpoint_path: str | None,
+    encoder_checkpoint_path: str,
     embed_dim: int,
     device: str,
     use_lora: bool,
     use_bf16: bool,
     secret_key: str,
     lsh_d: int,
-    whitening_path: str | None,
 ) -> SemanticLshComponents:
     """Load CodeT5 encoder, tokenizer, LSH space, and keying."""
 
@@ -262,12 +260,10 @@ def load_semantic_lsh_components(
     model_path = Path(encoder_model_path)
     if not model_path.exists():
         raise ValueError(f"encoder_model_path does not exist: {encoder_model_path}")
-    if encoder_checkpoint_path is not None and not Path(encoder_checkpoint_path).exists():
+    if not Path(encoder_checkpoint_path).is_file():
         raise ValueError(
             f"encoder_checkpoint_path does not exist: {encoder_checkpoint_path}"
         )
-    if whitening_path is not None and not Path(whitening_path).exists():
-        raise ValueError(f"lsh_whitening_path does not exist: {whitening_path}")
 
     encoder_config = EncoderConfig(
         model_name=encoder_model_path,
@@ -275,25 +271,22 @@ def load_semantic_lsh_components(
         use_lora=use_lora,
         use_bf16=use_bf16,
     )
-    checkpoint = None
-    if encoder_checkpoint_path is not None:
-        checkpoint = torch.load(
-            encoder_checkpoint_path,
-            map_location="cpu",
-            weights_only=False,
-        )
-        encoder_config = resolve_checkpoint_encoder_config(
-            encoder_config,
-            checkpoint,
-        )
+    checkpoint = torch.load(
+        encoder_checkpoint_path,
+        map_location="cpu",
+        weights_only=False,
+    )
+    encoder_config = resolve_checkpoint_encoder_config(
+        encoder_config,
+        checkpoint,
+    )
     encoder = SemanticEncoder(config=encoder_config)
-    if checkpoint is not None:
-        state_dict = (
-            checkpoint["model_state_dict"]
-            if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint
-            else checkpoint
-        )
-        encoder.load_state_dict(state_dict)
+    state_dict = (
+        checkpoint["model_state_dict"]
+        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint
+        else checkpoint
+    )
+    encoder.load_state_dict(state_dict)
     encoder.to(device)
 
     tokenizer = AutoTokenizer.from_pretrained(
@@ -303,7 +296,6 @@ def load_semantic_lsh_components(
         secret_key=secret_key,
         embed_dim=embed_dim,
         d=lsh_d,
-        whitening_path=whitening_path,
     )
     verifier = CodeT5LshVerifier(
         encoder=encoder,
@@ -314,41 +306,3 @@ def load_semantic_lsh_components(
     )
     keying = WatermarkKeying(secret_key, lsh_d)
     return SemanticLshComponents(verifier=verifier, keying=keying)
-
-
-def load_semantic_lsh_rule(
-    *,
-    encoder_model_path: str,
-    encoder_checkpoint_path: str | None,
-    embed_dim: int,
-    device: str,
-    use_lora: bool,
-    use_bf16: bool,
-    secret_key: str,
-    lsh_d: int,
-    lsh_gamma: float,
-    margin: float,
-    whitening_path: str | None,
-    use_ordinal_keying: bool = False,
-) -> SemanticLshEmbeddingRule:
-    """Load CodeT5 encoder, LSH space, and keying for a semantic SAWR rule."""
-
-    components = load_semantic_lsh_components(
-        encoder_model_path=encoder_model_path,
-        encoder_checkpoint_path=encoder_checkpoint_path,
-        embed_dim=embed_dim,
-        device=device,
-        use_lora=use_lora,
-        use_bf16=use_bf16,
-        secret_key=secret_key,
-        lsh_d=lsh_d,
-        whitening_path=whitening_path,
-    )
-    return SemanticLshEmbeddingRule(
-        verifier=components.verifier,
-        keying=components.keying,
-        lsh_d=lsh_d,
-        lsh_gamma=lsh_gamma,
-        margin=margin,
-        use_ordinal_keying=use_ordinal_keying,
-    )

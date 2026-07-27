@@ -26,75 +26,13 @@ _MAX_TENSOR_DIMENSION = 2**31 - 1
 _MAX_TENSOR_NUMEL = 2**31 - 1
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _Path = tuple[str | int, ...]
-_FORMAL_ARTIFACT_TYPES = frozenset(
+_IDENTITY_MARKERS = frozenset(
     {
-        "gate-data-jsonl",
-        "training-metrics",
-        "checkpoint-metadata",
-        "bundle-manifest",
-        "validation-summary",
-        "generation-window-audit",
-        "gated-calibration",
-        "gated-detection-details",
-        # The currently shipped detector uses this spelling.
-        "wfcllm_detection_calibration",
+        "diagnostic_test_backend",
+        "formal_eligible",
+        "diagnostic_only",
+        "not_official_method",
     }
-)
-_FORMAL_ARTIFACT_TYPE_PREFIXES = tuple(
-    artifact_field_tokens_and_compact(value)[1]
-    for value in _FORMAL_ARTIFACT_TYPES
-)
-_DIAGNOSTIC_ARTIFACT_TYPES = frozenset(
-    {
-        "diagnostic-artifact",
-        "diagnostic-report",
-        "diagnostic-selector",
-    }
-)
-_DIAGNOSTIC_ARTIFACT_TYPE_COMPACTS = frozenset(
-    artifact_field_tokens_and_compact(value)[1]
-    for value in _DIAGNOSTIC_ARTIFACT_TYPES
-)
-_FORMAL_VERSION_IDENTITIES = frozenset(
-    {
-        # Task 9: trainer output contracts.
-        "wfcllm-gate-training-checkpoint/v1",
-        "wfcllm-gate-training-metrics/v1",
-        "wfcllm-gate-development-summary/v1",
-        # Task 10: immutable bundle and validation contracts.
-        "wfcllm-gate-bundle/v1",
-        "wfcllm-gate-model-state/v1",
-        "wfcllm-gate-validation/v1",
-        "wfcllm-gate-input/v1",
-        "python-statement-window/v1",
-        # Task 12: data, candidate, and publication contracts.
-        "gate-data-feasibility/v1",
-        "wfcllm-gate-data/v1",
-        "wfcllm-gate-data-manifest/v1",
-        "wfcllm-gate-source-manifest/v1",
-        "wfcllm-gate-split/v1",
-        "wfcllm-training-key-bank-manifest/v1",
-        "wfcllm-gate-train-candidate/v1",
-        "wfcllm-gate-candidate-attempts/v2",
-        "wfcllm-gate-label/v1",
-        "wfcllm-production-gate-adapter/v1",
-        # Task 14 audits the existing detector calibration family too.
-        "wfcllm-detect-calibration/v1",
-    }
-)
-_FORMAL_VERSION_COMPACTS = frozenset(
-    artifact_field_tokens_and_compact(value)[1]
-    for value in _FORMAL_VERSION_IDENTITIES
-)
-_FORMAL_VERSION_PREFIXES = (
-    "gatedatafeasibility",
-    "pythonstatementwindow",
-    "wfcllmdetect",
-    "wfcllmdetection",
-    "wfcllmgate",
-    "wfcllmproductiongateadapter",
-    "wfcllmtrainingkeybank",
-    "wfcllmwindow",
 )
 _CHECKPOINT_RUNTIME_FIELD_NAMES = frozenset(
     {
@@ -461,43 +399,33 @@ def _walk_gate_artifact(
 def _diagnostic_quality_exemption(payload: Any) -> bool:
     if not isinstance(payload, dict):
         return False
-    backend_fields = {"diagnostic_test_backend", "formal_eligible"}
-    diagnostic_fields = {"diagnostic_only", "not_official_method"}
-    present_backend = backend_fields & set(payload)
-    present_diagnostic = diagnostic_fields & set(payload)
-    if not present_backend and not present_diagnostic:
+    present_identity = _IDENTITY_MARKERS & set(payload)
+    if not present_identity:
         return False
-    formal_values = {
+    formal_identity = {
         "diagnostic_test_backend": False,
         "formal_eligible": True,
         "diagnostic_only": False,
         "not_official_method": False,
     }
-    present_identity = present_backend | present_diagnostic
-    if all(payload[field] is formal_values[field] for field in present_identity):
+    diagnostic_identity = {
+        "diagnostic_test_backend": True,
+        "formal_eligible": False,
+        "diagnostic_only": True,
+        "not_official_method": True,
+    }
+    if present_identity != _IDENTITY_MARKERS:
+        raise ValueError("diagnostic test backend identity is incomplete or inconsistent")
+    if all(
+        payload[field] is formal_identity[field]
+        for field in _IDENTITY_MARKERS
+    ):
         return False
-    if present_backend and present_diagnostic:
-        raise ValueError("diagnostic identity cannot mix marker families")
-    if present_backend:
-        if (
-            present_backend == backend_fields
-            and payload["diagnostic_test_backend"] is False
-            and payload["formal_eligible"] is True
-        ):
-            return False
-        if (
-            present_backend != backend_fields
-            or payload["diagnostic_test_backend"] is not True
-            or payload["formal_eligible"] is not False
-        ):
-            raise ValueError("diagnostic test backend identity is inconsistent")
-    else:
-        if (
-            present_diagnostic != diagnostic_fields
-            or payload["diagnostic_only"] is not True
-            or payload["not_official_method"] is not True
-        ):
-            raise ValueError("diagnostic-only identity is inconsistent")
+    if any(
+        payload[field] is not diagnostic_identity[field]
+        for field in _IDENTITY_MARKERS
+    ):
+        raise ValueError("diagnostic test backend identity is incomplete or inconsistent")
     if (
         payload.get("validated") is True
         or payload.get("formal_bundle") is True
@@ -505,52 +433,7 @@ def _diagnostic_quality_exemption(payload: Any) -> bool:
         or payload.get("detector_input_allowed") is True
     ):
         raise ValueError("diagnostic identity contradicts formal artifact markers")
-    _reject_diagnostic_formal_identity(payload)
     return True
-
-
-def _reject_diagnostic_formal_identity(payload: dict[str, Any]) -> None:
-    artifact_type = payload.get("artifact_type")
-    if artifact_type is not None:
-        if not isinstance(artifact_type, str):
-            raise ValueError("diagnostic identity has invalid artifact_type")
-        tokens, compact = artifact_field_tokens_and_compact(artifact_type)
-        if compact in _DIAGNOSTIC_ARTIFACT_TYPE_COMPACTS:
-            pass
-        elif (
-            "formal" in tokens
-            or "formal" in compact
-            or compact.startswith("wfcllm")
-            or any(
-                compact.startswith(prefix)
-                for prefix in _FORMAL_ARTIFACT_TYPE_PREFIXES
-            )
-        ):
-            raise ValueError(
-                "diagnostic identity contradicts formal artifact_type"
-            )
-        else:
-            raise ValueError(
-                "diagnostic identity has unsupported artifact_type; only explicit "
-                "diagnostic artifact types are allowed"
-            )
-
-    for marker_name in ("schema_version", "contract_version"):
-        marker = payload.get(marker_name)
-        if marker is None:
-            continue
-        if not isinstance(marker, str):
-            raise ValueError(f"diagnostic identity has invalid {marker_name}")
-        tokens, compact = artifact_field_tokens_and_compact(marker)
-        if (
-            compact in _FORMAL_VERSION_COMPACTS
-            or "formal" in tokens
-            or "formal" in compact
-            or any(compact.startswith(prefix) for prefix in _FORMAL_VERSION_PREFIXES)
-        ):
-            raise ValueError(
-                f"diagnostic identity contradicts formal {marker_name}"
-            )
 
 
 def _is_feasibility_metadata_artifact(payload: Any) -> bool:

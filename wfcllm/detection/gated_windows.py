@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 import hashlib
 from pathlib import Path
@@ -115,17 +115,14 @@ class GatedWindowExtractor:
         bundle: object,
         config: GatedDetectionConfig | None = None,
         *,
-        allow_experimental: bool = False,
         defer_unreliable_until_max_units: bool = False,
         max_units_override: int | None = None,
     ) -> None:
         self._bundle = bundle
         self._config = config
-        if type(allow_experimental) is not bool:
-            raise ValueError("allow_experimental must be a bool")
         if type(defer_unreliable_until_max_units) is not bool:
             raise ValueError("defer_unreliable_until_max_units must be a bool")
-        manifest = _validate_bundle(bundle, config, allow_experimental)
+        manifest = _validate_bundle(bundle, config)
         bundle_max_units = getattr(manifest, "max_units", 3)
         if max_units_override is not None and (
             type(max_units_override) is not int
@@ -199,7 +196,7 @@ class GatedWindowExtractor:
 
 
 def gate_bundle_tree_sha256(root: Path) -> str:
-    """Return the artifact-tree digest used by gate publication manifests."""
+    """Return the artifact-tree digest used by current candidate manifests."""
 
     if not isinstance(root, Path) or not root.is_dir():
         raise ValueError("gate bundle directory is missing")
@@ -225,21 +222,7 @@ def gate_bundle_tree_sha256(root: Path) -> str:
 def _validate_bundle(
     bundle: object,
     config: GatedDetectionConfig | None,
-    allow_experimental: bool,
 ) -> Any:
-    if getattr(bundle, "experimental_only", False) is True:
-        summary = getattr(bundle, "validation_summary", None)
-        experimental = (
-            allow_experimental
-            and isinstance(summary, Mapping)
-            and summary.get("experimental_only") is True
-            and summary.get("diagnostic_only") is True
-            and summary.get("not_official_method") is True
-        )
-        if not experimental:
-            raise ValueError(
-                "experimental gate candidates require explicit diagnostic acceptance"
-            )
     manifest = getattr(bundle, "manifest", None)
     if manifest is None:
         raise ValueError("gate bundle manifest is required")

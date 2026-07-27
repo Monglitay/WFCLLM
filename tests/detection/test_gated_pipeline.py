@@ -107,24 +107,6 @@ def test_gated_scorer_counts_each_configured_evidence_channel() -> None:
     )
 
 
-def test_gated_scorer_can_count_unsuitable_windows_for_experimental_detection() -> None:
-    scorer = GatedWindowScorer(
-        semantic_scorer=_Semantic(),
-        minimum_reliable_windows=1,
-        allow_unsuitable_windows=True,
-    )
-
-    score = scorer.score(
-        [
-            _Window(False, "hit"),
-            _Window(False, "miss"),
-        ]
-    )
-
-    assert (score.hit_count, score.miss_count) == (1, 1)
-    assert score.reliable_window_count == 2
-
-
 def test_insufficient_reliable_windows_abstains() -> None:
     scorer = GatedWindowScorer(semantic_scorer=_Semantic(), minimum_reliable_windows=2)
     assert scorer.detect([_Window(True, "hit")]).decision == "insufficient_evidence"

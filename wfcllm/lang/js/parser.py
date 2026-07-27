@@ -1,8 +1,8 @@
 """Lightweight JavaScript statement block extraction.
 
 This parser intentionally avoids a new runtime dependency. It recognizes common
-top-level and nested JavaScript statements well enough for language registration,
-dataset plumbing, and fast semantic unit experiments.
+top-level and nested JavaScript statements for the current Gate window and
+per-dataset semantic-projection contracts.
 """
 from __future__ import annotations
 

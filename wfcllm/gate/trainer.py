@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import json
 import math
 import os
@@ -96,12 +95,6 @@ _SUMMARY_KEYS = {
     "early_stopped",
     "status",
 }
-_ALLOWED_FILES = {
-    "checkpoints/last.pt",
-    "checkpoints/best.pt",
-    "training_metrics.jsonl",
-    "development_summary.json",
-}
 _SENSITIVE_TOKENS = {
     "raw",
     "key",
@@ -137,7 +130,6 @@ class GateTrainerConfig:
     decision_threshold: float = 0.5
     max_tokens: int = 512
     enable_consistency: bool = True
-    save_checkpoints: bool = True
 
     def __post_init__(self) -> None:
         for name in ("epochs", "batch_size", "early_stopping_patience", "max_tokens"):
@@ -148,8 +140,6 @@ class GateTrainerConfig:
             raise ValueError("batch_size must fit one three-context cohort")
         if type(self.enable_consistency) is not bool:
             raise ValueError("enable_consistency must be a bool")
-        if type(self.save_checkpoints) is not bool:
-            raise ValueError("save_checkpoints must be a bool")
         if self.max_tokens > 512:
             raise ValueError("max_tokens must not exceed 512")
         if type(self.seed) is not int:
@@ -231,9 +221,6 @@ class GateTrainer:
         self,
         training_examples: Sequence[GateExample] | GateDataset,
         validation_examples: Sequence[GateExample] | GateDataset,
-        *,
-        resume_from: Path | None = None,
-        stop_after_epoch: int | None = None,
     ) -> dict[str, Any]:
         training = _snapshot_examples("training_examples", training_examples)
         validation = _snapshot_examples("validation_examples", validation_examples)
@@ -254,108 +241,12 @@ class GateTrainer:
             self.model.state_dict(), expected=self.model.state_dict()
         )
 
-        start_epoch = 0
         best_objective: tuple[float, float] | None = None
         best_epoch: int | None = None
         best_validation: dict[str, float] | None = None
         patience = 0
         optimizer_steps = 0
-        existing_metric_rows: list[dict[str, Any]] = []
-        if resume_from is not None and not self.config.save_checkpoints:
-            raise ValueError("checkpoint resume requires save_checkpoints=true")
-        if resume_from is None:
-            self._validate_fresh_output()
-        else:
-            self._validate_resume_layout(resume_from)
-            existing_metric_rows = self._read_metrics()
-            payload = self._read_checkpoint_payload(resume_from)
-            checkpoint_epoch = payload["epoch"]
-            training_state = dict(payload["training_state"])
-            replayed = _replay_metrics(
-                existing_metric_rows,
-                configured_epochs=self.config.epochs,
-                early_stopping_patience=self.config.early_stopping_patience,
-            )
-            for name in (
-                "best_objective",
-                "best_epoch",
-                "best_validation",
-                "patience",
-                "optimizer_steps",
-            ):
-                if training_state[name] != replayed[name]:
-                    raise ValueError(
-                        f"checkpoint training state {name} does not match metrics history"
-                    )
-            existing_summary = self._read_summary()
-            best_payload = self._read_checkpoint_payload(self._best_checkpoint)
-            if best_payload["epoch"] != training_state["best_epoch"]:
-                raise ValueError("best checkpoint epoch does not match training state")
-            if best_payload["validation"] != training_state["best_validation"]:
-                raise ValueError("best checkpoint validation does not match training state")
-            best_replayed = _replay_metrics(
-                existing_metric_rows[: best_payload["epoch"] + 1],
-                configured_epochs=self.config.epochs,
-                early_stopping_patience=self.config.early_stopping_patience,
-            )
-            best_checkpoint_state = best_payload["training_state"]
-            for name in (
-                "best_objective",
-                "best_epoch",
-                "best_validation",
-                "patience",
-                "optimizer_steps",
-            ):
-                if best_checkpoint_state[name] != best_replayed[name]:
-                    raise ValueError(
-                        f"best checkpoint {name} does not match metrics prefix"
-                    )
-            if best_checkpoint_state["epochs_completed"] != best_payload["epoch"] + 1:
-                raise ValueError("best checkpoint epoch does not match metrics prefix")
-            if best_checkpoint_state["status"] != best_replayed["epoch_status"]:
-                raise ValueError("best checkpoint status does not match metrics prefix")
-            if (
-                existing_summary["epochs_completed"]
-                != training_state["epochs_completed"]
-                or existing_summary["best_epoch"] != training_state["best_epoch"]
-                or existing_summary["best_validation"]
-                != training_state["best_validation"]
-                or existing_summary["status"] != training_state["status"]
-            ):
-                raise ValueError("development summary does not match checkpoint state")
-            if training_state["status"] in {"early_stopped", "completed"}:
-                raise ValueError(
-                    f"cannot resume checkpoint with terminal status {training_state['status']!r}"
-                )
-            if training_state["status"] != "interrupted":
-                raise ValueError("resumable checkpoint status must be interrupted")
-            if training_state["epochs_completed"] != checkpoint_epoch + 1:
-                raise ValueError("checkpoint epochs_completed does not match metrics")
-            if replayed["epoch_status"] != "running":
-                raise ValueError(
-                    "interrupted checkpoint must map from a running intrinsic epoch"
-                )
-            if existing_metric_rows[-1]["epoch"] != checkpoint_epoch:
-                raise ValueError("metrics/checkpoint epoch mismatch")
-            if payload["validation"] != existing_metric_rows[-1]["validation"]:
-                raise ValueError("checkpoint validation does not match final metrics row")
-            # Only mutate model/optimizer/scheduler after every checkpoint,
-            # metrics, summary, and best-checkpoint cross-check has passed.
-            self._restore_checkpoint_payload(payload)
-            start_epoch = checkpoint_epoch + 1
-            best_objective = tuple(training_state["best_objective"])
-            best_epoch = training_state["best_epoch"]
-            best_validation = dict(training_state["best_validation"])
-            patience = training_state["patience"]
-            optimizer_steps = training_state["optimizer_steps"]
-
-        if stop_after_epoch is not None:
-            if type(stop_after_epoch) is not int or not start_epoch <= stop_after_epoch:
-                raise ValueError("stop_after_epoch must be an epoch in this fit call")
-            if stop_after_epoch >= self.config.epochs:
-                raise ValueError("stop_after_epoch must be below configured epochs")
-        if start_epoch >= self.config.epochs:
-            raise ValueError("checkpoint has no remaining configured epoch")
+        self._validate_fresh_output()
 
         # Audit every actual training layout across every configured epoch and
         # every validation batch before the first optimizer mutation.
@@ -370,13 +261,12 @@ class GateTrainer:
                 validation_neighbors,
             )
 
-        if resume_from is None:
-            self._create_output_layout()
-            _atomic_write_text(self._metrics_path, "")
+        self._create_output_layout()
+        _atomic_write_text(self._metrics_path, "")
 
-        epochs_completed = start_epoch
+        epochs_completed = 0
         status = "running"
-        for epoch in range(start_epoch, self.config.epochs):
+        for epoch in range(self.config.epochs):
             seed_gate_training(self.config.seed + epoch)
             sampler = GroupConsistencyBatchSampler(
                 training_dataset,
@@ -479,13 +369,7 @@ class GateTrainer:
                 epoch_status = "completed"
             else:
                 epoch_status = "running"
-            status = (
-                "interrupted"
-                if epoch_status == "running"
-                and stop_after_epoch is not None
-                and epoch >= stop_after_epoch
-                else epoch_status
-            )
+            status = epoch_status
             assert best_objective is not None
             assert best_epoch is not None
             assert best_validation is not None
@@ -521,21 +405,16 @@ class GateTrainer:
             }
             _validate_metric_row(row, expected_epoch=epoch)
             _atomic_append_json_line(self._metrics_path, row)
-            if self.config.save_checkpoints:
-                checkpoint = self._checkpoint_payload(
+            checkpoint = self._checkpoint_payload(
+                epoch, validation_metrics, training_state
+            )
+            self._save_checkpoint(self._last_checkpoint, checkpoint)
+            if improved:
+                best_checkpoint = self._checkpoint_payload(
                     epoch, validation_metrics, training_state
                 )
-                self._save_checkpoint(self._last_checkpoint, checkpoint)
-                if improved:
-                    best_training_state = dict(training_state)
-                    # External controlled interruption is a run-level condition,
-                    # not an intrinsic property of this epoch's best snapshot.
-                    best_training_state["status"] = epoch_status
-                    best_checkpoint = self._checkpoint_payload(
-                        epoch, validation_metrics, best_training_state
-                    )
-                    self._save_checkpoint(self._best_checkpoint, best_checkpoint)
-            if status in {"early_stopped", "interrupted", "completed"}:
+                self._save_checkpoint(self._best_checkpoint, best_checkpoint)
+            if status in {"early_stopped", "completed"}:
                 break
 
         assert best_epoch is not None and best_validation is not None
@@ -555,43 +434,6 @@ class GateTrainer:
             json.dumps(summary, allow_nan=False, sort_keys=True) + "\n",
         )
         return summary
-
-    def load_checkpoint(self, path: Path) -> tuple[int, dict[str, Any]]:
-        """Transactionally restore a strictly validated safe checkpoint."""
-
-        payload = self._read_checkpoint_payload(path)
-        self._restore_checkpoint_payload(payload)
-        return payload["epoch"], dict(payload["training_state"])
-
-    def _read_checkpoint_payload(self, path: Path) -> Mapping[str, Any]:
-        self._validate_checkpoint_path(path)
-        try:
-            payload = torch.load(path, map_location=self.device, weights_only=True)
-        except TypeError as exc:
-            raise RuntimeError(
-                "safe checkpoint loading requires torch.load(weights_only=True); "
-                "upgrade PyTorch rather than using unsafe pickle loading"
-            ) from exc
-        except Exception as exc:
-            raise ValueError("checkpoint could not be loaded safely") from exc
-        self._validate_checkpoint_payload(payload)
-        return payload
-
-    def _restore_checkpoint_payload(self, payload: Mapping[str, Any]) -> None:
-        model_before = copy.deepcopy(self.model.state_dict())
-        optimizer_before = copy.deepcopy(self.optimizer.state_dict())
-        scheduler_before = copy.deepcopy(self.scheduler.state_dict())
-        try:
-            self.model.load_state_dict(payload["model_state"], strict=True)
-            self.optimizer.load_state_dict(payload["optimizer_state"])
-            self.scheduler.load_state_dict(payload["scheduler_state"])
-            if self.scheduler.last_epoch != payload["epoch"] + 1:
-                raise ValueError("checkpoint scheduler epoch is inconsistent")
-        except Exception as exc:
-            self.model.load_state_dict(model_before, strict=True)
-            self.optimizer.load_state_dict(optimizer_before)
-            self.scheduler.load_state_dict(scheduler_before)
-            raise ValueError("checkpoint state could not be restored transactionally") from exc
 
     @property
     def _checkpoint_dir(self) -> Path:
@@ -933,64 +775,6 @@ class GateTrainer:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._checkpoint_dir.mkdir()
 
-    def _validate_resume_layout(self, checkpoint: Path) -> None:
-        self._validate_checkpoint_path(checkpoint)
-        if checkpoint != self._last_checkpoint:
-            raise ValueError("resume must use this output_dir's checkpoints/last.pt")
-        actual = {
-            path.relative_to(self.output_dir).as_posix()
-            for path in self.output_dir.rglob("*")
-        }
-        if actual != (_ALLOWED_FILES | {"checkpoints"}):
-            raise ValueError("resume output directory artifact allowlist mismatch")
-        for path in self.output_dir.rglob("*"):
-            if path.is_symlink():
-                raise ValueError("resume artifacts and directories cannot be symlinks")
-
-    def _validate_checkpoint_path(self, path: Path) -> None:
-        if not isinstance(path, Path):
-            raise ValueError("checkpoint path must be a pathlib.Path")
-        if path.is_symlink() or not path.is_file():
-            raise ValueError("checkpoint must be a non-symlink file")
-        if _has_symlink_component(path):
-            raise ValueError("checkpoint path cannot traverse symlink directories")
-
-    def _read_metrics(self) -> list[dict[str, Any]]:
-        if self._metrics_path.is_symlink() or not self._metrics_path.is_file():
-            raise ValueError("training_metrics.jsonl must be a non-symlink file")
-        rows: list[dict[str, Any]] = []
-        for line_number, line in enumerate(
-            self._metrics_path.read_text(encoding="utf-8").splitlines(), start=1
-        ):
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"invalid metrics JSON at line {line_number}") from exc
-            _validate_metric_row(row, expected_epoch=line_number - 1)
-            if row["config_hash"] != self.config_hash:
-                raise ValueError("metrics config hash mismatch")
-            if row["dataset_manifest_hash"] != self.dataset_manifest_hash:
-                raise ValueError("metrics dataset manifest hash mismatch")
-            rows.append(row)
-        if not rows:
-            raise ValueError("resume metrics must not be empty")
-        return rows
-
-    def _read_summary(self) -> dict[str, Any]:
-        if self._summary_path.is_symlink() or not self._summary_path.is_file():
-            raise ValueError("development_summary.json must be a non-symlink file")
-        try:
-            value = json.loads(self._summary_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise ValueError("development summary must be valid JSON") from exc
-        _validate_summary(value)
-        if value["config_hash"] != self.config_hash:
-            raise ValueError("development summary config hash mismatch")
-        if value["dataset_manifest_hash"] != self.dataset_manifest_hash:
-            raise ValueError("development summary dataset manifest hash mismatch")
-        return dict(value)
-
-
 def _snapshot_examples(
     name: str, examples: Sequence[GateExample] | GateDataset
 ) -> tuple[GateExample, ...]:
@@ -1166,7 +950,7 @@ def _validate_training_state(
         raise ValueError("training patience is invalid")
     if type(value["optimizer_steps"]) is not int or value["optimizer_steps"] <= 0:
         raise ValueError("training optimizer_steps is invalid")
-    if value["status"] not in {"running", "interrupted", "early_stopped", "completed"}:
+    if value["status"] not in {"running", "early_stopped", "completed"}:
         raise ValueError("training status is invalid")
     if value["epochs_completed"] != epoch + 1:
         raise ValueError("training epochs_completed is inconsistent")
@@ -1179,12 +963,7 @@ def _validate_training_state(
             else "running"
         )
     )
-    allowed_statuses = (
-        {"running", "interrupted"}
-        if expected_epoch_status == "running"
-        else {expected_epoch_status}
-    )
-    if value["status"] not in allowed_statuses:
+    if value["status"] != expected_epoch_status:
         raise ValueError("training status is inconsistent with patience/epoch")
 
 
@@ -1223,68 +1002,6 @@ def _validate_metric_row(row: object, *, expected_epoch: int) -> None:
         raise ValueError("training metric epoch_status is invalid")
 
 
-def _replay_metrics(
-    rows: Sequence[Mapping[str, Any]],
-    *,
-    configured_epochs: int,
-    early_stopping_patience: int,
-) -> dict[str, Any]:
-    best_objective: tuple[float, float] | None = None
-    best_epoch: int | None = None
-    best_validation: Mapping[str, Any] | None = None
-    patience = 0
-    optimizer_steps = 0
-    for index, row in enumerate(rows):
-        if index < len(rows) - 1 and row["epoch_status"] in {
-            "early_stopped",
-            "completed",
-        }:
-            raise ValueError("metrics continue after intrinsic terminal epoch")
-        audit = row["batch_consistency_audit"]
-        optimizer_steps += audit["evaluated_batches"] + audit["skipped_batches"]
-        if row["optimizer_steps"] != optimizer_steps:
-            raise ValueError("metrics optimizer step history is inconsistent")
-        objective = (
-            row["validation"]["suitable_false_positive_rate"],
-            -row["validation"]["decision_consistency"],
-        )
-        improved = best_objective is None or objective < best_objective
-        if row["best"] != improved:
-            raise ValueError("metrics best flags contradict validation objectives")
-        if improved:
-            best_objective = objective
-            best_epoch = row["epoch"]
-            best_validation = row["validation"]
-            patience = 0
-        else:
-            patience += 1
-        expected_epoch_status = (
-            "early_stopped"
-            if patience >= early_stopping_patience
-            else (
-                "completed"
-                if row["epoch"] + 1 >= configured_epochs
-                else "running"
-            )
-        )
-        if row["epoch_status"] != expected_epoch_status:
-            raise ValueError(
-                "metrics epoch_status contradicts patience/configured epochs"
-            )
-    assert best_objective is not None
-    assert best_epoch is not None
-    assert best_validation is not None
-    return {
-        "best_objective": list(best_objective),
-        "best_epoch": best_epoch,
-        "best_validation": dict(best_validation),
-        "patience": patience,
-        "optimizer_steps": optimizer_steps,
-        "epoch_status": rows[-1]["epoch_status"],
-        "epochs_completed": rows[-1]["epoch"] + 1,
-    }
-
-
 def _validate_summary(value: object) -> None:
     if not isinstance(value, Mapping) or set(value) != _SUMMARY_KEYS:
         raise ValueError("development summary schema mismatch")
@@ -1301,7 +1018,7 @@ def _validate_summary(value: object) -> None:
     _validate_validation(value["best_validation"])
     if type(value["early_stopped"]) is not bool:
         raise ValueError("summary early_stopped must be bool")
-    if value["status"] not in {"interrupted", "early_stopped", "completed"}:
+    if value["status"] not in {"early_stopped", "completed"}:
         raise ValueError("summary status is invalid")
     if value["early_stopped"] != (value["status"] == "early_stopped"):
         raise ValueError("summary early-stopped flag/status mismatch")

@@ -45,6 +45,27 @@ _MAX_CANDIDATE_RELATIVE_PATH_BYTES = 1024
 _MAX_CANDIDATE_SEGMENT_BYTES = 255
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _LABEL_CACHE: OrderedDict[str, GateLabels] = OrderedDict()
+_IDENTITY_MARKERS = frozenset(
+    {
+        "diagnostic_test_backend",
+        "formal_eligible",
+        "diagnostic_only",
+        "not_official_method",
+    }
+)
+
+
+def _artifact_identity(diagnostic: bool) -> dict[str, bool]:
+    return {
+        "diagnostic_test_backend": diagnostic,
+        "formal_eligible": not diagnostic,
+        "diagnostic_only": diagnostic,
+        "not_official_method": diagnostic,
+    }
+
+
+def _diagnostic_row_identity(diagnostic: bool) -> dict[str, bool]:
+    return _artifact_identity(True) if diagnostic else {}
 
 
 @dataclass(frozen=True)
@@ -60,7 +81,6 @@ class GateDataPipelineConfig:
     feasibility_thresholds: tuple[tuple[str, int | float], ...]
     pilot_feasibility_path: Path | None = None
     max_groups: int | None = None
-    fast_experimental: bool = False
 
     def __post_init__(self) -> None:
         _path("output_root", self.output_root)
@@ -76,8 +96,6 @@ class GateDataPipelineConfig:
             type(self.max_groups) is not int or self.max_groups <= 0
         ):
             raise ValueError("max_groups must be a positive integer or None")
-        if type(self.fast_experimental) is not bool:
-            raise ValueError("fast_experimental must be a bool")
         if self.feasibility_contract != FEASIBILITY_CONTRACT_VERSION:
             raise ValueError("feasibility_contract must remain gate-data-feasibility/v1")
         if self.feasibility_thresholds != FEASIBILITY_THRESHOLD_ITEMS:
@@ -90,15 +108,12 @@ class GateTrainPipelineConfig:
     data_dir: Path
     config_hash: str
     pilot_feasibility_path: Path | None = None
-    fast_experimental: bool = False
 
     def __post_init__(self) -> None:
         for name in ("output_root", "data_dir"):
             _path(name, getattr(self, name))
         if self.pilot_feasibility_path is not None:
             _path("pilot_feasibility_path", self.pilot_feasibility_path)
-        if type(self.fast_experimental) is not bool:
-            raise ValueError("fast_experimental must be a bool")
         _digest("config_hash", self.config_hash)
 
 
@@ -464,16 +479,12 @@ def _run_gate_data_impl(config: GateDataPipelineConfig, dependencies: GatePipeli
         split_manifest_path = staging / "split_manifest.json"
         training_bank_manifest_path = staging / "training_key_bank_manifest.json"
         index_path = staging / "group_index.jsonl"
-        writer_paths = (
-            (data_path, index_path)
-            if config.fast_experimental
-            else (data_path, attempts_path, labels_path, index_path)
-        )
+        writer_paths = (data_path, attempts_path, labels_path, index_path)
         writers = [_BoundedJsonlWriter.open(path) for path in writer_paths]
         data_writer = writers[0]
         index_writer = writers[-1]
-        attempts_writer = None if config.fast_experimental else writers[1]
-        labels_writer = None if config.fast_experimental else writers[2]
+        attempts_writer = writers[1]
+        labels_writer = writers[2]
         compact_groups: list[_CompactGroupIndex] = []
         feasibility_groups: list[FeasibilityGroup] = []
         seen_group_ids: set[str] = set()
@@ -521,11 +532,7 @@ def _run_gate_data_impl(config: GateDataPipelineConfig, dependencies: GatePipeli
                 _validate_same_group_identities((generated,), (built,), "multi-key LSH probe")
                 _validate_probe_contract((built,), training_bank, holdout_bank)
                 probed = _probed_stage(trajectory, built)
-                labeled = _recompute_and_attest_labels(
-                    probed,
-                    built,
-                    fast_experimental=config.fast_experimental,
-                )
+                labeled = _recompute_and_attest_labels(probed, built)
                 split_group = _single_group(
                     dependencies.split_groups((built,), config),
                     "split",
@@ -585,16 +592,28 @@ def _run_gate_data_impl(config: GateDataPipelineConfig, dependencies: GatePipeli
                 compact_groups.append(compact)
                 feasibility_groups.append(_derived_feasibility(labeled, split_group))
                 public_row = dict(split_group.row)
+                public_row.update(_diagnostic_row_identity(diagnostic))
                 _validate_public_window_row(
                     public_row, diagnostic_expected=diagnostic,
                 )
                 data_writer.write(public_row)
-                if attempts_writer is not None and labels_writer is not None:
-                    _write_group_attempts(
-                        attempts_writer, split_group, probed, evidence_cache,
+                _write_group_attempts(
+                    attempts_writer,
+                    split_group,
+                    probed,
+                    evidence_cache,
+                    diagnostic=diagnostic,
+                )
+                labels_writer.write(
+                    _label_row(
+                        split_group.group_id,
+                        labeled,
+                        diagnostic=diagnostic,
                     )
-                    labels_writer.write(_label_row(split_group.group_id, labeled))
-                index_writer.write(_compact_index_row(compact))
+                )
+                index_writer.write(
+                    _compact_index_row(compact, diagnostic=diagnostic)
+                )
         finally:
             for writer in writers:
                 writer.close()
@@ -605,7 +624,7 @@ def _run_gate_data_impl(config: GateDataPipelineConfig, dependencies: GatePipeli
         if (
             config.scale == "full"
             and not feasibility.passed
-            and not config.fast_experimental
+            and not diagnostic
         ):
             raise ValueError("full gate data does not satisfy independent group admission minima")
         split_counts = {
@@ -688,45 +707,42 @@ def _run_gate_data_impl(config: GateDataPipelineConfig, dependencies: GatePipeli
             "feasibility_contract": FEASIBILITY_CONTRACT_VERSION,
             "feasibility_thresholds": dict(FEASIBILITY_THRESHOLD_ITEMS),
             "pilot_feasibility_sha256": None if pilot_payload is None else hashlib.sha256(_canonical_bytes(pilot_payload) + b"\n").hexdigest(),
-            "diagnostic_test_backend": diagnostic,
-            "experimental_only": config.fast_experimental,
-            "diagnostic_only": config.fast_experimental,
-            "not_official_method": config.fast_experimental,
-            "formal_eligible": not diagnostic and not config.fast_experimental,
+            **_artifact_identity(diagnostic),
             "collection_statistics": collection_statistics,
         }
         if selection_summary is not None:
             manifest["selection_summary"] = selection_summary
-        if not config.fast_experimental:
-            _write_json(split_manifest_path, {
-                "schema_version": "wfcllm-gate-split/v1",
-                "assignments": {group.group_id: group.split for group in compact_groups},
-                "split_groups": {group.group_id: group.split_group_id for group in compact_groups},
-            })
-            _write_json(training_bank_manifest_path, {
-                "schema_version": "wfcllm-training-key-bank-manifest/v1",
-                "bank_id": training_bank.bank_id,
-                "key_count": len(training_bank.key_ids),
-                "key_ids": list(training_bank.key_ids),
-            })
+        _write_json(split_manifest_path, {
+            "schema_version": "wfcllm-gate-split/v1",
+            "assignments": {group.group_id: group.split for group in compact_groups},
+            "split_groups": {group.group_id: group.split_group_id for group in compact_groups},
+            **_artifact_identity(diagnostic),
+        })
+        _write_json(training_bank_manifest_path, {
+            "schema_version": "wfcllm-training-key-bank-manifest/v1",
+            "bank_id": training_bank.bank_id,
+            "key_count": len(training_bank.key_ids),
+            "key_ids": list(training_bank.key_ids),
+            **_artifact_identity(diagnostic),
+        })
         manifest["grouped_jsonl_sha256"] = _sha_file(data_path)
         manifest["group_index_sha256"] = _sha_file(index_path)
         artifact_names = (
-            ("window_groups.jsonl", "group_index.jsonl")
-            if config.fast_experimental
-            else (
-                "window_groups.jsonl",
-                "candidate_attempts.jsonl",
-                "labels.jsonl",
-                "split_manifest.json",
-                "training_key_bank_manifest.json",
-                "group_index.jsonl",
-            )
+            "window_groups.jsonl",
+            "candidate_attempts.jsonl",
+            "labels.jsonl",
+            "split_manifest.json",
+            "training_key_bank_manifest.json",
+            "group_index.jsonl",
         )
         manifest["artifacts"] = {
             name: _sha_file(staging / name) for name in artifact_names
         }
-        feasibility_payload = {**feasibility.to_dict(), "config_hash": config.config_hash, "diagnostic_test_backend": diagnostic}
+        feasibility_payload = {
+            **feasibility.to_dict(),
+            "config_hash": config.config_hash,
+            **_artifact_identity(diagnostic),
+        }
         _reject_sensitive_public_fields(manifest)
         _reject_sensitive_public_fields(feasibility_payload)
         _write_json(staging / "feasibility_summary.json", feasibility_payload)
@@ -734,9 +750,8 @@ def _run_gate_data_impl(config: GateDataPipelineConfig, dependencies: GatePipeli
             staging / "feasibility_summary.json"
         )
         _write_json(staging / "manifest.json", manifest)
-        if not config.fast_experimental:
-            _audit_gate_data_artifacts(staging, manifest, config.config_hash)
-            dependencies.audit_gate_data(staging, manifest)
+        _audit_gate_data_artifacts(staging, manifest, config.config_hash)
+        dependencies.audit_gate_data(staging, manifest)
         _publish_new(staging, output)
     except BaseException:
         if os.environ.get("WFCLLM_PRESERVE_FAILED_GATE_DATA") == "1":
@@ -764,16 +779,7 @@ def run_gate_train(config: GateTrainPipelineConfig, dependencies: object) -> Gat
     if manifest.get("config_hash") != config.config_hash:
         raise ValueError("data manifest config hash mismatch")
     diagnostic = bool(getattr(dependencies, "diagnostic_test_backend", False))
-    if config.fast_experimental:
-        expected_markers = {
-            "experimental_only": True,
-            "diagnostic_only": True,
-            "not_official_method": True,
-            "formal_eligible": False,
-        }
-        if any(manifest.get(name) is not value for name, value in expected_markers.items()):
-            raise ValueError("fast training requires an explicitly experimental data manifest")
-    elif (
+    if (
         manifest.get("diagnostic_test_backend") is True
         or manifest.get("formal_eligible") is not True
     ) and not diagnostic:
@@ -784,9 +790,9 @@ def run_gate_train(config: GateTrainPipelineConfig, dependencies: object) -> Gat
             raise ValueError("data manifest pilot feasibility hash mismatch")
     elif manifest.get("pilot_feasibility_sha256") is not None:
         raise ValueError("data manifest requires its recorded pilot feasibility input")
-    if not config.fast_experimental:
+    if not diagnostic:
         _enforce_train_minima(manifest)
-    if not config.fast_experimental:
+    if not diagnostic:
         _audit_gate_data_artifacts(config.data_dir, manifest, config.config_hash)
     data_jsonl = config.data_dir / "window_groups.jsonl"
     if not data_jsonl.is_file():
@@ -806,7 +812,7 @@ def run_gate_train(config: GateTrainPipelineConfig, dependencies: object) -> Gat
         training_manifest = manifest
         snapshot: Path | None = None
         original_data_digest: str | None = None
-        if not config.fast_experimental:
+        if not diagnostic:
             original_data_digest = _tree_hash(config.data_dir)
             snapshot = staging / "_data_snapshot"
             _copy_tree_snapshot(config.data_dir, snapshot)
@@ -834,7 +840,7 @@ def run_gate_train(config: GateTrainPipelineConfig, dependencies: object) -> Gat
                 raise ValueError("trainer mutated original gate-data inputs")
         if not candidate.is_dir() or not any(candidate.iterdir()):
             raise ValueError("trainer did not produce a candidate bundle")
-        if not diagnostic and not config.fast_experimental:
+        if not diagnostic:
             _validate_formal_candidate_tree(candidate)
         elif _has_symlink(candidate):
             raise ValueError("diagnostic candidate bundle cannot contain symlinks")
@@ -850,11 +856,7 @@ def run_gate_train(config: GateTrainPipelineConfig, dependencies: object) -> Gat
             "training_result": training_result,
             "learning_curve_plan": plan,
             "learning_curve_runs_executed": False,
-            "diagnostic_test_backend": diagnostic,
-            "experimental_only": config.fast_experimental,
-            "diagnostic_only": config.fast_experimental,
-            "not_official_method": config.fast_experimental,
-            "formal_eligible": not diagnostic and not config.fast_experimental,
+            **_artifact_identity(diagnostic),
         }
         development_summary = {
             "schema_version": "wfcllm-gate-development-summary/v1",
@@ -864,16 +866,14 @@ def run_gate_train(config: GateTrainPipelineConfig, dependencies: object) -> Gat
             "learning_curve_plan": plan,
             "learning_curve_runs_executed": False,
             "unseen_group_metrics_status": "not_run_pending_formal_experiment_approval",
-            "diagnostic_test_backend": diagnostic,
-            "formal_eligible": not diagnostic,
+            **_artifact_identity(diagnostic),
         }
         _reject_sensitive_public_fields(candidate_manifest)
         _reject_sensitive_public_fields(development_summary)
         if snapshot is not None:
             shutil.rmtree(snapshot)
         _write_json(staging / "candidate_bundle_manifest.json", candidate_manifest)
-        if not config.fast_experimental:
-            _write_json(staging / "development_summary.json", development_summary)
+        _write_json(staging / "development_summary.json", development_summary)
         _publish_new(staging, output)
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
@@ -901,15 +901,6 @@ def _single_group(values: object, stage: str) -> GatePipelineGroup:
     except StopIteration:
         return group
     raise ValueError(f"{stage} must return exactly one GatePipelineGroup")
-
-
-def _groups(values: object, stage: str) -> tuple[GatePipelineGroup, ...]:
-    """Legacy bounded snapshot helper retained for narrow internal callers."""
-
-    result = tuple(_iter_groups(values, stage))
-    if not result:
-        raise ValueError(f"{stage} groups must contain GatePipelineGroup values")
-    return result
 
 
 def _validate_groups(groups: tuple[GatePipelineGroup, ...]) -> None:
@@ -1107,14 +1098,11 @@ def _validate_probe_contract(
 def _labels_for_group(
     group: GatePipelineGroup,
     length: int,
-    *,
-    fast_experimental: bool = False,
 ) -> GateLabels:
     candidates = group.candidate_observations_by_length[str(length)]
     cache_key = hashlib.sha256(
         _canonical_bytes(
             {
-                "fast_experimental": fast_experimental,
                 "candidates": [candidate.to_dict() for candidate in candidates],
             }
         )
@@ -1123,11 +1111,9 @@ def _labels_for_group(
     if cached is not None:
         _LABEL_CACHE.move_to_end(cache_key)
         return cached
-    thresholds = LabelThresholds(r3_hit_rate=0.25) if fast_experimental else None
     labels = build_gate_labels(
         candidates,
         training_key_count=32,
-        thresholds=thresholds,
     )
     _LABEL_CACHE[cache_key] = labels
     if len(_LABEL_CACHE) > _EVIDENCE_LRU_SIZE:
@@ -1138,17 +1124,11 @@ def _labels_for_group(
 def _recompute_and_attest_labels(
     probed: ProbedGroup,
     group: GatePipelineGroup,
-    *,
-    fast_experimental: bool = False,
 ) -> LabeledGroup:
     if probed.identity.digest != _group_identity(group).digest:
         raise ValueError("label stage changed immutable base identity")
     labels = {
-        length: _labels_for_group(
-            group,
-            length,
-            fast_experimental=fast_experimental,
-        )
+        length: _labels_for_group(group, length)
         for length in (1, 2, 3)
     }
     selected = labels[3]
@@ -1214,6 +1194,8 @@ def _write_group_attempts(
     group: GatePipelineGroup,
     probed: ProbedGroup,
     evidence_cache: OrderedDict[str, None],
+    *,
+    diagnostic: bool,
 ) -> None:
     """Write one complete trajectory while retaining only content digests."""
 
@@ -1233,6 +1215,7 @@ def _write_group_attempts(
                     "record_type": "probe_evidence",
                     "evidence_sha256": evidence_sha256,
                     **evidence,
+                    **_diagnostic_row_identity(diagnostic),
                 })
                 evidence_cache[evidence_sha256] = None
                 if len(evidence_cache) > _EVIDENCE_LRU_SIZE:
@@ -1245,10 +1228,16 @@ def _write_group_attempts(
                 "window_length": length,
                 "candidate_index": candidate_index,
                 "evidence_sha256": evidence_sha256,
+                **_diagnostic_row_identity(diagnostic),
             })
 
 
-def _label_row(group_id: str, stage: LabeledGroup) -> dict[str, Any]:
+def _label_row(
+    group_id: str,
+    stage: LabeledGroup,
+    *,
+    diagnostic: bool,
+) -> dict[str, Any]:
     selected = stage.labels_by_window_length[3]
     return {
         "schema_version": "wfcllm-gate-label/v1",
@@ -1265,10 +1254,15 @@ def _label_row(group_id: str, stage: LabeledGroup) -> dict[str, Any]:
             }
             for length in (1, 2, 3)
         },
+        **_diagnostic_row_identity(diagnostic),
     }
 
 
-def _compact_index_row(group: _CompactGroupIndex) -> dict[str, Any]:
+def _compact_index_row(
+    group: _CompactGroupIndex,
+    *,
+    diagnostic: bool,
+) -> dict[str, Any]:
     return {
         "group_id": group.group_id,
         "identity_sha256": group.identity_sha256,
@@ -1276,6 +1270,7 @@ def _compact_index_row(group: _CompactGroupIndex) -> dict[str, Any]:
         "split": group.split,
         "close_target": group.close_target,
         "suitable_target": group.suitable_target,
+        **_diagnostic_row_identity(diagnostic),
     }
 
 
@@ -1338,10 +1333,24 @@ def _audit_training_group_index(data_dir: Path, manifest: Mapping[str, Any], see
     if not path.is_file() or _has_symlink(path) or manifest.get("group_index_sha256") != _sha_file(path):
         raise ValueError("gate data group index hash mismatch")
     rows: list[dict[str, Any]] = []
+    diagnostic = manifest.get("diagnostic_test_backend") is True
+    expected_fields = {
+        "group_id",
+        "identity_sha256",
+        "split_group_id",
+        "split",
+        "close_target",
+        "suitable_target",
+    } | (_IDENTITY_MARKERS if diagnostic else frozenset())
     try:
         for value in _iter_jsonl(path, "group index"):
-            if set(value) != {"group_id", "identity_sha256", "split_group_id", "split", "close_target", "suitable_target"}:
+            if set(value) != expected_fields:
                 raise ValueError("group index row schema mismatch")
+            _validate_artifact_identity(
+                value,
+                diagnostic=diagnostic,
+                required=diagnostic,
+            )
             if not all(isinstance(value[name], str) and value[name] for name in ("group_id", "split_group_id")):
                 raise ValueError("group index identity is invalid")
             if not isinstance(value["identity_sha256"], str) or _DIGEST.fullmatch(value["identity_sha256"]) is None:
@@ -1429,6 +1438,7 @@ def _audit_gate_data_artifacts(data_dir: Path, manifest: Mapping[str, Any], seed
         index_rows=index_rows,
         training_ids=training_ids,
         holdout_ids=holdout_ids,
+        diagnostic=diagnostic_expected,
     )
     _audit_labels(
         data_dir / "labels.jsonl",
@@ -1436,15 +1446,30 @@ def _audit_gate_data_artifacts(data_dir: Path, manifest: Mapping[str, Any], seed
         expected_digests=expected_label_digests,
     )
     split = _read_json(data_dir / "split_manifest.json", "split manifest")
+    _validate_artifact_identity(
+        split,
+        diagnostic=diagnostic_expected,
+        required=True,
+    )
     if (
         split.get("assignments") != {row["group_id"]: row["split"] for row in index_rows}
         or split.get("split_groups") != {row["group_id"]: row["split_group_id"] for row in index_rows}
     ):
         raise ValueError("split manifest contradicts group index")
     bank = _read_json(data_dir / "training_key_bank_manifest.json", "training key bank manifest")
+    _validate_artifact_identity(
+        bank,
+        diagnostic=diagnostic_expected,
+        required=True,
+    )
     if bank.get("bank_id") != manifest.get("training_key_bank_id") or bank.get("key_count") != 32 or bank.get("key_ids") != training_ids:
         raise ValueError("training key bank provenance mismatch")
     feasibility = _read_json(data_dir / "feasibility_summary.json", "feasibility summary")
+    _validate_artifact_identity(
+        feasibility,
+        diagnostic=diagnostic_expected,
+        required=True,
+    )
     if (
         feasibility.get("contract_version") != FEASIBILITY_CONTRACT_VERSION
         or feasibility.get("thresholds") != dict(FEASIBILITY_THRESHOLD_ITEMS)
@@ -1460,6 +1485,7 @@ def _audit_candidate_attempts(
     index_rows: tuple[dict[str, Any], ...],
     training_ids: list[str],
     holdout_ids: list[str],
+    diagnostic: bool,
 ) -> dict[str, str]:
     """Stream the potentially very large attempt artifact without materializing it."""
 
@@ -1478,6 +1504,7 @@ def _audit_candidate_attempts(
     current_results: dict[int, list[dict[str, LshProbeResult]]] = {1: [], 2: [], 3: []}
     pending_evidence: str | None = None
     candidate_count = 0
+    diagnostic_fields = _IDENTITY_MARKERS if diagnostic else frozenset()
     try:
         for row in _iter_jsonl(path, "candidate attempts"):
             record_type = row.get("record_type")
@@ -1487,8 +1514,13 @@ def _audit_candidate_attempts(
                 if set(row) != {
                     "schema_version", "record_type", "evidence_sha256",
                     "candidate_observation", "lsh_probe_results",
-                } or row.get("schema_version") != "wfcllm-gate-candidate-attempts/v2":
+                } | diagnostic_fields or row.get("schema_version") != "wfcllm-gate-candidate-attempts/v2":
                     raise ValueError("probe evidence row schema mismatch")
+                _validate_artifact_identity(
+                    row,
+                    diagnostic=diagnostic,
+                    required=diagnostic,
+                )
                 digest = row["evidence_sha256"]
                 if not isinstance(digest, str) or _DIGEST.fullmatch(digest) is None:
                     raise ValueError("probe evidence digest is invalid")
@@ -1513,8 +1545,13 @@ def _audit_candidate_attempts(
             if record_type != "candidate_attempt" or set(row) != {
                 "schema_version", "record_type", "group_id", "identity_sha256",
                 "window_length", "candidate_index", "evidence_sha256",
-            } or row.get("schema_version") != "wfcllm-gate-candidate-attempts/v2":
+            } | diagnostic_fields or row.get("schema_version") != "wfcllm-gate-candidate-attempts/v2":
                 raise ValueError("candidate attempt row schema mismatch")
+            _validate_artifact_identity(
+                row,
+                diagnostic=diagnostic,
+                required=diagnostic,
+            )
             try:
                 expected_value = next(expected)
             except StopIteration as exc:
@@ -1562,6 +1599,7 @@ def _audit_candidate_attempts(
                     "schema_version": "wfcllm-gate-label/v1",
                     "group_id": group_id,
                     **label_payload,
+                    **_diagnostic_row_identity(diagnostic),
                 }
                 indexed = index_rows[len(expected_label_digests)]
                 if (
@@ -1839,16 +1877,14 @@ def _validate_public_window_row(
     row: Mapping[str, Any], *, diagnostic_expected: bool | None,
 ) -> None:
     base = {"schema_version", "group_id", "split"}
-    diagnostic = base | {"diagnostic_test_backend"}
+    diagnostic = base | _IDENTITY_MARKERS
     keys = set(row)
     if diagnostic_expected is True:
-        valid = keys == diagnostic and row.get("diagnostic_test_backend") is True
+        valid = keys == diagnostic
     elif diagnostic_expected is False:
         valid = keys == base
     else:
-        valid = keys == base or (
-            keys == diagnostic and row.get("diagnostic_test_backend") is True
-        )
+        valid = keys in (base, diagnostic)
     if (
         not valid
         or row.get("schema_version") != "wfcllm-gate-data/v1"
@@ -1857,9 +1893,31 @@ def _validate_public_window_row(
         or row.get("split") not in {"train", "validation", "test"}
     ):
         raise ValueError("window group public row schema mismatch")
+    if keys == diagnostic:
+        _validate_artifact_identity(row, diagnostic=True, required=True)
     _reject_sensitive_public_fields(row, path="window_group")
     if len(_canonical_bytes(dict(row))) + 1 > _MAX_JSONL_LINE_BYTES:
         raise ValueError("window group public row size limit exceeded")
+
+
+def _validate_artifact_identity(
+    payload: Mapping[str, Any],
+    *,
+    diagnostic: bool,
+    required: bool,
+) -> None:
+    present = set(payload) & _IDENTITY_MARKERS
+    if not present:
+        if required:
+            raise ValueError("artifact identity markers are missing")
+        return
+    if present != _IDENTITY_MARKERS:
+        raise ValueError("artifact identity markers are incomplete")
+    if any(
+        payload[name] is not expected
+        for name, expected in _artifact_identity(diagnostic).items()
+    ):
+        raise ValueError("artifact identity markers are inconsistent")
 
 
 def _canonical_bytes(value: object) -> bytes:

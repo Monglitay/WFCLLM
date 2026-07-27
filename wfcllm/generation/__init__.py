@@ -1,74 +1,39 @@
 from __future__ import annotations
 
-from importlib import import_module
-from typing import Any
+from wfcllm.generation.completion_finalizer import (
+    ProgramFinalizationResult,
+    finalize_humaneval_program,
+    finalize_mbpp_program,
+    finalize_mbpp_program_with_interface_wrapper,
+)
+from wfcllm.generation.gated_generator import (
+    GatedGenerationResult,
+    GatedGenerator,
+    GatedWindowAudit,
+    RewriteTokens,
+)
+from wfcllm.generation.gated_pipeline import (
+    GatedGenerationPipeline,
+    GatedGenerationPipelineConfig,
+)
+from wfcllm.generation.window_rewriter import (
+    CausalWindowRewriter,
+    ParsedRewrite,
+    RewriteGeneration,
+)
 
 __all__ = [
-    "AuditEvent",
-    "BoundaryEvent",
-    "BoundaryEventKind",
-    "Candidate",
     "CausalWindowRewriter",
-    "GatedGenerationResult",
+    "ProgramFinalizationResult",
     "GatedGenerationPipeline",
     "GatedGenerationPipelineConfig",
+    "GatedGenerationResult",
     "GatedGenerator",
     "GatedWindowAudit",
     "ParsedRewrite",
     "RewriteGeneration",
     "RewriteTokens",
-    "SawrStateMachine",
-    "WFCLLMStateMachine",
-    "evidence_retry_key",
+    "finalize_humaneval_program",
+    "finalize_mbpp_program",
+    "finalize_mbpp_program_with_interface_wrapper",
 ]
-
-_EXPORTS = {
-    "AuditEvent": ("wfcllm.generation.state_machine", "AuditEvent"),
-    "BoundaryEvent": ("wfcllm.generation.boundary", "BoundaryEvent"),
-    "BoundaryEventKind": ("wfcllm.generation.boundary", "BoundaryEventKind"),
-    "Candidate": ("wfcllm.generation.boundary", "Candidate"),
-    "CausalWindowRewriter": (
-        "wfcllm.generation.window_rewriter",
-        "CausalWindowRewriter",
-    ),
-    "GatedGenerationResult": (
-        "wfcllm.generation.gated_generator",
-        "GatedGenerationResult",
-    ),
-    "GatedGenerationPipeline": (
-        "wfcllm.generation.gated_pipeline",
-        "GatedGenerationPipeline",
-    ),
-    "GatedGenerationPipelineConfig": (
-        "wfcllm.generation.gated_pipeline",
-        "GatedGenerationPipelineConfig",
-    ),
-    "GatedGenerator": ("wfcllm.generation.gated_generator", "GatedGenerator"),
-    "GatedWindowAudit": (
-        "wfcllm.generation.gated_generator",
-        "GatedWindowAudit",
-    ),
-    "ParsedRewrite": ("wfcllm.generation.window_rewriter", "ParsedRewrite"),
-    "RewriteGeneration": (
-        "wfcllm.generation.window_rewriter",
-        "RewriteGeneration",
-    ),
-    "RewriteTokens": ("wfcllm.generation.gated_generator", "RewriteTokens"),
-    "SawrStateMachine": ("wfcllm.generation.state_machine", "SawrStateMachine"),
-    "WFCLLMStateMachine": ("wfcllm.generation.state_machine", "SawrStateMachine"),
-    "evidence_retry_key": ("wfcllm.generation.retry", "evidence_retry_key"),
-}
-
-
-def __getattr__(name: str) -> Any:
-    try:
-        module_name, attribute_name = _EXPORTS[name]
-    except KeyError as exc:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
-    value = getattr(import_module(module_name), attribute_name)
-    globals()[name] = value
-    return value
-
-
-def __dir__() -> list[str]:
-    return sorted({*globals(), *__all__})

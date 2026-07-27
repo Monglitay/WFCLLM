@@ -1,60 +1,36 @@
-# No Quality Gate Protocol
+# No-quality-gate Protocol
 
-WFCLLM is evaluated as a generation-time semantic watermarking method. The official protocol forbids using pass/test/correctness proxies as control signals during generation, retry, calibration, detection, and final candidate selection.
+当前方法的生成决策只能读取：
 
-## Allowed Signals
+- public prompt 与已生成前缀；
+- statement-window 结构；
+- Gate close/suitable 输出；
+- key-blind rewrite candidate；
+- semantic preservation、LSH signature/margin 与 Deployment Key 派生目标。
 
-- Structure-aware code boundary events.
-- Parser structure validity used only to establish formal window boundaries;
-  this is not evidence that code is correct or high quality.
-- Key-independent aggregates of semantic LSH margin/stability measured across
-  the training key bank. Raw keys and a deployment-key target region are never
-  public gate inputs.
-- Gate close/suitable probabilities from the frozen validated bundle.
-- Retry budget counters and rollback state.
-- Candidate 0 (the original complete window), bounded key-blind rewrites, and
-  deterministic rollback/restore state.
-- Sampling metadata needed to continue generation.
-- Final-code-only detector statistics derived from `id`, `dataset`, `prompt`, and `final_code`.
-- Posthoc utility reports, after all official generation and detection decisions are complete.
+以下信号不得参与 generation、retry、candidate selection、calibration 或
+detection：
 
-## Forbidden Signals
+- 单元测试或 hidden tests；
+- pass/fail、Pass@1、correctness；
+- canonical/reference solution；
+- 编译或执行是否成功；
+- 与答案的相似度、长度差或质量分数；
+- 人工选择标签。
 
-- Unit-test pass or fail results during generation.
-- Benchmark correctness labels during generation.
-- Runtime execution outcomes during retry.
-- Candidate selection based on pass/test/correctness proxies.
-- Calibration thresholds selected from pass/test/correctness proxies.
-- Detection scores that read generation traces, retry traces, audit logs, candidate sidecars, or posthoc utility reports.
-- Any proxy named or structured as quality, correctness, pass, fail, test outcome, benchmark outcome, reward, or oracle feedback when used as a control signal.
-- Syntax-valid or parser-valid flags treated as a quality rank, reward, or
-  correctness signal. Structural validity only permits the parser/window
-  contract to continue.
-- Single-key/deployment-key labels, target LSH region, raw training/holdout
-  keys, or any decision derived from knowing the deployment target.
-- Gate-data, gate-training metrics, checkpoints, validation rows, generation
-  audit rows, or candidate sidecars read by calibration/detection.
+`inputs/final_code.jsonl` 在 generation 阶段完成后冻结，其 SHA-256 与行数
+由 generation manifest 和 run state 双重绑定，并由所有下游阶段复核。
+Pass@1 只能由 `scripts/evaluate.py` 生成 posthoc report，且必须同时携带：
 
-## Posthoc Pass Report Marker
-
-Any posthoc pass report must carry this exact marker:
-
-```json
-{
-  "posthoc_only": true,
-  "not_used_for_generation": true,
-  "not_used_for_retry": true,
-  "not_used_for_selection": true,
-  "not_used_for_calibration": true,
-  "not_used_for_detection": true
-}
+```text
+posthoc_only=true
+not_used_for_generation=true
+not_used_for_retry=true
+not_used_for_selection=true
+not_used_for_calibration=true
+not_used_for_detection=true
 ```
 
-The marker records that the report is an after-the-fact utility measurement. It does not make the report eligible for any official method decision.
-
-Posthoc correctness can compare utility and enforce the configured reporting
-non-inferiority boundary, but it must never flow back into generation, retry,
-candidate selection, gate-data labels, gate training, gate validation,
-calibration, or detection. The formal eight-stage workflow therefore ends all
-generation and detector decisions before a posthoc pass report is produced or
-merged.
+校准补充的未加水印生成“生成即采用”，不因测试、正确性或质量信号筛选。
+`audit` 必须验证严格 detector input 与这些 posthoc 标记；发现质量字段泄漏时
+运行失败。

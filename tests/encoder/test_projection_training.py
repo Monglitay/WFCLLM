@@ -76,11 +76,15 @@ def test_prepare_region_blocks_python_uses_transform_engine_variants() -> None:
 
 
 @pytest.mark.parametrize(
-    ("language", "code"),
-    [("cpp", _CPP_CODE), ("java", _JAVA_CODE)],
+    ("language", "code", "return_line"),
+    [
+        ("cpp", _CPP_CODE, "return total;"),
+        ("java", _JAVA_CODE, "return total;"),
+        ("js", _JS_CODE, "    return a + b;"),
+    ],
 )
-def test_prepare_region_blocks_cpp_java_use_public_equivalent_variants(
-    language: str, code: str
+def test_prepare_region_blocks_nonpython_use_public_equivalent_variants(
+    language: str, code: str, return_line: str
 ) -> None:
     blocks = projection_training.prepare_region_blocks(
         (_record(language, 0, code),),
@@ -90,14 +94,14 @@ def test_prepare_region_blocks_cpp_java_use_public_equivalent_variants(
     )
 
     by_source = {block["source"]: block for block in blocks}
-    assert "return total;" in by_source
-    variants = by_source["return total;"]["positive_variants"]
+    assert return_line in by_source
+    variants = by_source[return_line]["positive_variants"]
     assert len(variants) >= 3
     assert len(set(variants)) == len(variants)
-    assert "return total;" not in variants
+    assert return_line not in variants
 
 
-@pytest.mark.parametrize("language", ["js", "ruby"])
+@pytest.mark.parametrize("language", ["ruby"])
 def test_prepare_region_blocks_rejects_languages_without_public_variants(
     language: str,
 ) -> None:
@@ -109,15 +113,23 @@ def test_prepare_region_blocks_rejects_languages_without_public_variants(
             max_perm_len=2,
         )
 
+def test_js_groups_are_available_without_a_javascript_tree_sitter_wheel() -> None:
+    records = tuple(_record("js", index, _JS_CODE) for index in range(20))
 
-def test_js_rejection_explains_missing_encoder_positive_samples() -> None:
-    with pytest.raises(ValueError, match="encoder positive samples"):
-        projection_training.prepare_region_blocks(
-            (_record("js", 0, _JS_CODE),),
-            language="js",
-            max_variants=8,
-            max_perm_len=2,
-        )
+    build = projection_training.build_projection_training_groups(
+        records,
+        language="js",
+        max_variants=8,
+        max_perm_len=2,
+        seed=7,
+        max_train_groups=1200,
+        max_validation_groups=160,
+        max_test_groups=160,
+    )
+
+    assert build.built_group_counts["train"] > 0
+    assert build.built_group_counts["validation"] > 0
+    assert build.built_group_counts["test"] > 0
 
 
 def test_built_group_counts_report_actual_counts_without_lowering_limits() -> None:

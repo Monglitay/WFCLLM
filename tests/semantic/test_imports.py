@@ -10,10 +10,8 @@ import pytest
     "statement",
     [
         "import wfcllm.semantic",
-        "import wfcllm.semantic.rules",
         "import wfcllm.semantic.lsh",
         "import wfcllm.semantic.keying",
-        "import wfcllm.semantic.verifier",
         "import wfcllm.semantic.window_lsh",
         (
             "from wfcllm.semantic import "
@@ -32,7 +30,7 @@ def test_semantic_imports_succeed_in_clean_process(statement: str) -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_semantic_dir_lists_lazy_window_exports() -> None:
+def test_semantic_dir_lists_window_exports() -> None:
     import wfcllm.semantic as semantic
 
     assert "SemanticWindowEvidence" in dir(semantic)

@@ -16,7 +16,6 @@ from wfcllm.generation.gated_state import (
     RetryAction,
     WindowAttempt,
 )
-from wfcllm.generation.generator import GeneratedToken
 from wfcllm.semantic.window_lsh import SemanticWindowScorer
 from wfcllm.windowing import (
     WINDOW_CONTRACT_VERSION,
@@ -226,7 +225,7 @@ class GatedCandidateAudit:
         if passed is not None and semantic_rule is None:
             semantic_rule = "encoder-cosine/v1"
         if passed is None and semantic_rule is not None:
-            raise ValueError("unvalidated candidate must not name a semantic rule")
+            raise ValueError("unscored candidate must not name a semantic rule")
         if cosine is not None:
             if (
                 isinstance(cosine, bool)
@@ -280,7 +279,6 @@ class GatedCandidateAudit:
             "structure_rejected",
             "semantic_rejected",
             "keyed_lsh_evaluated",
-            "fast_certified_rewrite_selected",
             "generated_not_evaluated_after_accept",
             "gate_skipped",
         }
@@ -291,7 +289,6 @@ class GatedCandidateAudit:
             "structure_rejected": (False, None, False),
             "semantic_rejected": (True, False, False),
             "keyed_lsh_evaluated": (True, True, True),
-            "fast_certified_rewrite_selected": (True, True, True),
             "generated_not_evaluated_after_accept": (None, None, False),
             "gate_skipped": (True, True, False),
         }[self.evaluation_status]
@@ -317,18 +314,6 @@ class GatedCandidateAudit:
             and (self.semantic_hit is not True or self.semantic_stable is not True)
         ):
             raise ValueError("a selected rewrite must be a stable semantic hit")
-        if (
-            self.selected
-            and self.candidate_index > 0
-            and self.evaluation_status == "fast_certified_rewrite_selected"
-            and (
-                self.semantic_preservation_passed is not True
-                or self.semantic_validation_rule not in CERTIFIED_REWRITE_SEMANTIC_RULES
-            )
-        ):
-            raise ValueError("a fast selected rewrite must be certified")
-
-
 class WholeWindowRewriter(Protocol):
     def rewrite_window(
         self, request: RewriteRequest, *, candidate_index: int
@@ -352,8 +337,6 @@ class GatedGenerator:
         max_rewrites: int,
         evidence_channels: int = 1,
         extractor: Any | None = None,
-        model_context: Any | None = None,
-        accept_certified_rewrite_without_hit: bool = False,
     ) -> None:
         if not isinstance(partitioner, WindowPartitioner):
             raise ValueError("partitioner must be a WindowPartitioner")
@@ -384,10 +367,6 @@ class GatedGenerator:
         self._evidence_channels = evidence_channels
         self._extractor = extractor or PythonStatementUnitExtractor()
         self._window_contract_version = partitioner.window_contract_version
-        self._model_context = model_context
-        self._accept_certified_rewrite_without_hit = bool(
-            accept_certified_rewrite_without_hit
-        )
 
     def generate(
         self,
@@ -546,22 +525,12 @@ class GatedGenerator:
                                 window_text=candidate_semantic_text,
                                 parent_descriptor=window.parent_descriptor.canonical,
                             )
-                    force_accept = (
-                        self._accept_certified_rewrite_without_hit
-                        and checked is not None
-                        and semantic_preservation_passed is True
-                        and candidate.text != rewrite_window
-                    )
                     controller.observe(
                         _attempt(
                             candidate_index,
                             suitable=checked is not None,
                             structure_ok=checked is not None,
-                            evidence=(
-                                _forced_hit_evidence(evidence)
-                                if force_accept
-                                else evidence
-                            ),
+                            evidence=evidence,
                         )
                     )
                     window_candidate_audit.append(
@@ -584,8 +553,6 @@ class GatedGenerator:
                                 if checked is None
                                 else "semantic_rejected"
                                 if semantic_preservation_passed is False
-                                else "fast_certified_rewrite_selected"
-                                if force_accept
                                 else "keyed_lsh_evaluated"
                             ),
                         )
@@ -684,7 +651,6 @@ class GatedGenerator:
                     semantic_validation_rule=selected_semantic_validation_rule,
                 )
             )
-            self._replay_if_available(rollback_anchor, selected)
             cursor = replacement_end
 
         output.extend(source[cursor:])
@@ -870,21 +836,6 @@ class GatedGenerator:
             )
         return evidence
 
-    def _replay_if_available(self, rollback_anchor: int, selected: RewriteTokens) -> None:
-        if self._model_context is None or selected.token_texts is None:
-            return
-        rollback = self._model_context.checkpoint_for_generated_byte(rollback_anchor)
-        steps = tuple(
-            GeneratedToken(token_id, token_text)
-            for token_id, token_text in zip(
-                selected.token_ids, selected.token_texts, strict=True
-            )
-        )
-        self._model_context.replay_from_checkpoint(
-            rollback.checkpoint, replacement_steps=steps
-        )
-
-
 def _attempt(
     candidate_index: int,
     *,
@@ -900,28 +851,6 @@ def _attempt(
         semantic_stable=bool(evidence is not None and evidence.stable),
         semantic_margin=float(evidence.margin if evidence is not None else 0.0),
     )
-
-
-def _forced_hit_evidence(evidence: Any | None) -> Any:
-    if evidence is None:
-        return type(
-            "ForcedEvidence",
-            (),
-            {
-                "hit": True,
-                "stable": True,
-                "margin": 1.0,
-            },
-        )()
-    return type(
-        "ForcedEvidence",
-        (),
-        {
-            "hit": True,
-            "stable": bool(getattr(evidence, "stable", True)),
-            "margin": float(getattr(evidence, "margin", 1.0)),
-        },
-    )()
 
 
 def _candidate_audit(

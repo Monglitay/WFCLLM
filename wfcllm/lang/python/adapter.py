@@ -30,9 +30,6 @@ class PythonAdapter(LanguageAdapter):
         return extract_statement_blocks(source)
 
     def positive_rules(self) -> list:
-        # Local import: lang.python.transform doesn't exist until Task 7.
-        # The methods are defined now to satisfy the ABC, but should only be
-        # CALLED after Task 7. Task 4 only exercises statement_types / extract_blocks.
         from wfcllm.lang.python.transform.positive import get_all_positive_rules
         return get_all_positive_rules()
 

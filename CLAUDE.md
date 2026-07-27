@@ -1,127 +1,31 @@
-# WFCLLM Agent Guide
+# CLAUDE.md
 
-This repository contains the live WFCLLM mainline: a structure-aware generation-time semantic watermarking method for code LLMs. The default official baseline remains `evidence_retry_seed7x3`. `gated_semantic_window_v1` is experimental and must not be described as effective based on fake/offline wiring tests.
+WFCLLM 当前工作树是 Gate-only Full Reproduction Core。
 
-## Project Architecture
+## 不可变边界
 
-```text
-wfcllm/
-  method/
-  generation/
-  semantic/
-  detection/
-  audit/
-  diagnostics/
-  cli/
-  orchestration/
-  datasets/
-  lang/
-  encoder/
-  common/
-```
+1. 唯一方法是 `gated_semantic_window_v1`。
+2. 唯一公开 profile 是 full；公开矩阵恰好五项。
+3. 唯一阶段链是
+   `encoder → gate-data → gate-train → generate → calibrate → detect → report → audit`。
+4. 每次执行从新的 root 开始，并训练本 run 的 encoder 与 Gate Bundle。
+5. 不接受旧状态、外部历史 Bundle、旧 candidate/schema/report 或兼容参数。
+6. 缺少本地资源必须失败，不得静默替代。
+7. detector positive input 必须严格为
+   `id,dataset,prompt,final_code` 四字段。
+8. Pass@1/Pass@k、test 和 correctness 只能在生成后使用，不得反馈到生成、
+   重试、选择、校准或检测；Metric Contract 只消费 Pass@1。
+9. 私有 key material 永不进入公开 artifact、状态、日志、配置或文档。
+10. 历史实现只从 Git 历史和既有 Archival Tag 恢复。
 
-`run.py` is intentionally a thin shim that forwards to `wfcllm.cli.entry:main`. Keep business logic inside the package.
+## 开发约定
 
-## Mainline Phases
+- 使用 `WFCLLM` conda 环境，常规测试默认离线。
+- 不安装新依赖来绕过本地资源问题。
+- 优先测试 Public Execution Surface，再补无法经济覆盖的合同单测。
+- 测试可注入轻量依赖，但不能进入生产入口；测试产物保持非正式身份。
+- 修改后运行 compileall、离线 collect-only、相关目标套件、完整 `tests/`、
+  shell syntax、状态命令和 removed-concept residue scan。
+- 保留用户已有工作树改动。未经明确授权不执行 Git 发布操作。
 
-The live phases are:
-
-- `generate`
-- `calibrate`
-- `detect`
-- `report`
-- `audit`
-
-Running without `--phase` executes the `PHASES` sequence from `wfcllm/orchestration/state.py`. Keep config `runtime.default_phases` aligned with that source of truth until orchestration explicitly supports config-driven phase sequencing. `--status` and run state handling belong to `wfcllm.orchestration`.
-
-The gated preset resolves a config-driven sequence:
-`encoder`, `gate-data`, `gate-train`, `generate`, `calibrate`, `detect`,
-`report`, plus `audit` for full-profile runs. There is no gate-validate
-stage (ADR 0007): generate, calibrate and detect all resolve gate-train's
-candidate bundle through one entry. The semantic encoder is trained per
-dataset from the run's gate source catalog (ADR 0006). With a hash-bound
-external bundle the sequence starts at `generate` with an explicit
-semantic-encoder checkpoint. Fake backends are restricted to controlled
-tests/diagnostics and must carry the complete non-formal marker.
-
-## Method Rules
-
-- The official preset is `evidence_retry_seed7x3`.
-- Official detector input rows contain exactly `id`, `dataset`, `prompt`, and `final_code`.
-- Pass/test/correctness proxies are forbidden during generation, retry, final selection, calibration, and detection.
-- Posthoc pass reports are allowed only as after-the-fact utility reports and must carry the full marker documented in `docs/NO_QUALITY_GATE_PROTOCOL.md`.
-- Diagnostic selectors are not official methods. Their outputs must carry `diagnostic_only=true` and `not_official_method=true`.
-- Do not leak secrets into public JSON, JSONL, reports, or docs.
-- Gate-data may use structure, key-independent multi-training-key LSH
-  aggregates, margin/stability, and rewrite budgets. Parser validity is not a
-  code-quality signal. Correctness/pass/test outcomes remain posthoc only.
-- The detector reads official four-field final-code input, the resolved gate bundle,
-  and frozen calibration artifacts; it never reads gate-data, checkpoints,
-  generation audit rows, or candidate sidecars.
-
-## Repository Boundaries
-
-- Live package code is under `wfcllm/`.
-- Archived legacy code is reference-only under `archive/`.
-- Historical docs are reference-only under `docs/archive/`.
-- Never import `experiment.*` from production code under `wfcllm/`.
-- Do not import archived code from live package modules.
-- Treat large local resources under `data/models/`, `data/datasets/`, `data/checkpoints/`, and run outputs as local artifacts unless explicitly requested.
-
-## Development Commands
-
-Use the `WFCLLM` conda environment.
-
-```bash
-conda run -n WFCLLM python run.py --status
-HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/method -v
-HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/generation -v
-HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/detection -v
-HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/audit -v
-HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/diagnostics -v
-conda run -n WFCLLM python -m compileall wfcllm run.py scripts tools
-```
-
-Use `HF_HUB_OFFLINE=1` for pytest commands unless the user explicitly asks for online behavior. Prefer local model and dataset paths under `data/`.
-
-Gated real runs additionally require local generation and semantic models,
-`data/models/codet5-small`, local source datasets, private 32/8 training and
-holdout key banks, and a runtime deployment key. Do not add automatic download
-fallbacks. Do not put key material in configs, run state, logs, manifests, or
-reports.
-
-## Coding Conventions
-
-- Prefer small, direct changes inside existing module boundaries.
-- Use `pathlib.Path` for paths.
-- Use UTF-8 explicitly for file reads and writes.
-- Use modern type hints such as `list[str]`, `dict[str, Any]`, and `str | None`.
-- Use dataclasses for config and value records when appropriate.
-- Keep library identifiers and most docstrings in English.
-- Raise `ValueError` for invalid config, malformed data, and incompatible artifacts unless nearby code uses a narrower exception.
-- Keep logs factual and low-noise.
-
-## Testing Guidance
-
-- Use `pytest`.
-- Use `tmp_path` for filesystem-isolated tests.
-- Use `monkeypatch`, `unittest.mock.patch`, and `MagicMock` for model, dataset, and external boundaries.
-- Use `pytest.raises(..., match=...)` for validation paths.
-- Use `pytest.approx(...)` for floating-point assertions.
-- Update nearby tests for behavior changes.
-
-For broad changes, run the targeted suites first, then the full suite if feasible:
-
-```bash
-HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/ -v
-```
-
-## Git Hygiene
-
-- Check `git status --short` before editing.
-- Do not revert unrelated user changes.
-- Do not commit local models, datasets, checkpoints, large run artifacts, or generated logs.
-- Also do not commit gate-data, key banks, gate bundles, generated JSONL,
-  or contents of `data/runs/`.
-- Commit format is `<type>: <description>`.
-- Allowed commit types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`.
+当前结构、命令和 artifact 细节见 `README.md`、`AGENTS.md` 与 `docs/`。

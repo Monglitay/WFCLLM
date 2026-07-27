@@ -35,27 +35,27 @@ def test_final_code_record_rejects_empty_id() -> None:
 
 
 def test_build_run_paths_uses_new_layout(tmp_path: Path) -> None:
-    paths = build_run_paths(tmp_path, "20260708_153000_evidence_retry_seed7x3")
+    paths = build_run_paths(tmp_path, "20260727_153000_gated_full")
 
     assert isinstance(paths, RunPaths)
     assert (
         paths.final_code_input
         == tmp_path
-        / "20260708_153000_evidence_retry_seed7x3"
+        / "20260727_153000_gated_full"
         / "inputs"
         / "final_code.jsonl"
     )
     assert (
         paths.audit_log
         == tmp_path
-        / "20260708_153000_evidence_retry_seed7x3"
+        / "20260727_153000_gated_full"
         / "generation"
         / "audit.jsonl"
     )
     assert (
         paths.detector_integrity
         == tmp_path
-        / "20260708_153000_evidence_retry_seed7x3"
+        / "20260727_153000_gated_full"
         / "audit"
         / "detector_input_integrity.json"
     )
@@ -73,21 +73,21 @@ def test_run_paths_include_all_gate_artifacts_without_changing_final_code_path(
     assert paths.gate_labels == tmp_path / "run-1" / "gate-data" / "labels.jsonl"
     assert paths.gate_split_manifest == tmp_path / "run-1" / "gate-data" / "split_manifest.json"
     assert paths.gate_training_key_bank_manifest == tmp_path / "run-1" / "gate-data" / "training_key_bank_manifest.json"
+    assert paths.gate_group_index == tmp_path / "run-1" / "gate-data" / "group_index.jsonl"
     assert paths.gate_feasibility_summary == tmp_path / "run-1" / "gate-data" / "feasibility_summary.json"
-    assert paths.gate_resolved_training_config == tmp_path / "run-1" / "gate-train" / "resolved_training_config.json"
-    assert paths.gate_training_metrics == tmp_path / "run-1" / "gate-train" / "training_metrics.jsonl"
     assert paths.gate_development_summary == tmp_path / "run-1" / "gate-train" / "development_summary.json"
-    assert paths.gate_checkpoints_dir == tmp_path / "run-1" / "gate-train" / "checkpoints"
     assert paths.gate_candidate_bundle_dir == tmp_path / "run-1" / "gate-train" / "candidate_bundle"
     assert paths.gate_candidate_bundle_manifest == tmp_path / "run-1" / "gate-train" / "candidate_bundle_manifest.json"
-    assert not hasattr(paths, "gate_bundle_manifest")
+    assert paths.generation_manifest == tmp_path / "run-1" / "generation" / "manifest.json"
     assert paths.audit_log == tmp_path / "run-1" / "generation" / "audit.jsonl"
     assert paths.candidate_sidecar == tmp_path / "run-1" / "generation" / "candidate_sidecar.jsonl"
-    assert paths.raw_attempt_summary == tmp_path / "run-1" / "generation" / "raw_attempt_summary.jsonl"
+    assert paths.finalizer_audit == tmp_path / "run-1" / "generation" / "finalizer.jsonl"
+    assert paths.negative_corpus == tmp_path / "run-1" / "calibration" / "negative_corpus.jsonl"
+    assert paths.negative_corpus_manifest == tmp_path / "run-1" / "calibration" / "negative_corpus_manifest.json"
     assert paths.reference_calibration == tmp_path / "run-1" / "calibration" / "reference_calibration.json"
     assert paths.positive_details == tmp_path / "run-1" / "detection" / "positive_details.jsonl"
-    assert paths.reference_negative_details == tmp_path / "run-1" / "detection" / "reference_negative_details.jsonl"
-    assert paths.model_negative_details == tmp_path / "run-1" / "detection" / "model_negative_details.jsonl"
+    assert paths.reference_report == tmp_path / "run-1" / "reports" / "reference_report.json"
+    assert paths.metric_contract == tmp_path / "run-1" / "reports" / "metric_contract.jsonl"
 
 
 @pytest.mark.parametrize("run_id", ["", ".", "..", "../escape", "/absolute", "a/b", "a\\b"])

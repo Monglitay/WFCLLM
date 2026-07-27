@@ -8,14 +8,8 @@ class TestEncoderConfig:
         cfg = EncoderConfig()
         assert cfg.model_name == "Salesforce/codet5-base"
         assert cfg.embed_dim == 128
-        assert cfg.lr == 2e-5
-        assert cfg.batch_size == 64
-        assert cfg.epochs == 10
-        assert cfg.margin == 0.3
+        assert cfg.pooling == "first"
         assert cfg.max_seq_length == 256
-        assert cfg.warmup_ratio == 0.1
-        assert cfg.early_stopping_patience == 3
-        assert cfg.negative_ratio == 0.5
 
     def test_lora_defaults(self):
         cfg = EncoderConfig()
@@ -36,30 +30,14 @@ class TestEncoderConfig:
         cfg = EncoderConfig(use_bf16=False)
         assert cfg.use_bf16 is False
 
-    def test_data_sources(self):
-        cfg = EncoderConfig()
-        assert "mbpp" in cfg.data_sources
-        assert "humaneval" in cfg.data_sources
-
-    def test_custom_values(self):
-        cfg = EncoderConfig(lr=1e-4, batch_size=16)
-        assert cfg.lr == 1e-4
-        assert cfg.batch_size == 16
-
-    def test_paths(self):
-        cfg = EncoderConfig()
-        assert "checkpoints" in cfg.checkpoint_dir
-        assert "results" in cfg.results_dir
-
-    def test_encoder_config_has_local_paths(self):
-        cfg = EncoderConfig()
-        assert cfg.local_model_dir == "data/models"
-        assert cfg.local_dataset_dir == "data/datasets"
-
-    def test_output_model_dir_default(self):
-        config = EncoderConfig()
-        assert config.output_model_dir == "data/models/encoder"
-
-    def test_output_model_dir_custom(self):
-        config = EncoderConfig(output_model_dir="custom/path")
-        assert config.output_model_dir == "custom/path"
+    def test_custom_architecture_values(self):
+        cfg = EncoderConfig(
+            model_name="/local/codet5",
+            embed_dim=64,
+            pooling="masked_mean",
+            max_seq_length=128,
+        )
+        assert cfg.model_name == "/local/codet5"
+        assert cfg.embed_dim == 64
+        assert cfg.pooling == "masked_mean"
+        assert cfg.max_seq_length == 128

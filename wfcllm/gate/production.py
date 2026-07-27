@@ -26,7 +26,6 @@ from wfcllm.gate.data import (
 from wfcllm.generation.window_rewriter import (
     CausalWindowRewriter,
     KeyBlindAstEquivalentWindowRewriter,
-    KeyBlindCppEquivalentWindowRewriter,
     RewriteGeneration,
 )
 from wfcllm.gate.labels import LabelThresholds, build_gate_labels
@@ -106,8 +105,7 @@ class LocalHFGateRuntimeOptions:
     generation_model_path: Path
     rewrite_model_path: Path | None
     semantic_encoder_model_path: Path
-    semantic_encoder_checkpoint_path: Path | None
-    semantic_whitening_path: Path | None
+    semantic_encoder_checkpoint_path: Path
     gate_base_model_path: Path
     model_device: str = "cuda"
     gate_device: str = "cuda"
@@ -126,7 +124,6 @@ class LocalHFGateRuntimeOptions:
     gate_max_tokens: int = 256
     gate_learning_rate: float = 2e-5
     gate_early_stopping_patience: int = 1
-    gate_resume_checkpoint: Path | None = None
     window_contract_version: str = WINDOW_CONTRACT_VERSION
 
     def __post_init__(self) -> None:
@@ -134,29 +131,27 @@ class LocalHFGateRuntimeOptions:
             "source_catalog",
             "generation_model_path",
             "semantic_encoder_model_path",
+            "semantic_encoder_checkpoint_path",
             "gate_base_model_path",
             "cache_dir",
         ):
             if not isinstance(getattr(self, name), Path):
                 raise ValueError(f"{name} must be a pathlib.Path")
-        for name in (
-            "rewrite_model_path",
-            "semantic_encoder_checkpoint_path",
-            "semantic_whitening_path",
-            "gate_resume_checkpoint",
+        if self.rewrite_model_path is not None and not isinstance(
+            self.rewrite_model_path, Path
         ):
-            value = getattr(self, name)
-            if value is not None and not isinstance(value, Path):
-                raise ValueError(f"{name} must be a pathlib.Path or None")
+            raise ValueError("rewrite_model_path must be a pathlib.Path or None")
+        if (
+            language_for_window_contract(self.window_contract_version) != "python"
+            and self.rewrite_model_path is None
+        ):
+            raise ValueError("rewrite_model_path is required for model rewriting")
         for name in ("model_device", "gate_device"):
             value = getattr(self, name)
             if not isinstance(value, str) or not value:
                 raise ValueError(f"{name} must be a non-empty string")
-        if self.semantic_evidence_rule not in {
-            "semantic_lsh",
-            "keyed_text_region",
-        }:
-            raise ValueError("unsupported semantic evidence rule")
+        if self.semantic_evidence_rule != "semantic_lsh":
+            raise ValueError("semantic_evidence_rule must be semantic_lsh")
         if not is_supported_window_contract(self.window_contract_version):
             raise ValueError("unsupported window contract version")
         if (
@@ -208,15 +203,20 @@ class LocalHFGateRuntimeOptions:
             self.source_catalog,
             self.generation_model_path,
             self.semantic_encoder_model_path,
+            self.semantic_encoder_checkpoint_path,
             self.gate_base_model_path,
         )
+        if self.rewrite_model_path is not None:
+            required = (*required, self.rewrite_model_path)
         for path in required:
             if path.is_symlink() or not path.exists():
                 raise ValueError(f"local runtime resource is missing or unsafe: {path}")
 
     @property
     def effective_rewrite_model_path(self) -> Path:
-        return self.rewrite_model_path or self.generation_model_path
+        if self.rewrite_model_path is None:
+            raise ValueError("rewrite model is unavailable for this runtime")
+        return self.rewrite_model_path
 
 
 def load_source_catalog(path: Path) -> Iterator[GateSourceCatalogRecord]:
@@ -303,14 +303,7 @@ class LocalHFProductionAdapter:
         extractor = get_statement_unit_extractor(language)
         self._rewriter: object | None = (
             KeyBlindAstEquivalentWindowRewriter()
-            if options.semantic_evidence_rule == "semantic_lsh"
-            and language == "python"
-            else KeyBlindCppEquivalentWindowRewriter(
-                extractor=extractor,
-                window_contract_version=options.window_contract_version,
-            )
-            if options.semantic_evidence_rule == "semantic_lsh"
-            and language == "cpp"
+            if language == "python"
             else None
         )
         self._semantic_runtime: object | None = None
@@ -346,9 +339,17 @@ class LocalHFProductionAdapter:
         ):
             raise ValueError("parsed source catalog has an invalid runtime shape")
         rewriter = self._rewriter
+        language = language_for_window_contract(
+            self.options.window_contract_version
+        )
         if rewriter is None:
             rewriter = _load_causal_rewriter(self.options)
             self._rewriter = rewriter
+        rewrite_identity = (
+            "python-ast-equivalent/v1"
+            if language == "python"
+            else self.options.effective_rewrite_model_path.name
+        )
         builder = GateDataBuilder(rewriter=rewriter, lsh_probe=_StructuralOnlyProbe())
         self.options.cache_dir.mkdir(parents=True, exist_ok=True)
         cache_path = self._training_cache_path(config.config_hash)
@@ -447,8 +448,7 @@ class LocalHFProductionAdapter:
                     task_id=record.task_id or record.function_id or record.source_id,
                     generation_model_id=(
                         record.source_model_id
-                        or self.options.effective_rewrite_model_path.name
-                        or "local-hf-rewriter"
+                        or rewrite_identity
                     ),
                     structural_invalid_rate=0.0,
                     numeric_instability_rate=0.0,
@@ -602,15 +602,9 @@ class LocalHFProductionAdapter:
                 observations_by_length[str(length)] = tuple(observations)
                 results_by_length[str(length)] = tuple(candidate_results)
 
-            label_thresholds = (
-                LabelThresholds(r3_hit_rate=0.25)
-                if config.fast_experimental
-                else None
-            )
             selected = build_gate_labels(
                 observations_by_length["3"],
                 training_key_count=32,
-                thresholds=label_thresholds,
             )
             r1, r3 = (selected.budgets[budget].success_rate for budget in (1, 3))
             holdout_hits = sum(
@@ -644,7 +638,6 @@ class LocalHFProductionAdapter:
             self._append_training_examples(
                 result,
                 observations_by_length,
-                fast_experimental=config.fast_experimental,
             )
             yield result
 
@@ -680,7 +673,6 @@ class LocalHFProductionAdapter:
         training, validation, validation_role = _partition_training_examples(
             examples,
             cache_rows,
-            fast_experimental=config.fast_experimental,
         )
         if not training or not validation:
             raise ValueError("gate training requires non-empty train and validation examples")
@@ -710,7 +702,6 @@ class LocalHFProductionAdapter:
                 early_stopping_patience=self.options.gate_early_stopping_patience,
                 max_tokens=self.options.gate_max_tokens,
                 enable_consistency=False,
-                save_checkpoints=not config.fast_experimental,
             ),
             loss_fn=GateLoss(
                 GateLossWeights(
@@ -721,45 +712,18 @@ class LocalHFProductionAdapter:
             ),
             device=self.options.gate_device,
         )
-        summary = trainer.fit(
-            training,
-            validation,
-            resume_from=self.options.gate_resume_checkpoint,
+        summary = trainer.fit(training, validation)
+        checkpoint = torch.load(
+            work / "checkpoints" / "best.pt",
+            map_location="cpu",
+            weights_only=True,
         )
-        if config.fast_experimental:
-            state = {
-                name: tensor.detach().cpu()
-                for name, tensor in model.state_dict().items()
-            }
-        else:
-            checkpoint = torch.load(
-                work / "checkpoints" / "best.pt",
-                map_location="cpu",
-                weights_only=True,
-            )
-            state = checkpoint.get("model_state")
+        state = checkpoint.get("model_state")
         if not isinstance(state, Mapping) or not state:
             raise ValueError("best gate checkpoint does not contain model state")
         output_dir.mkdir(parents=True, exist_ok=False)
         torch.save(state, output_dir / "gate_float.pt")
         tokenizer.save_pretrained(output_dir / "tokenizer")
-        if config.fast_experimental:
-            (output_dir / "runtime_thresholds.json").write_text(
-                json.dumps(
-                    {
-                        "schema_version": _CANDIDATE_RUNTIME_SCHEMA,
-                        "close_low_threshold": 0.0,
-                        "close_high_threshold": 0.000001,
-                        "suitable_accept_threshold": 0.0,
-                        "max_units": 3,
-                        "runtime_profile": "fast-experimental-low-threshold/v1",
-                    },
-                    allow_nan=False,
-                    sort_keys=True,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
         shutil.rmtree(work)
         return {
             "backend": LOCAL_HF_ADAPTER_NAME,
@@ -779,8 +743,6 @@ class LocalHFProductionAdapter:
         self,
         group: GatePipelineGroup,
         observations_by_length: Mapping[str, tuple[CandidateObservation, ...]],
-        *,
-        fast_experimental: bool = False,
     ) -> None:
         from wfcllm.gate.input import GateInput, serialize_gate_input
 
@@ -792,11 +754,9 @@ class LocalHFProductionAdapter:
             self._gate_tokenizer = tokenizer
         rows: list[dict[str, Any]] = []
         for length in (1, 2, 3):
-            thresholds = LabelThresholds(r3_hit_rate=0.25) if fast_experimental else None
             labels = build_gate_labels(
                 observations_by_length[str(length)],
                 training_key_count=32,
-                thresholds=thresholds,
             )
             current_units = tuple(metadata["current_units"][str(length)])
             normalized = "\n".join(normalize_unit_text(unit) for unit in current_units)
@@ -1276,7 +1236,7 @@ def _token_count(tokenizer: object, text: str) -> int:
 
 
 @dataclass(frozen=True)
-class _ExperimentalGateManifest:
+class _CandidateGateManifest:
     window_contract_version: str
     gate_input_contract_version: str
     tokenizer_sha256: str
@@ -1285,77 +1245,9 @@ class _ExperimentalGateManifest:
     suitable_accept_threshold: float
     max_tokens: int
     max_units: int
-    runtime_profile: str
 
 
-_CANDIDATE_RUNTIME_SCHEMA = "wfcllm-unvalidated-runtime-thresholds/v1"
-_CANDIDATE_RUNTIME_FIELDS = {
-    "schema_version",
-    "runtime_profile",
-    "close_low_threshold",
-    "close_high_threshold",
-    "suitable_accept_threshold",
-    "max_units",
-}
-
-
-def _load_candidate_runtime_manifest(
-    root: Path,
-    *,
-    tokenizer_sha256: str,
-    max_tokens: int,
-    window_contract_version: str = WINDOW_CONTRACT_VERSION,
-) -> tuple[_ExperimentalGateManifest, str | None]:
-    """Load an optional runtime profile whose bytes are bound by the bundle hash."""
-
-    defaults = _ExperimentalGateManifest(
-        window_contract_version=window_contract_version,
-        gate_input_contract_version=GATE_INPUT_CONTRACT_VERSION,
-        tokenizer_sha256=tokenizer_sha256,
-        close_low_threshold=0.45,
-        close_high_threshold=0.55,
-        suitable_accept_threshold=0.5,
-        max_tokens=max_tokens,
-        max_units=3,
-        runtime_profile="learned-gate-default/v1",
-    )
-    path = root / "runtime_thresholds.json"
-    if not path.is_file():
-        return defaults, None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ValueError("candidate runtime threshold artifact is invalid") from exc
-    if (
-        not isinstance(payload, Mapping)
-        or set(payload) != _CANDIDATE_RUNTIME_FIELDS
-        or payload.get("schema_version") != _CANDIDATE_RUNTIME_SCHEMA
-    ):
-        raise ValueError("candidate runtime threshold schema mismatch")
-    profile = payload.get("runtime_profile")
-    if not isinstance(profile, str) or not profile.strip():
-        raise ValueError("candidate runtime profile must be non-empty")
-    thresholds = GateThresholds(
-        close_low=payload.get("close_low_threshold"),
-        close_high=payload.get("close_high_threshold"),
-        suitable_accept=payload.get("suitable_accept_threshold"),
-        max_units=payload.get("max_units"),
-        max_input_tokens=max_tokens,
-    )
-    return (
-        replace(
-            defaults,
-            close_low_threshold=thresholds.close_low,
-            close_high_threshold=thresholds.close_high,
-            suitable_accept_threshold=thresholds.suitable_accept,
-            max_units=thresholds.max_units,
-            runtime_profile=profile,
-        ),
-        _sha256_file(path),
-    )
-
-
-class _ExperimentalFloatGatePredictor:
+class _FloatGatePredictor:
     def __init__(self, *, model: object, tokenizer: object, max_tokens: int) -> None:
         self.model = model
         self.tokenizer = tokenizer
@@ -1388,10 +1280,8 @@ class _ExperimentalFloatGatePredictor:
         )
 
 
-class LocalExperimentalRuntimeGateBundle:
-    """Float-only diagnostic gate candidate; never a formal gate bundle."""
-
-    experimental_only = True
+class _FloatRuntimeGateBundle:
+    """Load the float gate candidate produced by the current fresh run."""
 
     def __init__(
         self,
@@ -1405,14 +1295,13 @@ class LocalExperimentalRuntimeGateBundle:
         import torch
         from transformers import AutoTokenizer
 
-        from wfcllm.gate.bundle import sha256_directory
         from wfcllm.gate.config import GateTrainConfig
         from wfcllm.gate.model import GateModel
 
         float_path = root / "gate_float.pt"
         tokenizer_path = root / "tokenizer"
         if not float_path.is_file() or not tokenizer_path.is_dir():
-            raise ValueError("experimental gate candidate is incomplete")
+            raise ValueError("gate candidate is incomplete")
         state = torch.load(float_path, map_location="cpu", weights_only=True)
         model = GateModel.from_local_pretrained(
             GateTrainConfig(max_tokens=max_tokens, base_model_path=base_model_path)
@@ -1421,17 +1310,11 @@ class LocalExperimentalRuntimeGateBundle:
         tokenizer = AutoTokenizer.from_pretrained(
             str(tokenizer_path), local_files_only=True
         )
-        tokenizer_hash = sha256_directory(tokenizer_path)
+        tokenizer_hash = _sha256_directory(tokenizer_path)
         self.root = root
         self.bundle_sha256 = bundle_sha256
         self.tokenizer_sha256 = tokenizer_hash
-        self.validation_summary = {
-            "validated": False,
-            "experimental_only": True,
-            "diagnostic_only": True,
-            "not_official_method": True,
-        }
-        self.manifest = _ExperimentalGateManifest(
+        self.manifest = _CandidateGateManifest(
             window_contract_version=window_contract_version,
             gate_input_contract_version=GATE_INPUT_CONTRACT_VERSION,
             tokenizer_sha256=tokenizer_hash,
@@ -1440,10 +1323,8 @@ class LocalExperimentalRuntimeGateBundle:
             suitable_accept_threshold=0.5,
             max_tokens=max_tokens,
             max_units=3,
-            runtime_profile="learned-gate-default/v1",
         )
-        self.runtime_thresholds_sha256 = None
-        self.stable_gate_predictor = _ExperimentalFloatGatePredictor(
+        self.stable_gate_predictor = _FloatGatePredictor(
             model=model,
             tokenizer=tokenizer,
             max_tokens=max_tokens,
@@ -1454,29 +1335,8 @@ class LocalExperimentalRuntimeGateBundle:
         return _token_count(self._tokenizer, text)
 
 
-class LocalCandidateRuntimeGateBundle(LocalExperimentalRuntimeGateBundle):
-    """Formal float gate-train candidate bound by its publication tree hash."""
-
-    experimental_only = False
-
-    def __init__(self, **kwargs: Any) -> None:
-        window_contract_version = kwargs.get(
-            "window_contract_version", WINDOW_CONTRACT_VERSION
-        )
-        super().__init__(**kwargs)
-        self.manifest, self.runtime_thresholds_sha256 = (
-            _load_candidate_runtime_manifest(
-                self.root,
-                tokenizer_sha256=self.tokenizer_sha256,
-                max_tokens=self.manifest.max_tokens,
-                window_contract_version=window_contract_version,
-            )
-        )
-        self.validation_summary = None
-        self.runtime_markers = {
-            "runtime_profile": self.manifest.runtime_profile,
-            "runtime_thresholds_sha256": self.runtime_thresholds_sha256,
-        }
+class LocalCandidateRuntimeGateBundle(_FloatRuntimeGateBundle):
+    """Gate-train candidate bound by its current-run manifest tree hash."""
 
 
 class LocalHFProgramGenerator:
@@ -1805,51 +1665,9 @@ def _trim_to_compilable_python(text: str) -> str:
     return ("\n".join(lines).strip() + "\n") if lines else ""
 
 
-class KeyedTextRegionWindowScorer:
-    """One keyed text region for structurally valid statement rewrites."""
-
-    def __init__(self, deployment_key: bytes) -> None:
-        if not isinstance(deployment_key, bytes) or not deployment_key:
-            raise ValueError("deployment_key must be non-empty bytes")
-        self._key = deployment_key
-
-    def score(self, *, window_text: str, parent_descriptor: str):
-        from wfcllm.semantic.window_lsh import SemanticWindowEvidence
-
-        if not isinstance(window_text, str) or not window_text.strip():
-            raise ValueError("window_text must be non-empty")
-        if not isinstance(parent_descriptor, str) or not parent_descriptor:
-            raise ValueError("parent_descriptor must be non-empty")
-        normalized = normalize_unit_text(window_text)
-        payload = (
-            b"wfcllm-keyed-text-region/v1\0"
-            + parent_descriptor.encode("utf-8")
-            + b"\0"
-            + normalized.encode("utf-8")
-        )
-        digest = hmac.new(self._key, payload, hashlib.sha256).digest()
-        bit = int(digest[0] & 1)
-        region_digest = hmac.new(
-            self._key,
-            b"wfcllm-keyed-text-region-id/v1\0" + parent_descriptor.encode("utf-8"),
-            hashlib.sha256,
-        ).hexdigest()
-        return SemanticWindowEvidence(
-            signature=(bit,),
-            allowed_region_id=(
-                "semantic-window-region/v1:hmac-sha256:" + region_digest
-            ),
-            hit=bit == 0,
-            margin=1.0,
-            stable=True,
-        )
-
-
 def build_local_semantic_window_scorer(
     options: LocalHFGateRuntimeOptions, deployment_key: bytes
 ):
-    if options.semantic_evidence_rule == "keyed_text_region":
-        return KeyedTextRegionWindowScorer(deployment_key)
     from wfcllm.semantic.window_lsh import SemanticWindowScorer
 
     components = _load_public_semantic_components(options)
@@ -1883,10 +1701,7 @@ def local_semantic_runtime_hash(options: LocalHFGateRuntimeOptions) -> str:
     for path in (
         options.semantic_encoder_model_path,
         options.semantic_encoder_checkpoint_path,
-        options.semantic_whitening_path,
     ):
-        if path is None:
-            continue
         if path.is_file():
             digest.update(path.name.encode("utf-8") + bytes.fromhex(_sha256_file(path)))
         elif path.is_dir():
@@ -1945,8 +1760,6 @@ def _validate_cache_against_data(
 def _partition_training_examples(
     examples: tuple[Any, ...],
     cache_rows: list[dict[str, Any]],
-    *,
-    fast_experimental: bool,
 ) -> tuple[tuple[Any, ...], tuple[Any, ...], str]:
     if len(examples) != len(cache_rows):
         raise ValueError("gate examples and cache rows must have equal length")
@@ -1958,11 +1771,6 @@ def _partition_training_examples(
         example for example, row in paired if row.get("split") == "validation"
     )
     validation_role = "validation"
-    if fast_experimental and not validation:
-        validation = tuple(
-            example for example, row in paired if row.get("split") == "test"
-        )
-        validation_role = "test_fallback"
     return training, validation, validation_role
 
 
@@ -2266,6 +2074,34 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _sha256_directory(root: Path) -> str:
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("hash input must be a non-symlink directory")
+    digest = hashlib.sha256()
+    found_file = False
+    for path in sorted(
+        root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()
+    ):
+        if path.is_symlink():
+            raise ValueError("hash input directory cannot contain symlinks")
+        relative = path.relative_to(root).as_posix().encode("utf-8")
+        if path.is_dir():
+            digest.update(b"D")
+            digest.update(len(relative).to_bytes(8, "big"))
+            digest.update(relative)
+            continue
+        if not path.is_file():
+            raise ValueError("hash input directory contains an unsupported entry")
+        found_file = True
+        digest.update(b"F")
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(bytes.fromhex(_sha256_file(path)))
+    if not found_file:
+        raise ValueError("hash input directory must contain at least one file")
+    return digest.hexdigest()
+
+
 def _load_causal_rewriter(options: LocalHFGateRuntimeOptions):
     import torch
     from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoTokenizer
@@ -2311,22 +2147,13 @@ def _load_public_semantic_components(options: LocalHFGateRuntimeOptions):
         torch.manual_seed(_PUBLIC_SEMANTIC_INITIALIZATION_SEED)
         return load_semantic_lsh_components(
             encoder_model_path=str(options.semantic_encoder_model_path),
-            encoder_checkpoint_path=(
-                None
-                if options.semantic_encoder_checkpoint_path is None
-                else str(options.semantic_encoder_checkpoint_path)
-            ),
+            encoder_checkpoint_path=str(options.semantic_encoder_checkpoint_path),
             embed_dim=options.semantic_embed_dim,
             device=options.model_device,
             use_lora=False,
             use_bf16=False,
             secret_key="wfcllm-public-window-plane/v1",
             lsh_d=options.lsh_dimension,
-            whitening_path=(
-                None
-                if options.semantic_whitening_path is None
-                else str(options.semantic_whitening_path)
-            ),
         )
 
 
@@ -2338,9 +2165,7 @@ __all__ = [
     "HFCausalRewriteBackend",
     "LocalHFProgramGenerator",
     "LocalCandidateRuntimeGateBundle",
-    "LocalExperimentalRuntimeGateBundle",
     "LocalSemanticRuntime",
-    "KeyedTextRegionWindowScorer",
     "build_local_semantic_window_scorer",
     "experiment_contract_hash",
     "load_source_catalog",

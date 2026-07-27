@@ -1,6 +1,8 @@
 """Tests for DatasetAdapter implementations and registry."""
 from __future__ import annotations
 
+from unittest.mock import ANY
+
 import pytest
 
 
@@ -63,11 +65,9 @@ def test_mbpp_adapter_uses_interface_aware_generation_prompt(monkeypatch, tmp_pa
                     "Natural task.\n\nInterface requirements:\n"
                     "Define the function exactly named `target`."
                 ),
-                "generated_code": "def target(arg1):\n    return arg1\n",
                 "interface_extraction_status": "interface_aware",
                 "interface_function_name": "target",
                 "interface_positional_arities": [1],
-                "interface_parameter_names": ["items"],
                 "interface_helper_classes": [],
             }
         ],
@@ -80,7 +80,6 @@ def test_mbpp_adapter_uses_interface_aware_generation_prompt(monkeypatch, tmp_pa
         "interface_extraction_status": "interface_aware",
         "interface_function_name": "target",
         "interface_positional_arities": [1],
-        "interface_parameter_names": ["items"],
         "interface_helper_classes": [],
     }
 
@@ -104,7 +103,6 @@ def test_humanevalpack_loads_cpp_samples_from_local_cache(monkeypatch, tmp_path)
                     "task_id": "HumanEvalPack/0",
                     "prompt": "int add(int a, int b) {",
                     "declaration": "int add(int a, int b)",
-                    "canonical_solution": " return a + b;\n}",
                     "test": "assert(add(1, 2) == 3);",
                     "entry_point": "add",
                 }
@@ -122,14 +120,16 @@ def test_humanevalpack_loads_cpp_samples_from_local_cache(monkeypatch, tmp_path)
             {
                 "cache_dir": str(tmp_path / "humanevalpack"),
                 "download_mode": "reuse_cache_if_exists",
+                "download_config": ANY,
             },
         )
     ]
+    assert calls[0][2]["download_config"].local_files_only is True
     assert len(samples) == 1
     assert samples[0].language == "cpp"
     assert samples[0].task_id == "HumanEvalPack/0"
-    assert samples[0].canonical_solution.endswith("}")
-    assert samples[0].metadata["entry_point"] == "add"
+    assert samples[0].prompt == "int add(int a, int b) {"
+    assert samples[0].metadata == {}
 
 
 def test_humanevalpack_prefers_local_jsonl_fixture(monkeypatch, tmp_path):
@@ -142,8 +142,7 @@ def test_humanevalpack_prefers_local_jsonl_fixture(monkeypatch, tmp_path):
     local_dir = tmp_path / "humanevalpack" / "java"
     local_dir.mkdir(parents=True)
     (local_dir / "test.jsonl").write_text(
-        '{"task_id":"Java/local-0","prompt":"class Solution {",'
-        '"canonical_solution":" int f(){ return 1; }","entry_point":"f"}\n',
+        '{"task_id":"Java/local-0","prompt":"class Solution {"}\n',
         encoding="utf-8",
     )
 
@@ -152,7 +151,7 @@ def test_humanevalpack_prefers_local_jsonl_fixture(monkeypatch, tmp_path):
     assert len(samples) == 1
     assert samples[0].task_id == "Java/local-0"
     assert samples[0].language == "java"
-    assert samples[0].metadata["entry_point"] == "f"
+    assert samples[0].metadata == {}
 
 
 def test_humanevalpack_get_sample_can_disambiguate_language(monkeypatch, tmp_path):
@@ -164,7 +163,6 @@ def test_humanevalpack_get_sample_can_disambiguate_language(monkeypatch, tmp_pat
                 {
                     "task_id": "HumanEvalPack/1",
                     "prompt": f"{name} prompt",
-                    "canonical_solution": f"{name} solution",
                 }
             ]
         }

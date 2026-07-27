@@ -20,7 +20,6 @@ class _FakeAdapter:
             yield CodeSample(
                 task_id=f"cpp/{index}",
                 prompt=f"prompt {index}",
-                canonical_solution="return 0;",
                 language="cpp",
             )
 

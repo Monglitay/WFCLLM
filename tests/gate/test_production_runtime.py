@@ -56,17 +56,19 @@ def _runtime_options(tmp_path: Path) -> LocalHFGateRuntimeOptions:
         encoding="utf-8",
     )
     model = tmp_path / "model"
+    rewrite_model = tmp_path / "rewrite-model"
     encoder = tmp_path / "encoder"
     gate_model = tmp_path / "gate-model"
-    for path in (model, encoder, gate_model):
+    for path in (model, rewrite_model, encoder, gate_model):
         path.mkdir()
+    encoder_checkpoint = tmp_path / "semantic-projection.pt"
+    encoder_checkpoint.write_bytes(b"projection")
     return LocalHFGateRuntimeOptions(
         source_catalog=catalog,
         generation_model_path=model,
-        rewrite_model_path=None,
+        rewrite_model_path=rewrite_model,
         semantic_encoder_model_path=encoder,
-        semantic_encoder_checkpoint_path=None,
-        semantic_whitening_path=None,
+        semantic_encoder_checkpoint_path=encoder_checkpoint,
         gate_base_model_path=gate_model,
         model_device="cuda",
         gate_device="cuda",
@@ -175,7 +177,6 @@ def test_public_semantic_runtime_initialization_is_repeatable_and_rng_isolated(
         return SimpleNamespace(
             verifier=Verifier(int(torch.randint(0, 2, ()).item()))
         )
-
     monkeypatch.setattr(
         "wfcllm.semantic.lsh.load_semantic_lsh_components", fake_load
     )
@@ -819,25 +820,6 @@ def test_training_cache_is_bound_to_formal_group_index(tmp_path: Path) -> None:
         _validate_cache_against_data(rows, data)
 
 
-def test_fast_training_uses_disjoint_test_groups_when_validation_is_empty() -> None:
-    rows = [
-        {"group_id": "train-a", "split": "train"},
-        {"group_id": "train-b", "split": "train"},
-        {"group_id": "test-a", "split": "test"},
-    ]
-    examples = ("train-example-a", "train-example-b", "test-example")
-
-    training, validation, validation_role = gate_production._partition_training_examples(
-        examples,
-        rows,
-        fast_experimental=True,
-    )
-
-    assert training == ("train-example-a", "train-example-b")
-    assert validation == ("test-example",)
-    assert validation_role == "test_fallback"
-
-
 class _Rewriter:
     def rewrite(self, request, *, candidate_index):
         return RewriteCandidate(
@@ -1098,79 +1080,3 @@ def test_local_hf_probe_keeps_semantically_rejected_rewrites_evidence_free(
                 assert observation.lsh_signature is None
                 assert not observation.lsh_by_key_id
                 assert results == {}
-
-
-def test_candidate_runtime_manifest_loads_hashed_single_statement_profile(
-    tmp_path: Path,
-) -> None:
-    from wfcllm.gate.production import _load_candidate_runtime_manifest
-
-    payload = {
-        "schema_version": "wfcllm-unvalidated-runtime-thresholds/v1",
-        "runtime_profile": "single-statement-structural-accept/v1",
-        "close_low_threshold": 0.0,
-        "close_high_threshold": 0.000001,
-        "suitable_accept_threshold": 0.0,
-        "max_units": 1,
-    }
-    path = tmp_path / "runtime_thresholds.json"
-    path.write_text(json.dumps(payload), encoding="utf-8")
-
-    manifest, runtime_hash = _load_candidate_runtime_manifest(
-        tmp_path,
-        tokenizer_sha256="a" * 64,
-        max_tokens=256,
-    )
-
-    assert manifest.runtime_profile == "single-statement-structural-accept/v1"
-    assert manifest.close_low_threshold == 0.0
-    assert manifest.close_high_threshold == 0.000001
-    assert manifest.suitable_accept_threshold == 0.0
-    assert manifest.max_units == 1
-    assert runtime_hash == hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def test_candidate_runtime_manifest_rejects_unbound_or_invalid_profile(
-    tmp_path: Path,
-) -> None:
-    from wfcllm.gate.production import _load_candidate_runtime_manifest
-
-    (tmp_path / "runtime_thresholds.json").write_text(
-        json.dumps(
-            {
-                "schema_version": "wfcllm-unvalidated-runtime-thresholds/v1",
-                "runtime_profile": "single-statement-structural-accept/v1",
-                "close_low_threshold": 0.0,
-                "close_high_threshold": 1.0,
-                "suitable_accept_threshold": 0.0,
-                "max_units": 4,
-                "unexpected": True,
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="schema mismatch"):
-        _load_candidate_runtime_manifest(
-            tmp_path,
-            tokenizer_sha256="a" * 64,
-            max_tokens=256,
-        )
-
-
-def test_keyed_text_region_scorer_is_stable_keyed_and_non_degenerate() -> None:
-    from wfcllm.gate.production import KeyedTextRegionWindowScorer
-
-    scorer = KeyedTextRegionWindowScorer(b"deployment-key")
-    repeated = scorer.score(window_text="value = 1\n", parent_descriptor="module")
-    assert scorer.score(window_text="value = 1\n", parent_descriptor="module") == repeated
-    assert repeated.stable is True
-    assert repeated.margin == 1.0
-    observed = {
-        scorer.score(
-            window_text=f"value = {index}\n",
-            parent_descriptor="module",
-        ).hit
-        for index in range(64)
-    }
-    assert observed == {False, True}

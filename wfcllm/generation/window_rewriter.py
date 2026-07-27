@@ -1242,19 +1242,30 @@ _CPP_EQUIVALENT_TRANSFORMS: tuple[Callable[[str], str], ...] = (
     _cpp_sizeof_initializer_or_assignment,
 )
 
+
+def _js_equivalent_variant(text: str, *, candidate_index: int) -> str:
+    """Add deterministic lexical trivia without changing JavaScript code."""
+
+    tag = f"/* wfcllm-equivalent-{candidate_index} */"
+    if candidate_index <= 4:
+        return f"{tag} {text}"
+    return f"{text} {tag}"
+
+
 _PUBLIC_EQUIVALENT_VARIANT_FAMILIES: dict[
     str, tuple[Callable[..., str], int]
 ] = {
     "cpp": (_cpp_equivalent_variant, len(_CPP_EQUIVALENT_TRANSFORMS)),
     "java": (_java_equivalent_variant, len(_JAVA_EQUIVALENT_TRANSFORMS)),
+    "js": (_js_equivalent_variant, 8),
 }
 
 
 def public_equivalent_variants(language: str, text: str, count: int) -> tuple[str, ...]:
     """Return up to ``count`` deduplicated key-blind equivalent variants.
 
-    The shared cpp/java candidate generators are the only public entry;
-    python positives come from the TransformEngine positive rules instead.
+    C++/Java use statement transforms and JavaScript uses dependency-light
+    lexical-trivia variants. Python positives come from TransformEngine rules.
     Results never contain the original text or duplicates, so unproductive
     inputs may yield fewer than ``count`` variants (possibly none).
     """
@@ -1268,7 +1279,7 @@ def public_equivalent_variants(language: str, text: str, count: int) -> tuple[st
     if language == "python":
         raise ValueError(
             "python equivalent variants come from the TransformEngine positive "
-            "rules; the public equivalent-variant entry supports cpp and java"
+            "rules; the public equivalent-variant entry supports cpp, java, and js"
         )
     family = _PUBLIC_EQUIVALENT_VARIANT_FAMILIES.get(language)
     if family is None:

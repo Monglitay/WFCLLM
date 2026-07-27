@@ -1,10 +1,8 @@
-"""Per-dataset training of the public semantic projection (gated runtime).
+"""Per-dataset training of the public semantic projection for the Gate runtime.
 
-Moved out of ``scripts/train_gated_semantic_projection.py`` so the gated
-``encoder`` phase can train one projection per dataset catalog.  Block
-preparation is language aware: python uses the TransformEngine positive
-rules, cpp/java use the public equivalent-variant entry shared with the
-window rewriter, and languages without a public generator fail fast.
+Block preparation is language aware: Python uses positive AST rules, while
+C++, Java, and JavaScript use the public equivalent-variant surface shared
+with the window rewriter.
 """
 
 from __future__ import annotations
@@ -35,7 +33,7 @@ from wfcllm.semantic.lsh_space import LSHSpace
 
 PUBLIC_PLANE_ID = "wfcllm-public-window-plane/v1"
 OBJECTIVE_VERSION = "wfcllm-public-region-prototype/v2"
-_SUPPORTED_LANGUAGES = ("python", "cpp", "java")
+_SUPPORTED_LANGUAGES = ("python", "cpp", "java", "js")
 
 
 @dataclass(frozen=True)
@@ -156,8 +154,10 @@ def _public_variant_region_blocks(
 
     if language == "cpp":
         from wfcllm.lang.cpp.parser import extract_statement_blocks
-    else:
+    elif language == "java":
         from wfcllm.lang.java.parser import extract_statement_blocks
+    else:
+        from wfcllm.lang.js.parser import extract_statement_blocks
 
     blocks: list[dict[str, Any]] = []
     for record in records:
@@ -374,7 +374,9 @@ def train_semantic_projection(settings: ProjectionTrainingSettings) -> dict[str,
         raise ValueError("model path must be a local non-symlink directory")
     if settings.epochs < 10:
         raise ValueError("formal semantic projection training requires at least 10 epochs")
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if output_dir.exists() or output_dir.is_symlink():
+        raise ValueError("semantic projection output must be a fresh directory")
+    output_dir.mkdir(parents=True)
 
     random.seed(settings.seed)
     torch.manual_seed(settings.seed)
@@ -465,14 +467,6 @@ def train_semantic_projection(settings: ProjectionTrainingSettings) -> dict[str,
         lora_dropout=settings.lora_dropout,
         lora_target_modules=["q", "v"],
         max_seq_length=settings.max_length,
-        lr=settings.lr,
-        batch_size=settings.batch_size,
-        epochs=settings.epochs,
-        num_workers=settings.num_workers,
-        checkpoint_dir=str(output_dir / "checkpoints"),
-        output_model_dir=str(output_dir),
-        results_dir=str(output_dir),
-        data_sources=[],
     )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = SemanticEncoder(config=config).to(device)

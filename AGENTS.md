@@ -1,165 +1,88 @@
 # AGENTS.md
 
-Guidance for agentic coding agents working in `WFCLLM`.
-Audited against `CLAUDE.md`, `README.md`, `configs/base_config.json`,
-`configs/wfcllm/`, current `wfcllm/`, `scripts/`, `tools/`, and `tests/`
-on 2026-07-09.
+适用于仓库根目录下的全部文件。先遵循 `CLAUDE.md`，再遵循本文件。
 
-## Scope And Priority
+## 当前范围
 
-- This file applies to the whole repository rooted at `WFCLLM/`.
-- Follow the root `CLAUDE.md` first. This file adds practical coding,
-  testing, and artifact guidance for agents.
-- If a user instruction conflicts with this file, follow the user instruction.
-- Treat `experiment/`, `archive/`, `configs/legacy/`, `scripts/legacy/`, and
-  `docs/archive/` as reference-only historical material.
-- Never import `experiment.*` or archived modules from production code under
-  `wfcllm/`.
-- Legacy tests are archived and excluded from default pytest discovery by
-  `pytest.ini`; do not copy their import patterns into active tests.
+- 只维护 Gated Lineage，方法名固定为 `gated_semantic_window_v1`。
+- 只维护五个 Full Reproduction Profile：
+  Python/HumanEval、Python/MBPP、C++/HumanEvalPack、
+  Java/HumanEvalPack、JavaScript/HumanEvalPack。
+- 完整链固定为
+  `encoder → gate-data → gate-train → generate → calibrate → detect → report → audit`。
+- 执行必须从新的 run root 和状态文件开始。不要加入旧状态迁移、外部历史
+  Bundle、旧 candidate/report/schema reader 或恢复入口。
+- 历史内容只从 Git 历史与既有 Archival Tag 恢复；不要在当前树创建
+  `archive/`、`legacy/` 或历史副本。
 
-## Current Architecture
+## Public Execution Surface
 
-- `wfcllm.method`
-  - Preset contracts, method config dataclasses, artifact path helpers, and
-    official run layout helpers.
-- `wfcllm.generation`
-  - Structure-aware generation-time evidence collection, retry state machine,
-    candidate sidecars, and final-code JSONL pipeline.
-- `wfcllm.semantic`
-  - Semantic LSH rules, feature extraction, and entropy helpers used by the
-    official WFCLLM method.
-- `wfcllm.detection`
-  - Strict final-code-only detector input validation, calibration, metrics,
-    and detection pipeline.
-- `wfcllm.audit`
-  - Detector-input integrity, no-quality-gate checks, and artifact marker
-    validation.
-- `wfcllm.diagnostics`
-  - Non-official diagnostic selector and upper-bound analysis helpers.
-- `wfcllm.cli`
-  - `run.py` argparse surface, phase registry wiring, config loading, and
-    phase runner functions.
-- `wfcllm.orchestration`
-  - Phase source of truth, run-state persistence, prereq handling, and
-    skip/force orchestration.
-- `wfcllm.datasets`, `wfcllm.lang`, `wfcllm.encoder`, `wfcllm.common`
-  - Dataset adapters, language adapters, encoder support, and shared helpers.
+- `run.py` / `wfcllm.cli.entry`
+- `scripts/experiments/run_gated_experiment.sh`
+- 五个 `scripts/experiments/run_*_full.sh`
+- `scripts/wfcllm_prepare_gated_experiment.py`
+- `scripts/evaluate.py`
+- `scripts/wfcllm_metric_contract.py`
 
-## CLI And Phase Contract
+缺少本地模型、数据集、source catalog、negative input 或密钥必须失败。不得
+增加 canonical-solution、简化 detector 或测试后端替代路径。测试依赖只能由
+测试注入，产物必须带完整非正式标记。
 
-- `run.py` is intentionally a thin shim that forwards to
-  `wfcllm.cli.entry:main`.
-- Phase source of truth is `wfcllm/orchestration/state.py`.
-- Main phases are `generate`, `calibrate`, `detect`, `report`, and `audit`.
-- Optional active phases are `encoder`, `posthoc-pass-report`, and
-  `diagnostic-selector`.
-- Historical phase implementations are available only through explicit
-  `legacy-*` phase names plus `--legacy`; live code should not call archived
-  modules directly.
-- Current `run.py` mainline phase runners establish the official phase names
-  and run-state contract. Artifact-producing low-level scripts remain under
-  `scripts/` until those phase runners are wired to the full pipeline.
-- Official detector input rows contain exactly `id`, `dataset`, `prompt`, and
-  `final_code`.
-- Diagnostic selector outputs must be marked `diagnostic_only=true` and
-  `not_official_method=true`.
-- Posthoc pass reports must carry the marker documented in
-  `docs/NO_QUALITY_GATE_PROTOCOL.md`.
+## 当前模块
 
-## Configs
+- `wfcllm.method`：唯一 preset、配置和 artifact 路径。
+- `wfcllm.windowing` / `wfcllm.lang`：Python、C++、Java、JavaScript
+  statement-window 合同。
+- `wfcllm.encoder`：每数据集 semantic projection 训练。
+- `wfcllm.gate`：source、key bank、Gate 数据、训练和当前 Bundle。
+- `wfcllm.generation`：Gate 生成、改写、finalizer 和输出。
+- `wfcllm.detection`：严格 code-only 校准与检测。
+- `wfcllm.audit`：detector input、no-quality-gate 和 artifact 完整性。
+- `wfcllm.evaluation`：生成后 Pass@1/Pass@k 与当前 Metric Contract；
+  Metric Contract 只消费 Pass@1。
+- `wfcllm.cli` / `wfcllm.orchestration`：当前八阶段入口和 fresh-run 状态。
 
-- Use `configs/base_config.json` for the default mainline config.
-- Use `configs/wfcllm/evidence_retry_seed7x3.json` for the official preset.
-- Use `configs/wfcllm/repro_humaneval_full164.json` for the documented
-  HumanEval reproduction contract.
-- Historical experiment configs belong under `configs/legacy/`.
-- Do not add old mainline config sections to active root configs.
+## 数据与秘密
 
-## Artifact Contracts
+- 正式 detector positive input 只能是 `inputs/final_code.jsonl`。
+- 每行必须且只能有 `id`、`dataset`、`prompt`、`final_code`。
+- generation sidecar、audit、Gate 数据和 correctness 结果不得进入 detector。
+- 不得把 Deployment Key、Training Key Bank、Holdout Key Bank 或原始秘密写入
+  配置、状态、日志、公开 JSON/JSONL 或文档。
+- 模型、数据集、keys、source catalog、Gate cache、checkpoint 和 run tree
+  都是 Local Reproduction Resource；不得提交。
 
-- Official run artifacts use the `data/runs/<run_id>/` layout documented in
-  `docs/ARTIFACT_SCHEMA.md`.
-- `inputs/final_code.jsonl` is the only official positive detector input.
-- Generation audit rows, candidate sidecars, raw attempt summaries, and
-  posthoc reports are not detector inputs.
-- Do not leak secrets into public JSON, JSONL, reports, or docs.
-- Do not commit local models, datasets, checkpoints, large run outputs, logits
-  dumps, generated logs, or papers.
+## 实现风格
 
-## Environment
+- 在现有模块边界内做最小直接改动。
+- 库模块使用 `from __future__ import annotations`。
+- 路径用 `pathlib.Path`；文本读写显式指定 UTF-8。
+- 使用现代类型标注和 dataclass。
+- 无效配置、数据或 artifact 通常抛 `ValueError`。
+- 模块 logger 使用 `logging.getLogger(__name__)`。
+- 不从历史目录或退出范围的模块导入生产代码。
 
-- Use the conda environment `WFCLLM`.
-- Do not install dependencies or run project code from `base`.
-- Install dependencies from `requirements.txt`.
-- Tests and normal development should assume offline execution.
-- Prefer local resources under `data/models/` and `data/datasets/`.
-- For pytest and model/dataset-sensitive commands, set `HF_HUB_OFFLINE=1`;
-  also set `TRANSFORMERS_OFFLINE=1` and `HF_DATASETS_OFFLINE=1` when
-  appropriate.
+## 验证
 
-## Smoke Commands
+使用 `WFCLLM` conda 环境并保持 Hugging Face 离线：
 
 ```bash
-conda run -n WFCLLM python run.py --status
-conda run -n WFCLLM python -m compileall wfcllm run.py scripts tools
-HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest --collect-only -q
+conda run -n WFCLLM python run.py --status --state-file /tmp/wfcllm-state.json
+conda run -n WFCLLM python -m compileall wfcllm run.py scripts tests
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+  conda run -n WFCLLM python -m pytest --collect-only -q
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+  conda run -n WFCLLM python -m pytest tests/ -q
+bash -n scripts/experiments/run_gated_experiment.sh \
+  scripts/experiments/run_*_full.sh
 ```
 
-## Test Commands
+资源限制导致失败时，报告首个失败命令、首条错误和受影响文件；不要把 fixture
+测试称为真实 GPU 复现。
 
-Active tests are rooted at `tests/`; archived tests are excluded by
-`pytest.ini`.
+## Git
 
-```bash
-HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/method -v
-HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/generation -v
-HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/semantic -v
-HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/detection -v
-HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/audit -v
-HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/diagnostics -v
-HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/integration -v
-HF_HUB_OFFLINE=1 conda run -n WFCLLM pytest tests/ -v
-```
-
-If full `tests/` fails because local models or datasets are absent, report the
-first failing command, first error line, and affected files. Do not describe a
-resource-bound failure as a successful full-suite run.
-
-## Script Entry Points
-
-- `scripts/wfcllm_generate.py`: low-level artifact-producing generation entry
-  point while `run.py` phase runners remain a phase/state contract.
-- `scripts/wfcllm_sanitize_final_code.py`: sanitize candidate JSONL into the
-  strict final-code detector schema.
-- `scripts/evaluate.py exec`: pass@k from candidate JSONL files.
-- `scripts/evaluate.py detection`: regression report from saved summary/details
-  artifacts.
-- `scripts/evaluate.py bench`: benchmark report from existing candidate and
-  detection artifacts. It does not auto-run archived phases.
-- `scripts/evaluate.py dual`: archived harness guidance only.
-
-## Code Style
-
-- Prefer minimal, direct changes inside existing module boundaries.
-- Use `from __future__ import annotations` in library modules.
-- Use `pathlib.Path` for path handling.
-- Use UTF-8 explicitly for file reads and writes.
-- Use modern type hints such as `list[str]`, `dict[str, Any]`, and
-  `str | None`.
-- Prefer dataclasses for config objects and result records.
-- Raise `ValueError` for invalid config, malformed data, and incompatible
-  artifacts unless nearby code uses a narrower exception.
-- Use `logging.getLogger(__name__)` for module loggers.
-- Keep logs factual and low-noise.
-
-## Git Hygiene
-
-- Check `git status --short` before editing.
-- Do not revert unrelated user changes.
-- Keep commits scoped to code, tests, configs, scripts, docs, and archive files
-  needed for the task.
-- Do not add `data/`, `papers/`, `review-stage/`, local server output,
-  checkpoints, large JSONL files, or generated logs to the branch.
-- Commit format is `<type>: <description>`.
-- Allowed commit types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`.
+- 编辑前检查 `git status --short`，保留无关和用户已有改动。
+- 不提交 `data/` 内容、模型、数据集、keys、checkpoint、run、日志或论文。
+- 未经明确要求，不暂存、提交、推送、建分支或创建 PR。
+- 不改写分支、worktree、tag 或 Git 历史。

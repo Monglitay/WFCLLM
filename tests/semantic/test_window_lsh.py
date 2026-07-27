@@ -8,7 +8,6 @@ import torch
 
 from wfcllm.semantic import SemanticWindowEvidence, SemanticWindowScorer
 from wfcllm.semantic.keying import WatermarkKeying
-from wfcllm.semantic.verifier import ProjectionVerifier
 
 
 @dataclass
@@ -398,69 +397,6 @@ def test_window_evidence_validates_public_contract(changes: dict[str, object]) -
 
     with pytest.raises(ValueError):
         SemanticWindowEvidence(**values)
-
-
-class _StubEncoder:
-    def eval(self) -> None:
-        pass
-
-    def __call__(
-        self,
-        input_ids: torch.Tensor,
-        attention_mask: torch.Tensor,
-    ) -> torch.Tensor:
-        return torch.tensor([[0.25, -0.5]], dtype=torch.float32)
-
-
-class _StubTokenizer:
-    def __call__(self, code_text: str, **kwargs: object) -> dict[str, torch.Tensor]:
-        return {
-            "input_ids": torch.tensor([[1, 2]], dtype=torch.int64),
-            "attention_mask": torch.tensor([[1, 1]], dtype=torch.int64),
-        }
-
-
-class _StubLshSpace:
-    def __init__(self, signature: tuple[int, ...]) -> None:
-        self.signature = signature
-
-    def sign(self, embedding: torch.Tensor) -> tuple[int, ...]:
-        return self.signature
-
-    def min_margin(self, embedding: torch.Tensor) -> float:
-        return 0.42
-
-
-def test_real_projection_verifier_protocol_remains_compatible() -> None:
-    keying = WatermarkKeying("deployment-secret", d=4)
-    descriptor = "python-statement-window/v1|module|parent=block|ordinal=1"
-    allowed = keying.derive_descriptor(
-        contract_version="python-statement-window/v1",
-        parent_descriptor=descriptor,
-        k=4,
-    )
-    verifier = ProjectionVerifier(
-        encoder=_StubEncoder(),
-        tokenizer=_StubTokenizer(),
-        lsh_space=_StubLshSpace(min(allowed)),
-        device="cpu",
-    )
-    scorer = SemanticWindowScorer(
-        verifier=verifier,
-        keying=keying,
-        contract_version="python-statement-window/v1",
-        k=4,
-        margin=0.1,
-    )
-
-    evidence = scorer.score(
-        window_text="return x",
-        parent_descriptor=descriptor,
-    )
-
-    assert evidence.signature == min(allowed)
-    assert evidence.hit is True
-    assert evidence.stable is True
 
 
 def test_scorer_applies_fixed_key_independent_preservation_threshold() -> None:

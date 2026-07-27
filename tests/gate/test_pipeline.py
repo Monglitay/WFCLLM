@@ -134,8 +134,14 @@ def _evidence_templates(suitable: bool):
 
 
 class FakeDependencies:
-    def __init__(self, groups: tuple[GatePipelineGroup, ...]) -> None:
+    def __init__(
+        self,
+        groups: tuple[GatePipelineGroup, ...],
+        *,
+        diagnostic: bool = True,
+    ) -> None:
         self.groups = groups
+        self.diagnostic_test_backend = diagnostic
         self.calls: list[str] = []
         self.train_called = False
         self.generated_count = 0
@@ -320,91 +326,6 @@ def test_gate_data_writes_manifest_and_grouped_jsonl_in_fixed_order(tmp_path: Pa
     assert len(first_evidence["lsh_probe_results"]) == 40
 
 
-def test_fast_experimental_gate_data_writes_only_training_artifacts(
-    tmp_path: Path,
-) -> None:
-    deps = FakeDependencies(tuple(_group(i) for i in range(100)))
-    config = replace(
-        _data_config(tmp_path),
-        fast_experimental=True,
-        max_groups=100,
-    )
-
-    result = run_gate_data(config, deps)
-
-    assert {path.name for path in result.output_dir.iterdir()} == {
-        "window_groups.jsonl",
-        "group_index.jsonl",
-        "feasibility_summary.json",
-        "manifest.json",
-    }
-    assert result.manifest["formal_eligible"] is False
-    assert result.manifest["experimental_only"] is True
-    assert result.manifest["diagnostic_only"] is True
-    assert result.manifest["not_official_method"] is True
-    assert "audit" not in deps.calls
-
-
-def test_fast_experimental_gate_data_records_failed_formal_feasibility(
-    tmp_path: Path,
-) -> None:
-    groups = tuple(
-        replace(
-            _group(index, scale="full"),
-            statement_family="expression_statement",
-        )
-        for index in range(300)
-    )
-    deps = FakeDependencies(groups)
-    config = replace(
-        _data_config(tmp_path, scale="full"),
-        fast_experimental=True,
-        max_groups=300,
-    )
-
-    result = run_gate_data(config, deps)
-
-    assert result.group_count == 300
-    assert result.feasibility.passed is False
-    assert result.feasibility.admissions["major_statement_families"].passed is False
-    assert result.manifest["experimental_only"] is True
-    summary = json.loads(result.feasibility_path.read_text(encoding="utf-8"))
-    assert summary["passed"] is False
-
-
-def test_fast_experimental_train_does_not_apply_formal_admission_minima(
-    tmp_path: Path,
-) -> None:
-    groups = tuple(
-        replace(
-            _group(index, scale="full"),
-            statement_family="expression_statement",
-        )
-        for index in range(300)
-    )
-    data = run_gate_data(
-        replace(
-            _data_config(tmp_path / "data", scale="full"),
-            fast_experimental=True,
-            max_groups=300,
-        ),
-        FakeDependencies(groups),
-    )
-    train_dependencies = FakeDependencies(())
-
-    run_gate_train(
-        GateTrainPipelineConfig(
-            output_root=tmp_path / "train",
-            data_dir=data.output_dir,
-            config_hash=_sha("config"),
-            fast_experimental=True,
-        ),
-        train_dependencies,
-    )
-
-    assert train_dependencies.train_called is True
-
-
 def test_production_local_dependencies_run_formal_pipeline_with_local_adapters(
     tmp_path: Path,
 ) -> None:
@@ -431,10 +352,10 @@ def test_production_local_dependencies_run_formal_pipeline_with_local_adapters(
 
     result = run_gate_data(_data_config(tmp_path / "run"), dependencies)
 
-    assert dependencies.diagnostic_test_backend is False
+    assert dependencies.diagnostic_test_backend is True
     assert result.group_count == 100
-    assert result.manifest["diagnostic_test_backend"] is False
-    assert result.manifest["formal_eligible"] is True
+    assert result.manifest["diagnostic_test_backend"] is True
+    assert result.manifest["formal_eligible"] is False
     assert adapter.probe_count == 100
     with pytest.raises(ValueError, match="released"):
         adapter.training_view.material_for("train-key-000")
@@ -522,8 +443,20 @@ def test_candidate_attempt_writer_deduplicates_equal_content_from_distinct_objec
     writer = gate_pipeline._BoundedJsonlWriter.open(path)
     cache: OrderedDict[str, None] = OrderedDict()
     try:
-        gate_pipeline._write_group_attempts(writer, first, _probed_for_writer(first), cache)
-        gate_pipeline._write_group_attempts(writer, second, _probed_for_writer(second), cache)
+        gate_pipeline._write_group_attempts(
+            writer,
+            first,
+            _probed_for_writer(first),
+            cache,
+            diagnostic=True,
+        )
+        gate_pipeline._write_group_attempts(
+            writer,
+            second,
+            _probed_for_writer(second),
+            cache,
+            diagnostic=True,
+        )
     finally:
         writer.close()
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
@@ -538,8 +471,20 @@ def test_candidate_attempt_writer_reemits_content_after_lru_eviction(tmp_path: P
     cache: OrderedDict[str, None] = OrderedDict()
     try:
         for group in groups:
-            gate_pipeline._write_group_attempts(writer, group, _probed_for_writer(group), cache)
-        gate_pipeline._write_group_attempts(writer, groups[0], _probed_for_writer(groups[0]), cache)
+            gate_pipeline._write_group_attempts(
+                writer,
+                group,
+                _probed_for_writer(group),
+                cache,
+                diagnostic=True,
+            )
+        gate_pipeline._write_group_attempts(
+            writer,
+            groups[0],
+            _probed_for_writer(groups[0]),
+            cache,
+            diagnostic=True,
+        )
     finally:
         writer.close()
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
@@ -683,9 +628,15 @@ def test_formal_gate_data_rejects_diagnostic_window_row_and_cleans_staging(tmp_p
     group = _group(0)
     corrupted = replace(
         group,
-        row={**dict(group.row), "diagnostic_test_backend": True},
+        row={
+            **dict(group.row),
+            "diagnostic_test_backend": True,
+            "formal_eligible": False,
+            "diagnostic_only": True,
+            "not_official_method": True,
+        },
     )
-    deps = FakeDependencies((corrupted,))
+    deps = FakeDependencies((corrupted,), diagnostic=False)
     with pytest.raises(ValueError, match="window group public row schema"):
         run_gate_data(_data_config(tmp_path), deps)
     assert not (tmp_path / "gate-data").exists()
@@ -693,14 +644,31 @@ def test_formal_gate_data_rejects_diagnostic_window_row_and_cleans_staging(tmp_p
     assert "audit" not in deps.calls
 
 
-def test_diagnostic_gate_data_rejects_formal_window_row_and_cleans_staging(tmp_path: Path) -> None:
+def test_diagnostic_gate_data_marks_every_public_row_non_formal(
+    tmp_path: Path,
+) -> None:
     deps = FakeDependencies((_group(0),))
     deps.diagnostic_test_backend = True
-    with pytest.raises(ValueError, match="window group public row schema"):
-        run_gate_data(_data_config(tmp_path), deps)
-    assert not (tmp_path / "gate-data").exists()
-    assert not list(tmp_path.glob(".gate-data-*"))
-    assert "audit" not in deps.calls
+    result = run_gate_data(_data_config(tmp_path), deps)
+
+    for name in (
+        "window_groups.jsonl",
+        "candidate_attempts.jsonl",
+        "labels.jsonl",
+        "group_index.jsonl",
+    ):
+        rows = [
+            json.loads(line)
+            for line in (result.output_dir / name).read_text(
+                encoding="utf-8"
+            ).splitlines()
+        ]
+        assert rows
+        for row in rows:
+            assert row["diagnostic_test_backend"] is True
+            assert row["formal_eligible"] is False
+            assert row["diagnostic_only"] is True
+            assert row["not_official_method"] is True
 
 
 def test_gate_data_audit_failure_removes_staging_and_publishes_nothing(tmp_path: Path) -> None:
@@ -830,49 +798,18 @@ def test_gate_train_requires_full_data_manifest_and_passed_pilot(tmp_path: Path)
     assert deps.train_called is False
 
 
-def test_fast_experimental_train_consumes_minimal_data_without_snapshot(
-    tmp_path: Path,
-) -> None:
-    data_dependencies = FakeDependencies(
-        tuple(_group(index, scale="full") for index in range(300))
-    )
-    data = run_gate_data(
-        replace(
-            _data_config(tmp_path / "data", scale="full"),
-            fast_experimental=True,
-            max_groups=300,
-        ),
-        data_dependencies,
-    )
-    train_dependencies = FakeDependencies(())
-
-    result = run_gate_train(
-        GateTrainPipelineConfig(
-            output_root=tmp_path / "train",
-            data_dir=data.output_dir,
-            config_hash=_sha("config"),
-            fast_experimental=True,
-        ),
-        train_dependencies,
-    )
-
-    assert train_dependencies.train_called is True
-    assert {path.name for path in result.output_dir.iterdir()} == {
-        "candidate_bundle",
-        "candidate_bundle_manifest.json",
-    }
-    assert result.manifest["formal_eligible"] is False
-    assert result.manifest["experimental_only"] is True
-    assert result.manifest["diagnostic_only"] is True
-    assert result.manifest["not_official_method"] is True
-
-
 def test_gate_train_enforces_independent_group_minima_before_trainer(tmp_path: Path) -> None:
     pilot_dir = tmp_path / "pilot"
-    pilot_deps = FakeDependencies(tuple(_group(i) for i in range(100)))
+    pilot_deps = FakeDependencies(
+        tuple(_group(i) for i in range(100)),
+        diagnostic=False,
+    )
     pilot = run_gate_data(_data_config(pilot_dir), pilot_deps)
     full_dir = tmp_path / "full"
-    full_deps = FakeDependencies(tuple(_group(i, scale="full") for i in range(300)))
+    full_deps = FakeDependencies(
+        tuple(_group(i, scale="full") for i in range(300)),
+        diagnostic=False,
+    )
     full = run_gate_data(_data_config(full_dir, scale="full", pilot=pilot.feasibility_path), full_deps)
     for index, artifact_name in enumerate(full.manifest["artifacts"]):
         artifact = full.output_dir / artifact_name
@@ -882,7 +819,7 @@ def test_gate_train_enforces_independent_group_minima_before_trainer(tmp_path: P
                 artifact.unlink()
             else:
                 artifact.write_bytes(original + b"tamper")
-            blocked = FakeDependencies(())
+            blocked = FakeDependencies((), diagnostic=False)
             with pytest.raises(ValueError, match="artifact|hash|missing"):
                 run_gate_train(
                     GateTrainPipelineConfig(
@@ -912,7 +849,7 @@ def test_gate_train_enforces_independent_group_minima_before_trainer(tmp_path: P
         json.dumps(tampered_manifest, sort_keys=True, separators=(",", ":")) + "\n",
         encoding="utf-8",
     )
-    semantic_tamper_deps = FakeDependencies(())
+    semantic_tamper_deps = FakeDependencies((), diagnostic=False)
     with pytest.raises(ValueError, match="labels JSONL|causal Task6"):
         run_gate_train(
             GateTrainPipelineConfig(
@@ -941,7 +878,7 @@ def test_gate_train_enforces_independent_group_minima_before_trainer(tmp_path: P
             json.dumps(tampered_manifest, sort_keys=True, separators=(",", ":")) + "\n",
             encoding="utf-8",
         )
-        blocked_window_deps = FakeDependencies(())
+        blocked_window_deps = FakeDependencies((), diagnostic=False)
         with pytest.raises(ValueError, match="window group"):
             run_gate_train(
                 GateTrainPipelineConfig(
@@ -953,7 +890,7 @@ def test_gate_train_enforces_independent_group_minima_before_trainer(tmp_path: P
         assert blocked_window_deps.train_called is False
         full.data_path.write_bytes(original_windows)
         manifest_path.write_bytes(original_manifest)
-    train_deps = FakeDependencies(())
+    train_deps = FakeDependencies((), diagnostic=False)
     result = run_gate_train(
         GateTrainPipelineConfig(full_dir, full.output_dir, _sha("config"), pilot.feasibility_path),
         train_deps,
@@ -963,7 +900,7 @@ def test_gate_train_enforces_independent_group_minima_before_trainer(tmp_path: P
     assert (result.output_dir / "development_summary.json").exists()
     assert train_deps.train_called is True
     original_window_data = full.data_path.read_bytes()
-    mutating_original_trainer = FakeDependencies(())
+    mutating_original_trainer = FakeDependencies((), diagnostic=False)
     normal_train = mutating_original_trainer.train_candidate
     def mutate_original_data(**kwargs):
         full.data_path.write_bytes(original_window_data + b"{}\n")
@@ -975,7 +912,7 @@ def test_gate_train_enforces_independent_group_minima_before_trainer(tmp_path: P
             mutating_original_trainer,
         )
     full.data_path.write_bytes(original_window_data)
-    mutating_snapshot_trainer = FakeDependencies(())
+    mutating_snapshot_trainer = FakeDependencies((), diagnostic=False)
     normal_snapshot_train = mutating_snapshot_trainer.train_candidate
     def mutate_snapshot_data(**kwargs):
         kwargs["data_jsonl"].chmod(0o644)
@@ -991,14 +928,23 @@ def test_gate_train_enforces_independent_group_minima_before_trainer(tmp_path: P
 
 def test_gate_train_rejects_tampered_grouped_data_before_trainer(tmp_path: Path) -> None:
     pilot_root = tmp_path / "pilot"
-    pilot = run_gate_data(_data_config(pilot_root), FakeDependencies(tuple(_group(i) for i in range(100))))
+    pilot = run_gate_data(
+        _data_config(pilot_root),
+        FakeDependencies(
+            tuple(_group(i) for i in range(100)),
+            diagnostic=False,
+        ),
+    )
     full_root = tmp_path / "full"
     full = run_gate_data(
         _data_config(full_root, scale="full", pilot=pilot.feasibility_path),
-        FakeDependencies(tuple(_group(i, scale="full") for i in range(300))),
+        FakeDependencies(
+            tuple(_group(i, scale="full") for i in range(300)),
+            diagnostic=False,
+        ),
     )
     full.data_path.write_text(full.data_path.read_text(encoding="utf-8") + "{}\n", encoding="utf-8")
-    deps = FakeDependencies(())
+    deps = FakeDependencies((), diagnostic=False)
     with pytest.raises(ValueError, match="artifact|hash"):
         run_gate_train(
             GateTrainPipelineConfig(full_root, full.output_dir, _sha("config"), pilot.feasibility_path),

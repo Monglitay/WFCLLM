@@ -151,9 +151,3 @@ def test_codet5_verifier_detects_bfloat16_batch_interaction() -> None:
 
     assert precision_stable is False
     assert batch_stable is False
-
-
-def test_semantic_lsh_module_exports_loader() -> None:
-    from wfcllm.semantic.lsh import load_semantic_lsh_rule
-
-    assert callable(load_semantic_lsh_rule)

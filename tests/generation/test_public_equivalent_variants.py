@@ -1,4 +1,4 @@
-"""Public cpp/java equivalent-variant entry used by encoder training."""
+"""Public non-Python equivalent variants used by encoder training."""
 from __future__ import annotations
 
 import pytest
@@ -42,9 +42,13 @@ def test_python_is_rejected_in_favor_of_transform_engine() -> None:
         public_equivalent_variants("python", "return 1", 3)
 
 
-def test_js_is_rejected_with_explicit_gap_message() -> None:
-    with pytest.raises(ValueError, match="no public equivalent-variant generator"):
-        public_equivalent_variants("js", "return 1;", 3)
+def test_js_variants_are_dependency_light_and_deduplicated() -> None:
+    variants = public_equivalent_variants("js", "return a + b;", 6)
+
+    assert len(variants) == 6
+    assert len(set(variants)) == 6
+    assert "return a + b;" not in variants
+    assert all("wfcllm-equivalent" in variant for variant in variants)
 
 
 def test_invalid_count_is_rejected() -> None:

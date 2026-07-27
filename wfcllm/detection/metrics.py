@@ -6,7 +6,7 @@ import random
 from pathlib import Path
 from typing import Any
 
-from wfcllm.detection.pipeline import validate_final_code_detector_input_record
+from wfcllm.detection.code_only import validate_final_code_record_exact
 
 
 SUMMARY_FIELDS = ("min", "p25", "p50", "p75", "max")
@@ -14,7 +14,6 @@ BUCKET_FIELDS = (
     "code_chars",
     "direct_statements",
     "scoreable_contexts",
-    "proxy_windows",
 )
 OPTIONAL_NUMERIC_FIELDS = ("p_value", "fpr_target", *BUCKET_FIELDS)
 WILSON_95_Z = 1.959963984540054
@@ -35,7 +34,7 @@ def split_records_by_task(
 
     task_records: dict[str, list[dict[str, Any]]] = {}
     for row in records:
-        validate_final_code_detector_input_record(row)
+        validate_final_code_record_exact(row)
         task_records.setdefault(_task_id_from_record(row), []).append(row)
 
     task_ids = sorted(task_records)

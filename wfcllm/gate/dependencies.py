@@ -141,14 +141,12 @@ class PrivateKeyBankView:
 
 
 class LocalGateDependencies:
-    """Formal, local-only dependencies shared by both CLI entry points.
+    """Local-only dependencies with an explicit production/test identity.
 
     Heavy parser/rewriter/trainer/validator adapters are optional injected local
     components.  In their absence this boundary reports the exact unavailable
     resource instead of downloading or falling back to a diagnostic backend.
     """
-
-    diagnostic_test_backend = False
 
     def __init__(
         self,
@@ -159,11 +157,15 @@ class LocalGateDependencies:
         base_model_path: Path | None,
         adapter: ProductionGateAdapter,
         adapter_name: str,
+        diagnostic_test_backend: bool,
         _token: object,
     ) -> None:
         if _token is not _CONSTRUCTION_TOKEN:
             raise ValueError("LocalGateDependencies must be built by an approved factory")
         _validate_production_adapter(adapter)
+        if type(diagnostic_test_backend) is not bool:
+            raise ValueError("diagnostic_test_backend must be boolean")
+        self.diagnostic_test_backend = diagnostic_test_backend
         self._source_manifest = source_manifest
         self._key_sources = {"training": training_keys, "holdout": holdout_keys}
         self._base_model_path = base_model_path
@@ -329,8 +331,7 @@ def build_local_gate_dependencies(
 
     if adapter_name is None:
         raise ValueError(
-            "no allowlisted production gate adapter is configured; "
-            "Task 12/13 do not implement the formal experiment adapter"
+            "an allowlisted production gate adapter is required"
         )
     factory = _PRODUCTION_ADAPTER_FACTORIES.get(adapter_name)
     if factory is None:
@@ -345,6 +346,7 @@ def build_local_gate_dependencies(
         base_model_path=base_model_path,
         adapter=adapter,
         adapter_name=adapter_name,
+        diagnostic_test_backend=False,
     )
 
 
@@ -358,7 +360,7 @@ def build_trusted_test_gate_dependencies(
     base_model_path: Path | None,
     adapter: ProductionGateAdapter,
 ) -> LocalGateDependencies:
-    """Explicit test-only seam; still requires the full production attestation."""
+    """Explicit test-only seam with complete diagnostic artifact identity."""
 
     return _build_dependencies(
         source_manifest=source_manifest,
@@ -369,6 +371,7 @@ def build_trusted_test_gate_dependencies(
         base_model_path=base_model_path,
         adapter=adapter,
         adapter_name="trusted-test",
+        diagnostic_test_backend=True,
     )
 
 
@@ -382,6 +385,7 @@ def _build_dependencies(
     base_model_path: Path | None,
     adapter: ProductionGateAdapter,
     adapter_name: str,
+    diagnostic_test_backend: bool,
 ) -> LocalGateDependencies:
     _validate_production_adapter(adapter)
 
@@ -392,6 +396,7 @@ def _build_dependencies(
         base_model_path=base_model_path,
         adapter=adapter,
         adapter_name=adapter_name,
+        diagnostic_test_backend=diagnostic_test_backend,
         _token=_CONSTRUCTION_TOKEN,
     )
 

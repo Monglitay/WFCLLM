@@ -125,16 +125,16 @@ def test_fstring_whole_token_preserves_expression_but_not_external_whitespace() 
         ),
     ],
 )
-def test_legacy_whole_fstring_token_matches_modern_whole_span(
+def test_single_string_token_fstring_matches_native_tokenization(
     monkeypatch: pytest.MonkeyPatch,
     fstring: str,
     expected_fstring: str,
 ) -> None:
     source = f"message = {fstring}  \t\nresult = message  \t\n"
-    modern = normalize_unit_text(source)
+    native = normalize_unit_text(source)
     start_offset = source.index(fstring)
     end_offset = start_offset + len(fstring)
-    legacy_token = tokenize.TokenInfo(
+    whole_string_token = tokenize.TokenInfo(
         type=token.STRING,
         string=fstring,
         start=_offset_position(source, start_offset),
@@ -144,21 +144,21 @@ def test_legacy_whole_fstring_token_matches_modern_whole_span(
     monkeypatch.setattr(
         normalization.tokenize,
         "generate_tokens",
-        lambda _readline: iter((legacy_token,)),
+        lambda _readline: iter((whole_string_token,)),
     )
 
-    legacy = normalize_unit_text(source)
+    normalized = normalize_unit_text(source)
 
-    assert legacy == modern == (
+    assert normalized == native == (
         f"message = {expected_fstring}\nresult = message"
     )
 
 
-def test_legacy_whole_fstring_preserves_expression_string_value(
+def test_single_string_token_fstring_preserves_expression_string_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fstring = 'f"""{len(\'\'\'inside  \t\nnext\'\'\')}"""'
-    legacy_token = tokenize.TokenInfo(
+    whole_string_token = tokenize.TokenInfo(
         type=token.STRING,
         string=fstring,
         start=(1, 0),
@@ -168,7 +168,7 @@ def test_legacy_whole_fstring_preserves_expression_string_value(
     monkeypatch.setattr(
         normalization.tokenize,
         "generate_tokens",
-        lambda _readline: iter((legacy_token,)),
+        lambda _readline: iter((whole_string_token,)),
     )
 
     normalized = normalize_unit_text(fstring)

@@ -1,13 +1,4 @@
-"""Per-phase runner functions invoked by PhaseOrchestrator.
-
-Lifted from run.py (Phase 1 refactor). Functions are CLI-bound:
-they consume argparse.Namespace, build phase configs, invoke pipelines,
-and update RunStateManager.
-
-Future refactor phases (Phase 5: pretrain, Phase 8: generator split) will
-further decompose these into their phase packages. For Phase 1 they stay
-together to avoid scope creep.
-"""
+"""Current Gate-only phase runners invoked by :class:`PhaseOrchestrator`."""
 from __future__ import annotations
 
 import argparse
@@ -18,6 +9,7 @@ import os
 import re
 import stat
 import sys
+import unicodedata
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -28,27 +20,6 @@ _GATED_METHOD = "gated_semantic_window_v1"
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _MAX_PUBLIC_AUDIT_ARTIFACT_BYTES = 32 * 1024 * 1024
 
-# ---------------------------------------------------------------------------
-# Compare-only mode flag names
-# ---------------------------------------------------------------------------
-
-COMPARE_ONLY_REQUIRED_FLAGS = (
-    "compare_summary_left",
-    "compare_details_left",
-    "compare_summary_right",
-    "compare_details_right",
-    "compare_output",
-)
-COMPARE_ONLY_OPTIONAL_WATERMARKED_FLAGS = (
-    "compare_watermarked_left",
-    "compare_watermarked_right",
-)
-
-# ---------------------------------------------------------------------------
-# Config helper utilities (used by multiple runners)
-# ---------------------------------------------------------------------------
-
-
 def get_config(args: argparse.Namespace) -> dict:
     cfg = getattr(args, "_config_cache", None)
     if cfg is None:
@@ -58,215 +29,107 @@ def get_config(args: argparse.Namespace) -> dict:
     return cfg
 
 
-def configured_extract_input(args: argparse.Namespace) -> str | None:
-    return (get_config(args).get("extract") or {}).get("input_file")
-
-
-def is_compare_only_mode(args: argparse.Namespace) -> bool:
-    required_present = all(getattr(args, flag, None) for flag in COMPARE_ONLY_REQUIRED_FLAGS)
-    if not required_present:
-        return False
-
-    optional_watermarked_flags = tuple(
-        getattr(args, flag, None) for flag in COMPARE_ONLY_OPTIONAL_WATERMARKED_FLAGS
-    )
-    return not any(optional_watermarked_flags) or all(optional_watermarked_flags)
-
-
-def has_explicit_extract_input(args: argparse.Namespace) -> bool:
-    return bool(getattr(args, "input_file", None) or configured_extract_input(args))
-
-
-def validate_compare_only_mode(args: argparse.Namespace) -> str | None:
-    """Return an error string if compare-only flags are used incorrectly, else None."""
-    compare_flags = COMPARE_ONLY_REQUIRED_FLAGS + COMPARE_ONLY_OPTIONAL_WATERMARKED_FLAGS
-    if not any(getattr(args, flag, None) for flag in compare_flags):
-        return None
-    if args.phase not in {"extract", "legacy-extract"}:
-        return "[错误] compare-only 模式仅支持 --phase legacy-extract"
-    if not is_compare_only_mode(args):
-        return (
-            "[错误] compare-only 模式要求提供左右 summary/details 和 compare-output；"
-            "watermarked 必须两侧同时提供或同时省略"
-        )
-    return None
-
-
-def _phase_state_key(args: argparse.Namespace, default: str) -> str:
-    override = getattr(args, "_state_phase_override", None)
-    return override if isinstance(override, str) else default
-
-
-def _run_with_state_phase(
-    args: argparse.Namespace,
-    state: RunStateManager,
-    phase: str,
-    runner,
-) -> int:
-    sentinel = object()
-    previous = getattr(args, "_state_phase_override", sentinel)
-    setattr(args, "_state_phase_override", phase)
-    try:
-        return runner(args, state)
-    finally:
-        if previous is sentinel:
-            delattr(args, "_state_phase_override")
-        else:
-            setattr(args, "_state_phase_override", previous)
-
-
-def _watermark_output_from_state(args: argparse.Namespace, state: RunStateManager) -> str | None:
-    phase = _phase_state_key(args, "extract")
-    if phase == "legacy-extract":
-        return state.get("legacy-watermark", "output_file") or state.get(
-            "watermark",
-            "output_file",
-        )
-    return state.get("watermark", "output_file") or state.get(
-        "legacy-watermark",
-        "output_file",
-    )
-
-
-def _legacy_phase_archived(phase: str, guidance: str) -> int:
-    print(
-        f"[错误] {phase} implementation has been archived; {guidance}",
-        file=sys.stderr,
-    )
-    return 1
-
-
-# ---------------------------------------------------------------------------
-# Per-phase runner functions
-# ---------------------------------------------------------------------------
-
-
 def run_generate(args: argparse.Namespace, state: RunStateManager) -> int:
-    from wfcllm.method.presets import EVIDENCE_RETRY_SEED7X3_NAME
-
-    config = get_config(args)
-    if _is_gated(config):
-        _runtime_secret(args, "deployment")
-        _path, bundle_hash = resolve_gate_bundle(args)
-        pipeline = _optional_gated_generation_pipeline(args)
-        output_path = pipeline.run() if pipeline is not None else None
-        state.mark_done(
-            "generate",
-            method=_GATED_METHOD,
-            gate_bundle_sha256=bundle_hash,
-            output_path=(str(output_path) if output_path is not None else None),
+    config = _require_gated_config(args)
+    run_dir = _gate_run_dir(args, config)
+    _runtime_secret(args, "deployment")
+    _path, bundle_hash = resolve_gate_bundle(args)
+    pipeline = _require_gated_generation_pipeline(args)
+    output_path = _canonical_local_path(Path(pipeline.run()))
+    final_code = _canonical_local_path(run_dir / "inputs" / "final_code.jsonl")
+    if output_path != final_code:
+        raise ValueError(
+            "generate must produce --run-dir/inputs/final_code.jsonl"
         )
-    else:
-        state.mark_done("generate", method=EVIDENCE_RETRY_SEED7X3_NAME)
+    from wfcllm.detection.gated_pipeline import load_jsonl_records
+
+    final_rows = load_jsonl_records(final_code)
+    final_code_hash = _safe_file_hash(final_code)
+    manifest_path = run_dir / "generation" / "manifest.json"
+    manifest = _load_json_object(manifest_path)
+    if (
+        manifest.get("final_code_sha256") != final_code_hash
+        or manifest.get("final_code_row_count") != len(final_rows)
+    ):
+        raise ValueError("generation manifest does not bind final_code.jsonl")
+    generation_model_identifier = manifest.get("generation_model_identifier")
+    if (
+        not isinstance(generation_model_identifier, str)
+        or not generation_model_identifier
+    ):
+        raise ValueError("generation manifest is missing model identity")
+    state.mark_done(
+        "generate",
+        method=_GATED_METHOD,
+        gate_bundle_sha256=bundle_hash,
+        output_path=str(final_code),
+        final_code_sha256=final_code_hash,
+        final_code_row_count=len(final_rows),
+        generation_manifest_sha256=_safe_file_hash(manifest_path),
+        generation_model_identifier=generation_model_identifier,
+    )
     print("=== WFCLLM generate ===")
     return 0
 
 
-def _optional_gated_generation_pipeline(args: argparse.Namespace):
-    """Resolve the runtime-wired gated pipeline without affecting old presets."""
-
+def _require_gated_generation_pipeline(args: argparse.Namespace):
     pipeline = getattr(args, "_gated_generation_pipeline", None)
     if pipeline is None:
         factory = getattr(args, "_gated_generation_pipeline_factory", None)
         if callable(factory):
             pipeline = factory(args)
-    if pipeline is None and getattr(args, "generation_model_path", None):
-        pipeline = _build_local_gated_generation_pipeline(args)
     if pipeline is None:
-        if hasattr(args, "generation_model_path"):
-            raise ValueError(
-                "--generation-model-path is required for gated generation"
-            )
-        # Narrow dependency-injected orchestration tests use Namespaces that do
-        # not expose production runtime flags.
-        return None
+        pipeline = _build_local_gated_generation_pipeline(args)
     if not callable(getattr(pipeline, "run", None)):
         raise ValueError("gated generation runtime pipeline is not configured")
     return pipeline
 
 
 def run_calibrate(args: argparse.Namespace, state: RunStateManager) -> int:
-    config = get_config(args)
-    if _is_gated(config):
-        _runtime_secret(args, "deployment")
-        _path, bundle_hash = resolve_gate_bundle(args)
-        generated_hash = state.get("generate", "gate_bundle_sha256")
-        if generated_hash != bundle_hash:
-            raise ValueError("calibrate requires the same gate bundle as generate")
-        corpus_path, corpus_hash = _resolve_gated_negative_corpus(args, config)
-        setattr(args, "_gated_negative_corpus_hash", corpus_hash)
-        pipeline = _require_gated_detection_pipeline(args)
-        calibration_path = _gated_calibration_output(args, config)
-        try:
-            pipeline.calibrate_jsonl(str(corpus_path), output_path=calibration_path)
-        except ValueError as exc:
-            if (
-                not _uses_fast_experimental_gate_training(config)
-                or str(exc)
-                != "calibration has no samples with enough reliable windows"
-            ):
-                raise
-            _write_fast_experimental_fallback_gated_calibration(
-                pipeline,
-                calibration_path,
-            )
-        state.mark_done(
-            "calibrate",
-            method=_GATED_METHOD,
-            detector_mode="wfcllm-gated-semantic-window/v1",
-            gate_bundle_sha256=bundle_hash,
-            calibration_path=(str(calibration_path) if calibration_path else None),
+    config = _require_gated_config(args)
+    _runtime_secret(args, "deployment")
+    _path, bundle_hash = resolve_gate_bundle(args)
+    if state.get("generate", "gate_bundle_sha256") != bundle_hash:
+        raise ValueError("calibrate requires the same gate bundle as generate")
+    _verify_frozen_generation_artifacts(state, _gate_run_dir(args, config))
+    corpus_path, negative_manifest_hash = _resolve_gated_negative_corpus(
+        args, config
+    )
+    negative_manifest = _load_json_object(
+        _gate_run_dir(args, config)
+        / "calibration"
+        / "negative_corpus_manifest.json"
+    )
+    supplement_model = negative_manifest.get("generation_model_identifier")
+    if (
+        supplement_model is not None
+        and supplement_model
+        != state.get("generate", "generation_model_identifier")
+    ):
+        raise ValueError(
+            "calibration supplement must use the same generation model as generate"
         )
-    else:
-        state.mark_done("calibrate")
+    setattr(args, "_gated_negative_manifest_hash", negative_manifest_hash)
+    pipeline = _require_gated_detection_pipeline(args)
+    calibration_path = _gated_calibration_output(args, config)
+    pipeline.calibrate_jsonl(str(corpus_path), output_path=calibration_path)
+    if not calibration_path.is_file():
+        raise ValueError("calibrate did not produce reference_calibration.json")
+    if _validate_negative_corpus_manifest(
+        _gate_run_dir(args, config)
+    ) != negative_manifest_hash:
+        raise ValueError("negative corpus manifest changed during calibration")
+    state.mark_done(
+        "calibrate",
+        method=_GATED_METHOD,
+        detector_mode="wfcllm-gated-semantic-window/v1",
+        gate_bundle_sha256=bundle_hash,
+        calibration_path=str(calibration_path),
+        calibration_sha256=_safe_file_hash(calibration_path),
+        negative_corpus_manifest_sha256=negative_manifest_hash,
+    )
     print("=== WFCLLM calibrate ===")
     return 0
-
-
-def _write_fast_experimental_fallback_gated_calibration(
-    pipeline: object,
-    output_path: Path,
-) -> None:
-    from wfcllm.detection.gated_pipeline import (
-        BINOMIAL_P_VALUE_RULE,
-        EMPIRICAL_P_VALUE_RULE,
-        GatedCalibrationArtifact,
-        write_gated_calibration_artifact,
-    )
-
-    bindings = getattr(pipeline, "_bindings", None)
-    scorer = getattr(pipeline, "_scorer", None)
-    minimum_reliable_windows = getattr(scorer, "minimum_reliable_windows", None)
-    if type(minimum_reliable_windows) is not int or minimum_reliable_windows <= 0:
-        raise ValueError("fast experimental calibration fallback requires scorer state")
-    target_fpr = float(getattr(pipeline, "_target_fpr", 0.05))
-    group_by = str(getattr(pipeline, "_calibration_group_by", "reliable_window_count"))
-    empirical_rule = (
-        BINOMIAL_P_VALUE_RULE
-        if group_by == "pooled_binomial_tail"
-        else EMPIRICAL_P_VALUE_RULE
-    )
-    bucket = str(minimum_reliable_windows)
-    artifact = GatedCalibrationArtifact(
-        schema_version="wfcllm-gated-calibration/v1",
-        method_name=_GATED_METHOD,
-        detector_mode=bindings.detector_mode,
-        window_contract_version=bindings.window_contract_version,
-        gate_input_contract_version=bindings.gate_input_contract_version,
-        gate_bundle_sha256=bindings.gate_bundle_sha256,
-        semantic_encoder_sha256=bindings.semantic_encoder_sha256,
-        lsh_config_sha256=bindings.lsh_config_sha256,
-        key_identifier_sha256=bindings.key_identifier_sha256,
-        negative_corpus_manifest_sha256=bindings.negative_corpus_manifest_sha256,
-        empirical_p_value_rule=empirical_rule,
-        target_fpr=target_fpr,
-        minimum_reliable_windows=minimum_reliable_windows,
-        reliable_window_count_buckets={bucket: (0.0,)},
-        thresholds_by_reliable_window_count={
-            bucket: target_fpr if empirical_rule == BINOMIAL_P_VALUE_RULE else 0.0
-        },
-    )
-    write_gated_calibration_artifact(output_path, artifact)
 
 
 _GATED_NEGATIVE_CORPUS_MANIFEST_SCHEMA = "wfcllm-gated-negative-corpus-manifest/v1"
@@ -276,18 +139,7 @@ def _resolve_gated_negative_corpus(
     args: argparse.Namespace,
     config: Mapping[str, object],
 ) -> tuple[Path, str]:
-    """Resolve the calibration negative corpus, supplementing when configured.
-
-    Without calibration.target_negative_count this keeps the historical
-    behavior: --negative-input is required and the returned hash covers that
-    external file.  With a target, the external corpus (missing file counts
-    as zero rows) is topped up with plain unwatermarked completions on
-    held-out dataset prompts (ADR 0008), the consolidated corpus is written
-    to run_dir/calibration/negative_corpus.jsonl, and the returned hash —
-    the value bound as negative_corpus_manifest_sha256 — covers that
-    consolidated corpus file, preserving the existing binding semantics
-    (hash of the corpus file calibration actually reads).
-    """
+    """Supplement held-out negatives to the configured calibration target."""
 
     calibration = config.get("calibration")
     target = (
@@ -296,23 +148,43 @@ def _resolve_gated_negative_corpus(
         else None
     )
     negative_input = getattr(args, "negative_input", None)
+    if not isinstance(negative_input, (str, Path)) or not str(negative_input):
+        raise ValueError("gated calibrate requires --negative-input")
+    external_records = _load_external_negative_records(negative_input)
+    positive_ids, positive_prompts = _gated_positive_population(args, config)
+    _assert_negative_population_is_held_out(
+        external_records,
+        positive_ids=positive_ids,
+        positive_prompts=positive_prompts,
+        label="external calibration negative corpus",
+    )
     if target is None:
-        if negative_input is None:
-            raise ValueError("gated calibrate requires --negative-input")
         path = Path(negative_input)
         return path, _safe_file_hash(path)
     if type(target) is not int or target < 1:
         raise ValueError(
             "calibration.target_negative_count must be a positive integer"
         )
-    external_records = _load_external_negative_records(negative_input)
     needed = target - len(external_records)
     generated_records: list[dict[str, str]] = []
     generation_model_identifier: str | None = None
     decoding_config: dict[str, object] | None = None
     if needed > 0:
         generated_records, generation_model_identifier, decoding_config = (
-            _generate_unwatermarked_negative_supplement(args, config, needed)
+            _generate_unwatermarked_negative_supplement(
+                args,
+                config,
+                needed,
+                positive_ids=positive_ids,
+                positive_prompts=positive_prompts,
+                external_records=external_records,
+            )
+        )
+        _assert_negative_population_is_held_out(
+            generated_records,
+            positive_ids=positive_ids,
+            positive_prompts=positive_prompts,
+            label="generated calibration negative supplement",
         )
     corpus_records = [*external_records, *generated_records]
     corpus_path = (
@@ -327,8 +199,9 @@ def _resolve_gated_negative_corpus(
         encoding="utf-8",
     )
     corpus_hash = _safe_file_hash(corpus_path)
+    manifest_path = corpus_path.parent / "negative_corpus_manifest.json"
     _write_public_json(
-        corpus_path.parent / "negative_corpus_manifest.json",
+        manifest_path,
         {
             "schema_version": _GATED_NEGATIVE_CORPUS_MANIFEST_SCHEMA,
             "target_negative_count": target,
@@ -339,34 +212,117 @@ def _resolve_gated_negative_corpus(
             "corpus_sha256": corpus_hash,
         },
     )
-    return corpus_path, corpus_hash
+    return corpus_path, _safe_file_hash(manifest_path)
 
 
 def _load_external_negative_records(
     negative_input: object,
 ) -> list[dict[str, object]]:
-    """Load externally provided negatives; a missing file contributes zero rows."""
+    """Load the required external held-out negative corpus."""
 
-    if negative_input is None:
-        return []
+    if not isinstance(negative_input, (str, Path)) or not str(negative_input):
+        raise ValueError("gated calibrate requires --negative-input")
     path = Path(negative_input)
-    if not path.exists():
-        return []
-    from wfcllm.detection.code_only import validate_final_code_record_exact
-    from wfcllm.detection.pipeline import load_jsonl_records
+    if not path.is_file():
+        raise ValueError(f"negative input does not exist: {path}")
+    from wfcllm.detection.gated_pipeline import load_jsonl_records
 
     records = load_jsonl_records(path)
-    for record in records:
-        validate_final_code_record_exact(record)
     return [dict(record) for record in records]
+
+
+def _validate_negative_corpus_manifest(run_dir: Path) -> str:
+    """Validate and hash the current calibration-corpus provenance manifest."""
+
+    corpus_path = run_dir / "calibration" / "negative_corpus.jsonl"
+    manifest_path = run_dir / "calibration" / "negative_corpus_manifest.json"
+    manifest = _load_json_object(manifest_path)
+    if manifest.get("schema_version") != _GATED_NEGATIVE_CORPUS_MANIFEST_SCHEMA:
+        raise ValueError("negative corpus manifest schema mismatch")
+    target = manifest.get("target_negative_count")
+    external = manifest.get("external_count")
+    generated = manifest.get("generated_count")
+    if (
+        type(target) is not int
+        or target < 1
+        or type(external) is not int
+        or external < 1
+        or type(generated) is not int
+        or generated < 0
+        or external + generated < target
+    ):
+        raise ValueError("negative corpus manifest counts are invalid")
+    from wfcllm.detection.gated_pipeline import load_jsonl_records
+
+    records = load_jsonl_records(corpus_path)
+    if len(records) != external + generated:
+        raise ValueError("negative corpus row count does not match its manifest")
+    if manifest.get("corpus_sha256") != _safe_file_hash(corpus_path):
+        raise ValueError("negative corpus hash does not match its manifest")
+    model_identifier = manifest.get("generation_model_identifier")
+    decoding = manifest.get("decoding_config")
+    if generated == 0:
+        if model_identifier is not None or decoding is not None:
+            raise ValueError(
+                "negative corpus manifest has generation provenance without "
+                "generated rows"
+            )
+    elif (
+        not isinstance(model_identifier, str)
+        or not model_identifier
+        or not isinstance(decoding, Mapping)
+    ):
+        raise ValueError(
+            "generated negative supplement requires model and decoding provenance"
+        )
+    return _safe_file_hash(manifest_path)
+
+
+def _verify_frozen_generation_artifacts(
+    state: RunStateManager,
+    run_dir: Path,
+) -> None:
+    """Verify that downstream phases consume exactly generate's frozen output."""
+
+    final_code = _canonical_local_path(
+        run_dir / "inputs" / "final_code.jsonl"
+    )
+    recorded_path = state.get("generate", "output_path")
+    if (
+        not isinstance(recorded_path, str)
+        or _canonical_local_path(Path(recorded_path)) != final_code
+    ):
+        raise ValueError("current generate output path is not bound to this run")
+    from wfcllm.detection.gated_pipeline import load_jsonl_records
+
+    rows = load_jsonl_records(final_code)
+    current_hash = _safe_file_hash(final_code)
+    if (
+        state.get("generate", "final_code_sha256") != current_hash
+        or state.get("generate", "final_code_row_count") != len(rows)
+    ):
+        raise ValueError("frozen final_code.jsonl changed after generate")
+    manifest_path = run_dir / "generation" / "manifest.json"
+    manifest = _load_json_object(manifest_path)
+    if (
+        state.get("generate", "generation_manifest_sha256")
+        != _safe_file_hash(manifest_path)
+        or manifest.get("final_code_sha256") != current_hash
+        or manifest.get("final_code_row_count") != len(rows)
+    ):
+        raise ValueError("generation manifest binding mismatch")
 
 
 def _generate_unwatermarked_negative_supplement(
     args: argparse.Namespace,
     config: Mapping[str, object],
     needed: int,
+    *,
+    positive_ids: set[str],
+    positive_prompts: set[str],
+    external_records: list[dict[str, object]],
 ) -> tuple[list[dict[str, str]], str, dict[str, object]]:
-    """Generate plain unwatermarked completions on held-out dataset prompts.
+    """Generate plain unwatermarked completions on held-out prompts.
 
     No gated embedding, no window rewriting, and no deployment key are
     involved, and every completion is adopted as-is: the supplement path
@@ -378,18 +334,32 @@ def _generate_unwatermarked_negative_supplement(
     if not isinstance(generation, Mapping):
         raise ValueError("gated generation config is missing")
     decoding = _gated_negative_decoding_config(config, generation)
-    positive_ids = _gated_positive_sample_ids(args, config)
     samples = _load_gated_dataset_samples(args, generation)
-    held_out = [
-        sample for sample in samples if sample["id"] not in positive_ids
+    held_out_dataset = [
+        {
+            "id": sample["id"],
+            "prompt": sample["prompt"],
+            "source": "dataset",
+        }
+        for sample in samples
+        if _normalise_population_text(sample["id"]) not in positive_ids
+        and _normalise_prompt(sample["prompt"]) not in positive_prompts
     ]
-    if len(held_out) < needed:
+    held_out_external = [
+        {
+            "id": str(record["id"]),
+            "prompt": str(record["prompt"]),
+            "source": "external-negative",
+        }
+        for record in external_records
+    ]
+    prompt_pool = [*held_out_dataset, *held_out_external]
+    if not prompt_pool:
         raise ValueError(
-            f"calibration negative supplement requires {needed} held-out "
-            f"dataset prompts but only {len(held_out)} remain outside the "
-            "positive evaluation set"
+            "calibration negative supplement requires at least one held-out "
+            "prompt from the dataset remainder or external negative input"
         )
-    selected = held_out[:needed]
+    selected = [prompt_pool[index % len(prompt_pool)] for index in range(needed)]
     options = _local_hf_runtime_options(args, config, "calibrate")
     from wfcllm.gate.production import LocalHFProgramGenerator
 
@@ -409,19 +379,39 @@ def _generate_unwatermarked_negative_supplement(
         torch_dtype=str(decoding["torch_dtype"]),
     )
     dataset = str(generation.get("dataset", "humaneval"))
-    records = [
-        {
-            "id": sample["id"],
-            "dataset": dataset,
-            "prompt": sample["prompt"],
-            "final_code": program.generate_program(
-                prompt=sample["prompt"],
-                sample_id=sample["id"],
-            ),
-        }
-        for sample in selected
-    ]
-    return records, options.generation_model_path.name, decoding
+    records: list[dict[str, str]] = []
+    used_ids = {str(record["id"]) for record in external_records}
+    for index, sample in enumerate(selected):
+        base_id = str(sample["id"])
+        sample_id = (
+            base_id
+            if base_id not in used_ids and index < len(held_out_dataset)
+            else (
+                "calibration-supplement/"
+                f"{index:06d}/"
+                + hashlib.sha256(
+                    f"{sample['source']}\0{base_id}\0{index}".encode("utf-8")
+                ).hexdigest()[:16]
+            )
+        )
+        used_ids.add(sample_id)
+        prompt = str(sample["prompt"])
+        records.append(
+            {
+                "id": sample_id,
+                "dataset": dataset,
+                "prompt": prompt,
+                "final_code": program.generate_program(
+                    prompt=prompt,
+                    sample_id=sample_id,
+                ),
+            }
+        )
+    return (
+        records,
+        _generation_model_identifier(options.generation_model_path),
+        decoding,
+    )
 
 
 def _gated_negative_decoding_config(
@@ -459,15 +449,15 @@ def _gated_negative_decoding_config(
     return overridden
 
 
-def _gated_positive_sample_ids(
+def _gated_positive_population(
     args: argparse.Namespace,
     config: Mapping[str, object],
-) -> set[str]:
-    """Read only the id column of this run's generate output.
+) -> tuple[set[str], set[str]]:
+    """Read this run's public positive identity without using quality signals.
 
     inputs/final_code.jsonl is a generate artifact of the same run; reading
-    its id list here enforces the held-out guarantee for supplement prompts.
-    Only ids are used — never detection or quality signals.
+    its IDs and prompts here enforces the held-out guarantee for every negative
+    row.  Detection, correctness, and quality signals are never read.
     """
 
     final_code_path = (
@@ -478,157 +468,190 @@ def _gated_positive_sample_ids(
             "calibration negative supplement requires the generate output "
             "inputs/final_code.jsonl to hold out positive prompts"
         )
-    ids: set[str] = set()
-    for line_number, line in enumerate(
-        final_code_path.read_text(encoding="utf-8").splitlines(), start=1
-    ):
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError as exc:
+    from wfcllm.detection.gated_pipeline import load_jsonl_records
+
+    records = load_jsonl_records(final_code_path)
+    ids = {_normalise_population_text(record["id"]) for record in records}
+    prompts = {_normalise_prompt(record["prompt"]) for record in records}
+    return ids, prompts
+
+
+def _assert_negative_population_is_held_out(
+    records: list[dict[str, object]],
+    *,
+    positive_ids: set[str],
+    positive_prompts: set[str],
+    label: str,
+) -> None:
+    for index, record in enumerate(records, start=1):
+        record_id = _normalise_population_text(record["id"])
+        prompt = _normalise_prompt(record["prompt"])
+        if record_id in positive_ids:
             raise ValueError(
-                f"invalid generate output row final_code.jsonl:{line_number}"
-            ) from exc
-        if not isinstance(record, Mapping) or "id" not in record:
-            raise ValueError(
-                f"generate output row must carry an id final_code.jsonl:{line_number}"
+                f"{label} row {index} overlaps the positive population by id"
             )
-        ids.add(str(record["id"]))
-    return ids
+        if prompt in positive_prompts:
+            raise ValueError(
+                f"{label} row {index} overlaps the positive population by prompt"
+            )
+
+
+def _normalise_population_text(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("population identity must be a non-empty string")
+    return unicodedata.normalize("NFKC", value).casefold().strip()
+
+
+def _normalise_prompt(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("population prompt must be a non-empty string")
+    return unicodedata.normalize("NFKC", value).replace("\r\n", "\n").strip()
 
 
 def run_detect(args: argparse.Namespace, state: RunStateManager) -> int:
-    config = get_config(args)
-    if _is_gated(config):
-        _runtime_secret(args, "deployment")
-        _path, bundle_hash = resolve_gate_bundle(args)
-        if state.get("generate", "gate_bundle_sha256") != bundle_hash:
-            raise ValueError("detect requires the same gate bundle as generate")
-        if state.get("calibrate", "gate_bundle_sha256") != bundle_hash:
-            raise ValueError("detect requires the same gate bundle as calibrate")
-        detector_input = getattr(args, "input", None)
-        if detector_input is None:
-            raise ValueError("gated detect requires --input")
-        from wfcllm.detection.gated_pipeline import load_gated_calibration_artifact
+    config = _require_gated_config(args)
+    run_dir = _gate_run_dir(args, config)
+    _runtime_secret(args, "deployment")
+    _path, bundle_hash = resolve_gate_bundle(args)
+    if state.get("generate", "gate_bundle_sha256") != bundle_hash:
+        raise ValueError("detect requires the same gate bundle as generate")
+    if state.get("calibrate", "gate_bundle_sha256") != bundle_hash:
+        raise ValueError("detect requires the same gate bundle as calibrate")
+    _verify_frozen_generation_artifacts(state, run_dir)
+    detector_input = run_dir / "inputs" / "final_code.jsonl"
+    from wfcllm.detection.gated_pipeline import load_gated_calibration_artifact
 
-        calibration_path = getattr(args, "calibration", None) or state.get(
-            "calibrate", "calibration_path"
-        )
-        if not calibration_path:
-            raise ValueError("gated detect requires a calibration artifact")
-        artifact = load_gated_calibration_artifact(calibration_path)
-        artifact_negative_hash = getattr(
-            artifact, "negative_corpus_manifest_sha256", None
-        )
-        if isinstance(artifact_negative_hash, str):
-            setattr(args, "_gated_negative_corpus_hash", artifact_negative_hash)
-        pipeline = _require_gated_detection_pipeline(args)
-        details_path = _gated_detection_output(args, config)
-        pipeline.detect_jsonl(
-            detector_input,
-            artifact=artifact,
-            output_path=details_path,
-        )
-        state.mark_done(
-            "detect",
-            method=_GATED_METHOD,
-            detector_mode="wfcllm-gated-semantic-window/v1",
-            gate_bundle_sha256=bundle_hash,
-            details_path=(str(details_path) if details_path else None),
-        )
-    else:
-        state.mark_done("detect")
+    calibration_path = run_dir / "calibration" / "reference_calibration.json"
+    if state.get("calibrate", "calibration_sha256") != _safe_file_hash(
+        calibration_path
+    ):
+        raise ValueError("current calibration artifact hash mismatch")
+    artifact = load_gated_calibration_artifact(calibration_path)
+    current_negative_manifest_hash = _validate_negative_corpus_manifest(run_dir)
+    if (
+        artifact.negative_corpus_manifest_sha256
+        != current_negative_manifest_hash
+    ):
+        raise ValueError("calibration negative corpus manifest hash mismatch")
+    setattr(
+        args,
+        "_gated_negative_manifest_hash",
+        artifact.negative_corpus_manifest_sha256,
+    )
+    pipeline = _require_gated_detection_pipeline(args)
+    details_path = _gated_detection_output(args, config)
+    pipeline.detect_jsonl(
+        detector_input,
+        artifact=artifact,
+        output_path=details_path,
+    )
+    if not details_path.is_file():
+        raise ValueError("detect did not produce positive_details.jsonl")
+    detail_rows = _read_public_json_artifacts(details_path)
+    if not detail_rows:
+        raise ValueError("positive detection details must not be empty")
+    state.mark_done(
+        "detect",
+        method=_GATED_METHOD,
+        detector_mode="wfcllm-gated-semantic-window/v1",
+        gate_bundle_sha256=bundle_hash,
+        details_path=str(details_path),
+        details_sha256=_safe_file_hash(details_path),
+        details_row_count=len(detail_rows),
+    )
     print("=== WFCLLM detect ===")
     return 0
 
 
 def run_report(args: argparse.Namespace, state: RunStateManager) -> int:
-    config = get_config(args)
-    if _is_gated(config):
-        metrics = getattr(args, "_gated_report_metrics", None)
-        if metrics is None:
-            run_dir_value = getattr(args, "run_dir", None)
-            metrics = (
-                _gated_report_metrics_from_artifacts(Path(run_dir_value), config)
-                if run_dir_value is not None
-                else {}
-            )
-        if not isinstance(metrics, Mapping):
-            raise ValueError("gated report metrics must be a mapping")
-        allowed_metrics = {
-            "gate_coverage",
-            "hit_count",
-            "miss_count",
-            "abstain_count",
-            "rewrite_cost",
-            "detection_curve",
-            "calibration",
-        }
-        report_fields = {name: metrics.get(name) for name in sorted(allowed_metrics)}
-
-        generation_section = (
-            config.get("generation") if isinstance(config, Mapping) else None
+    config = _require_gated_config(args)
+    metrics = getattr(args, "_gated_report_metrics", None)
+    run_dir_value = getattr(args, "run_dir", None)
+    if metrics is None:
+        if run_dir_value is None:
+            raise ValueError("report requires --run-dir")
+        metrics = _gated_report_metrics_from_artifacts(
+            Path(run_dir_value), config
         )
-        if not isinstance(generation_section, Mapping):
-            generation_section = {}
-        model_path_value = getattr(args, "generation_model_path", None)
-        report_fields["dataset"] = generation_section.get("dataset")
-        report_fields["language"] = str(generation_section.get("language", "python"))
-        report_fields["generation_model"] = (
-            Path(str(model_path_value)).name if model_path_value else None
-        )
+    if not isinstance(metrics, Mapping):
+        raise ValueError("gated report metrics must be a mapping")
+    allowed_metrics = {
+        "gate_coverage",
+        "hit_count",
+        "miss_count",
+        "abstain_count",
+        "rewrite_cost",
+        "detection_curve",
+        "calibration",
+    }
+    report_fields = {name: metrics.get(name) for name in sorted(allowed_metrics)}
 
-        posthoc = getattr(args, "_posthoc_pass_report", None)
-        run_dir_value = getattr(args, "run_dir", None)
-        if posthoc is None and run_dir_value is not None:
-            posthoc_path = Path(run_dir_value) / "reports" / "pass_report_posthoc.json"
-            if posthoc_path.exists():
-                posthoc = _load_json_object(posthoc_path)
-        if posthoc is not None:
-            if not isinstance(posthoc, dict):
-                raise ValueError("posthoc pass report must be an object")
-            from wfcllm.audit.artifact_integrity import assert_posthoc_pass_report_marker
+    generation_section = config.get("generation")
+    if not isinstance(generation_section, Mapping):
+        raise ValueError("generation config is missing")
+    report_fields["dataset"] = generation_section.get("dataset")
+    report_fields["language"] = str(generation_section.get("language", "python"))
 
-            assert_posthoc_pass_report_marker(posthoc)
-            report_fields["posthoc_pass_report"] = dict(posthoc)
-        if run_dir_value is not None:
-            report_path = Path(run_dir_value) / "reports" / "reference_report.json"
-            report_path.parent.mkdir(parents=True, exist_ok=True)
-            _write_public_json(
-                report_path,
-                {
-                    "method": _GATED_METHOD,
-                    "detector_mode": "wfcllm-gated-semantic-window/v1",
-                    **report_fields,
-                },
-            )
-        state.mark_done(
-            "report",
-            method=_GATED_METHOD,
-            detector_mode="wfcllm-gated-semantic-window/v1",
+    posthoc = getattr(args, "_posthoc_pass_report", None)
+    if posthoc is None and run_dir_value is not None:
+        posthoc_path = Path(run_dir_value) / "reports" / "pass_report_posthoc.json"
+        if posthoc_path.exists():
+            posthoc = _load_json_object(posthoc_path)
+    if posthoc is not None:
+        if not isinstance(posthoc, dict):
+            raise ValueError("posthoc pass report must be an object")
+        from wfcllm.audit.artifact_integrity import assert_posthoc_pass_report_marker
+
+        assert_posthoc_pass_report_marker(posthoc)
+        report_fields["posthoc_pass_report"] = dict(posthoc)
+    if run_dir_value is None:
+        raise ValueError("report requires --run-dir")
+    run_dir = Path(run_dir_value)
+    _verify_frozen_generation_artifacts(state, run_dir)
+    calibration_path = run_dir / "calibration" / "reference_calibration.json"
+    if state.get("calibrate", "calibration_sha256") != _safe_file_hash(
+        calibration_path
+    ):
+        raise ValueError("current calibration artifact hash mismatch")
+    details_path = run_dir / "detection" / "positive_details.jsonl"
+    if state.get("detect", "details_sha256") != _safe_file_hash(details_path):
+        raise ValueError("current positive detection details hash mismatch")
+    generation_model_identifier = state.get(
+        "generate", "generation_model_identifier"
+    )
+    if (
+        not isinstance(generation_model_identifier, str)
+        or not generation_model_identifier
+    ):
+        raise ValueError("current generation model identity is missing")
+    report_fields["generation_model"] = generation_model_identifier
+    report_path = Path(run_dir_value) / "reports" / "reference_report.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_public_json(
+        report_path,
+        {
+            "method": _GATED_METHOD,
+            "detector_mode": "wfcllm-gated-semantic-window/v1",
             **report_fields,
-        )
-    else:
-        method = config.get("method") if isinstance(config, Mapping) else None
-        method_name = method.get("name") if isinstance(method, Mapping) else None
-        from wfcllm.detection.config import DETECTOR_MODE
-
-        state.mark_done(
-            "report",
-            method=method_name,
-            detector_mode=DETECTOR_MODE,
-        )
+        },
+    )
+    state.mark_done(
+        "report",
+        method=_GATED_METHOD,
+        detector_mode="wfcllm-gated-semantic-window/v1",
+        report_path=str(report_path),
+        report_sha256=_safe_file_hash(report_path),
+        **report_fields,
+    )
     print("=== WFCLLM report ===")
     return 0
 
 
 def run_audit(args: argparse.Namespace, state: RunStateManager) -> int:
+    config = _require_gated_config(args)
     run_dir_value = getattr(args, "run_dir", None)
     if run_dir_value is None:
-        state.mark_done("audit")
-        print("=== WFCLLM audit ===")
-        return 0
+        raise ValueError("audit requires --run-dir")
 
     run_dir = Path(run_dir_value)
     final_code = run_dir / "inputs" / "final_code.jsonl"
@@ -642,45 +665,71 @@ def run_audit(args: argparse.Namespace, state: RunStateManager) -> int:
     if detector_summary.get("ok") is not True:
         raise ValueError("official detector input integrity audit failed")
 
-    artifact_paths = (
+    negative_corpus = run_dir / "calibration" / "negative_corpus.jsonl"
+    if not negative_corpus.is_file():
+        raise ValueError(f"required audit artifact is missing: {negative_corpus}")
+    negative_summary = audit_detector_input_file(negative_corpus)
+    if negative_summary.get("ok") is not True:
+        raise ValueError("calibration detector input integrity audit failed")
+
+    artifact_paths = [
         run_dir / "gate-data" / "manifest.json",
         run_dir / "gate-data" / "window_groups.jsonl",
         run_dir / "gate-data" / "candidate_attempts.jsonl",
         run_dir / "gate-data" / "labels.jsonl",
         run_dir / "gate-data" / "split_manifest.json",
         run_dir / "gate-data" / "training_key_bank_manifest.json",
+        run_dir / "gate-data" / "group_index.jsonl",
         run_dir / "gate-data" / "feasibility_summary.json",
-        run_dir / "gate-train" / "resolved_training_config.json",
-        run_dir / "gate-train" / "training_metrics.jsonl",
         run_dir / "gate-train" / "development_summary.json",
         run_dir / "gate-train" / "candidate_bundle_manifest.json",
+        run_dir / "generation" / "manifest.json",
         run_dir / "generation" / "audit.jsonl",
         run_dir / "generation" / "candidate_sidecar.jsonl",
+        run_dir / "generation" / "progress.json",
+        negative_corpus,
+        run_dir / "calibration" / "negative_corpus_manifest.json",
         run_dir / "calibration" / "reference_calibration.json",
         run_dir / "detection" / "positive_details.jsonl",
         run_dir / "reports" / "reference_report.json",
-        run_dir / "reports" / "model_negative_report.json",
-    )
+    ]
+    generation = config.get("generation")
+    if (
+        isinstance(generation, Mapping)
+        and generation.get("program_finalizer") != "none"
+    ):
+        artifact_paths.append(run_dir / "generation" / "finalizer.jsonl")
     audited = 0
     for path in artifact_paths:
-        if not path.exists():
-            continue
+        if not path.is_file():
+            raise ValueError(f"required audit artifact is missing: {path}")
         for payload in _read_public_json_artifacts(path):
             audit_gate_artifact(payload)
             no_quality = audit_no_quality_gate_payload(payload)
             if no_quality.get("ok") is not True:
                 raise ValueError("formal artifact no-quality-gate audit failed")
             audited += 1
+    _verify_frozen_generation_artifacts(state, run_dir)
+    if _validate_negative_corpus_manifest(run_dir) != state.get(
+        "calibrate", "negative_corpus_manifest_sha256"
+    ):
+        raise ValueError("current negative corpus manifest hash mismatch")
+    if state.get("calibrate", "calibration_sha256") != _safe_file_hash(
+        run_dir / "calibration" / "reference_calibration.json"
+    ):
+        raise ValueError("current calibration artifact hash mismatch")
+    if state.get("detect", "details_sha256") != _safe_file_hash(
+        run_dir / "detection" / "positive_details.jsonl"
+    ):
+        raise ValueError("current positive detection details hash mismatch")
+    if state.get("report", "report_sha256") != _safe_file_hash(
+        run_dir / "reports" / "reference_report.json"
+    ):
+        raise ValueError("current reference report hash mismatch")
+    resolve_gate_bundle(args)
 
     from wfcllm.audit import reject_secret_key_leak
 
-    for config_path in (
-        run_dir / "config" / "resolved_config.json",
-        run_dir / "config" / "method_preset.json",
-    ):
-        if config_path.exists():
-            reject_secret_key_leak(_load_json_object(config_path))
-            audited += 1
     posthoc_path = run_dir / "reports" / "pass_report_posthoc.json"
     if posthoc_path.exists():
         posthoc = _load_json_object(posthoc_path)
@@ -694,7 +743,20 @@ def run_audit(args: argparse.Namespace, state: RunStateManager) -> int:
     audit_dir.mkdir(parents=True, exist_ok=True)
     _write_public_json(audit_dir / "detector_input_integrity.json", detector_summary)
     no_quality_summary = {"ok": True, "artifacts_checked": audited}
-    artifact_summary = {"ok": True, "artifacts_checked": audited}
+    artifact_summary = {
+        "ok": True,
+        "artifacts_checked": audited,
+        "final_code_sha256": _safe_file_hash(final_code),
+        "calibration_sha256": _safe_file_hash(
+            run_dir / "calibration" / "reference_calibration.json"
+        ),
+        "positive_details_sha256": _safe_file_hash(
+            run_dir / "detection" / "positive_details.jsonl"
+        ),
+        "reference_report_sha256": _safe_file_hash(
+            run_dir / "reports" / "reference_report.json"
+        ),
+    }
     _write_public_json(audit_dir / "no_quality_gate_integrity.json", no_quality_summary)
     _write_public_json(audit_dir / "artifact_integrity.json", artifact_summary)
     state.mark_done(
@@ -761,7 +823,11 @@ def _gated_report_metrics_from_artifacts(
     """Aggregate public gated metrics without adding detector evidence."""
 
     details_path = run_dir / "detection" / "positive_details.jsonl"
-    details = _read_public_json_artifacts(details_path) if details_path.exists() else []
+    if not details_path.is_file():
+        raise ValueError("current positive detection details are missing")
+    details = _read_public_json_artifacts(details_path)
+    if not details:
+        raise ValueError("current positive detection details are empty")
     hit_count = sum(int(row.get("hit_count", 0)) for row in details if isinstance(row, dict))
     miss_count = sum(int(row.get("miss_count", 0)) for row in details if isinstance(row, dict))
     abstain_count = sum(
@@ -807,14 +873,9 @@ def _gated_report_metrics_from_artifacts(
                     selected_rewrite_count += int(selected_index > 0)
 
     calibration_path = run_dir / "calibration" / "reference_calibration.json"
-    calibration: object = None
-    if calibration_path.exists():
-        calibration = _load_json_object(calibration_path)
-    elif isinstance(config.get("calibration"), Mapping):
-        calibration = {
-            name: config["calibration"].get(name)
-            for name in ("method", "group_by", "target_fpr")
-        }
+    if not calibration_path.is_file():
+        raise ValueError("current calibration artifact is missing")
+    calibration: object = _load_json_object(calibration_path)
 
     return {
         "gate_coverage": gate_coverage,
@@ -837,6 +898,57 @@ def _gated_report_metrics_from_artifacts(
     }
 
 
+def _resolve_current_pilot_feasibility(
+    args: argparse.Namespace,
+    config: Mapping[str, object],
+    *,
+    scale: str,
+) -> Path | None:
+    """Bind Full gate phases to the fresh canonical sibling pilot run."""
+
+    supplied = _optional_runtime_path(args, "pilot_feasibility")
+    if scale == "pilot":
+        if supplied is not None:
+            raise ValueError("pilot gate-data must not consume another pilot artifact")
+        return None
+    if scale != "full":
+        raise ValueError("gate-data scale must be pilot or full")
+    if supplied is None:
+        raise ValueError("full Gate phases require --pilot-feasibility")
+    run_dir = _canonical_local_path(_gate_run_dir(args, config))
+    expected = _canonical_local_path(
+        run_dir.parent / "pilot" / "gate-data" / "feasibility_summary.json"
+    )
+    if _canonical_local_path(supplied) != expected:
+        raise ValueError(
+            "pilot feasibility must come from the fresh canonical sibling "
+            "pilot/gate-data/feasibility_summary.json"
+        )
+    pilot_state_path = run_dir.parent / "pilot_state.json"
+    if not pilot_state_path.is_file():
+        raise ValueError("fresh pilot run state is missing")
+    pilot_state = RunStateManager(pilot_state_path)
+    if not pilot_state.is_done("gate-data"):
+        raise ValueError("fresh pilot gate-data phase is incomplete")
+    from wfcllm.gate.production import experiment_contract_hash
+
+    if pilot_state.get("gate-data", "config_hash") != experiment_contract_hash(
+        config
+    ):
+        raise ValueError("pilot feasibility config hash mismatch")
+    pilot_output = expected.parent
+    if (
+        pilot_state.get("gate-data", "manifest_path")
+        != str(pilot_output / "manifest.json")
+        or pilot_state.get("gate-data", "output_artifact_path")
+        != str(pilot_output)
+        or pilot_state.get("gate-data", "output_artifact_hash")
+        != _stable_tree_hash(pilot_output)
+    ):
+        raise ValueError("pilot feasibility is not bound to the fresh pilot state")
+    return expected
+
+
 def run_gate_data(args: argparse.Namespace, state: RunStateManager) -> int:
     from wfcllm.gate.feasibility import FEASIBILITY_THRESHOLD_ITEMS
     from wfcllm.gate.pipeline import GateDataPipelineConfig, run_gate_data as pipeline
@@ -849,11 +961,15 @@ def run_gate_data(args: argparse.Namespace, state: RunStateManager) -> int:
     from wfcllm.gate.production import experiment_contract_hash
 
     resolved_hash = experiment_contract_hash(config)
+    pilot_feasibility = _resolve_current_pilot_feasibility(
+        args,
+        config,
+        scale=str(gate_data["scale"]),
+    )
     thresholds = tuple(
         (name, gate_data["feasibility_thresholds"][name])
         for name, _value in FEASIBILITY_THRESHOLD_ITEMS
     )
-    fast_experimental = _uses_fast_experimental_gate_training(config)
     pipeline_config = GateDataPipelineConfig(
         output_root=run_dir,
         scale=gate_data["scale"],
@@ -864,19 +980,15 @@ def run_gate_data(args: argparse.Namespace, state: RunStateManager) -> int:
         lsh_config_hash=_canonical_hash(config["semantic_lsh"]),
         feasibility_contract=gate_data["feasibility_contract_version"],
         feasibility_thresholds=thresholds,
-        pilot_feasibility_path=_optional_runtime_path(args, "pilot_feasibility"),
+        pilot_feasibility_path=pilot_feasibility,
         max_groups=int(gate_data["full_independent_group_max"]),
-        fast_experimental=fast_experimental,
     )
     input_hash = compute_phase_input_hash(args, "gate-data")
     result = pipeline(pipeline_config, dependencies)
     expected_output, expected_manifest = _require_expected_gate_result_paths(
         args, "gate-data", result.output_dir, result.manifest_path
     )
-    if fast_experimental:
-        _require_experimental_manifest(result.manifest, "gate-data")
-    else:
-        _require_formal_manifest(result.manifest, "gate-data")
+    _require_formal_manifest(result.manifest, "gate-data")
     if result.manifest.get("config_hash") != resolved_hash:
         raise ValueError("gate-data output manifest config hash mismatch")
     _require_same_input_hash(args, "gate-data", input_hash)
@@ -900,16 +1012,14 @@ def run_gate_train(args: argparse.Namespace, state: RunStateManager) -> int:
     dependencies = _formal_gate_dependencies(args, "gate-train")
     run_dir = _gate_run_dir(args, config)
     data_dir = run_dir / "gate-data"
-    fast_experimental = _uses_fast_experimental_gate_training(config)
     data_manifest = _load_json_object(data_dir / "manifest.json")
-    if fast_experimental:
-        _require_experimental_manifest(data_manifest, "gate-data")
-    else:
-        _require_formal_manifest(data_manifest, "gate-data")
-    pilot = _optional_runtime_path(args, "pilot_feasibility")
+    _require_formal_manifest(data_manifest, "gate-data")
     from wfcllm.gate.production import experiment_contract_hash
 
     resolved_hash = experiment_contract_hash(config)
+    pilot = _resolve_current_pilot_feasibility(
+        args, config, scale="full"
+    )
     input_hash = compute_phase_input_hash(args, "gate-train")
     result = pipeline(
         GateTrainPipelineConfig(
@@ -917,17 +1027,13 @@ def run_gate_train(args: argparse.Namespace, state: RunStateManager) -> int:
             data_dir=data_dir,
             config_hash=resolved_hash,
             pilot_feasibility_path=pilot,
-            fast_experimental=fast_experimental,
         ),
         dependencies,
     )
     expected_output, expected_manifest = _require_expected_gate_result_paths(
         args, "gate-train", result.output_dir, result.manifest_path
     )
-    if fast_experimental:
-        _require_experimental_manifest(result.manifest, "gate-train")
-    else:
-        _require_formal_manifest(result.manifest, "gate-train")
+    _require_formal_manifest(result.manifest, "gate-train")
     if result.manifest.get("config_hash") != resolved_hash:
         raise ValueError("gate-train output manifest config hash mismatch")
     _require_same_input_hash(args, "gate-train", input_hash)
@@ -974,15 +1080,9 @@ def compute_phase_input_hash(args: argparse.Namespace, phase: str) -> str:
             bytes.fromhex(
                 _canonical_hash(
                     {
-                        "gate_epochs": _gate_training_runtime_int(
-                            args, config, "gate_epochs", "max_epochs", 4
-                        ),
-                        "gate_early_stopping_patience": _gate_training_runtime_int(
-                            args,
-                            config,
-                            "gate_early_stopping_patience",
-                            "early_stopping_patience",
-                            1,
+                        "gate_epochs": int(config["gate_train"]["max_epochs"]),
+                        "gate_early_stopping_patience": int(
+                            config["gate_train"]["early_stopping_patience"]
                         ),
                     }
                 )
@@ -1003,47 +1103,24 @@ def _candidate_config_hash_matches(
 
     if not isinstance(expected_hash, str):
         return False
-    if config.get("experiment", {}).get("profile") == "fast":
-        return True
     return expected_hash == experiment_contract_hash(config)
 
 
 def resolve_gate_bundle(args: argparse.Namespace) -> tuple[Path, str]:
-    """Resolve the hash-bound gate bundle consumed by generate/calibrate/detect.
-
-    An externally referenced bundle (``method.gate.bundle_path`` plus
-    ``bundle_sha256``) takes precedence; otherwise the gate-train candidate
-    bundle of the current run is resolved through its publication manifest.
-    """
+    """Resolve the hash-bound gate-train candidate from this current run."""
 
     config = _require_gated_config(args)
-    gate = config["method"]["gate"]
-    configured_path = gate.get("bundle_path")
-    configured_hash = gate.get("bundle_sha256")
-    if configured_path is not None:
-        if not isinstance(configured_path, str) or not isinstance(configured_hash, str):
-            raise ValueError("external gate bundle path/hash are required together")
-        path = Path(configured_path)
-        actual = _safe_tree_hash(path)
-        if actual != configured_hash:
-            raise ValueError("external gate bundle hash mismatch")
-        _require_candidate_bundle_layout(path)
-        if _safe_tree_hash(path) != actual:
-            raise ValueError("external gate bundle changed while loading")
-        return path, actual
-
     run_dir = _gate_run_dir(args, config)
     candidate = run_dir / "gate-train" / "candidate_bundle"
-    publication = _load_json_object(
+    candidate_manifest = _load_json_object(
         run_dir / "gate-train" / "candidate_bundle_manifest.json"
     )
-    if _uses_fast_experimental_gate_training(config):
-        _require_experimental_manifest(publication, "gate-train")
-    else:
-        _require_formal_manifest(publication, "gate-train")
-    if not _candidate_config_hash_matches(publication.get("config_hash"), config):
+    _require_formal_manifest(candidate_manifest, "gate-train")
+    if not _candidate_config_hash_matches(
+        candidate_manifest.get("config_hash"), config
+    ):
         raise ValueError("gate candidate bundle config hash mismatch")
-    expected = publication.get("candidate_bundle_sha256")
+    expected = candidate_manifest.get("candidate_bundle_sha256")
     actual = _safe_tree_hash(candidate)
     if expected != actual:
         raise ValueError("gate candidate bundle hash mismatch")
@@ -1070,16 +1147,6 @@ def _is_gated(config: object) -> bool:
         isinstance(config, Mapping)
         and isinstance(config.get("method"), Mapping)
         and config["method"].get("name") == _GATED_METHOD
-    )
-
-
-def _uses_fast_experimental_gate_training(config: Mapping[str, object]) -> bool:
-    method = config.get("method")
-    gate = method.get("gate") if isinstance(method, Mapping) else None
-    return (
-        isinstance(gate, Mapping)
-        and gate.get("bundle_path") is None
-        and gate.get("fast_experimental") is True
     )
 
 
@@ -1203,9 +1270,6 @@ def _build_local_gated_generation_pipeline(args: argparse.Namespace):
     )
     from wfcllm.generation.window_rewriter import (
         KeyBlindAstEquivalentWindowRewriter,
-        KeyBlindCppEquivalentWindowRewriter,
-        KeyBlindJavaEquivalentWindowRewriter,
-        KeyBlindWhitespaceWindowRewriter,
     )
 
     config = _require_gated_config(args)
@@ -1271,27 +1335,7 @@ def _build_local_gated_generation_pipeline(args: argparse.Namespace):
             comprehension_alpha=rewrite_config.get("comprehension_alpha", True),
         )
     elif rewrite_strategy == "model_semantic_window":
-        if language == "cpp" and _uses_fast_experimental_gate_training(config):
-            rewriter = KeyBlindCppEquivalentWindowRewriter(
-                extractor=extractor.unit_extractor,
-                window_contract_version=options.window_contract_version,
-            )
-        elif language == "java" and _uses_fast_experimental_gate_training(config):
-            rewriter = KeyBlindJavaEquivalentWindowRewriter(
-                extractor=extractor.unit_extractor,
-                window_contract_version=options.window_contract_version,
-            )
-        else:
-            rewriter = (
-                load_local_causal_rewriter(options)
-                if options.rewrite_model_path is not None
-                else program.rewriter.for_extractor(
-                    extractor.unit_extractor,
-                    window_contract_version=options.window_contract_version,
-                )
-            )
-    elif options.semantic_evidence_rule == "keyed_text_region":
-        rewriter = KeyBlindWhitespaceWindowRewriter()
+        rewriter = load_local_causal_rewriter(options)
     else:
         raise ValueError(f"unsupported gated rewrite strategy: {rewrite_strategy!r}")
     generator = GatedGenerator(
@@ -1303,15 +1347,14 @@ def _build_local_gated_generation_pipeline(args: argparse.Namespace):
             config["semantic_lsh"].get("evidence_channels", 1)
         ),
         extractor=extractor.unit_extractor,
-        accept_certified_rewrite_without_hit=(
-            language in {"cpp", "java"}
-            and _uses_fast_experimental_gate_training(config)
-        ),
     )
     dataset = str(generation.get("dataset", "humaneval"))
     samples = _load_gated_generation_samples(args, generation)
     run_dir = _gate_run_dir(args, config)
     semantic_hash = local_semantic_runtime_hash(options)
+    generation_model_identifier = _generation_model_identifier(
+        options.generation_model_path
+    )
     return GatedGenerationPipeline(
         config=GatedGenerationPipelineConfig(
             output_dir=run_dir,
@@ -1324,6 +1367,7 @@ def _build_local_gated_generation_pipeline(args: argparse.Namespace):
             semantic_encoder_sha256=semantic_hash,
             lsh_config_sha256=_canonical_hash(config["semantic_lsh"]),
             generation_config_sha256=_canonical_hash(generation),
+            generation_model_identifier=generation_model_identifier,
             secret_source_type=(
                 "file" if getattr(args, "secret_key_file", None) else "environment"
             ),
@@ -1363,12 +1407,12 @@ def _build_local_gated_detection_pipeline(args: argparse.Namespace):
         max_tokens=int(config["method"]["gate"]["max_input_tokens"]),
         window_contract_version=options.window_contract_version,
     )
-    negative_hash = getattr(args, "_gated_negative_corpus_hash", None)
+    negative_hash = getattr(args, "_gated_negative_manifest_hash", None)
     if not isinstance(negative_hash, str) or _DIGEST.fullmatch(negative_hash) is None:
-        negative_input = getattr(args, "negative_input", None)
-        if not negative_input:
-            raise ValueError("gated detector runtime requires the calibration corpus hash")
-        negative_hash = _safe_file_hash(Path(negative_input))
+        raise ValueError(
+            "gated detector runtime requires the current negative corpus "
+            "manifest hash"
+        )
     detector = config.get("detector")
     if not isinstance(detector, Mapping):
         raise ValueError("gated detector config is missing")
@@ -1400,9 +1444,6 @@ def _build_local_gated_detection_pipeline(args: argparse.Namespace):
             evidence_channels=int(
                 config["semantic_lsh"].get("evidence_channels", 1)
             ),
-            allow_unsuitable_windows=detector.get(
-                "allow_unsuitable_windows", False
-            ),
         ),
         bindings=GatedDetectionBindings(
             gate_bundle_sha256=bundle_hash,
@@ -1416,48 +1457,26 @@ def _build_local_gated_detection_pipeline(args: argparse.Namespace):
         calibration_group_by=str(
             calibration.get("group_by", "reliable_window_count")
         ),
-        calibration_pool_excludes_insufficient=bool(
-            calibration.get("pool_excludes_insufficient", False)
-        ),
     )
 
 
 def _gated_calibration_output(
     args: argparse.Namespace, config: Mapping[str, object]
 ) -> Path:
-    explicit = getattr(args, "calibration", None)
-    if explicit:
-        return Path(explicit)
     return _gate_run_dir(args, config) / "calibration" / "reference_calibration.json"
 
 
 def _gated_detection_output(
     args: argparse.Namespace, config: Mapping[str, object]
 ) -> Path:
-    explicit = getattr(args, "positive_details", None)
-    if explicit:
-        return Path(explicit)
     return _gate_run_dir(args, config) / "detection" / "positive_details.jsonl"
 
 
 def _gate_run_dir(args: argparse.Namespace, config: Mapping[str, object]) -> Path:
     explicit = getattr(args, "run_dir", None)
-    if explicit is not None:
-        if not isinstance(explicit, (str, Path)) or not str(explicit):
-            raise ValueError("run_dir must be a non-empty local path")
-        path = Path(explicit)
-        _reject_symlink_path(path)
-        return path
-    run_id = getattr(args, "run_id", None)
-    if not isinstance(run_id, str) or not run_id:
-        raise ValueError("gated phases require --run-id or --run-dir")
-    artifacts = config.get("artifacts")
-    run_root = artifacts.get("run_root") if isinstance(artifacts, Mapping) else None
-    if not isinstance(run_root, str) or not run_root:
-        raise ValueError("artifacts.run_root must be a non-empty local path")
-    from wfcllm.method.artifacts import build_run_paths
-
-    path = build_run_paths(run_root, run_id).run_dir
+    if not isinstance(explicit, (str, Path)) or not str(explicit):
+        raise ValueError("gated phases require a non-empty --run-dir")
+    path = Path(explicit)
     _reject_symlink_path(path)
     return path
 
@@ -1506,6 +1525,9 @@ def _require_expected_gate_result_paths(
 def _formal_gate_dependencies(args: argparse.Namespace, phase: str) -> object:
     config = _require_gated_config(args)
     source_manifest = _optional_runtime_path(args, "gate_source_manifest")
+    if source_manifest is None:
+        raise ValueError(f"--gate-source-manifest is required for {phase}")
+    _validate_current_source_manifest(args, source_manifest)
     adapter_options = _local_hf_runtime_options(args, config, phase)
     base_model_path = adapter_options.gate_base_model_path
     from wfcllm.gate.dependencies import build_local_gate_dependencies
@@ -1526,12 +1548,46 @@ def _formal_gate_dependencies(args: argparse.Namespace, phase: str) -> object:
     return dependencies
 
 
-def _resolve_semantic_encoder_checkpoint(args: argparse.Namespace) -> Path | None:
-    """Prefer the explicit checkpoint; fall back to the run's encoder phase."""
+def _validate_current_source_manifest(
+    args: argparse.Namespace,
+    source_manifest: Path,
+) -> None:
+    """Require prepare's complete formal manifest for the current catalog."""
 
-    explicit = _optional_runtime_path(args, "semantic_encoder_checkpoint_path")
-    if explicit is not None:
-        return explicit
+    catalog = _required_runtime_path(args, "gate_source_catalog")
+    from wfcllm.gate.production import load_source_catalog
+    from wfcllm.gate.sources import GateSourceManifest, GateSourceRecord
+
+    records = tuple(load_source_catalog(catalog))
+    expected = GateSourceManifest(
+        tuple(
+            GateSourceRecord(
+                source_family=record.source_family,
+                source_id=record.source_id,
+                code=record.code,
+                repository_id=record.repository_id,
+                task_id=record.task_id,
+                function_id=record.function_id,
+                source_model_id=record.source_model_id,
+                license_id=record.license_id,
+                contract_or_hard_set=record.contract_or_hard_set,
+            )
+            for record in records
+        )
+    ).to_dict()
+    expected["catalog_sha256"] = _safe_file_hash(catalog)
+    if _load_json_object(source_manifest) != expected:
+        raise ValueError(
+            "Gate source manifest does not bind the complete current formal catalog"
+        )
+
+
+def _resolve_semantic_encoder_checkpoint(
+    args: argparse.Namespace,
+    config: Mapping[str, object],
+) -> Path:
+    """Resolve only the semantic encoder trained by this Fresh Reproduction Run."""
+
     from wfcllm.orchestration.state import DEFAULT_STATE_FILE
 
     state_file = getattr(args, "state_file", None)
@@ -1541,15 +1597,51 @@ def _resolve_semantic_encoder_checkpoint(args: argparse.Namespace) -> Path | Non
         else DEFAULT_STATE_FILE
     )
     if not state_path.exists():
-        return None
+        raise ValueError("current run semantic encoder state is missing")
     try:
-        recorded = RunStateManager(path=state_path).get("encoder", "best_model_path")
-    except (OSError, RuntimeError, ValueError):
-        return None
+        encoder_state = RunStateManager(path=state_path)
+        recorded = encoder_state.get("encoder", "best_model_path")
+        recorded_hash = encoder_state.get("encoder", "best_model_sha256")
+        recorded_catalog_hash = encoder_state.get(
+            "encoder", "source_catalog_sha256"
+        )
+        recorded_config_hash = encoder_state.get("encoder", "config_sha256")
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError("current run semantic encoder state is invalid") from exc
     if not isinstance(recorded, str) or not recorded:
-        return None
-    checkpoint = Path(recorded)
-    _reject_symlink_path(checkpoint)
+        raise ValueError("current run semantic encoder checkpoint is missing")
+    checkpoint = _canonical_local_path(Path(recorded))
+    expected = _canonical_local_path(
+        _gate_run_dir(args, config) / "encoder" / "best_model.pt"
+    )
+    if checkpoint != expected:
+        raise ValueError(
+            "current run semantic encoder checkpoint path does not match "
+            "--run-dir/encoder/best_model.pt"
+        )
+    if not checkpoint.is_file():
+        raise ValueError("current run semantic encoder checkpoint does not exist")
+    if (
+        not isinstance(recorded_hash, str)
+        or _DIGEST.fullmatch(recorded_hash) is None
+        or _safe_file_hash(checkpoint) != recorded_hash
+    ):
+        raise ValueError("current run semantic encoder checkpoint hash mismatch")
+    catalog = _required_runtime_path(args, "gate_source_catalog")
+    if (
+        not isinstance(recorded_catalog_hash, str)
+        or _DIGEST.fullmatch(recorded_catalog_hash) is None
+        or _safe_file_hash(catalog) != recorded_catalog_hash
+    ):
+        raise ValueError("current run semantic encoder source catalog hash mismatch")
+    from wfcllm.gate.production import experiment_contract_hash
+
+    if (
+        not isinstance(recorded_config_hash, str)
+        or _DIGEST.fullmatch(recorded_config_hash) is None
+        or experiment_contract_hash(config) != recorded_config_hash
+    ):
+        raise ValueError("current run semantic encoder config hash mismatch")
     return checkpoint
 
 
@@ -1621,10 +1713,15 @@ def _local_hf_runtime_options(
     return LocalHFGateRuntimeOptions(
         source_catalog=required_runtime_path("gate_source_catalog"),
         generation_model_path=required_runtime_path("generation_model_path"),
-        rewrite_model_path=_optional_runtime_path(args, "rewrite_model_path"),
+        rewrite_model_path=(
+            required_runtime_path("rewrite_model_path")
+            if rewrite.get("strategy") == "model_semantic_window"
+            else None
+        ),
         semantic_encoder_model_path=required_runtime_path("semantic_encoder_model_path"),
-        semantic_encoder_checkpoint_path=_resolve_semantic_encoder_checkpoint(args),
-        semantic_whitening_path=_optional_runtime_path(args, "semantic_whitening_path"),
+        semantic_encoder_checkpoint_path=_resolve_semantic_encoder_checkpoint(
+            args, config
+        ),
         gate_base_model_path=base_model_path,
         model_device=getattr(args, "model_device", "cuda"),
         gate_device=getattr(args, "gate_device", "cuda"),
@@ -1665,9 +1762,7 @@ def _local_hf_runtime_options(
             else 0.95
         ),
         gate_batch_size=getattr(args, "gate_batch_size", 9),
-        gate_epochs=_gate_training_runtime_int(
-            args, config, "gate_epochs", "max_epochs", 4
-        ),
+        gate_epochs=int(gate_train.get("max_epochs", 4)),
         gate_max_tokens=(
             int(gate_train.get("max_tokens", 256))
             if isinstance(gate_train, Mapping)
@@ -1678,41 +1773,15 @@ def _local_hf_runtime_options(
             if isinstance(gate_train, Mapping)
             else 2e-5
         ),
-        gate_early_stopping_patience=_gate_training_runtime_int(
-            args,
-            config,
-            "gate_early_stopping_patience",
-            "early_stopping_patience",
-            1,
+        gate_early_stopping_patience=int(
+            gate_train.get("early_stopping_patience", 1)
         ),
-        gate_resume_checkpoint=_optional_runtime_path(args, "gate_resume_checkpoint"),
         window_contract_version=str(
             method.get("windowing", {}).get(
                 "contract_version", "python-statement-window/v1"
             )
         ),
     )
-
-
-def _gate_training_runtime_int(
-    args: argparse.Namespace,
-    config: Mapping[str, object],
-    argument_name: str,
-    config_name: str,
-    default: int,
-) -> int:
-    override = getattr(args, argument_name, None)
-    gate_train = config.get("gate_train")
-    value = (
-        override
-        if override is not None
-        else gate_train.get(config_name, default)
-        if isinstance(gate_train, Mapping)
-        else default
-    )
-    if type(value) is not int or value <= 0:
-        raise ValueError(f"{argument_name} must be a positive integer")
-    return value
 
 
 def _runtime_secret(
@@ -1855,6 +1924,13 @@ def _safe_tree_hash(root: Path) -> str:
     return digest.hexdigest()
 
 
+def _generation_model_identifier(model_path: Path) -> str:
+    """Return a stable non-secret identity for one validated local model tree."""
+
+    canonical = _canonical_local_path(model_path)
+    return f"{canonical.name}:sha256:{_safe_tree_hash(canonical)}"
+
+
 def _stable_tree_hash(root: Path) -> str:
     first = _safe_tree_hash(root)
     if _safe_tree_hash(root) != first:
@@ -1884,10 +1960,17 @@ def _load_formal_json(path: Path, name: str) -> Mapping[str, object]:
 
 
 def _require_formal_manifest(manifest: Mapping[str, object], name: str) -> None:
-    if manifest.get("diagnostic_test_backend") is not False:
-        raise ValueError(f"{name} diagnostic test backend is not formal")
-    if manifest.get("experimental_only") is True or manifest.get("not_official_method") is True:
-        return
+    formal_identity = {
+        "diagnostic_test_backend": False,
+        "formal_eligible": True,
+        "diagnostic_only": False,
+        "not_official_method": False,
+    }
+    if any(
+        manifest.get(field) is not value
+        for field, value in formal_identity.items()
+    ):
+        raise ValueError(f"{name} artifact does not have complete formal identity")
     formal_schemas = {
         "gate-data": "wfcllm-gate-data-manifest/v1",
         "gate-train": "wfcllm-gate-train-candidate/v1",
@@ -1895,30 +1978,6 @@ def _require_formal_manifest(manifest: Mapping[str, object], name: str) -> None:
     if name in formal_schemas:
         if manifest.get("schema_version") != formal_schemas[name]:
             raise ValueError(f"{name} manifest schema is incompatible")
-        if manifest.get("formal_eligible") is not True:
-            raise ValueError(f"{name} manifest is not formal eligible")
-    elif "formal_eligible" in manifest and manifest.get("formal_eligible") is not True:
-        raise ValueError(f"{name} manifest is not formal eligible")
-
-
-def _require_experimental_manifest(
-    manifest: Mapping[str, object], name: str
-) -> None:
-    expected_schemas = {
-        "gate-data": "wfcllm-gate-data-manifest/v1",
-        "gate-train": "wfcllm-gate-train-candidate/v1",
-    }
-    if name in expected_schemas and manifest.get("schema_version") != expected_schemas[name]:
-        raise ValueError(f"{name} experimental manifest schema is incompatible")
-    expected = {
-        "experimental_only": True,
-        "diagnostic_only": True,
-        "not_official_method": True,
-        "formal_eligible": False,
-    }
-    if any(manifest.get(field) is not value for field, value in expected.items()):
-        raise ValueError(f"{name} is not an explicitly experimental artifact")
-
 
 def _safe_read_file(path: Path, *, max_bytes: int) -> bytes:
     _reject_symlink_path(path)
@@ -1947,202 +2006,12 @@ def _safe_read_file(path: Path, *, max_bytes: int) -> bytes:
             os.close(descriptor)
 
 
-def run_posthoc_pass_report(args: argparse.Namespace, state: RunStateManager) -> int:
-    state.mark_done(
-        "posthoc-pass-report",
-        posthoc_only=True,
-        not_used_for_generation=True,
-        not_used_for_retry=True,
-        not_used_for_selection=True,
-        not_used_for_calibration=True,
-        not_used_for_detection=True,
-    )
-    print("=== WFCLLM posthoc pass report ===")
-    return 0
-
-
-def run_diagnostic_selector(args: argparse.Namespace, state: RunStateManager) -> int:
-    if not getattr(args, "diagnostic_only", False):
-        print("[错误] diagnostic-selector requires --diagnostic-only", file=sys.stderr)
-        return 1
-    state.mark_done(
-        "diagnostic-selector",
-        diagnostic_only=True,
-        not_official_method=True,
-    )
-    print("=== WFCLLM diagnostic selector ===")
-    return 0
-
-
-def run_legacy_ablation(args: argparse.Namespace, state: RunStateManager) -> int:
-    return _legacy_phase_archived(
-        "legacy-ablation",
-        "historical code is under archive/legacy_wfcllm_2026_07/code/ablation "
-        "and scripts/legacy/run_ablation.py is retained as guidance only.",
-    )
-
-
-def run_legacy_watermark(args: argparse.Namespace, state: RunStateManager) -> int:
-    return _legacy_phase_archived(
-        "legacy-watermark",
-        "historical code is under archive/legacy_wfcllm_2026_07/code/watermark.",
-    )
-
-
-def run_legacy_extract(args: argparse.Namespace, state: RunStateManager) -> int:
-    if is_compare_only_mode(args):
-        return _run_with_state_phase(args, state, "legacy-extract", run_extract)
-    return _legacy_phase_archived(
-        "legacy-extract",
-        "historical code is under archive/legacy_wfcllm_2026_07/code/extract.",
-    )
-
-
-def run_legacy_token_channel_train(args: argparse.Namespace, state: RunStateManager) -> int:
-    return _legacy_phase_archived(
-        "legacy-token-channel-train",
-        "historical token-channel code is under "
-        "archive/legacy_wfcllm_2026_07/code/watermark/token_channel.",
-    )
-
-
-def run_legacy_build_entropy_profile(
-    args: argparse.Namespace,
-    state: RunStateManager,
-) -> int:
-    return _legacy_phase_archived(
-        "legacy-build-entropy-profile",
-        "historical adaptive-gamma code is under "
-        "archive/legacy_wfcllm_2026_07/code/watermark/adaptive_gamma.",
-    )
-
-
-def run_legacy_pretrain(args: argparse.Namespace, state: RunStateManager) -> int:
-    return _legacy_phase_archived(
-        "legacy-pretrain",
-        "historical code is under archive/legacy_wfcllm_2026_07/code/pretrain.",
-    )
-
-
-def run_phase(phase: str, args: argparse.Namespace, state: RunStateManager) -> int:
-    """Dispatch to registered phase runners."""
-    runners = {
-        "generate": run_generate,
-        "gate-data": run_gate_data,
-        "gate-train": run_gate_train,
-        "calibrate": run_calibrate,
-        "detect": run_detect,
-        "report": run_report,
-        "audit": run_audit,
-        "posthoc-pass-report": run_posthoc_pass_report,
-        "diagnostic-selector": run_diagnostic_selector,
-        "encoder": run_encoder,
-        "legacy-watermark": run_legacy_watermark,
-        "legacy-extract": run_legacy_extract,
-        "legacy-token-channel-train": run_legacy_token_channel_train,
-        "legacy-build-entropy-profile": run_legacy_build_entropy_profile,
-        "legacy-pretrain": run_legacy_pretrain,
-        "legacy-ablation": run_legacy_ablation,
-    }
-    return runners[phase](args, state)
-
-
 def run_encoder(args: argparse.Namespace, state: RunStateManager) -> int:
-    """阶段一：训练语义编码器。"""
-    import glob
-
-    from wfcllm.encoder.config import EncoderConfig
-    from wfcllm.encoder.train import main as encoder_main
-
-    if _is_gated(get_config(args)):
-        return _run_gated_encoder(args, state)
-
-    print("=== 阶段一：语义编码器预训练 ===")
-
-    if args.eval_only:
-        from wfcllm.encoder.train import evaluate_only
-
-        default_best = str(Path(EncoderConfig().output_model_dir) / "best_model.pt")
-        checkpoint = (
-            args.checkpoint
-            or (default_best if Path(default_best).exists() else None)
-            or state.get("encoder", "checkpoint")
-        )
-        if not checkpoint:
-            print("[错误] 未找到 checkpoint，请用 --checkpoint 指定路径", file=sys.stderr)
-            return 1
-        if not Path(checkpoint).exists():
-            print(f"[错误] checkpoint 不存在：{checkpoint}", file=sys.stderr)
-            return 1
-        print(f"[评测] 使用模型: {checkpoint}")
-
-        config = EncoderConfig()
-        if args.model_name:
-            config.model_name = args.model_name
-        if args.embed_dim:
-            config.embed_dim = args.embed_dim
-        if args.no_lora:
-            config.use_lora = False
-        if args.no_bf16:
-            config.use_bf16 = False
-
-        try:
-            evaluate_only(checkpoint, config)
-        except Exception as e:
-            print(f"[错误] 评测失败：{e}", file=sys.stderr)
-            return 1
-        return 0
-
-    config = EncoderConfig()
-    if args.model_name:
-        config.model_name = args.model_name
-    if args.embed_dim:
-        config.embed_dim = args.embed_dim
-    if args.lr:
-        config.lr = args.lr
-    if args.batch_size:
-        config.batch_size = args.batch_size
-    if args.epochs:
-        config.epochs = args.epochs
-    if args.margin:
-        config.margin = args.margin
-    if args.no_lora:
-        config.use_lora = False
-    if args.no_bf16:
-        config.use_bf16 = False
-
-    if args.model_name is None:
-        local_codet5 = Path(config.local_model_dir) / "codet5-base"
-        if local_codet5.exists() and (local_codet5 / "config.json").exists():
-            config.model_name = str(local_codet5)
-            print(f"[自动] 使用本地模型: {config.model_name}")
-        else:
-            print(f"[回退] 使用 HF Hub 模型: {config.model_name}")
-
-    try:
-        encoder_main(config)
-    except Exception as e:
-        print(f"[错误] 编码器训练失败：{e}", file=sys.stderr)
-        return 1
-
-    best_model_path = str(Path(config.output_model_dir) / "best_model.pt")
-    ckpt_pattern = str(Path(config.checkpoint_dir) / "encoder_epoch*.pt")
-    checkpoints = sorted(glob.glob(ckpt_pattern))
-    checkpoint_path = checkpoints[-1] if checkpoints else config.checkpoint_dir
-
-    state.mark_done("encoder", checkpoint=checkpoint_path, best_model_path=best_model_path)
-    print(f"[完成] 编码器训练完毕，最优模型: {best_model_path}")
-    return 0
-
-
-def _run_gated_encoder(args: argparse.Namespace, state: RunStateManager) -> int:
     """Train the mandatory per-dataset semantic projection for a gated run."""
 
     from wfcllm.encoder import projection_training
 
     config = _require_gated_config(args)
-    if getattr(args, "eval_only", False):
-        raise ValueError("gated encoder phase does not support --eval-only")
     catalog = _required_runtime_path(args, "gate_source_catalog")
     model_path = _required_runtime_path(args, "semantic_encoder_model_path")
     generation = config.get("generation")
@@ -2165,108 +2034,28 @@ def _run_gated_encoder(args: argparse.Namespace, state: RunStateManager) -> int:
             language=language,
         )
     )
-    best_model_path = str(result["best_model_path"])
+    best_model_path = _canonical_local_path(Path(str(result["best_model_path"])))
+    expected_best_model = _canonical_local_path(
+        run_dir / "encoder" / "best_model.pt"
+    )
+    if best_model_path != expected_best_model or not best_model_path.is_file():
+        raise ValueError(
+            "encoder trainer must produce the current run checkpoint at "
+            "--run-dir/encoder/best_model.pt"
+        )
     built_group_counts = dict(result["built_group_counts"])
+    from wfcllm.gate.production import experiment_contract_hash
+
     state.mark_done(
         "encoder",
-        checkpoint=best_model_path,
-        best_model_path=best_model_path,
+        run_dir=str(_canonical_local_path(run_dir)),
+        checkpoint=str(best_model_path),
+        best_model_path=str(best_model_path),
+        best_model_sha256=_safe_file_hash(best_model_path),
+        source_catalog_sha256=_safe_file_hash(catalog),
+        config_sha256=experiment_contract_hash(config),
         language=language,
         built_group_counts=built_group_counts,
     )
     print("=== WFCLLM encoder ===")
     return 0
-
-
-def run_watermark(args: argparse.Namespace, state: RunStateManager) -> int:
-    return _legacy_phase_archived(
-        "watermark",
-        "use --phase legacy-watermark --legacy for archive guidance or the new generate phase.",
-    )
-
-
-def run_offline_analysis(args: argparse.Namespace) -> int:
-    from wfcllm.evaluation.detection_report import (
-        build_offline_regression_report,
-        load_detail_artifact,
-        load_summary_artifact,
-        load_watermarked_artifact,
-        write_offline_regression_report,
-    )
-
-    left_watermarked = (
-        load_watermarked_artifact(args.compare_watermarked_left)
-        if args.compare_watermarked_left
-        else None
-    )
-    right_watermarked = (
-        load_watermarked_artifact(args.compare_watermarked_right)
-        if args.compare_watermarked_right
-        else None
-    )
-
-    report = build_offline_regression_report(
-        left_summary=load_summary_artifact(args.compare_summary_left),
-        left_details=load_detail_artifact(args.compare_details_left),
-        left_watermarked=left_watermarked,
-        right_summary=load_summary_artifact(args.compare_summary_right),
-        right_details=load_detail_artifact(args.compare_details_right),
-        right_watermarked=right_watermarked,
-    )
-    output_path = write_offline_regression_report(args.compare_output, report)
-    print(f"[完成] 离线回归报告已保存至 {output_path}")
-    return 0
-
-
-def run_extract(args: argparse.Namespace, state: RunStateManager) -> int:
-    if is_compare_only_mode(args):
-        return run_offline_analysis(args)
-    return _legacy_phase_archived(
-        "extract",
-        "use --phase legacy-extract --legacy for archive guidance or the new detect phase.",
-    )
-
-
-def run_generate_negative(args: argparse.Namespace, state: RunStateManager) -> int:
-    return _legacy_phase_archived(
-        "generate-negative",
-        "historical negative-corpus generation is archived under "
-        "archive/legacy_wfcllm_2026_07/code/extract/calibration.",
-    )
-
-
-def resolve_token_channel_train_config(args: argparse.Namespace) -> dict[str, object]:
-    """Legacy token-channel config resolution is archived."""
-    raise RuntimeError(
-        "token-channel-train config resolution has been archived; see "
-        "archive/legacy_wfcllm_2026_07/code/watermark/token_channel."
-    )
-
-
-def validate_token_channel_train_config(train_cfg: dict[str, object]) -> str | None:
-    """Validate required user-facing inputs before workflow construction."""
-
-    if not train_cfg.get("dataset"):
-        return "[错误] token-channel-train 需要提供 dataset（可通过配置文件或 --dataset 指定）"
-    if not train_cfg.get("lm_model_path"):
-        return "[错误] token-channel-train 需要提供 lm_model_path（可通过配置文件或 --lm-model-path 指定）"
-    return None
-
-
-def run_token_channel_train(args: argparse.Namespace, state: RunStateManager) -> int:
-    return _legacy_phase_archived(
-        "token-channel-train",
-        "historical token-channel training is archived under "
-        "archive/legacy_wfcllm_2026_07/code/watermark/token_channel.",
-    )
-
-
-def run_build_entropy_profile(
-    args: argparse.Namespace,
-    state: RunStateManager,
-) -> int:
-    return _legacy_phase_archived(
-        "build-entropy-profile",
-        "historical adaptive-gamma profile building is archived under "
-        "archive/legacy_wfcllm_2026_07/code/watermark/adaptive_gamma.",
-    )

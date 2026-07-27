@@ -16,21 +16,19 @@ class HumanEvalAdapter(DatasetAdapter):
         self._dataset_path = dataset_path
 
     def iter_samples(self, language: str | None = None) -> Iterator[CodeSample]:
-        from wfcllm.datasets.loaders.local import load_reference_solutions
+        from wfcllm.datasets.loaders.local import load_prompts
 
         if language is not None and language not in self.supported_languages:
             raise ValueError(
                 f"HumanEvalAdapter does not support language={language!r}; "
                 f"supported={self.supported_languages}"
             )
-        rows = load_reference_solutions("humaneval", self._dataset_path)
+        rows = load_prompts("humaneval", self._dataset_path)
         for row in rows:
             yield CodeSample(
                 task_id=row["id"],
                 prompt=row["prompt"],
-                canonical_solution=row["generated_code"],
                 language="python",
-                metadata={},
             )
 
     def get_sample(self, task_id: str) -> CodeSample:

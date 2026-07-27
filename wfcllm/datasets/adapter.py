@@ -8,11 +8,10 @@ from typing import Iterator
 
 @dataclass(frozen=True)
 class CodeSample:
-    """A code-generation benchmark sample, normalised across datasets."""
+    """A reference-free code-generation benchmark sample."""
 
     task_id: str
     prompt: str
-    canonical_solution: str
     language: str
     metadata: dict = field(default_factory=dict)
 

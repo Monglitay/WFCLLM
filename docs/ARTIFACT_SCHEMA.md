@@ -1,117 +1,77 @@
-# Artifact Schema
+# Current Artifact Schema
 
-WFCLLM's official run artifact contract is rooted at `data/runs/<run_id>/`. Artifact-producing workflows must write the layout below when connected to the mainline pipeline.
-
-## Run Layout
+只支持 Fresh Reproduction Run 的当前布局：
 
 ```text
-data/runs/<run_id>/
-  config/
-    resolved_config.json
-    method_preset.json
-  inputs/
-    final_code.jsonl
-  gate-data/
-    manifest.json
-    source_manifest.json
-    window_groups.jsonl
-    candidate_attempts.jsonl
-    labels.jsonl
-    split_manifest.json
-    training_key_bank_manifest.json
-    feasibility_summary.json
-  gate-train/
-    resolved_training_config.json
-    training_metrics.jsonl
-    development_summary.json
-    checkpoints/
-    candidate_bundle/
-    candidate_bundle_manifest.json
-  gate-validate/
-    validation_summary.json
-    agreement_details.jsonl
-    bundle/
-    gate_bundle_manifest.json
-  generation/
-    audit.jsonl
-    candidate_sidecar.jsonl
-    raw_attempt_summary.jsonl
-  calibration/
-    reference_calibration.json
-  detection/
-    positive_details.jsonl
-    reference_negative_details.jsonl
-    model_negative_details.jsonl
-  reports/
-    reference_report.json
-    model_negative_report.json
-    pass_report_posthoc.json
-  audit/
-    detector_input_integrity.json
-    no_quality_gate_integrity.json
-    artifact_integrity.json
-  logs/
-    run.log
+<experiment-root>/
+├── pilot/                       # 独立 pilot encoder + gate-data
+├── pilot-private/               # pilot keys（本地私有）
+├── private/                     # full keys（本地私有）
+├── gate-cache/                  # 本地 cache
+├── pilot_state.json
+├── run_state.json
+└── run/
+    ├── encoder/
+    ├── gate-data/
+    ├── gate-train/
+    │   ├── candidate_bundle/
+    │   └── candidate_bundle_manifest.json
+    ├── inputs/final_code.jsonl
+    ├── generation/
+    ├── calibration/
+    ├── detection/
+    ├── reports/
+    └── audit/
 ```
 
-The three `gate-*` directories belong only to the experimental
-`gated_semantic_window_v1` method. The official `evidence_retry_seed7x3`
-baseline retains its five-stage layout and does not require them.
+## 关键 artifact
 
-## Detector Input Contract
+| 路径 | 生产阶段 | 消费阶段 |
+|---|---|---|
+| `encoder/best_model.pt` | encoder | gate-data、gate-train、generate、detect |
+| `gate-data/manifest.json` | gate-data | gate-train、Metric Contract、audit |
+| `gate-data/window_groups.jsonl` | gate-data | gate-train、audit |
+| `gate-data/feasibility_summary.json` | gate-data | gate-train、audit |
+| `gate-train/candidate_bundle_manifest.json` | gate-train | generate、calibrate、detect、audit |
+| `gate-train/candidate_bundle/` | gate-train | generate、calibrate、detect |
+| `inputs/final_code.jsonl` | generate | detect、posthoc evaluation、audit |
+| `generation/audit.jsonl` | generate | report、audit；绝不是 detector input |
+| `generation/finalizer.jsonl` | generate（启用 finalizer 时） | audit |
+| `generation/progress.json` | generate | audit |
+| `calibration/negative_corpus.jsonl` | calibrate | calibrate、audit |
+| `calibration/reference_calibration.json` | calibrate | detect、report、Metric Contract |
+| `detection/positive_details.jsonl` | detect | report、Metric Contract |
+| `reports/reference_report.json` | report | Metric Contract、audit |
+| `reports/pass_report_posthoc.json` | posthoc | Metric Contract |
+| `reports/metric_contract.jsonl` | audit 后统一汇总 | 当前 Full Reproduction 结果 |
+| `audit/*.json` | audit | 独立完整性检查 |
 
-`inputs/final_code.jsonl` is the only official positive detector input. Each row must contain exactly:
+## 身份与绑定
 
-- `id`
-- `dataset`
-- `prompt`
-- `final_code`
+当前 artifact 使用当前 schema version，并以 SHA-256 绑定配置、source catalog、
+key identifier、Gate Bundle、tokenizer、semantic encoder、window contract、
+negative corpus manifest、generation config 与内容绑定的 generation model
+identity。私有 key bytes 不进入公开 artifact。
 
-Calibration and detection may open this file, their negative final-code
-corpora, the validated gate bundle, and the frozen calibration artifact. They
-must never read `gate-data/`, training checkpoints, generation audit rows, or
-candidate sidecars as detector evidence.
+`generation/manifest.json` 与 run state 同时记录 `final_code_sha256` 和
+`final_code_row_count`；calibrate、detect、report、audit 逐阶段复核。
+calibration、positive detection details、reference report 也由 run state
+记录 SHA-256。`audit/artifact_integrity.json` 汇总这些核心 hash，Metric
+Contract 在读取 report 前再次验证，防止 audit 后篡改。
 
-## Gated Producer/Consumer Contract
+`candidate_bundle_manifest.json` 必须来自同一 run 的 `gate-train`，携带
+`candidate_bundle_sha256` 和当前 experiment contract hash。后续阶段重新计算
+树 hash；不接受外部路径或旧 candidate layout。
 
-| Artifact | Required public fields | Producer | Allowed consumer |
-| --- | --- | --- | --- |
-| `gate-data/manifest.json` | schema/config/input hashes, source and split contract versions, `formal_eligible` | `gate-data` | `gate-train`, audit |
-| `window_groups.jsonl` | group/source IDs, normalized structure, spans and parent descriptor | `gate-data` | `gate-train`, audit |
-| `candidate_attempts.jsonl` | group/window/candidate IDs, rewrite budget, structural/LSH outcomes | `gate-data` | label builder, audit |
-| `labels.jsonl` | group/window IDs, close/suitable labels, budget summaries | `gate-data` | `gate-train`, audit |
-| `split_manifest.json` | source groups, split IDs and provenance hashes | `gate-data` | `gate-train`, `gate-validate`, audit |
-| `training_key_bank_manifest.json` | key-bank identifier/count and hash only | `gate-data` | `gate-train`, audit |
-| `training_metrics.jsonl` | six named losses and aggregate structural metrics | `gate-train` | report, audit |
-| `candidate_bundle_manifest.json` | model/tokenizer/config hashes, candidate status | `gate-train` | `gate-validate`, audit |
-| `validation_summary.json` | fitted thresholds, float/int8 agreement, false-positive and coverage metrics | `gate-validate` | bundle publisher, report, audit |
-| `agreement_details.jsonl` | sample/group IDs and stability decisions; no raw keys | `gate-validate` | audit |
-| `gate_bundle_manifest.json` | bundle tree hash, contract hashes and `validated=true` | `gate-validate` | generate, calibrate, detect, audit |
-| `generation/audit.jsonl` | closed spans, gate probabilities, rewrite decisions, `audit_only=true` | generate | audit/report only |
-| `generation/candidate_sidecar.jsonl` | candidate and selected-index trace, `not_detector_input=true` | generate | audit only |
-| `calibration/reference_calibration.json` | gated detector mode, bundle/config/key identifiers, negative-corpus hash, reliable-window background | calibrate | detect, report, audit |
-| `detection/*_details.jsonl` | final-code-derived spans, parent descriptor, gate probabilities, hit/miss/abstain and margin | detect | report, audit |
+## Test-only artifact
 
-Key-bank and deployment key material is runtime-only. Public artifacts contain
-only non-reversible identifiers or hashes. A formal gate bundle must come from
-the real `gate-validate` publisher, have a matching tree hash, and carry
-`validated=true` with `diagnostic_test_backend=false`. Fake integration
-artifacts are always `diagnostic_only=true`, `not_official_method=true`,
-`formal_eligible=false`, and cannot be relabelled as formal artifacts.
+受控测试可注入轻量依赖。只要测试产生 Gate artifact，就必须携带一致的
+`diagnostic_test_backend=true`、`formal_eligible=false`、`diagnostic_only=true`
+和 `not_official_method=true` 身份。生产 preflight 不接受这些 artifact。
 
-## Generation Sidecars
+## Metric Contract
 
-Files under `generation/` are audit or diagnostic artifacts. They are useful for reproducibility and debugging, but they are not detector inputs.
-
-## Reports
-
-`reports/pass_report_posthoc.json` is allowed only after official generation, calibration, detection, and selection decisions are complete. It must include the marker from `docs/NO_QUALITY_GATE_PROTOCOL.md`.
-
-For gated runs, the formal report keeps the method and detector mode separate
-from proxy-baseline numbers and reports gate coverage, hit/miss/abstain counts,
-rewrite cost, calibration, and the detection curve. A pre-existing pass@1
-artifact may only be merged with all posthoc markers intact.
-
-## Integrity Audits
-
-The `audit/` directory records detector-input and no-quality-gate integrity checks. These artifacts support reproducibility and review; they do not add detector evidence.
+`scripts/wfcllm_metric_contract.py` 只读取上述当前布局，输出
+`wfcllm-metric-contract/v2`。每个已 audit 的有效当前 run 始终得到一行；
+样本不足和缺少 posthoc Pass@1 以 `null` 与 caveat 表达，而不是省略整行。
+其他 Pass@k 可生成当前 posthoc 报告，但不进入 Metric Contract。

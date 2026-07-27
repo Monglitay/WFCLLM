@@ -15,7 +15,6 @@ from wfcllm.detection.code_only import (
     validate_final_code_record_exact,
 )
 from wfcllm.detection.config import GATED_DETECTOR_MODE
-from wfcllm.detection.pipeline import load_jsonl_records
 from wfcllm.detection.scoring import GatedSampleScore, GatedWindowScorer
 from wfcllm.gate.input import GATE_INPUT_CONTRACT_VERSION
 from wfcllm.windowing.contracts import (
@@ -35,19 +34,39 @@ EMPIRICAL_STANDARDIZED_HIT_SURPLUS_RULE = (
 )
 _INSUFFICIENT_STATISTIC_FLOOR = -1e300
 # Surprisal is mathematically non-negative, so 0.0 is its domain lower bound
-# and sorts identically to the historical -1e300 floor while satisfying the
+# and sorts before every sufficient-record value while satisfying the
 # artifact's non-negative background check.
 _INSUFFICIENT_SURPRISAL_SENTINEL = 0.0
 QUANTILE_THRESHOLD_RULE = "pooled_negative_quantile_threshold/v1"
-_POOLED_CALIBRATION_GROUPS = frozenset(
-    {
-        "pooled_reliable_hit_rate",
-        "pooled_reliable_hit_rate_quantile",
-        "pooled_empirical_binomial_surprisal",
-        "pooled_empirical_standardized_hit_surplus",
-    }
-)
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
+
+
+def load_jsonl_records(path: str | Path) -> list[dict[str, Any]]:
+    """Load strict current-schema detector rows from a bounded JSONL file."""
+
+    source = Path(path)
+    if not source.is_file():
+        raise ValueError(f"detector input does not exist: {source}")
+    records: list[dict[str, Any]] = []
+    with source.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"invalid JSONL at {source}:{line_number}: {exc.msg}"
+                ) from exc
+            if not isinstance(value, dict):
+                raise ValueError(
+                    f"detector input row at {source}:{line_number} must be an object"
+                )
+            validate_final_code_record_exact(value)
+            records.append(value)
+    if not records:
+        raise ValueError(f"detector input is empty: {source}")
+    return records
 
 
 @dataclass(frozen=True)
@@ -186,10 +205,6 @@ class GatedCalibrationArtifact:
         if not isinstance(value, Mapping):
             raise ValueError("gated calibration artifact schema mismatch")
         payload = dict(value)
-        # Pre-multichannel artifacts (nocarrier/cpp runs) predate this field;
-        # absence means the non-count-statistic rules, i.e. None.
-        if "null_hit_probability" not in payload:
-            payload["null_hit_probability"] = None
         if set(payload) != fields:
             raise ValueError("gated calibration artifact schema mismatch")
         buckets = payload.get("reliable_window_count_buckets")
@@ -246,7 +261,6 @@ class GatedDetectionPipeline:
         bindings: GatedDetectionBindings,
         target_fpr: float = 0.05,
         calibration_group_by: str = "reliable_window_count",
-        calibration_pool_excludes_insufficient: bool = False,
     ) -> None:
         if not callable(getattr(extractor, "extract", None)):
             raise ValueError("extractor must expose final-code extract")
@@ -270,18 +284,11 @@ class GatedDetectionPipeline:
             "pooled_empirical_standardized_hit_surplus",
         }:
             raise ValueError("unsupported gated calibration grouping")
-        if type(calibration_pool_excludes_insufficient) is not bool:
-            raise ValueError(
-                "calibration_pool_excludes_insufficient must be a bool"
-            )
         self._extractor = extractor
         self._scorer = scorer
         self._bindings = bindings
         self._target_fpr = float(target_fpr)
         self._calibration_group_by = calibration_group_by
-        self._calibration_pool_excludes_insufficient = (
-            calibration_pool_excludes_insufficient
-        )
 
     def calibrate(
         self,
@@ -293,21 +300,6 @@ class GatedDetectionPipeline:
         for record in records:
             validate_final_code_record_exact(record)
             scores.append(self._score_record(record))
-        if (
-            self._calibration_pool_excludes_insufficient
-            and self._calibration_group_by in _POOLED_CALIBRATION_GROUPS
-        ):
-            # Opt-in consistency mode: insufficient-window records are the
-            # very records detect() answers with insufficient_evidence, so
-            # they are skipped entirely instead of entering the pool as
-            # sentinels.  The default (False) keeps the historical
-            # reproduction semantics.
-            scores = [
-                score
-                for score in scores
-                if score.reliable_window_count
-                >= self._scorer.minimum_reliable_windows
-            ]
         buckets: dict[str, list[float]] = {}
         null_hit_probability: float | None = None
         count_statistic_group = self._calibration_group_by in {

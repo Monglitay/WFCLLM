@@ -33,7 +33,6 @@ def _detail(
         "threshold_at_target_fpr": threshold,
         "p_value": 0.5,
         "scoreable_contexts": 1,
-        "proxy_windows": 3,
         "direct_statements": 2,
         "code_chars": 20,
         "insufficient_evidence": insufficient,

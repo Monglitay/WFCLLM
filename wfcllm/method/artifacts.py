@@ -34,8 +34,6 @@ class FinalCodeRecord:
 @dataclass(frozen=True)
 class RunPaths:
     run_dir: Path
-    resolved_config: Path
-    method_preset: Path
     final_code_input: Path
     gate_data_manifest: Path
     gate_window_groups: Path
@@ -43,27 +41,25 @@ class RunPaths:
     gate_labels: Path
     gate_split_manifest: Path
     gate_training_key_bank_manifest: Path
+    gate_group_index: Path
     gate_feasibility_summary: Path
-    gate_resolved_training_config: Path
-    gate_training_metrics: Path
     gate_development_summary: Path
-    gate_checkpoints_dir: Path
     gate_candidate_bundle_dir: Path
     gate_candidate_bundle_manifest: Path
+    generation_manifest: Path
     audit_log: Path
     candidate_sidecar: Path
-    raw_attempt_summary: Path
+    finalizer_audit: Path
+    negative_corpus: Path
+    negative_corpus_manifest: Path
     reference_calibration: Path
     positive_details: Path
-    reference_negative_details: Path
-    model_negative_details: Path
     reference_report: Path
-    model_negative_report: Path
     pass_report_posthoc: Path
+    metric_contract: Path
     detector_integrity: Path
     no_quality_gate_integrity: Path
     artifact_integrity: Path
-    run_log: Path
 
 
 def _component_name_max(run_root: str | Path) -> int:
@@ -102,8 +98,6 @@ def build_run_paths(run_root: str | Path, run_id: str) -> RunPaths:
     run_dir = Path(run_root) / run_id
     return RunPaths(
         run_dir=run_dir,
-        resolved_config=run_dir / "config" / "resolved_config.json",
-        method_preset=run_dir / "config" / "method_preset.json",
         final_code_input=run_dir / "inputs" / "final_code.jsonl",
         gate_data_manifest=run_dir / "gate-data" / "manifest.json",
         gate_window_groups=run_dir / "gate-data" / "window_groups.jsonl",
@@ -113,31 +107,29 @@ def build_run_paths(run_root: str | Path, run_id: str) -> RunPaths:
         gate_training_key_bank_manifest=(
             run_dir / "gate-data" / "training_key_bank_manifest.json"
         ),
+        gate_group_index=run_dir / "gate-data" / "group_index.jsonl",
         gate_feasibility_summary=run_dir / "gate-data" / "feasibility_summary.json",
-        gate_resolved_training_config=(
-            run_dir / "gate-train" / "resolved_training_config.json"
-        ),
-        gate_training_metrics=run_dir / "gate-train" / "training_metrics.jsonl",
         gate_development_summary=run_dir / "gate-train" / "development_summary.json",
-        gate_checkpoints_dir=run_dir / "gate-train" / "checkpoints",
         gate_candidate_bundle_dir=run_dir / "gate-train" / "candidate_bundle",
         gate_candidate_bundle_manifest=(
             run_dir / "gate-train" / "candidate_bundle_manifest.json"
         ),
+        generation_manifest=run_dir / "generation" / "manifest.json",
         audit_log=run_dir / "generation" / "audit.jsonl",
         candidate_sidecar=run_dir / "generation" / "candidate_sidecar.jsonl",
-        raw_attempt_summary=run_dir / "generation" / "raw_attempt_summary.jsonl",
+        finalizer_audit=run_dir / "generation" / "finalizer.jsonl",
+        negative_corpus=run_dir / "calibration" / "negative_corpus.jsonl",
+        negative_corpus_manifest=(
+            run_dir / "calibration" / "negative_corpus_manifest.json"
+        ),
         reference_calibration=run_dir / "calibration" / "reference_calibration.json",
         positive_details=run_dir / "detection" / "positive_details.jsonl",
-        reference_negative_details=run_dir / "detection" / "reference_negative_details.jsonl",
-        model_negative_details=run_dir / "detection" / "model_negative_details.jsonl",
         reference_report=run_dir / "reports" / "reference_report.json",
-        model_negative_report=run_dir / "reports" / "model_negative_report.json",
         pass_report_posthoc=run_dir / "reports" / "pass_report_posthoc.json",
+        metric_contract=run_dir / "reports" / "metric_contract.jsonl",
         detector_integrity=run_dir / "audit" / "detector_input_integrity.json",
         no_quality_gate_integrity=run_dir / "audit" / "no_quality_gate_integrity.json",
         artifact_integrity=run_dir / "audit" / "artifact_integrity.json",
-        run_log=run_dir / "logs" / "run.log",
     )
 
 

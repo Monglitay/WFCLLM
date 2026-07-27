@@ -1,22 +1,13 @@
 from __future__ import annotations
 
 import json
-import math
 import re
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
-from wfcllm.datasets.constants import SUPPORTED_DATASETS
-
-
-_ALLOWED_TORCH_DTYPES = ("auto", "fp32", "fp16", "bf16")
-_ALLOWED_PROMPT_MODES = ("completion", "chat")
-_ALLOWED_RULE_NAMES = ("hash", "semantic_lsh")
-DEFAULT_HUMANEVAL_STOP_SEQUENCES = ("\nclass", "\ndef", "\n#", "\nif", "\nprint")
-_EVIDENCE_RETRY_METHOD = "evidence_retry_seed7x3"
 _GATED_METHOD = "gated_semantic_window_v1"
 _GATED_PHASES = (
     "encoder",
@@ -26,9 +17,8 @@ _GATED_PHASES = (
     "calibrate",
     "detect",
     "report",
+    "audit",
 )
-_MAIN_PHASES = ("generate", "calibrate", "detect", "report", "audit")
-_GATED_MAIN_PHASES = ("generate", "calibrate", "detect", "report")
 _SENSITIVE_PUBLIC_TOKENS = (
     "secret",
     "deployment_key",
@@ -42,12 +32,12 @@ _SENSITIVE_PUBLIC_TOKENS = (
     "private_key",
     "access_key",
 )
-_FAST_LOSSES = [
+_GATE_LOSSES = [
     "close_bce",
     "suitable_bce",
     "dangerous_negative_fp",
 ]
-_FAST_LOSS_WEIGHTS = {
+_GATE_LOSS_WEIGHTS = {
     "close_bce": 1.0,
     "suitable_bce": 1.0,
     "close_positive": 1.0,
@@ -80,7 +70,7 @@ _HEX_DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class _FrozenSequence(tuple[Any, ...]):
-    """Tuple-backed config sequence with list-compatible equality."""
+    """Tuple-backed config sequence equal to the same list or tuple values."""
 
     def __eq__(self, other: object) -> bool:
         if isinstance(other, (list, tuple)):
@@ -196,31 +186,20 @@ class WFCLLMMethodPreset:
                 raise ValueError(f"{section_name} must be a dict")
 
         method_name = self.method.get("name")
-        if method_name not in {_EVIDENCE_RETRY_METHOD, _GATED_METHOD}:
+        if method_name != _GATED_METHOD:
             raise ValueError(f"unsupported method.name: {method_name!r}")
         if self.method.get("strict_no_quality_gate") is not True:
             raise ValueError("method.strict_no_quality_gate must be true")
         if self.method.get("strict_code_only_detector") is not True:
             raise ValueError("method.strict_code_only_detector must be true")
-        if method_name == _GATED_METHOD:
-            for section_name in section_names:
-                object.__setattr__(
-                    self,
-                    section_name,
-                    _freeze_config(getattr(self, section_name)),
-                )
-            self._reject_public_secret_material(self.to_dict())
-            self._validate_gated_method()
-        else:
-            self._require_exact_keys(
-                self.method,
-                {
-                    "name",
-                    "strict_no_quality_gate",
-                    "strict_code_only_detector",
-                },
-                "method",
+        for section_name in section_names:
+            object.__setattr__(
+                self,
+                section_name,
+                _freeze_config(getattr(self, section_name)),
             )
+        self._reject_public_secret_material(self.to_dict())
+        self._validate_gated_method()
 
         try:
             json.dumps(self.to_dict(), allow_nan=False)
@@ -245,7 +224,6 @@ class WFCLLMMethodPreset:
                 "name",
                 "strict_no_quality_gate",
                 "strict_code_only_detector",
-                "experimental",
                 "windowing",
                 "gate",
                 "rewrite",
@@ -302,12 +280,10 @@ class WFCLLMMethodPreset:
             "method",
             "group_by",
             "target_fpr",
-            "posthoc_pass_at_1_noninferiority_absolute_drop_max",
         }
         calibration_optional_keys = {
             "target_negative_count",
             "supplement",
-            "pool_excludes_insufficient",
         }
         self._require_exact_keys(
             self.calibration,
@@ -318,7 +294,7 @@ class WFCLLMMethodPreset:
         self._require_exact_keys(self.artifacts, {"run_root"}, "artifacts")
         self._require_exact_keys(
             self.runtime,
-            {"default_phases", "external_validated_bundle_phases"},
+            {"default_phases"},
             "runtime",
         )
         self._require_exact_keys(
@@ -337,9 +313,7 @@ class WFCLLMMethodPreset:
             gate,
             {
                 "input_contract_version",
-                "bundle_contract_version",
-                "bundle_path",
-                "bundle_sha256",
+                "candidate_contract_version",
                 "uncertain_boundary_policy",
                 "max_input_tokens",
             },
@@ -371,9 +345,6 @@ class WFCLLMMethodPreset:
             {"d", "gamma", "margin", "key_derivation_version"},
             "method.semantic.lsh",
         )
-
-        if self.method.get("experimental") is not True:
-            raise ValueError("method.experimental must be true")
 
         if windowing.get("enabled") is not True:
             raise ValueError("method.windowing.enabled must be true")
@@ -412,31 +383,19 @@ class WFCLLMMethodPreset:
 
         if gate.get("input_contract_version") != "wfcllm-gate-input/v1":
             raise ValueError("method.gate.input_contract_version is incompatible")
-        if gate.get("bundle_contract_version") != "wfcllm-gate-bundle/v1":
-            raise ValueError("method.gate.bundle_contract_version is incompatible")
+        if (
+            gate.get("candidate_contract_version")
+            != "wfcllm-gate-train-candidate/v1"
+        ):
+            raise ValueError(
+                "method.gate.candidate_contract_version is incompatible"
+            )
         if gate.get("uncertain_boundary_policy") != "close_and_skip":
             raise ValueError(
                 "method.gate.uncertain_boundary_policy must be close_and_skip"
             )
         if gate.get("max_input_tokens") != 256:
             raise ValueError("method.gate.max_input_tokens must equal 256")
-        bundle_path = gate.get("bundle_path")
-        bundle_sha256 = gate.get("bundle_sha256")
-        if (bundle_path is None) != (bundle_sha256 is None):
-            raise ValueError("method.gate bundle path and sha256 must be set together")
-        if bundle_path is not None:
-            if not isinstance(bundle_path, str) or not bundle_path:
-                raise ValueError("method.gate.bundle_path must be a non-empty string")
-            bundle_parts = Path(bundle_path).parts
-            if "://" in bundle_path or "\x00" in bundle_path or ".." in bundle_parts:
-                raise ValueError("method.gate.bundle_path must identify a local path")
-            if (
-                not isinstance(bundle_sha256, str)
-                or len(bundle_sha256) != 64
-                or any(character not in "0123456789abcdef" for character in bundle_sha256)
-            ):
-                raise ValueError("method.gate.bundle_sha256 must be lowercase SHA-256")
-
         self._require_fixed_values(
             rewrite,
             {
@@ -514,32 +473,18 @@ class WFCLLMMethodPreset:
         self._validate_gate_data()
         self._validate_gate_train()
 
-        expected_default_phases = (
-            list(_GATED_MAIN_PHASES)
-            if bundle_path is not None
-            else list(_GATED_PHASES)
-        )
-        if self.runtime.get("default_phases") != expected_default_phases:
-            phase_description = (
-                "configured local phases" if bundle_path is None else "four main phases"
-            )
+        if self.runtime.get("default_phases") != list(_GATED_PHASES):
             raise ValueError(
-                f"gated runtime.default_phases must use the {phase_description}"
-            )
-        if self.runtime.get("external_validated_bundle_phases") != list(_GATED_MAIN_PHASES):
-            raise ValueError(
-                "gated runtime.external_validated_bundle_phases must use the four main phases"
+                "gated runtime.default_phases must use the full reproduction chain"
             )
 
     def _formal_semantic_lsh(self) -> bool:
         """Whether the config declares the formal semantic-LSH evidence rule."""
 
         rule_name = self.semantic_lsh.get("rule_name")
-        if rule_name not in {"semantic_lsh", "keyed_text_region"}:
-            raise ValueError(
-                "semantic_lsh.rule_name must be semantic_lsh or keyed_text_region"
-            )
-        return rule_name == "semantic_lsh"
+        if rule_name != "semantic_lsh":
+            raise ValueError("semantic_lsh.rule_name must be semantic_lsh")
+        return True
 
     def _validate_reusable_sections(self) -> None:
         self._require_fixed_values(
@@ -564,9 +509,7 @@ class WFCLLMMethodPreset:
         self._require_fixed_values(
             self.semantic_lsh,
             {
-                "rule_name": (
-                    "semantic_lsh" if formal_semantic_lsh else "keyed_text_region"
-                ),
+                "rule_name": "semantic_lsh",
                 "lsh_d": 12 if formal_semantic_lsh else 1,
                 "lsh_gamma": 0.45 if formal_semantic_lsh else 0.5,
                 "semantic_margin": 0.0,
@@ -598,7 +541,6 @@ class WFCLLMMethodPreset:
             self.calibration,
             {
                 "target_fpr": 0.05,
-                "posthoc_pass_at_1_noninferiority_absolute_drop_max": 0.02,
             },
             "calibration",
         )
@@ -629,16 +571,6 @@ class WFCLLMMethodPreset:
                 "predeclared 5% FPR statistic"
             )
         self._validate_calibration_negative_supplement()
-        pool_excludes_insufficient = self.calibration.get(
-            "pool_excludes_insufficient"
-        )
-        if (
-            "pool_excludes_insufficient" in self.calibration
-            and not isinstance(pool_excludes_insufficient, bool)
-        ):
-            raise ValueError(
-                "calibration.pool_excludes_insufficient must be a bool"
-            )
         run_root = self.artifacts.get("run_root")
         if (
             not isinstance(run_root, str)
@@ -804,8 +736,8 @@ class WFCLLMMethodPreset:
             "learning_rate": 0.00002,
             "max_epochs": 4,
             "early_stopping_patience": 1,
-            "losses": _FAST_LOSSES,
-            "loss_weights": _FAST_LOSS_WEIGHTS,
+            "losses": _GATE_LOSSES,
+            "loss_weights": _GATE_LOSS_WEIGHTS,
         }
         self._require_fixed_values(self.gate_train, fixed, "gate_train")
         base_encoder_id = self.gate_train.get("base_encoder_id")
@@ -939,12 +871,7 @@ class WFCLLMMethodPreset:
             raise ValueError("gated public config must not contain secret material")
 
     def to_dict(self) -> dict[str, Any]:
-        if self.method.get("name") == _EVIDENCE_RETRY_METHOD:
-            payload = asdict(self)
-            for section_name in ("gate_data", "gate_train"):
-                payload.pop(section_name)
-            return payload
-        payload = {
+        return {
             "method": _thaw_config(self.method),
             "generation": _thaw_config(self.generation),
             "semantic_lsh": _thaw_config(self.semantic_lsh),
@@ -955,200 +882,9 @@ class WFCLLMMethodPreset:
             "gate_data": _thaw_config(self.gate_data),
             "gate_train": _thaw_config(self.gate_train),
         }
-        return payload
 
 
 def _rebuild_method_preset(payload: dict[str, Any]) -> WFCLLMMethodPreset:
     if not isinstance(payload, dict):
         raise ValueError("method preset pickle payload must be a dict")
     return WFCLLMMethodPreset(**payload)
-
-
-@dataclass(frozen=True)
-class SawrGenerationConfig:
-    """Local causal-LM generation settings for the SAWR smoke runner."""
-
-    model_path: str
-    max_new_tokens: int = 512
-    temperature: float = 0.0
-    top_p: float = 1.0
-    top_k: int = 0
-    retry_repetition_penalty: float = 1.0
-    torch_dtype: str = "auto"
-    device: str = "cuda"
-    seed: int = 0
-    load_in_4bit: bool = False
-    eos_token_id: int | None = None
-    prompt_mode: str = "completion"
-    stop_sequences: tuple[str, ...] = DEFAULT_HUMANEVAL_STOP_SEQUENCES
-
-    def __post_init__(self) -> None:
-        if not Path(self.model_path).exists():
-            raise ValueError(f"model_path does not exist: {self.model_path}")
-        if self.max_new_tokens <= 0:
-            raise ValueError("max_new_tokens must be positive")
-        if self.temperature < 0:
-            raise ValueError("temperature must be non-negative")
-        if not 0 < self.top_p <= 1:
-            raise ValueError("top_p must be in (0, 1]")
-        if self.top_k < 0:
-            raise ValueError("top_k must be non-negative")
-        if (
-            isinstance(self.retry_repetition_penalty, bool)
-            or not isinstance(self.retry_repetition_penalty, (int, float))
-            or not math.isfinite(float(self.retry_repetition_penalty))
-        ):
-            raise ValueError("retry_repetition_penalty must be a finite number")
-        if self.retry_repetition_penalty < 1.0:
-            raise ValueError("retry_repetition_penalty must be >= 1.0")
-        if self.torch_dtype not in _ALLOWED_TORCH_DTYPES:
-            raise ValueError(
-                f"torch_dtype must be one of {_ALLOWED_TORCH_DTYPES}, got {self.torch_dtype!r}"
-            )
-        object.__setattr__(
-            self,
-            "retry_repetition_penalty",
-            float(self.retry_repetition_penalty),
-        )
-        if self.prompt_mode not in _ALLOWED_PROMPT_MODES:
-            raise ValueError(
-                f"prompt_mode must be one of {_ALLOWED_PROMPT_MODES}, got {self.prompt_mode!r}"
-            )
-        if isinstance(self.stop_sequences, str) or not isinstance(
-            self.stop_sequences,
-            (tuple, list),
-        ):
-            raise ValueError("stop_sequences must be a sequence of strings")
-        if any(
-            not isinstance(stop_sequence, str) or not stop_sequence
-            for stop_sequence in self.stop_sequences
-        ):
-            raise ValueError("stop_sequences entries must be non-empty strings")
-        object.__setattr__(self, "stop_sequences", tuple(self.stop_sequences))
-
-
-@dataclass(frozen=True)
-class SawrRuleConfig:
-    """Embedding rule settings for deterministic SAWR smoke decisions."""
-
-    rule_name: str = "hash"
-    target_accept_rate: float = 0.5
-    parameters: dict[str, object] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        if self.rule_name not in _ALLOWED_RULE_NAMES:
-            raise ValueError(
-                f"rule_name must be one of {_ALLOWED_RULE_NAMES}, got {self.rule_name!r}"
-            )
-        if not 0 <= self.target_accept_rate <= 1:
-            raise ValueError("target_accept_rate must be in [0, 1]")
-        if not isinstance(self.parameters, dict):
-            raise ValueError("parameters must be a dict")
-        try:
-            parameters_json = json.dumps(self.parameters, allow_nan=False)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("parameters must be JSON-serializable") from exc
-        object.__setattr__(self, "parameters", json.loads(parameters_json))
-
-    def to_dict(self) -> dict[str, object]:
-        return asdict(self)
-
-
-@dataclass(frozen=True)
-class SawrPipelineConfig:
-    """Top-level SAWR smoke pipeline settings."""
-
-    dataset: str
-    dataset_path: str
-    output_dir: str
-    generation: SawrGenerationConfig
-    rule: SawrRuleConfig = field(default_factory=SawrRuleConfig)
-    sample_limit: int | None = None
-    sample_offset: int | None = None
-    max_group_statements: int = 2
-    retry_budget: int = 1
-    statement_retry_budget: int | None = None
-    window_retry_budget: int | None = None
-    compound_retry_budget: int | None = None
-    global_rollback_budget: int | None = None
-    max_total_sampled_tokens: int | None = None
-    evidence_retry_attempts: int = 1
-    evidence_retry_seed_stride: int = 1009
-    resume: str | None = None
-    candidate_sidecar_output: str | None = None
-    run_id: str | None = None
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.generation, SawrGenerationConfig):
-            raise ValueError("generation must be SawrGenerationConfig")
-        if not isinstance(self.rule, SawrRuleConfig):
-            raise ValueError("rule must be SawrRuleConfig")
-        if self.dataset not in SUPPORTED_DATASETS:
-            raise ValueError(
-                f"dataset must be one of {SUPPORTED_DATASETS}, got '{self.dataset}'"
-            )
-        if self.sample_limit is not None and self.sample_limit < 0:
-            raise ValueError("sample_limit must be non-negative")
-        if self.sample_offset is not None and self.sample_offset < 0:
-            raise ValueError("sample_offset must be non-negative")
-        if self.max_group_statements <= 0:
-            raise ValueError("max_group_statements must be positive")
-        if self.retry_budget < 0:
-            raise ValueError("retry_budget must be non-negative")
-        if self.statement_retry_budget is not None and self.statement_retry_budget < 0:
-            raise ValueError("statement_retry_budget must be non-negative")
-        if self.window_retry_budget is not None and self.window_retry_budget < 0:
-            raise ValueError("window_retry_budget must be non-negative")
-        if self.compound_retry_budget is not None and self.compound_retry_budget < 0:
-            raise ValueError("compound_retry_budget must be non-negative")
-        retry_budget_for_limits = sum(
-            (
-                0
-                if self.statement_retry_budget is None
-                else self.statement_retry_budget,
-                0 if self.window_retry_budget is None else self.window_retry_budget,
-                (
-                    self.retry_budget
-                    if self.compound_retry_budget is None
-                    else self.compound_retry_budget
-                ),
-            )
-        )
-        if self.global_rollback_budget is None:
-            object.__setattr__(self, "global_rollback_budget", retry_budget_for_limits)
-        elif self.global_rollback_budget < 0:
-            raise ValueError("global_rollback_budget must be non-negative")
-        if self.max_total_sampled_tokens is None:
-            derived_budget = self.generation.max_new_tokens * max(
-                2,
-                int(self.global_rollback_budget) + 2,
-            )
-            object.__setattr__(self, "max_total_sampled_tokens", derived_budget)
-        elif self.max_total_sampled_tokens <= 0:
-            raise ValueError("max_total_sampled_tokens must be positive")
-        if self.evidence_retry_attempts <= 0:
-            raise ValueError("evidence_retry_attempts must be positive")
-        if self.evidence_retry_seed_stride <= 0:
-            raise ValueError("evidence_retry_seed_stride must be positive")
-        if self.resume is not None and self.resume != "latest":
-            raise ValueError("resume must be None or 'latest'")
-        if self.candidate_sidecar_output is not None and not isinstance(
-            self.candidate_sidecar_output,
-            str,
-        ):
-            raise ValueError("candidate_sidecar_output must be a string or None")
-        if self.run_id is not None and (
-            not isinstance(self.run_id, str) or not self.run_id
-        ):
-            raise ValueError("run_id must be a non-empty string or None")
-
-    def to_dict(self) -> dict[str, object]:
-        return asdict(self)
-
-
-WFCLLMGenerationConfig = SawrGenerationConfig
-WFCLLMRuleConfig = SawrRuleConfig
-WFCLLMPipelineConfig = SawrPipelineConfig
-SawrGenerationConfig = WFCLLMGenerationConfig
-SawrRuleConfig = WFCLLMRuleConfig
-SawrPipelineConfig = WFCLLMPipelineConfig

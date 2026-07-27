@@ -1,54 +1,54 @@
-# Output results
-experiment/*/results/
-
-# 离线资源（模型权重、数据集）— 大二进制文件不入库
-data/models/
-data/datasets/
-data/checkpoints/
-data/results/
-data/run_state.json
-data/run_state.json.lock
-data/mbpp/
-
-# 保留目录占位文件
+# Local Reproduction Resources: only four directory placeholders are tracked.
+data/**
+!data/models/
 !data/models/.gitkeep
+!data/datasets/
 !data/datasets/.gitkeep
+!data/checkpoints/
 !data/checkpoints/.gitkeep
+!data/results/
 !data/results/.gitkeep
 
-# Python
-__pycache__/
-*.pyc
-
-# IDE
-.idea/
-
-# Worktrees
-.worktrees/
-.claude/worktrees/
-
-# Logs
-logs/
-logs_config_B_watermark_*.log
-nohup_config_B_watermark.log
+# Model weights, private keys, caches, run products, and logs.
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.key
+*.log
 nohup.out
+logs/
+.cache/
 
-# Jupyter
+# Python and test caches.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE, notebooks, and machine-local agent state.
+.idea/
+.vscode/
 .ipynb_checkpoints/
+.claude/
+.agents/
+.codex/
+.tmp/
+.worktrees/
 
-# Claude internal
-.claude/scheduled_tasks.lock
-
-# External reference code
+# Machine-local research and rescue material.
+review-stage/
+figures/
+papers/
 code-watermark-main/
+# Local copies of content removed from the current working tree.
+archive/
+experiment/
+tools/
 
-# Large data files
-data/token_channel/
-
-# Local gate keys, datasets, models, and run artifacts
-data/gate_keys/
-data/gate_datasets/
-data/gate_models/
-data/runs/*/gate-data/
-data/runs/*/gate-train/
-data/runs/*/gate-validate/
+# Local environment files.
+.env
+.env.*

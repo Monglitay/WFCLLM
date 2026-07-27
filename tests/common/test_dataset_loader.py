@@ -1,7 +1,7 @@
 """Tests for wfcllm.common.dataset_loader."""
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
 
@@ -9,7 +9,6 @@ from wfcllm.datasets.loaders.local import (
     SUPPORTED_DATASETS,
     load_mbpp_generation_samples,
     load_prompts,
-    load_reference_solutions,
 )
 
 
@@ -34,7 +33,9 @@ class TestLoadPrompts:
             "openai/openai_humaneval",
             cache_dir="data/datasets/humaneval",
             download_mode="reuse_cache_if_exists",
+            download_config=ANY,
         )
+        assert mock_load.call_args.kwargs["download_config"].local_files_only is True
         assert len(prompts) == 1
         assert prompts[0]["id"] == "HumanEval/0"
         assert prompts[0]["prompt"] == "def foo():"
@@ -52,7 +53,9 @@ class TestLoadPrompts:
             "full",
             cache_dir="data/datasets/mbpp",
             download_mode="reuse_cache_if_exists",
+            download_config=ANY,
         )
+        assert mock_load.call_args.kwargs["download_config"].local_files_only is True
         assert len(prompts) == 1
         assert prompts[0]["id"] == "mbpp/1"
         assert prompts[0]["prompt"] == "Write a function"
@@ -89,6 +92,17 @@ class TestLoadPrompts:
         with pytest.raises(ValueError, match="sample_limit must be non-negative"):
             load_prompts("humaneval", "data/datasets", sample_limit=-1)
 
+    @patch("wfcllm.datasets.loaders.local.load_dataset")
+    def test_missing_cache_is_requested_local_only(self, mock_load):
+        def fail_without_cache(*_args, **kwargs):
+            assert kwargs["download_config"].local_files_only is True
+            raise FileNotFoundError("local dataset cache is missing")
+
+        mock_load.side_effect = fail_without_cache
+
+        with pytest.raises(FileNotFoundError, match="local dataset cache"):
+            load_prompts("humaneval", "data/datasets")
+
 
 @patch("wfcllm.datasets.loaders.local.load_dataset")
 def test_mbpp_generation_samples_keep_only_sanitized_interface_metadata(
@@ -99,11 +113,6 @@ def test_mbpp_generation_samples_keep_only_sanitized_interface_metadata(
             {
                 "task_id": 601,
                 "text": "Find the maximum chain length from pairs.",
-                "code": (
-                    "def max_chain_length(pairs, n):\n"
-                    "    secret_reference_value = 987654\n"
-                    "    return secret_reference_value\n"
-                ),
                 "test_list": [
                     "assert max_chain_length([Pair(5, 24)], 4) == 3",
                 ],
@@ -118,59 +127,10 @@ def test_mbpp_generation_samples_keep_only_sanitized_interface_metadata(
     assert rows[0]["interface_extraction_status"] == "interface_aware"
     assert rows[0]["interface_function_name"] == "max_chain_length"
     assert rows[0]["interface_positional_arities"] == [2]
-    assert rows[0]["interface_parameter_names"] == ["pairs", "n"]
     assert rows[0]["interface_helper_classes"] == ["Pair"]
     assert rows[0]["prompt"].startswith("class Pair:")
-    assert "def max_chain_length(pairs, n):" in rows[0]["prompt"]
+    assert "def max_chain_length(arg1, arg2):" in rows[0]["prompt"]
     serialized = repr(rows[0])
     assert "assert max_chain_length" not in serialized
     assert "Pair(5, 24)" not in serialized
     assert "== 3" not in serialized
-    assert "987654" not in rows[0]["prompt"]
-    assert "secret_reference_value" not in rows[0]["prompt"]
-
-
-class TestLoadReferenceSolutions:
-    @patch("wfcllm.datasets.loaders.local.load_dataset")
-    def test_humaneval_returns_id_prompt_and_canonical_solution(self, mock_load):
-        fake_split = [
-            {
-                "task_id": "HumanEval/0",
-                "prompt": "def foo():\n",
-                "canonical_solution": "    return 1\n",
-            }
-        ]
-        mock_ds = {"test": fake_split}
-        mock_load.return_value = mock_ds
-
-        rows = load_reference_solutions("humaneval", "data/datasets")
-
-        assert rows == [
-            {
-                "id": "HumanEval/0",
-                "prompt": "def foo():\n",
-                "generated_code": "    return 1\n",
-            }
-        ]
-
-    @patch("wfcllm.datasets.loaders.local.load_dataset")
-    def test_mbpp_returns_id_prompt_and_reference_code(self, mock_load):
-        fake_split = [
-            {
-                "task_id": 1,
-                "text": "Write a function",
-                "code": "def f():\n    return 1\n",
-            }
-        ]
-        mock_ds = {"train": fake_split}
-        mock_load.return_value = mock_ds
-
-        rows = load_reference_solutions("mbpp", "data/datasets")
-
-        assert rows == [
-            {
-                "id": "mbpp/1",
-                "prompt": "Write a function",
-                "generated_code": "def f():\n    return 1\n",
-            }
-        ]

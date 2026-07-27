@@ -518,7 +518,7 @@ class GateDataBuilder:
 
         Formal collection must provide ``source_text`` so byte slices preserve
         comments, blank lines, newline style, and indentation exactly. ``None``
-        retains the unit-join fallback for small tests and legacy fixtures only.
+        retains the unit-join fallback for small isolated unit tests only.
         The full source is never included in a rewriter request or gate input.
         """
 

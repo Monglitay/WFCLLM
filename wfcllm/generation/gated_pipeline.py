@@ -41,9 +41,10 @@ class GatedGenerationPipelineConfig:
     lsh_config_sha256: str
     generation_config_sha256: str
     secret_source_type: str
+    generation_model_identifier: str | None = None
     embedding_passes: int = 1
     fail_fast: bool = False
-    experimental_only: bool = False
+    diagnostic_test_backend: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.output_dir, Path) or not isinstance(self.bundle_path, Path):
@@ -64,6 +65,13 @@ class GatedGenerationPipelineConfig:
                 raise ValueError(f"{name} must be a non-empty string")
         if self.secret_source_type not in {"file", "environment"}:
             raise ValueError("secret_source_type must be file or environment")
+        if self.generation_model_identifier is not None and (
+            not isinstance(self.generation_model_identifier, str)
+            or not self.generation_model_identifier
+        ):
+            raise ValueError(
+                "generation_model_identifier must be a non-empty string or None"
+            )
         if (
             type(self.embedding_passes) is not int
             or not 1 <= self.embedding_passes <= 3
@@ -71,8 +79,8 @@ class GatedGenerationPipelineConfig:
             raise ValueError("embedding_passes must be an integer in [1, 3]")
         if type(self.fail_fast) is not bool:
             raise ValueError("fail_fast must be boolean")
-        if type(self.experimental_only) is not bool:
-            raise ValueError("experimental_only must be boolean")
+        if type(self.diagnostic_test_backend) is not bool:
+            raise ValueError("diagnostic_test_backend must be boolean")
 
 
 class GatedGenerationPipeline:
@@ -128,9 +136,7 @@ class GatedGenerationPipeline:
         ):
             raise ValueError("base model must generate a complete program")
         if bundle_loader is None:
-            from wfcllm.gate.bundle import GateBundle
-
-            bundle_loader = GateBundle.load
+            raise ValueError("current-run gate candidate loader is required")
         hasher = bundle_hasher or _hash_tree
         before = hasher(config.bundle_path)
         if before != config.bundle_sha256:
@@ -151,19 +157,6 @@ class GatedGenerationPipeline:
 
     @staticmethod
     def _validate_bundle(bundle: Any, config: GatedGenerationPipelineConfig) -> None:
-        if getattr(bundle, "experimental_only", False) is True:
-            summary = getattr(bundle, "validation_summary", None)
-            experimental = (
-                config.experimental_only
-                and isinstance(summary, Mapping)
-                and summary.get("experimental_only") is True
-                and summary.get("diagnostic_only") is True
-                and summary.get("not_official_method") is True
-            )
-            if not experimental:
-                raise ValueError(
-                    "experimental gate candidates require explicit diagnostic acceptance"
-                )
         manifest = getattr(bundle, "manifest", None)
         if getattr(manifest, "window_contract_version", None) != config.parser_contract:
             raise ValueError("parser contract hash/version mismatch")
@@ -210,43 +203,46 @@ class GatedGenerationPipeline:
                 candidate_sidecar_rows=len(candidates),
                 current_sample_id=sample_id,
             )
-            original = ""
+            # Base generation and finalization are required inference work, not
+            # optional watermark transforms.  A failure here means there is no
+            # program to keep in the full denominator, so it must abort the
+            # phase instead of publishing an empty formal detector input.
+            original = self._generate_base_program(prompt, sample_id)
+            if self._program_finalizer is not None:
+                before = original
+                finalized = self._program_finalizer(prompt, before)
+                if not isinstance(finalized, ProgramFinalizationResult):
+                    raise ValueError(
+                        "program_finalizer must return ProgramFinalizationResult"
+                    )
+                original = finalized.code
+                provenance = _verify_finalizer_statement_provenance(
+                    before=before,
+                    after=original,
+                    prompt=prompt,
+                    program_finalizer_name=self._program_finalizer_name,
+                )
+                finalizer_rows.append(
+                    {
+                        "id": sample_id,
+                        "dataset": self._config.dataset,
+                        "applied": finalized.applied,
+                        "reason": finalized.reason,
+                        "before_sha256": hashlib.sha256(
+                            before.encode("utf-8")
+                        ).hexdigest(),
+                        "after_sha256": hashlib.sha256(
+                            original.encode("utf-8")
+                        ).hexdigest(),
+                        "before_character_count": len(before),
+                        "after_character_count": len(original),
+                        "input_source": before,
+                        "output_source": original,
+                        "carrier_count": 0,
+                        **provenance,
+                    }
+                )
             try:
-                original = self._generate_base_program(prompt, sample_id)
-                if self._program_finalizer is not None:
-                    before = original
-                    finalized = self._program_finalizer(prompt, before)
-                    if not isinstance(finalized, ProgramFinalizationResult):
-                        raise ValueError(
-                            "program_finalizer must return ProgramFinalizationResult"
-                        )
-                    original = finalized.code
-                    provenance = _verify_finalizer_statement_provenance(
-                        before=before,
-                        after=original,
-                        prompt=prompt,
-                        program_finalizer_name=self._program_finalizer_name,
-                    )
-                    finalizer_rows.append(
-                        {
-                            "id": sample_id,
-                            "dataset": self._config.dataset,
-                            "applied": finalized.applied,
-                            "reason": finalized.reason,
-                            "before_sha256": hashlib.sha256(
-                                before.encode("utf-8")
-                            ).hexdigest(),
-                            "after_sha256": hashlib.sha256(
-                                original.encode("utf-8")
-                            ).hexdigest(),
-                            "before_character_count": len(before),
-                            "after_character_count": len(original),
-                            "input_source": before,
-                            "output_source": original,
-                            "carrier_count": 0,
-                            **provenance,
-                        }
-                    )
                 pass_audits = []
                 pass_candidates = []
                 for _embedding_pass in range(self._config.embedding_passes):
@@ -271,8 +267,6 @@ class GatedGenerationPipeline:
                     audit=tuple(pass_audits),
                     candidates=tuple(pass_candidates),
                 )
-            except FinalizerIntegrityError:
-                raise
             except Exception as exc:
                 if self._config.fail_fast:
                     raise
@@ -398,10 +392,11 @@ class GatedGenerationPipeline:
             root / "generation" / "manifest.json",
             {
                 "schema_version": "wfcllm-gated-generation-manifest/v1",
-                "formal": not self._config.experimental_only,
-                "experimental_only": self._config.experimental_only,
-                "diagnostic_only": self._config.experimental_only,
-                "not_official_method": self._config.experimental_only,
+                "formal": not self._config.diagnostic_test_backend,
+                "diagnostic_test_backend": self._config.diagnostic_test_backend,
+                "formal_eligible": not self._config.diagnostic_test_backend,
+                "diagnostic_only": self._config.diagnostic_test_backend,
+                "not_official_method": self._config.diagnostic_test_backend,
                 "gate_bundle_sha256": self._config.bundle_sha256,
                 "parser_contract": self._config.parser_contract,
                 "gate_input_contract": self._config.gate_input_contract,
@@ -409,6 +404,13 @@ class GatedGenerationPipeline:
                 "semantic_encoder_sha256": self._config.semantic_encoder_sha256,
                 "lsh_config_sha256": self._config.lsh_config_sha256,
                 "generation_config_sha256": self._config.generation_config_sha256,
+                "generation_model_identifier": (
+                    self._config.generation_model_identifier
+                ),
+                "final_code_sha256": hashlib.sha256(
+                    final_path.read_bytes()
+                ).hexdigest(),
+                "final_code_row_count": len(final_rows),
                 "embedding_passes": self._config.embedding_passes,
                 "program_finalizer": self._program_finalizer_name,
                 "finalizer_applied_count": sum(

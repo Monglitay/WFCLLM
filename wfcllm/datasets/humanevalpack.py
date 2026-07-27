@@ -40,13 +40,14 @@ class HumanEvalPackAdapter(DatasetAdapter):
         if local is not None:
             return local
 
-        from datasets import load_dataset
+        from datasets import DownloadConfig, load_dataset
 
         dataset = load_dataset(
             "bigcode/humanevalpack",
             language,
             cache_dir=str(self._dataset_path / "humanevalpack"),
             download_mode="reuse_cache_if_exists",
+            download_config=DownloadConfig(local_files_only=True),
         )
         if "test" not in dataset:
             raise ValueError(
@@ -92,21 +93,14 @@ class HumanEvalPackAdapter(DatasetAdapter):
 
     @staticmethod
     def _normalise(row, language: str) -> CodeSample:
-        required = ("task_id", "prompt", "canonical_solution")
+        required = ("task_id", "prompt")
         missing = [name for name in required if name not in row]
         if missing:
             raise ValueError(
                 f"malformed HumanEvalPack {language} row; missing fields: {missing}"
             )
-        metadata = {
-            key: value
-            for key, value in dict(row).items()
-            if key not in required
-        }
         return CodeSample(
             task_id=str(row["task_id"]),
             prompt=str(row["prompt"]),
-            canonical_solution=str(row["canonical_solution"]),
             language=language,
-            metadata=metadata,
         )

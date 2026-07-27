@@ -18,7 +18,7 @@ class StatementTypes:
 
 
 class LanguageAdapter(ABC):
-    """Pluggable per-language strategy used by encoder, watermark, and extract phases."""
+    """Pluggable per-language strategy used by encoder and windowing."""
 
     name: str = ""
 

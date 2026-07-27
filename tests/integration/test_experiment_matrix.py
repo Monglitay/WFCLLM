@@ -1,151 +1,166 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import subprocess
 
 import pytest
 
 from wfcllm.cli.config_resolver import resolve_method_config
+from wfcllm.orchestration.state import PHASES
 
 
 ROOT = Path(__file__).resolve().parents[2]
 MATRIX = (
-    ("python", "humaneval", "full"),
-    ("python", "humaneval", "fast"),
-    ("python", "mbpp", "full"),
-    ("python", "mbpp", "fast"),
-    ("cpp", "humanevalpack", "full"),
-    ("cpp", "humanevalpack", "fast"),
-    ("java", "humanevalpack", "full"),
-    ("java", "humanevalpack", "fast"),
-    ("js", "humanevalpack", "full"),
-    ("js", "humanevalpack", "fast"),
+    ("python", "humaneval", "python_ast_equivalent"),
+    ("python", "mbpp", "python_ast_equivalent"),
+    ("cpp", "humanevalpack", "model_semantic_window"),
+    ("java", "humanevalpack", "model_semantic_window"),
+    ("js", "humanevalpack", "model_semantic_window"),
 )
 
 
-@pytest.mark.parametrize(("language", "dataset", "profile"), MATRIX)
-def test_experiment_entry_and_config_contract(
+@pytest.mark.parametrize(("language", "dataset", "rewrite_strategy"), MATRIX)
+def test_full_reproduction_public_surface(
     language: str,
     dataset: str,
-    profile: str,
+    rewrite_strategy: str,
 ) -> None:
-    stem = f"{language}_{dataset}_{profile}"
+    stem = f"{language}_{dataset}_full"
     wrapper_path = ROOT / "scripts" / "experiments" / f"run_{stem}.sh"
     config_path = ROOT / "configs" / "wfcllm" / "experiments" / f"{stem}.json"
 
     wrapper = wrapper_path.read_text(encoding="utf-8")
     config = json.loads(config_path.read_text(encoding="utf-8"))
+    resolved = resolve_method_config(config)
 
     assert f'WFCLLM_LANGUAGE="{language}"' in wrapper
     assert f'WFCLLM_DATASET="{dataset}"' in wrapper
-    assert f'WFCLLM_PROFILE="{profile}"' in wrapper
+    assert 'WFCLLM_PROFILE="full"' in wrapper
     assert "run_gated_experiment.sh" in wrapper
     assert config["generation"]["language"] == language
     assert config["generation"]["dataset"] == dataset
-    assert config["experiment"]["profile"] == profile
+    assert config["experiment"]["profile"] == "full"
+    assert config["method"]["rewrite"]["strategy"] == rewrite_strategy
     assert config["semantic_lsh"]["rule_name"] == "semantic_lsh"
-    assert config["method"]["rewrite"]["strategy"] != "keyed_text_region"
-
-    resolved = resolve_method_config(config)
-    assert resolved["generation"]["language"] == language
-    assert resolved["generation"]["dataset"] == dataset
-    assert resolved["semantic_lsh"]["rule_name"] == "semantic_lsh"
+    assert resolved["method"]["name"] == "gated_semantic_window_v1"
     assert resolved["method"]["windowing"]["contract_version"] == (
         f"{language}-statement-window/v1"
     )
-    assert {
-        "python": "oss_python",
-        "cpp": "oss_cpp",
-        "java": "oss_java",
-        "js": "oss_js",
-    }[language] in resolved["gate_data"]["sources"]
-    assert resolved["gate_data"]["scale"] == (
-        "full" if profile == "full" else "pilot"
+    assert resolved["method"]["rewrite"]["strategy"] == rewrite_strategy
+    assert resolved["runtime"]["default_phases"] == PHASES
+
+
+def test_exactly_five_full_configs_and_wrappers_are_public() -> None:
+    config_dir = ROOT / "configs" / "wfcllm" / "experiments"
+    wrapper_dir = ROOT / "scripts" / "experiments"
+    expected_stems = sorted(
+        f"{language}_{dataset}_full" for language, dataset, _strategy in MATRIX
     )
 
-
-def test_external_bundle_experiment_config_resolves_four_main_phases() -> None:
-    config_path = (
-        ROOT
-        / "configs"
-        / "wfcllm"
-        / "experiments"
-        / "python_humaneval_full_evidence_dense48_external_gate.json"
+    assert sorted(path.stem for path in config_dir.glob("*.json")) == expected_stems
+    assert sorted(ROOT.glob("configs/**/*.json")) == sorted(
+        [
+            ROOT / "configs" / "base_config.json",
+            *(config_dir / f"{stem}.json" for stem in expected_stems),
+        ]
     )
-    config = json.loads(config_path.read_text(encoding="utf-8"))
-    assert config["method"]["gate"]["bundle_path"]
-    assert config["method"]["gate"]["bundle_sha256"]
+    assert sorted(
+        path.stem.removeprefix("run_")
+        for path in wrapper_dir.glob("run_*_*.sh")
+        if path.name != "run_gated_experiment.sh"
+    ) == expected_stems
 
+
+def test_shared_runner_is_full_fresh_and_fail_closed() -> None:
+    runner = (
+        ROOT / "scripts" / "experiments" / "run_gated_experiment.sh"
+    ).read_text(encoding="utf-8")
+
+    assert runner.index("experiment_preflight") < runner.index("mkdir -p")
+    assert "run_basic_multilanguage_experiment.py" not in runner
+    assert "WFCLLM_PROFILE" not in runner or '"full"' in runner
+    assert 'PILOT_SOURCE_CATALOG:?set PILOT_SOURCE_CATALOG' in runner
+    assert 'FULL_SOURCE_CATALOG:?set FULL_SOURCE_CATALOG' in runner
+    assert "SOURCE_CATALOG" not in runner.replace(
+        "PILOT_SOURCE_CATALOG", ""
+    ).replace("FULL_SOURCE_CATALOG", "")
+    assert "head -n" not in runner
+    assert "SAMPLE_LIMIT" not in runner
+    assert "skipped audit" not in runner
+    assert "/root/" not in runner
+    assert "wfcllm_metric_contract.py" in runner
+    assert runner.index("run_phase audit") < runner.index(
+        "wfcllm_metric_contract.py"
+    )
+    for phase in PHASES:
+        assert f"run_phase {phase}" in runner or (
+            phase == "encoder" and '--phase encoder "${{PILOT_COMMON[@]}}' in runner
+        )
+
+
+@pytest.mark.parametrize(("language", "dataset", "_strategy"), MATRIX)
+def test_full_wrappers_fail_before_artifacts_when_heavy_resources_are_absent(
+    tmp_path: Path,
+    language: str,
+    dataset: str,
+    _strategy: str,
+) -> None:
+    experiment_root = tmp_path / f"{language}-{dataset}-full"
+    missing = tmp_path / "missing"
+    environment = {
+        **os.environ,
+        "EXPERIMENT_ROOT": str(experiment_root),
+        "GENERATION_MODEL_PATH": str(missing / "generation"),
+        "REWRITE_MODEL_PATH": str(missing / "rewrite"),
+        "SEMANTIC_ENCODER_MODEL_PATH": str(missing / "encoder"),
+        "GATE_BASE_MODEL_PATH": str(missing / "gate"),
+        "DATASET_PATH": str(missing / "datasets"),
+        "PILOT_SOURCE_CATALOG": str(missing / "pilot.jsonl"),
+        "FULL_SOURCE_CATALOG": str(missing / "full.jsonl"),
+        "NEGATIVE_INPUT": str(missing / "negative.jsonl"),
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "HF_DATASETS_OFFLINE": "1",
+    }
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(
+                ROOT
+                / "scripts"
+                / "experiments"
+                / f"run_{language}_{dataset}_full.sh"
+            ),
+        ],
+        cwd=ROOT,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "generation model directory is missing" in completed.stderr
+    assert not experiment_root.exists()
+
+
+def test_default_config_is_canonical_python_humaneval_full_profile() -> None:
+    config = json.loads(
+        (
+            ROOT
+            / "configs"
+            / "wfcllm"
+            / "experiments"
+            / "python_humaneval_full.json"
+        ).read_text(encoding="utf-8")
+    )
     resolved = resolve_method_config(config)
 
-    assert resolved["runtime"]["default_phases"] == [
-        "generate",
-        "calibrate",
-        "detect",
-        "report",
-    ]
-
-
-def test_local_bundle_experiment_configs_keep_seven_phase_sequence() -> None:
-    for name in (
-        "python_humaneval_full_evidence_dense48.json",
-        "cpp_humanevalpack_fast.json",
-    ):
-        config_path = ROOT / "configs" / "wfcllm" / "experiments" / name
-        config = json.loads(config_path.read_text(encoding="utf-8"))
-        assert config["method"].get("gate", {}).get("bundle_path") is None
-
-        resolved = resolve_method_config(config)
-
-        assert resolved["runtime"]["default_phases"] == [
-            "encoder",
-            "gate-data",
-            "gate-train",
-            "generate",
-            "calibrate",
-            "detect",
-            "report",
-        ], name
-
-
-def test_matrix_contains_only_the_eight_supported_entries() -> None:
-    wrappers = sorted(
-        path.name
-        for path in (ROOT / "scripts" / "experiments").glob("run_*_*.sh")
-        if path.name != "run_gated_experiment.sh"
-    )
-    expected = sorted(
-        f"run_{language}_{dataset}_{profile}.sh"
-        for language, dataset, profile in MATRIX
-    )
-
-    assert wrappers == expected
-
-
-def test_shared_runner_performs_preflight_before_preparing_keys() -> None:
-    runner = (
-        ROOT / "scripts" / "experiments" / "run_gated_experiment.sh"
-    ).read_text(encoding="utf-8")
-
-    assert runner.index("experiment_preflight") < runner.index(
-        "wfcllm_prepare_gated_experiment.py"
-    )
-    assert "PILOT_SOURCE_CATALOG" in runner
-    assert "FULL_SOURCE_CATALOG" in runner
-    assert "keyed_text_region" in runner
-    assert '--config "${WFCLLM_CONFIG}"' in runner
-    assert "--gate-data-scale pilot" in runner
-    assert "--gate-data-scale full" in runner
-
-
-def test_shared_runner_trains_encoder_before_each_gate_data_chain() -> None:
-    runner = (
-        ROOT / "scripts" / "experiments" / "run_gated_experiment.sh"
-    ).read_text(encoding="utf-8")
-
-    assert 'run.py --phase encoder "${PILOT_COMMON[@]}"' in runner
-    assert runner.index('run.py --phase encoder "${PILOT_COMMON[@]}"') < runner.index(
-        "--gate-data-scale pilot"
-    )
-    assert "run_phase encoder" in runner
-    assert runner.index("run_phase encoder") < runner.index("run_phase gate-data")
+    assert resolved["method"]["name"] == "gated_semantic_window_v1"
+    assert resolved["generation"]["language"] == "python"
+    assert resolved["generation"]["dataset"] == "humaneval"
+    assert resolved["experiment"]["profile"] == "full"
+    assert resolved["runtime"]["default_phases"] == PHASES
