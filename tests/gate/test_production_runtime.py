@@ -148,6 +148,34 @@ def test_deployment_scorer_and_runtime_hash_bind_lsh_gamma(
     )
 
 
+def test_deployment_scorer_and_runtime_hash_bind_strict_semantic_margin(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured = {}
+
+    def scorer(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(**kwargs)
+
+    monkeypatch.setattr(
+        gate_production,
+        "_load_public_semantic_components",
+        lambda _options: SimpleNamespace(verifier=object()),
+    )
+    monkeypatch.setattr("wfcllm.semantic.window_lsh.SemanticWindowScorer", scorer)
+    baseline = _runtime_options(tmp_path)
+    configured = replace(baseline, semantic_margin=0.005)
+
+    gate_production.build_local_semantic_window_scorer(
+        configured, b"deployment"
+    )
+
+    assert captured["margin"] == 0.005
+    assert gate_production.local_semantic_runtime_hash(configured) != (
+        gate_production.local_semantic_runtime_hash(baseline)
+    )
+
+
 def test_production_adapter_no_longer_exposes_validate_candidate() -> None:
     assert not hasattr(gate_production.LocalHFProductionAdapter, "validate_candidate")
     assert "validate_candidate" not in gate_production.LocalHFProductionAdapter.capabilities

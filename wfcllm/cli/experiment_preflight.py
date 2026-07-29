@@ -7,6 +7,7 @@ from collections.abc import Mapping
 import hashlib
 import json
 from pathlib import Path
+import unicodedata
 
 
 SUPPORTED_EXPERIMENT_PAIRS = frozenset(
@@ -203,6 +204,10 @@ def validate_runtime_resources(
     pilot_source_catalog: Path,
     full_source_catalog: Path,
     negative_input: Path,
+    test_negative_input: Path | None = None,
+    training_key_bank: Path | None = None,
+    holdout_key_bank: Path | None = None,
+    deployment_key: Path | None = None,
 ) -> None:
     """Fail before a Fresh Reproduction Run creates any artifact directories."""
 
@@ -243,7 +248,7 @@ def validate_runtime_resources(
     dataset = generation.get("dataset")
     if not isinstance(language, str) or not isinstance(dataset, str):
         raise ValueError("generation language and dataset must be strings")
-    _validate_dataset_runtime(dataset_path, dataset, language)
+    target_task_ids = _validate_dataset_runtime(dataset_path, dataset, language)
     pilot_sources, pilot_groups = _validate_gate_source_catalog(
         pilot_source_catalog, language, "pilot"
     )
@@ -264,6 +269,87 @@ def validate_runtime_resources(
     if any(row["dataset"] != dataset for row in negative_rows):
         raise ValueError(
             "negative detector input dataset must match the Full profile dataset"
+        )
+    if "supplementary_ablation" in config:
+        if test_negative_input is None:
+            raise ValueError(
+                "Supplementary Ablation requires an independent "
+                "--test-negative-input"
+            )
+        validate_ablation_negative_corpora(
+            negative_input,
+            test_negative_input,
+            target_task_ids=target_task_ids,
+            dataset=dataset,
+        )
+        _validate_ablation_private_resources(
+            training_key_bank=training_key_bank,
+            holdout_key_bank=holdout_key_bank,
+            deployment_key=deployment_key,
+        )
+
+
+def _validate_ablation_private_resources(
+    *,
+    training_key_bank: Path | None,
+    holdout_key_bank: Path | None,
+    deployment_key: Path | None,
+) -> None:
+    """Validate one pre-existing, family-shared private resource set."""
+
+    paths = {
+        "training key bank": training_key_bank,
+        "holdout key bank": holdout_key_bank,
+        "deployment key": deployment_key,
+    }
+    missing = sorted(label for label, path in paths.items() if path is None)
+    if missing:
+        raise ValueError(
+            "Supplementary Ablation family private resources are missing: "
+            + ", ".join(missing)
+        )
+    assert training_key_bank is not None
+    assert holdout_key_bank is not None
+    assert deployment_key is not None
+    for label, path in paths.items():
+        assert path is not None
+        _require_local_resource(path, label, directory=False)
+        if path.stat().st_mode & 0o077:
+            raise ValueError(
+                f"Supplementary Ablation {label} must not be group/world accessible"
+            )
+    from wfcllm.common.secrets import load_secret
+
+    def bank(path: Path, count: int, label: str) -> tuple[str, ...]:
+        raw = load_secret(secret_file=path, env_name=None)
+        try:
+            value = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"Supplementary Ablation {label} must be UTF-8 JSON"
+            ) from exc
+        if (
+            not isinstance(value, list)
+            or len(value) != count
+            or any(not isinstance(item, str) or not item for item in value)
+            or len(set(value)) != count
+        ):
+            raise ValueError(
+                f"Supplementary Ablation {label} must contain exactly "
+                f"{count} unique non-empty records"
+            )
+        return tuple(value)
+
+    training = bank(training_key_bank, 32, "training key bank")
+    holdout = bank(holdout_key_bank, 8, "holdout key bank")
+    if not set(training).isdisjoint(holdout):
+        raise ValueError(
+            "Supplementary Ablation training and holdout key banks must be disjoint"
+        )
+    deployment = load_secret(secret_file=deployment_key, env_name=None)
+    if len(deployment) < 32:
+        raise ValueError(
+            "Supplementary Ablation deployment key must contain at least 32 bytes"
         )
 
 
@@ -296,7 +382,7 @@ def _validate_dataset_runtime(
     dataset_path: Path,
     dataset: str,
     language: str,
-) -> None:
+) -> set[str]:
     from wfcllm import datasets
 
     adapter = datasets.get(dataset)
@@ -334,6 +420,77 @@ def _validate_dataset_runtime(
         if sample.task_id in task_ids:
             raise ValueError("dataset adapter returned duplicate task IDs")
         task_ids.add(sample.task_id)
+    return task_ids
+
+
+def validate_ablation_negative_corpora(
+    calibration_path: Path,
+    test_path: Path,
+    *,
+    target_task_ids: set[str],
+    dataset: str,
+) -> dict[str, object]:
+    """Require disjoint calibration/test negatives and exact target coverage."""
+
+    from wfcllm.detection.gated_pipeline import load_jsonl_records
+    from wfcllm.windowing.normalization import normalize_unit_text
+
+    if not isinstance(target_task_ids, set) or not target_task_ids:
+        raise ValueError("Supplementary Ablation target task IDs must be non-empty")
+    calibration = load_jsonl_records(calibration_path)
+    test = load_jsonl_records(test_path)
+    for label, rows in (("calibration", calibration), ("test", test)):
+        if any(row["dataset"] != dataset for row in rows):
+            raise ValueError(
+                f"Supplementary Ablation {label} negatives must use "
+                f"dataset={dataset!r}"
+            )
+
+    def normalized_id(row: Mapping[str, object]) -> str:
+        return unicodedata.normalize("NFKC", str(row["id"])).casefold().strip()
+
+    def normalized_prompt(row: Mapping[str, object]) -> str:
+        return (
+            unicodedata.normalize("NFKC", str(row["prompt"]))
+            .replace("\r\n", "\n")
+            .strip()
+        )
+
+    def normalized_code(row: Mapping[str, object]) -> str:
+        return normalize_unit_text(str(row["final_code"]))
+
+    dimensions = {
+        "id": normalized_id,
+        "prompt": normalized_prompt,
+        "normalized code": normalized_code,
+    }
+    for label, normalizer in dimensions.items():
+        calibration_values = {normalizer(row) for row in calibration}
+        test_values = {normalizer(row) for row in test}
+        if calibration_values & test_values:
+            raise ValueError(
+                "Supplementary Ablation calibration/test negative "
+                f"overlap by {label}"
+            )
+
+    expected_ids = {
+        unicodedata.normalize("NFKC", value).casefold().strip()
+        for value in target_task_ids
+    }
+    observed_ids = {normalized_id(row) for row in test}
+    if observed_ids != expected_ids or len(test) != len(expected_ids):
+        missing = sorted(expected_ids - observed_ids)
+        unexpected = sorted(observed_ids - expected_ids)
+        raise ValueError(
+            "Supplementary Ablation test negatives must cover each target task "
+            f"exactly once: missing={missing}, unexpected={unexpected}"
+        )
+    return {
+        "calibration_count": len(calibration),
+        "test_count": len(test),
+        "calibration_sha256": _sha256_file(calibration_path),
+        "test_sha256": _sha256_file(test_path),
+    }
 
 
 def _validate_gate_source_catalog(
@@ -455,6 +612,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pilot-source-catalog", type=Path)
     parser.add_argument("--full-source-catalog", type=Path)
     parser.add_argument("--negative-input", type=Path)
+    parser.add_argument("--test-negative-input", type=Path)
+    parser.add_argument("--training-key-bank", type=Path)
+    parser.add_argument("--holdout-key-bank", type=Path)
+    parser.add_argument("--deployment-key", type=Path)
+    parser.add_argument("--ablation-spec", type=Path)
     args = parser.parse_args(argv)
     try:
         config = load_and_validate_experiment_config(
@@ -463,6 +625,16 @@ def main(argv: list[str] | None = None) -> int:
             args.dataset,
             args.profile,
         )
+        if args.ablation_spec is not None:
+            from wfcllm.cli.config_resolver import resolve_method_config
+            from wfcllm.method.ablation import load_supplementary_ablation_spec
+
+            config = resolve_method_config(
+                config,
+                supplementary_ablation=load_supplementary_ablation_spec(
+                    args.ablation_spec
+                ),
+            )
         if args.check_runtime_capabilities:
             validate_runtime_capabilities(config)
         if args.check_runtime_resources:
@@ -500,6 +672,10 @@ def main(argv: list[str] | None = None) -> int:
                 pilot_source_catalog=args.pilot_source_catalog,
                 full_source_catalog=args.full_source_catalog,
                 negative_input=args.negative_input,
+                test_negative_input=args.test_negative_input,
+                training_key_bank=args.training_key_bank,
+                holdout_key_bank=args.holdout_key_bank,
+                deployment_key=args.deployment_key,
             )
     except (OSError, UnicodeError, ValueError) as exc:
         parser.error(str(exc))

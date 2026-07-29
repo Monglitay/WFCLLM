@@ -156,6 +156,73 @@ def test_generation_audit_is_sidecar_only(tmp_path: Path) -> None:
     assert candidates[0]["keyed_lsh_scored"] is True
 
 
+def test_generation_latency_uses_an_injected_monotonic_clock_and_stays_sidecar_only(
+    tmp_path: Path,
+) -> None:
+    readings = iter((10.0, 10.25))
+    GatedGenerationPipeline(
+        config=_config(tmp_path),
+        bundle_loader=lambda _p: _bundle(),
+        bundle_hasher=lambda _p: _digest("bundle"),
+        base_model=_BaseModel(),
+        generator=_Generator(),
+        data_adapter=lambda: [{"id": "1", "prompt": "p"}],
+        deployment_key=b"key",
+        monotonic_clock=lambda: next(readings),
+    ).run()
+
+    latency = _read_jsonl(tmp_path / "generation" / "latency_sidecar.jsonl")
+    assert latency == [
+        {
+            "id": "1",
+            "dataset": "humaneval",
+            "generation_latency_seconds": 0.25,
+            "audit_only": True,
+            "not_detector_input": True,
+        }
+    ]
+    final_row = _read_jsonl(tmp_path / "inputs" / "final_code.jsonl")[0]
+    assert set(final_row) == {"id", "dataset", "prompt", "final_code"}
+
+
+def test_diagnostic_generation_downgrades_nested_ablation_identity(
+    tmp_path: Path,
+) -> None:
+    production_binding = {
+        "resolved_config_sha256": "a" * 64,
+        "supplementary_ablation": {
+            "study_kind": "supplementary_ablation",
+            "formal": True,
+            "formal_eligible": True,
+            "diagnostic_test_backend": False,
+            "diagnostic_only": False,
+            "not_official_method": False,
+        },
+    }
+    GatedGenerationPipeline(
+        config=replace(
+            _config(tmp_path),
+            supplementary_binding=production_binding,
+        ),
+        bundle_loader=lambda _p: _bundle(),
+        bundle_hasher=lambda _p: _digest("bundle"),
+        base_model=_BaseModel(),
+        generator=_Generator(),
+        data_adapter=lambda: [{"id": "1", "prompt": "p"}],
+        deployment_key=b"key",
+    ).run()
+
+    manifest = json.loads(
+        (tmp_path / "generation" / "manifest.json").read_text(encoding="utf-8")
+    )
+    study = manifest["supplementary_ablation"]
+    assert study["formal"] is False
+    assert study["formal_eligible"] is False
+    assert study["diagnostic_test_backend"] is True
+    assert study["diagnostic_only"] is True
+    assert study["not_official_method"] is True
+
+
 def test_production_generation_is_marked_formal_only_when_explicit(
     tmp_path: Path,
 ) -> None:

@@ -116,6 +116,8 @@ class GatedCalibrationArtifact:
     null_hit_probability: float | None
     reliable_window_count_buckets: dict[str, tuple[float, ...]]
     thresholds_by_reliable_window_count: dict[str, float]
+    resolved_config_sha256: str | None = None
+    supplementary_ablation: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.schema_version != GATED_CALIBRATION_SCHEMA_VERSION:
@@ -198,6 +200,25 @@ class GatedCalibrationArtifact:
                 )
             ):
                 raise ValueError("invalid empirical threshold")
+        if (self.resolved_config_sha256 is None) != (
+            self.supplementary_ablation is None
+        ):
+            raise ValueError(
+                "Supplementary Ablation calibration binding must be complete"
+            )
+        if self.resolved_config_sha256 is not None:
+            if _DIGEST.fullmatch(self.resolved_config_sha256) is None:
+                raise ValueError(
+                    "Supplementary Ablation resolved config hash is invalid"
+                )
+            if (
+                not isinstance(self.supplementary_ablation, dict)
+                or self.supplementary_ablation.get("study_kind")
+                != "supplementary_ablation"
+            ):
+                raise ValueError(
+                    "Supplementary Ablation calibration identity is invalid"
+                )
 
     @classmethod
     def from_dict(cls, value: object) -> GatedCalibrationArtifact:
@@ -205,7 +226,9 @@ class GatedCalibrationArtifact:
         if not isinstance(value, Mapping):
             raise ValueError("gated calibration artifact schema mismatch")
         payload = dict(value)
-        if set(payload) != fields:
+        optional = {"resolved_config_sha256", "supplementary_ablation"}
+        payload_fields = set(payload)
+        if payload_fields != fields and payload_fields != fields - optional:
             raise ValueError("gated calibration artifact schema mismatch")
         buckets = payload.get("reliable_window_count_buckets")
         if not isinstance(buckets, Mapping):
@@ -217,6 +240,9 @@ class GatedCalibrationArtifact:
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
+        if self.resolved_config_sha256 is None:
+            payload.pop("resolved_config_sha256")
+            payload.pop("supplementary_ablation")
         payload["reliable_window_count_buckets"] = {
             key: list(values)
             for key, values in self.reliable_window_count_buckets.items()

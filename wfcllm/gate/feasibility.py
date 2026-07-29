@@ -147,6 +147,11 @@ def evaluate_gate_data_feasibility(
     if not snapshot or any(not isinstance(group, FeasibilityGroup) for group in snapshot):
         raise ValueError("groups must contain FeasibilityGroup values")
     snapshot = tuple(sorted(snapshot, key=lambda group: group.group_id))
+    configured_window_lengths = snapshot[0].window_lengths
+    if any(
+        group.window_lengths != configured_window_lengths for group in snapshot
+    ):
+        raise ValueError("all feasibility groups must use the same window_lengths")
     ids = tuple(group.group_id for group in snapshot)
     if len(set(ids)) != len(ids):
         raise ValueError("duplicate independent group_id values are forbidden")
@@ -180,7 +185,7 @@ def evaluate_gate_data_feasibility(
         "suitable_negative_groups": AdmissionResult(negatives >= negative_min, negatives, f">= {negative_min}"),
         **{
             f"window_length_w{length}_groups": AdmissionResult(windows[length] >= 50, windows[length], ">= 50")
-            for length in (1, 2, 3)
+            for length in configured_window_lengths
         },
         "major_statement_families": AdmissionResult(qualifying_families >= 4, qualifying_families, ">= 4 families with >= 25 independent groups each"),
         "r3_minus_r1_bootstrap_lower_95": AdmissionResult(lower > 0.0, lower, "> 0"),

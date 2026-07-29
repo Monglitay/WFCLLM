@@ -33,6 +33,8 @@ def main(argv: list[str] | None = None) -> int:
         "k": 1,
         "value": compute_pass_at_1(rows),
         "sample_count": len(rows),
+        "passed_count": sum(row["is_correct"] is True for row in rows),
+        "total_count": len(rows),
         "posthoc_only": True,
         "not_used_for_generation": True,
         "not_used_for_retry": True,

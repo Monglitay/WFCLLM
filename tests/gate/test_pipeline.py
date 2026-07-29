@@ -54,16 +54,20 @@ class TinyPipelineGate(nn.Module):
         return types.SimpleNamespace(close_logits=logits[:, 0], suitable_logits=logits[:, 1])
 
 
-def _group(index: int, *, scale: str = "pilot") -> GatePipelineGroup:
+def _group(
+    index: int, *, scale: str = "pilot", max_units: int = 3
+) -> GatePipelineGroup:
     suitable = index < (15 if scale == "pilot" else 150)
     split = "validation" if index % 10 == 0 else "test" if index % 10 == 1 else "train"
+    lengths = tuple(range(1, max_units + 1))
+    observations, probes = _evidence_templates(suitable)
     return GatePipelineGroup(
         group_id=f"group-{index:05d}",
         split_group_id=f"repository:repo-{index:05d}",
         split=split,
         suitable_target=suitable,
         close_target=True,
-        window_lengths=(1, 2, 3),
+        window_lengths=lengths,
         statement_family=("assignment", "branch", "loop", "return")[index % 4],
         r1_success_rate=0.25 if suitable else 0.0,
         r3_success_rate=0.625 if suitable else 0.0,
@@ -74,13 +78,49 @@ def _group(index: int, *, scale: str = "pilot") -> GatePipelineGroup:
         structural_invalid_rate=0.0,
         numeric_instability_rate=0.0,
         first_hit_candidate_position=0 if suitable else None,
-        candidate_indices_by_window_length={length: tuple(range(4)) for length in (1, 2, 3)},
+        candidate_indices_by_window_length={
+            length: tuple(range(4)) for length in lengths
+        },
         observed_training_key_ids=tuple(f"train-key-{i:03d}" for i in range(32)),
         observed_holdout_key_ids=tuple(f"holdout-key-{i:03d}" for i in range(8)),
-        candidate_observations_by_length=_evidence_templates(suitable)[0],
-        probe_results_by_length=_evidence_templates(suitable)[1],
+        candidate_observations_by_length={
+            str(length): observations[str(length)] for length in lengths
+        },
+        probe_results_by_length={
+            str(length): probes[str(length)] for length in lengths
+        },
         row={"schema_version": "wfcllm-gate-data/v1", "group_id": f"group-{index:05d}", "split": split},
     )
+
+
+def test_pipeline_stage_types_accept_only_the_configured_max_units_prefix() -> None:
+    group = _group(0, max_units=1)
+    identity = GateGroupIdentity(
+        group_id=group.group_id,
+        split_group_id=group.split_group_id,
+        repository_id=group.repository_id,
+        task_id=group.task_id,
+        generation_model_id=group.generation_model_id,
+        statement_family=group.statement_family,
+        window_lengths=(1,),
+    )
+    parsed = ParsedWindowGroup(identity, "python-statement-window/v1")
+    trajectory = CandidateTrajectoryGroup(
+        parsed, {1: tuple(range(4))}
+    )
+    probed = ProbedGroup(
+        trajectory,
+        group.candidate_observations_by_length,
+        group.probe_results_by_length,
+    )
+    labels = build_gate_labels(
+        group.candidate_observations_by_length["1"],
+        training_key_count=32,
+    )
+
+    labeled = LabeledGroup(probed, {1: labels}, 0.5, 0)
+
+    assert labeled.identity.window_lengths == (1,)
 
 
 @lru_cache(maxsize=2)

@@ -333,11 +333,11 @@ def test_reliable_hit_requires_structure_stability_and_configured_margin(
     )
 
     first_hits = labels.budgets[3].first_hit_by_key_id
-    assert first_hits["train-key-000"] == 0
+    assert first_hits["train-key-000"] is None
     assert first_hits["train-key-001"] is None
     assert first_hits["train-key-002"] is None
     assert first_hits["train-key-003"] is None
-    assert labels.budgets[3].success_rate == 1 / 32
+    assert labels.budgets[3].success_rate == 0.0
 
 
 def test_first_hit_indices_are_budget_prefix_specific(

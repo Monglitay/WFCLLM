@@ -7,10 +7,12 @@ from collections import Counter
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 import re
 import sys
+import time
 from typing import Any, Callable, Iterable, Mapping
 
 from wfcllm.generation.completion_finalizer import ProgramFinalizationResult
@@ -45,6 +47,7 @@ class GatedGenerationPipelineConfig:
     embedding_passes: int = 1
     fail_fast: bool = False
     diagnostic_test_backend: bool = False
+    supplementary_binding: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.output_dir, Path) or not isinstance(self.bundle_path, Path):
@@ -81,6 +84,10 @@ class GatedGenerationPipelineConfig:
             raise ValueError("fail_fast must be boolean")
         if type(self.diagnostic_test_backend) is not bool:
             raise ValueError("diagnostic_test_backend must be boolean")
+        if self.supplementary_binding is not None and not isinstance(
+            self.supplementary_binding, Mapping
+        ):
+            raise ValueError("supplementary_binding must be an object or None")
 
 
 class GatedGenerationPipeline:
@@ -104,6 +111,7 @@ class GatedGenerationPipeline:
         program_finalizer_name: str = "none",
         bundle_loader: Callable[[Path], Any] | None = None,
         bundle_hasher: Callable[[Path], str] | None = None,
+        monotonic_clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if not isinstance(config, GatedGenerationPipelineConfig):
             raise ValueError("config must be GatedGenerationPipelineConfig")
@@ -137,6 +145,8 @@ class GatedGenerationPipeline:
             raise ValueError("base model must generate a complete program")
         if bundle_loader is None:
             raise ValueError("current-run gate candidate loader is required")
+        if not callable(monotonic_clock):
+            raise ValueError("monotonic_clock must be callable")
         hasher = bundle_hasher or _hash_tree
         before = hasher(config.bundle_path)
         if before != config.bundle_sha256:
@@ -154,6 +164,7 @@ class GatedGenerationPipeline:
         self._deployment_key = deployment_key
         self._program_finalizer = program_finalizer
         self._program_finalizer_name = program_finalizer_name
+        self._monotonic_clock = monotonic_clock
 
     @staticmethod
     def _validate_bundle(bundle: Any, config: GatedGenerationPipelineConfig) -> None:
@@ -171,6 +182,7 @@ class GatedGenerationPipeline:
         audits: list[dict[str, Any]] = []
         candidates: list[dict[str, Any]] = []
         finalizer_rows: list[dict[str, Any]] = []
+        latency_rows: list[dict[str, Any]] = []
         samples_iter = (
             self._data_adapter() if callable(self._data_adapter) else self._data_adapter
         )
@@ -207,6 +219,7 @@ class GatedGenerationPipeline:
             # optional watermark transforms.  A failure here means there is no
             # program to keep in the full denominator, so it must abort the
             # phase instead of publishing an empty formal detector input.
+            sample_started_at = self._monotonic_clock()
             original = self._generate_base_program(prompt, sample_id)
             if self._program_finalizer is not None:
                 before = original
@@ -286,12 +299,19 @@ class GatedGenerationPipeline:
                         "final_code": original,
                     }
                 )
+                latency_rows.append(
+                    self._latency_row(
+                        sample_id=sample_id,
+                        started_at=sample_started_at,
+                    )
+                )
                 self._publish_partial_outputs(
                     root,
                     final_rows=final_rows,
                     audits=audits,
                     candidates=candidates,
                     finalizer_rows=finalizer_rows,
+                    latency_rows=latency_rows,
                 )
                 self._write_progress(
                     progress_path,
@@ -345,12 +365,19 @@ class GatedGenerationPipeline:
                     }
                 )
                 candidates.append(value)
+            latency_rows.append(
+                self._latency_row(
+                    sample_id=sample_id,
+                    started_at=sample_started_at,
+                )
+            )
             self._publish_partial_outputs(
                 root,
                 final_rows=final_rows,
                 audits=audits,
                 candidates=candidates,
                 finalizer_rows=finalizer_rows,
+                latency_rows=latency_rows,
             )
             self._write_progress(
                 progress_path,
@@ -384,13 +411,12 @@ class GatedGenerationPipeline:
             audits=audits,
             candidates=candidates,
             finalizer_rows=finalizer_rows,
+            latency_rows=latency_rows,
         )
         failed_samples = sum(
             row.get("sample_generation_failed") is True for row in audits
         )
-        write_generation_manifest(
-            root / "generation" / "manifest.json",
-            {
+        manifest = {
                 "schema_version": "wfcllm-gated-generation-manifest/v1",
                 "formal": not self._config.diagnostic_test_backend,
                 "diagnostic_test_backend": self._config.diagnostic_test_backend,
@@ -444,7 +470,31 @@ class GatedGenerationPipeline:
                 "sample_failure_count": sum(
                     row.get("sample_generation_failed") is True for row in audits
                 ),
-            },
+            }
+        if self._config.supplementary_binding is not None:
+            binding = json.loads(
+                json.dumps(
+                    dict(self._config.supplementary_binding),
+                    allow_nan=False,
+                    ensure_ascii=False,
+                )
+            )
+            study = binding.get("supplementary_ablation")
+            if isinstance(study, dict):
+                diagnostic = self._config.diagnostic_test_backend
+                study.update(
+                    {
+                        "formal": not diagnostic,
+                        "formal_eligible": not diagnostic,
+                        "diagnostic_test_backend": diagnostic,
+                        "diagnostic_only": diagnostic,
+                        "not_official_method": diagnostic,
+                    }
+                )
+            manifest.update(binding)
+        write_generation_manifest(
+            root / "generation" / "manifest.json",
+            manifest,
         )
         self._write_progress(
             progress_path,
@@ -467,16 +517,38 @@ class GatedGenerationPipeline:
         audits: list[dict[str, Any]],
         candidates: list[dict[str, Any]],
         finalizer_rows: list[dict[str, Any]],
+        latency_rows: list[dict[str, Any]],
     ) -> None:
         write_final_code_rows(root / "inputs" / "final_code.jsonl", final_rows)
         write_generation_sidecar_rows(root / "generation" / "audit.jsonl", audits)
         write_generation_sidecar_rows(
             root / "generation" / "candidate_sidecar.jsonl", candidates
         )
+        write_generation_sidecar_rows(
+            root / "generation" / "latency_sidecar.jsonl", latency_rows
+        )
         if self._program_finalizer is not None:
             write_generation_sidecar_rows(
                 root / "generation" / "finalizer.jsonl", finalizer_rows
             )
+
+    def _latency_row(self, *, sample_id: str, started_at: float) -> dict[str, Any]:
+        finished_at = self._monotonic_clock()
+        if (
+            not isinstance(started_at, (int, float))
+            or isinstance(started_at, bool)
+            or not isinstance(finished_at, (int, float))
+            or isinstance(finished_at, bool)
+        ):
+            raise ValueError("monotonic clock must return finite numeric values")
+        elapsed = float(finished_at) - float(started_at)
+        if not math.isfinite(elapsed) or elapsed < 0.0:
+            raise ValueError("monotonic clock must not move backwards")
+        return {
+            "id": sample_id,
+            "dataset": self._config.dataset,
+            "generation_latency_seconds": elapsed,
+        }
 
     @staticmethod
     def _write_progress(

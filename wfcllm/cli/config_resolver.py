@@ -24,7 +24,11 @@ def load_config(config_path: Path) -> dict:
     return payload
 
 
-def resolve_method_config(config: Mapping[str, object]) -> dict:
+def resolve_method_config(
+    config: Mapping[str, object],
+    *,
+    supplementary_ablation: Mapping[str, object] | None = None,
+) -> dict:
     """Expand a named public method config against its canonical preset."""
 
     if not isinstance(config, Mapping):
@@ -41,7 +45,12 @@ def resolve_method_config(config: Mapping[str, object]) -> dict:
     merged = _deep_merge(load_method_preset(name).to_dict(), dict(config))
     experiment = config.get("experiment")
     if isinstance(experiment, Mapping):
-        return _resolve_experiment_matrix_config(config, merged)
+        resolved = _resolve_experiment_matrix_config(config, merged)
+        if supplementary_ablation is None:
+            return resolved
+        from wfcllm.method.ablation import resolve_supplementary_ablation
+
+        return resolve_supplementary_ablation(resolved, supplementary_ablation)
     raise ValueError("gated config must declare one full experiment profile")
 
 

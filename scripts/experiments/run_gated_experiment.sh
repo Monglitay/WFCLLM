@@ -30,6 +30,20 @@ fi
 : "${SEMANTIC_ENCODER_MODEL_PATH:?set SEMANTIC_ENCODER_MODEL_PATH to a local semantic encoder}"
 : "${GATE_BASE_MODEL_PATH:?set GATE_BASE_MODEL_PATH to a local CodeT5 gate base model}"
 : "${NEGATIVE_INPUT:?set NEGATIVE_INPUT to strict four-field negative final_code JSONL}"
+ABLATION_SPEC="${ABLATION_SPEC:-}"
+TEST_NEGATIVE_INPUT="${TEST_NEGATIVE_INPUT:-}"
+ABLATION_TRAINING_KEY_BANK="${ABLATION_TRAINING_KEY_BANK:-}"
+ABLATION_HOLDOUT_KEY_BANK="${ABLATION_HOLDOUT_KEY_BANK:-}"
+ABLATION_DEPLOYMENT_KEY="${ABLATION_DEPLOYMENT_KEY:-}"
+if [[ -n "${ABLATION_SPEC}" && -z "${TEST_NEGATIVE_INPUT}" ]]; then
+  echo "set TEST_NEGATIVE_INPUT for Supplementary Ablation actual FPR" >&2
+  exit 2
+fi
+if [[ -n "${ABLATION_SPEC}" ]]; then
+  : "${ABLATION_TRAINING_KEY_BANK:?set ABLATION_TRAINING_KEY_BANK to the family-shared private bank}"
+  : "${ABLATION_HOLDOUT_KEY_BANK:?set ABLATION_HOLDOUT_KEY_BANK to the family-shared private bank}"
+  : "${ABLATION_DEPLOYMENT_KEY:?set ABLATION_DEPLOYMENT_KEY to the family-shared private key}"
+fi
 : "${PILOT_SOURCE_CATALOG:?set PILOT_SOURCE_CATALOG for a full run}"
 : "${FULL_SOURCE_CATALOG:?set FULL_SOURCE_CATALOG for a full run}"
 if [[ "${PILOT_SOURCE_CATALOG}" == "${FULL_SOURCE_CATALOG}" ]]; then
@@ -51,6 +65,15 @@ PREFLIGHT_RESOURCES=(
 )
 if [[ -n "${REWRITE_MODEL_PATH}" ]]; then
   PREFLIGHT_RESOURCES+=(--rewrite-model-path "${REWRITE_MODEL_PATH}")
+fi
+if [[ -n "${ABLATION_SPEC}" ]]; then
+  PREFLIGHT_RESOURCES+=(
+    --ablation-spec "${ABLATION_SPEC}"
+    --test-negative-input "${TEST_NEGATIVE_INPUT}"
+    --training-key-bank "${ABLATION_TRAINING_KEY_BANK}"
+    --holdout-key-bank "${ABLATION_HOLDOUT_KEY_BANK}"
+    --deployment-key "${ABLATION_DEPLOYMENT_KEY}"
+  )
 fi
 env PYTHONPATH=. HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
   "${RUN_PY[@]}" -m wfcllm.cli.experiment_preflight \
@@ -81,6 +104,16 @@ SOURCE_MANIFEST="${ROOT}/source_manifest.json"
 TRAINING_KEYS="${PRIVATE_DIR}/training_keys.json"
 HOLDOUT_KEYS="${PRIVATE_DIR}/holdout_keys.json"
 DEPLOYMENT_KEY="${PRIVATE_DIR}/deployment.key"
+PREPARE_PRIVATE_MODE=()
+if [[ -n "${ABLATION_SPEC}" ]]; then
+  TRAINING_KEYS="${ABLATION_TRAINING_KEY_BANK}"
+  HOLDOUT_KEYS="${ABLATION_HOLDOUT_KEY_BANK}"
+  DEPLOYMENT_KEY="${ABLATION_DEPLOYMENT_KEY}"
+  PILOT_TRAINING_KEYS="${ABLATION_TRAINING_KEY_BANK}"
+  PILOT_HOLDOUT_KEYS="${ABLATION_HOLDOUT_KEY_BANK}"
+  PILOT_DEPLOYMENT_KEY="${ABLATION_DEPLOYMENT_KEY}"
+  PREPARE_PRIVATE_MODE=(--reuse-private-resources)
+fi
 
 mkdir -p "${ROOT}"
 env PYTHONPATH=. HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 "${RUN_PY[@]}" scripts/wfcllm_prepare_gated_experiment.py \
@@ -88,13 +121,15 @@ env PYTHONPATH=. HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 "
   --source-manifest "${PILOT_SOURCE_MANIFEST}" \
   --training-key-bank "${PILOT_TRAINING_KEYS}" \
   --holdout-key-bank "${PILOT_HOLDOUT_KEYS}" \
-  --deployment-key "${PILOT_DEPLOYMENT_KEY}"
+  --deployment-key "${PILOT_DEPLOYMENT_KEY}" \
+  "${PREPARE_PRIVATE_MODE[@]}"
 env PYTHONPATH=. HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 "${RUN_PY[@]}" scripts/wfcllm_prepare_gated_experiment.py \
   --source-catalog "${FULL_SOURCE_CATALOG}" \
   --source-manifest "${SOURCE_MANIFEST}" \
   --training-key-bank "${TRAINING_KEYS}" \
   --holdout-key-bank "${HOLDOUT_KEYS}" \
-  --deployment-key "${DEPLOYMENT_KEY}"
+  --deployment-key "${DEPLOYMENT_KEY}" \
+  "${PREPARE_PRIVATE_MODE[@]}"
 
 COMMON=(
   --config "${WFCLLM_CONFIG}"
@@ -115,6 +150,12 @@ COMMON=(
 )
 if [[ -n "${REWRITE_MODEL_PATH}" ]]; then
   COMMON+=(--rewrite-model-path "${REWRITE_MODEL_PATH}")
+fi
+if [[ -n "${ABLATION_SPEC}" ]]; then
+  COMMON+=(
+    --ablation-spec "${ABLATION_SPEC}"
+    --test-negative-input "${TEST_NEGATIVE_INPUT}"
+  )
 fi
 
 OFFLINE=(PYTHONPATH=. HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1)
@@ -143,6 +184,12 @@ PILOT_COMMON=(
 )
 if [[ -n "${REWRITE_MODEL_PATH}" ]]; then
   PILOT_COMMON+=(--rewrite-model-path "${REWRITE_MODEL_PATH}")
+fi
+if [[ -n "${ABLATION_SPEC}" ]]; then
+  PILOT_COMMON+=(
+    --ablation-spec "${ABLATION_SPEC}"
+    --test-negative-input "${TEST_NEGATIVE_INPUT}"
+  )
 fi
 env "${OFFLINE[@]}" "${RUN_PY[@]}" run.py --phase encoder "${PILOT_COMMON[@]}"
 env "${OFFLINE[@]}" "${RUN_PY[@]}" run.py --phase gate-data \

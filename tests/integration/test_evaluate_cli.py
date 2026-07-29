@@ -41,6 +41,8 @@ def test_evaluate_defaults_to_posthoc_pass_at_1(tmp_path, capsys) -> None:
     assert payload["metric"] == "pass@1"
     assert payload["k"] == 1
     assert payload["value"] == pytest.approx(0.75)
+    assert payload["passed_count"] == 2
+    assert payload["total_count"] == 3
     assert payload["posthoc_only"] is True
     assert payload["not_used_for_detection"] is True
     assert json.loads(output.read_text(encoding="utf-8")) == payload

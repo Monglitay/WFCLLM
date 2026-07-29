@@ -7,6 +7,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -68,6 +69,28 @@ def _diagnostic_row_identity(diagnostic: bool) -> dict[str, bool]:
     return _artifact_identity(True) if diagnostic else {}
 
 
+def _supplementary_binding(
+    value: Mapping[str, object] | None,
+    *,
+    diagnostic: bool | None = None,
+) -> dict[str, object]:
+    if value is None:
+        return {}
+    output = json.loads(_canonical_bytes(dict(value)))
+    study = output.get("supplementary_ablation")
+    if diagnostic is not None and isinstance(study, dict):
+        study.update(
+            {
+                "formal": not diagnostic,
+                "formal_eligible": not diagnostic,
+                "diagnostic_test_backend": diagnostic,
+                "diagnostic_only": diagnostic,
+                "not_official_method": diagnostic,
+            }
+        )
+    return output
+
+
 @dataclass(frozen=True)
 class GateDataPipelineConfig:
     output_root: Path
@@ -79,8 +102,11 @@ class GateDataPipelineConfig:
     lsh_config_hash: str
     feasibility_contract: str
     feasibility_thresholds: tuple[tuple[str, int | float], ...]
+    window_lengths: tuple[int, ...] = (1, 2, 3)
+    semantic_margin: float = 0.0
     pilot_feasibility_path: Path | None = None
     max_groups: int | None = None
+    supplementary_binding: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         _path("output_root", self.output_root)
@@ -100,6 +126,19 @@ class GateDataPipelineConfig:
             raise ValueError("feasibility_contract must remain gate-data-feasibility/v1")
         if self.feasibility_thresholds != FEASIBILITY_THRESHOLD_ITEMS:
             raise ValueError("feasibility thresholds are frozen by gate-data-feasibility/v1")
+        if self.window_lengths not in {(1,), (1, 2), (1, 2, 3)}:
+            raise ValueError("window_lengths must be the prefix 1..max_units")
+        if (
+            isinstance(self.semantic_margin, bool)
+            or not isinstance(self.semantic_margin, (int, float))
+            or not math.isfinite(float(self.semantic_margin))
+            or self.semantic_margin < 0.0
+        ):
+            raise ValueError("semantic_margin must be finite and non-negative")
+        if self.supplementary_binding is not None:
+            if not isinstance(self.supplementary_binding, Mapping):
+                raise ValueError("supplementary_binding must be an object or None")
+            _canonical_bytes(dict(self.supplementary_binding))
 
 
 @dataclass(frozen=True)
@@ -108,6 +147,7 @@ class GateTrainPipelineConfig:
     data_dir: Path
     config_hash: str
     pilot_feasibility_path: Path | None = None
+    supplementary_binding: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         for name in ("output_root", "data_dir"):
@@ -115,6 +155,10 @@ class GateTrainPipelineConfig:
         if self.pilot_feasibility_path is not None:
             _path("pilot_feasibility_path", self.pilot_feasibility_path)
         _digest("config_hash", self.config_hash)
+        if self.supplementary_binding is not None:
+            if not isinstance(self.supplementary_binding, Mapping):
+                raise ValueError("supplementary_binding must be an object or None")
+            _canonical_bytes(dict(self.supplementary_binding))
 
 
 @dataclass(frozen=True)
@@ -242,8 +286,8 @@ class GateGroupIdentity:
             value = getattr(self, name)
             if not isinstance(value, str) or not value:
                 raise ValueError(f"{name} must be a non-empty string")
-        if self.window_lengths != (1, 2, 3):
-            raise ValueError("identity window_lengths must remain W1/W2/W3")
+        if self.window_lengths not in {(1,), (1, 2), (1, 2, 3)}:
+            raise ValueError("identity window_lengths must be the prefix 1..max_units")
 
     @property
     def digest(self) -> str:
@@ -287,10 +331,14 @@ class CandidateTrajectoryGroup:
         if not isinstance(self.parsed, ParsedWindowGroup):
             raise ValueError("candidate trajectory requires ParsedWindowGroup")
         values = dict(self.candidate_indices_by_window_length)
-        if set(values) != {1, 2, 3} or any(
-            values[length] != tuple(range(4)) for length in (1, 2, 3)
+        lengths = self.parsed.identity.window_lengths
+        if set(values) != set(lengths) or any(
+            values[length] != tuple(range(4)) for length in lengths
         ):
-            raise ValueError("candidate trajectory must contain candidate 0 through 3 for W1/W2/W3")
+            raise ValueError(
+                "candidate trajectory must contain candidate 0 through 3 "
+                "for every configured window length"
+            )
         object.__setattr__(self, "candidate_indices_by_window_length", MappingProxyType(values))
 
     @property
@@ -311,8 +359,13 @@ class ProbedGroup:
             raise ValueError("probed group requires CandidateTrajectoryGroup")
         observations = {key: tuple(value) for key, value in self.candidate_observations_by_length.items()}
         probes = {key: tuple(value) for key, value in self.probe_results_by_length.items()}
-        if set(observations) != {"1", "2", "3"} or set(probes) != {"1", "2", "3"}:
-            raise ValueError("probed group must contain W1/W2/W3 evidence")
+        expected = {
+            str(length) for length in self.trajectory.identity.window_lengths
+        }
+        if set(observations) != expected or set(probes) != expected:
+            raise ValueError(
+                "probed group must contain every configured window length"
+            )
         object.__setattr__(self, "candidate_observations_by_length", MappingProxyType(observations))
         object.__setattr__(self, "probe_results_by_length", MappingProxyType(probes))
 
@@ -334,8 +387,13 @@ class LabeledGroup:
         if not isinstance(self.probed, ProbedGroup):
             raise ValueError("labeled group requires ProbedGroup")
         labels = dict(self.labels_by_window_length)
-        if set(labels) != {1, 2, 3} or any(not isinstance(value, GateLabels) for value in labels.values()):
-            raise ValueError("labeled group requires Task6 labels for W1/W2/W3")
+        if set(labels) != set(self.probed.identity.window_lengths) or any(
+            not isinstance(value, GateLabels) for value in labels.values()
+        ):
+            raise ValueError(
+                "labeled group requires Task6 labels for every configured "
+                "window length"
+            )
         object.__setattr__(self, "labels_by_window_length", MappingProxyType(labels))
 
     @property
@@ -532,7 +590,9 @@ def _run_gate_data_impl(config: GateDataPipelineConfig, dependencies: GatePipeli
                 _validate_same_group_identities((generated,), (built,), "multi-key LSH probe")
                 _validate_probe_contract((built,), training_bank, holdout_bank)
                 probed = _probed_stage(trajectory, built)
-                labeled = _recompute_and_attest_labels(probed, built)
+                labeled = _recompute_and_attest_labels(
+                    probed, built, config=config
+                )
                 split_group = _single_group(
                     dependencies.split_groups((built,), config),
                     "split",
@@ -545,7 +605,9 @@ def _run_gate_data_impl(config: GateDataPipelineConfig, dependencies: GatePipeli
                 if previous_split != split_group.split:
                     raise ValueError("repository/task/function split leakage detected")
 
-                selected = labeled.labels_by_window_length[3]
+                selected = labeled.labels_by_window_length[
+                    config.window_lengths[-1]
+                ]
                 close_suitable_counts[
                     (
                         "close_true_suitable_true"
@@ -697,7 +759,8 @@ def _run_gate_data_impl(config: GateDataPipelineConfig, dependencies: GatePipeli
             "holdout_key_count": 8,
             "rewrite_count": 3,
             "rewrite_budgets": [1, 3],
-            "window_lengths": [1, 2, 3],
+            "window_lengths": list(config.window_lengths),
+            "semantic_margin": config.semantic_margin,
             "group_count": len(compact_groups),
             "split_counts": split_counts,
             "split_label_counts": split_labels,
@@ -708,6 +771,9 @@ def _run_gate_data_impl(config: GateDataPipelineConfig, dependencies: GatePipeli
             "feasibility_thresholds": dict(FEASIBILITY_THRESHOLD_ITEMS),
             "pilot_feasibility_sha256": None if pilot_payload is None else hashlib.sha256(_canonical_bytes(pilot_payload) + b"\n").hexdigest(),
             **_artifact_identity(diagnostic),
+            **_supplementary_binding(
+                config.supplementary_binding, diagnostic=diagnostic
+            ),
             "collection_statistics": collection_statistics,
         }
         if selection_summary is not None:
@@ -717,6 +783,9 @@ def _run_gate_data_impl(config: GateDataPipelineConfig, dependencies: GatePipeli
             "assignments": {group.group_id: group.split for group in compact_groups},
             "split_groups": {group.group_id: group.split_group_id for group in compact_groups},
             **_artifact_identity(diagnostic),
+            **_supplementary_binding(
+                config.supplementary_binding, diagnostic=diagnostic
+            ),
         })
         _write_json(training_bank_manifest_path, {
             "schema_version": "wfcllm-training-key-bank-manifest/v1",
@@ -724,6 +793,9 @@ def _run_gate_data_impl(config: GateDataPipelineConfig, dependencies: GatePipeli
             "key_count": len(training_bank.key_ids),
             "key_ids": list(training_bank.key_ids),
             **_artifact_identity(diagnostic),
+            **_supplementary_binding(
+                config.supplementary_binding, diagnostic=diagnostic
+            ),
         })
         manifest["grouped_jsonl_sha256"] = _sha_file(data_path)
         manifest["group_index_sha256"] = _sha_file(index_path)
@@ -742,6 +814,9 @@ def _run_gate_data_impl(config: GateDataPipelineConfig, dependencies: GatePipeli
             **feasibility.to_dict(),
             "config_hash": config.config_hash,
             **_artifact_identity(diagnostic),
+            **_supplementary_binding(
+                config.supplementary_binding, diagnostic=diagnostic
+            ),
         }
         _reject_sensitive_public_fields(manifest)
         _reject_sensitive_public_fields(feasibility_payload)
@@ -779,6 +854,11 @@ def run_gate_train(config: GateTrainPipelineConfig, dependencies: object) -> Gat
     if manifest.get("config_hash") != config.config_hash:
         raise ValueError("data manifest config hash mismatch")
     diagnostic = bool(getattr(dependencies, "diagnostic_test_backend", False))
+    binding = _supplementary_binding(
+        config.supplementary_binding, diagnostic=diagnostic
+    )
+    if any(manifest.get(key) != value for key, value in binding.items()):
+        raise ValueError("data manifest Supplementary Ablation binding mismatch")
     if (
         manifest.get("diagnostic_test_backend") is True
         or manifest.get("formal_eligible") is not True
@@ -857,6 +937,7 @@ def run_gate_train(config: GateTrainPipelineConfig, dependencies: object) -> Gat
             "learning_curve_plan": plan,
             "learning_curve_runs_executed": False,
             **_artifact_identity(diagnostic),
+            **binding,
         }
         development_summary = {
             "schema_version": "wfcllm-gate-development-summary/v1",
@@ -867,6 +948,7 @@ def run_gate_train(config: GateTrainPipelineConfig, dependencies: object) -> Gat
             "learning_curve_runs_executed": False,
             "unseen_group_metrics_status": "not_run_pending_formal_experiment_approval",
             **_artifact_identity(diagnostic),
+            **binding,
         }
         _reject_sensitive_public_fields(candidate_manifest)
         _reject_sensitive_public_fields(development_summary)
@@ -925,11 +1007,15 @@ def _validate_same_group_identities(
 
 def _validate_trajectory_contract(groups: tuple[GatePipelineGroup, ...]) -> None:
     for group in groups:
-        if group.window_lengths != (1, 2, 3):
-            raise ValueError("generated trajectories must contain W1/W2/W3 in order")
-        if set(group.candidate_indices_by_window_length) != {1, 2, 3} or any(
+        if group.window_lengths not in {(1,), (1, 2), (1, 2, 3)}:
+            raise ValueError(
+                "generated trajectories must contain the prefix 1..max_units"
+            )
+        if set(group.candidate_indices_by_window_length) != set(
+            group.window_lengths
+        ) or any(
             group.candidate_indices_by_window_length[length] != tuple(range(4))
-            for length in (1, 2, 3)
+            for length in group.window_lengths
         ):
             raise ValueError("generated trajectories must contain candidate 0 through 3 for every window")
 
@@ -969,7 +1055,7 @@ def _probed_stage(
 def _split_stage(labeled: LabeledGroup, group: GatePipelineGroup) -> SplitGroup:
     if labeled.identity.digest != _group_identity(group).digest:
         raise ValueError("split stage changed immutable base identity")
-    selected = labeled.labels_by_window_length[3]
+    selected = labeled.labels_by_window_length[group.window_lengths[-1]]
     if (
         selected.close_target != group.close_target
         or selected.suitable_target != group.suitable_target
@@ -982,7 +1068,7 @@ def _derived_feasibility(
     labeled: LabeledGroup,
     group: GatePipelineGroup,
 ) -> FeasibilityGroup:
-    selected = labeled.labels_by_window_length[3]
+    selected = labeled.labels_by_window_length[group.window_lengths[-1]]
     first_hits = [
         value
         for value in selected.budgets[3].first_hit_by_key_id.values()
@@ -1014,10 +1100,14 @@ def _validate_probe_contract(
     for group in groups:
         if group.observed_training_key_ids != training_bank.key_ids or group.observed_holdout_key_ids != holdout_bank.key_ids:
             raise ValueError("multi-key LSH probe evidence does not cover the exact 32/8 key banks")
-        if set(group.candidate_observations_by_length) != {"1", "2", "3"} or set(group.probe_results_by_length) != {"1", "2", "3"}:
-            raise ValueError("probe evidence must cover W1/W2/W3")
+        expected_lengths = {str(length) for length in group.window_lengths}
+        if (
+            set(group.candidate_observations_by_length) != expected_lengths
+            or set(group.probe_results_by_length) != expected_lengths
+        ):
+            raise ValueError("probe evidence must cover every configured window")
         expected_keys = set(training_bank.key_ids) | set(holdout_bank.key_ids)
-        for length in (1, 2, 3):
+        for length in group.window_lengths:
             observations = group.candidate_observations_by_length[str(length)]
             probes = group.probe_results_by_length[str(length)]
             if len(observations) != 4 or len(probes) != 4:
@@ -1098,12 +1188,17 @@ def _validate_probe_contract(
 def _labels_for_group(
     group: GatePipelineGroup,
     length: int,
+    *,
+    semantic_margin: float,
+    max_units: int,
 ) -> GateLabels:
     candidates = group.candidate_observations_by_length[str(length)]
     cache_key = hashlib.sha256(
         _canonical_bytes(
             {
                 "candidates": [candidate.to_dict() for candidate in candidates],
+                "semantic_margin": semantic_margin,
+                "max_units": max_units,
             }
         )
     ).hexdigest()
@@ -1114,6 +1209,10 @@ def _labels_for_group(
     labels = build_gate_labels(
         candidates,
         training_key_count=32,
+        thresholds=LabelThresholds(
+            configured_margin=semantic_margin,
+            max_units=max_units,
+        ),
     )
     _LABEL_CACHE[cache_key] = labels
     if len(_LABEL_CACHE) > _EVIDENCE_LRU_SIZE:
@@ -1124,23 +1223,32 @@ def _labels_for_group(
 def _recompute_and_attest_labels(
     probed: ProbedGroup,
     group: GatePipelineGroup,
+    *,
+    config: GateDataPipelineConfig,
 ) -> LabeledGroup:
     if probed.identity.digest != _group_identity(group).digest:
         raise ValueError("label stage changed immutable base identity")
     labels = {
-        length: _labels_for_group(group, length)
-        for length in (1, 2, 3)
+        length: _labels_for_group(
+            group,
+            length,
+            semantic_margin=config.semantic_margin,
+            max_units=config.window_lengths[-1],
+        )
+        for length in config.window_lengths
     }
-    selected = labels[3]
+    selected = labels[config.window_lengths[-1]]
     r1, r3 = (selected.budgets[budget].success_rate for budget in (1, 3))
     first_hits = [value for value in selected.budgets[3].first_hit_by_key_id.values() if value is not None]
     holdout_ids = group.observed_holdout_key_ids
-    holdout_results = group.probe_results_by_length["3"]
+    holdout_results = group.probe_results_by_length[
+        str(config.window_lengths[-1])
+    ]
     holdout_hit_count = sum(
         any(
             key_id in holdout_results[candidate_index]
             and holdout_results[candidate_index][key_id].is_reliable_hit(
-                configured_margin=0.0
+                configured_margin=config.semantic_margin
             )
             for candidate_index in range(4)
         )
@@ -1199,7 +1307,7 @@ def _write_group_attempts(
 ) -> None:
     """Write one complete trajectory while retaining only content digests."""
 
-    for length in (1, 2, 3):
+    for length in group.window_lengths:
         observations = probed.candidate_observations_by_length[str(length)]
         results_by_candidate = probed.probe_results_by_length[str(length)]
         for candidate_index, (observation, results) in enumerate(
@@ -1238,7 +1346,8 @@ def _label_row(
     *,
     diagnostic: bool,
 ) -> dict[str, Any]:
-    selected = stage.labels_by_window_length[3]
+    lengths = tuple(stage.labels_by_window_length)
+    selected = stage.labels_by_window_length[lengths[-1]]
     return {
         "schema_version": "wfcllm-gate-label/v1",
         "group_id": group_id,
@@ -1252,7 +1361,7 @@ def _label_row(
                 str(budget): outcome.to_dict()
                 for budget, outcome in stage.labels_by_window_length[length].budgets.items()
             }
-            for length in (1, 2, 3)
+            for length in lengths
         },
         **_diagnostic_row_identity(diagnostic),
     }
@@ -1416,6 +1525,20 @@ def _audit_gate_data_artifacts(data_dir: Path, manifest: Mapping[str, Any], seed
     ids = [row["group_id"] for row in index_rows]
     window_rows = _iter_jsonl(data_dir / "window_groups.jsonl", "window groups")
     diagnostic_expected = manifest.get("diagnostic_test_backend") is True
+    raw_window_lengths = manifest.get("window_lengths")
+    if raw_window_lengths not in ([1], [1, 2], [1, 2, 3]):
+        raise ValueError(
+            "gate data manifest window_lengths must be the prefix 1..max_units"
+        )
+    window_lengths = tuple(raw_window_lengths)
+    semantic_margin = manifest.get("semantic_margin")
+    if (
+        isinstance(semantic_margin, bool)
+        or not isinstance(semantic_margin, (int, float))
+        or not math.isfinite(float(semantic_margin))
+        or semantic_margin < 0.0
+    ):
+        raise ValueError("gate data manifest semantic_margin is invalid")
     for expected_index in index_rows:
         try:
             row = next(window_rows)
@@ -1439,6 +1562,8 @@ def _audit_gate_data_artifacts(data_dir: Path, manifest: Mapping[str, Any], seed
         training_ids=training_ids,
         holdout_ids=holdout_ids,
         diagnostic=diagnostic_expected,
+        window_lengths=window_lengths,
+        semantic_margin=float(semantic_margin),
     )
     _audit_labels(
         data_dir / "labels.jsonl",
@@ -1486,13 +1611,15 @@ def _audit_candidate_attempts(
     training_ids: list[str],
     holdout_ids: list[str],
     diagnostic: bool,
+    window_lengths: tuple[int, ...] = (1, 2, 3),
+    semantic_margin: float = 0.0,
 ) -> dict[str, str]:
     """Stream the potentially very large attempt artifact without materializing it."""
 
     expected = (
         (row["group_id"], row["identity_sha256"], length, candidate_index)
         for row in index_rows
-        for length in (1, 2, 3)
+        for length in window_lengths
         for candidate_index in range(4)
     )
     expected_keys = set(training_ids) | set(holdout_ids)
@@ -1500,8 +1627,12 @@ def _audit_candidate_attempts(
     label_cache: OrderedDict[tuple[str, ...], dict[str, Any]] = OrderedDict()
     expected_label_digests: dict[str, str] = {}
     current_evidence_hashes: list[str] = []
-    current_observations: dict[int, list[CandidateObservation]] = {1: [], 2: [], 3: []}
-    current_results: dict[int, list[dict[str, LshProbeResult]]] = {1: [], 2: [], 3: []}
+    current_observations: dict[int, list[CandidateObservation]] = {
+        length: [] for length in window_lengths
+    }
+    current_results: dict[int, list[dict[str, LshProbeResult]]] = {
+        length: [] for length in window_lengths
+    }
     pending_evidence: str | None = None
     candidate_count = 0
     diagnostic_fields = _IDENTITY_MARKERS if diagnostic else frozenset()
@@ -1580,7 +1711,7 @@ def _audit_candidate_attempts(
             current_results[length].append(results)
             pending_evidence = None
             candidate_count += 1
-            if length == 3 and row["candidate_index"] == 3:
+            if length == window_lengths[-1] and row["candidate_index"] == 3:
                 group_id = row["group_id"]
                 cache_key = tuple(current_evidence_hashes)
                 label_payload = label_cache.get(cache_key)
@@ -1589,6 +1720,8 @@ def _audit_candidate_attempts(
                         current_observations,
                         current_results,
                         holdout_ids=tuple(holdout_ids),
+                        window_lengths=window_lengths,
+                        semantic_margin=semantic_margin,
                     )
                     label_cache[cache_key] = label_payload
                     if len(label_cache) > 512:
@@ -1610,8 +1743,12 @@ def _audit_candidate_attempts(
                     raise ValueError("causal labels recomputed from probe evidence contradict group index")
                 expected_label_digests[group_id] = hashlib.sha256(_canonical_bytes(expected_row)).hexdigest()
                 current_evidence_hashes = []
-                current_observations = {1: [], 2: [], 3: []}
-                current_results = {1: [], 2: [], 3: []}
+                current_observations = {
+                    configured_length: [] for configured_length in window_lengths
+                }
+                current_results = {
+                    configured_length: [] for configured_length in window_lengths
+                }
         try:
             next(expected)
         except StopIteration:
@@ -1620,7 +1757,10 @@ def _audit_candidate_attempts(
             raise ValueError("candidate attempt artifact is incomplete")
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
         raise ValueError(f"candidate attempts JSONL is invalid: {exc}") from exc
-    if pending_evidence is not None or candidate_count != len(index_rows) * 12:
+    if (
+        pending_evidence is not None
+        or candidate_count != len(index_rows) * len(window_lengths) * 4
+    ):
         raise ValueError("candidate trajectory/probe evidence coverage mismatch")
     return expected_label_digests
 
@@ -1630,16 +1770,26 @@ def _derived_label_payload(
     results: Mapping[int, list[dict[str, LshProbeResult]]],
     *,
     holdout_ids: tuple[str, ...],
+    window_lengths: tuple[int, ...] = (1, 2, 3),
+    semantic_margin: float = 0.0,
 ) -> dict[str, Any]:
     labels = {
-        length: build_gate_labels(tuple(observations[length]), training_key_count=32)
-        for length in (1, 2, 3)
+        length: build_gate_labels(
+            tuple(observations[length]),
+            training_key_count=32,
+            thresholds=LabelThresholds(
+                configured_margin=semantic_margin,
+                max_units=window_lengths[-1],
+            ),
+        )
+        for length in window_lengths
     }
-    selected = labels[3]
+    max_units = window_lengths[-1]
+    selected = labels[max_units]
     holdout_success_rate = sum(
         any(
-            (probe := results[3][candidate_index].get(key_id)) is not None
-            and probe.is_reliable_hit(configured_margin=0.0)
+            (probe := results[max_units][candidate_index].get(key_id)) is not None
+            and probe.is_reliable_hit(configured_margin=semantic_margin)
             for candidate_index in range(4)
         )
         for key_id in holdout_ids
@@ -1655,7 +1805,7 @@ def _derived_label_payload(
                 str(budget): outcome.to_dict()
                 for budget, outcome in labels[length].budgets.items()
             }
-            for length in (1, 2, 3)
+            for length in window_lengths
         },
     }
 

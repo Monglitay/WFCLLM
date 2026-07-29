@@ -71,7 +71,7 @@ def test_each_feasibility_admission_has_an_explicit_result() -> None:
         for item in base
     )
     summary = evaluate_gate_data_feasibility(bad, scale="pilot")
-    assert summary.admissions["window_length_w3_groups"].passed is False
+    assert "window_length_w3_groups" not in summary.admissions
     assert summary.admissions["major_statement_families"].passed is False
     assert summary.admissions["r3_minus_r1_bootstrap_lower_95"].passed is False
     assert summary.admissions["holdout_key_absolute_gap"].passed is False

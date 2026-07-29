@@ -153,6 +153,28 @@ def test_w1_w2_w3_each_get_candidate_zero_plus_three_ordered_rewrites() -> None:
     assert len(rewriter.calls) == (3 + 2 + 1) * 3
 
 
+@pytest.mark.parametrize(
+    ("max_units", "expected_lengths"),
+    [(1, (1,)), (2, (1, 2)), (3, (1, 2, 3))],
+)
+def test_builder_constructs_only_allowlisted_max_units_windows(
+    max_units: int,
+    expected_lengths: tuple[int, ...],
+) -> None:
+    builder, rewriter, _probe = _builder()
+
+    group = builder.build(
+        [_unit(0), _unit(1), _unit(2)],
+        max_units=max_units,
+    )[0]
+
+    assert group.candidate_window_lengths == expected_lengths
+    assert set(group.candidates_by_length) == {
+        str(length) for length in expected_lengths
+    }
+    assert {call[1] for call in rewriter.calls} == set(expected_lengths)
+
+
 def test_builder_rewrites_only_explicitly_selected_window_starts() -> None:
     builder, rewriter, _ = _builder()
 
@@ -395,7 +417,8 @@ def test_probe_result_preserves_signature_and_is_frozen() -> None:
     assert result.signature == (1, 0, 1)
     with pytest.raises(FrozenInstanceError):
         result.margin = 0.9  # type: ignore[misc]
-    assert result.is_reliable_hit(configured_margin=0.2) is True
+    assert result.is_reliable_hit(configured_margin=0.2) is False
+    assert result.is_reliable_hit(configured_margin=0.199) is True
     for margin in (True, -0.1, math.nan, math.inf):
         with pytest.raises(ValueError, match="configured_margin"):
             result.is_reliable_hit(configured_margin=margin)  # type: ignore[arg-type]
@@ -425,7 +448,7 @@ def test_builder_persists_raw_probe_facts_for_margin_relabeling() -> None:
     low = build_gate_labels(
         trajectory,
         training_key_count=32,
-        thresholds=LabelThresholds(configured_margin=0.19),
+        thresholds=LabelThresholds(configured_margin=0.189),
     )
     high = build_gate_labels(
         trajectory,

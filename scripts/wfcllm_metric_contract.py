@@ -17,7 +17,10 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from wfcllm.evaluation.metric_contract import extract_metric_contract
+from wfcllm.evaluation.metric_contract import (
+    extract_metric_contract,
+    finalize_supplementary_family_contracts,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -54,13 +57,24 @@ def main(argv: list[str] | None = None) -> int:
     if not run_dirs:
         parser.error("at least one run directory is required")
 
+    rows = [
+        extract_metric_contract(Path(run_dir))
+        for run_dir in run_dirs
+    ]
+    if any("supplementary_ablation" in row for row in rows):
+        if any("supplementary_ablation" not in row for row in rows):
+            raise ValueError(
+                "Supplementary Ablation family output cannot mix canonical runs"
+            )
+        if len(rows) > 1:
+            rows = finalize_supplementary_family_contracts(rows)
     lines = [
         json.dumps(
-            extract_metric_contract(Path(run_dir)),
+            row,
             ensure_ascii=False,
             sort_keys=True,
         )
-        for run_dir in run_dirs
+        for row in rows
     ]
     if args.output is not None:
         output_path = Path(args.output)

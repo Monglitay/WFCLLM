@@ -285,7 +285,7 @@ class LshProbeResult:
             and self.stable
             and self.stable_across_precision_modes
             and self.stable_across_batch_modes
-            and self.margin >= configured_margin
+            and self.margin > configured_margin
         )
 
 @dataclass(frozen=True)
@@ -513,6 +513,7 @@ class GateDataBuilder:
         context: GateBuildContext | None = None,
         source_text: str | None = None,
         selected_start_unit_ids: tuple[str, ...] | None = None,
+        max_units: int = 3,
     ) -> tuple[GateDataGroup, ...]:
         """Build candidate trajectories.
 
@@ -531,6 +532,8 @@ class GateDataBuilder:
             raise ValueError(
                 "units must be a non-empty sequence of StatementUnit instances"
             )
+        if type(max_units) is not int or not 1 <= max_units <= 3:
+            raise ValueError("max_units must be between 1 and 3")
         unit_tuple = tuple(units)
         unit_ids = tuple(unit.unit_id for unit in unit_tuple)
         if len(set(unit_ids)) != len(unit_ids):
@@ -568,7 +571,9 @@ class GateDataBuilder:
                 continue
             if not start.eligible or start.hard_boundary:
                 continue
-            windows = _enumerate_windows(unit_tuple, start_index)
+            windows = _enumerate_windows(
+                unit_tuple, start_index, max_units=max_units
+            )
             trajectories: dict[str, tuple[CandidateObservation, ...]] = {}
             for window in windows:
                 length_key = str(len(window))
@@ -781,11 +786,16 @@ def validate_key_blind_payload(value: object) -> None:
 
 
 def _enumerate_windows(
-    units: tuple[StatementUnit, ...], start_index: int
+    units: tuple[StatementUnit, ...],
+    start_index: int,
+    *,
+    max_units: int = 3,
 ) -> tuple[tuple[StatementUnit, ...], ...]:
     start = units[start_index]
     output: list[tuple[StatementUnit, ...]] = []
-    for length in (1, 2, 3):
+    if type(max_units) is not int or not 1 <= max_units <= 3:
+        raise ValueError("max_units must be between 1 and 3")
+    for length in range(1, max_units + 1):
         end_index = start_index + length
         if end_index > len(units):
             break

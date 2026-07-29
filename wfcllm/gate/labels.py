@@ -33,6 +33,7 @@ class LabelThresholds:
     structural_valid_rate: float = 2 / 3
     unstable_rate: float = 0.10
     configured_margin: float = 0.0
+    max_units: int = 3
 
     def __post_init__(self) -> None:
         for name in ("r3_hit_rate", "structural_valid_rate", "unstable_rate"):
@@ -40,6 +41,8 @@ class LabelThresholds:
         _validate_non_negative_finite(
             "configured_margin", self.configured_margin
         )
+        if type(self.max_units) is not int or not 1 <= self.max_units <= 3:
+            raise ValueError("max_units must be between 1 and 3")
 
 
 @dataclass(frozen=True)
@@ -304,7 +307,11 @@ def build_gate_labels(
     current_unit_count = candidates[0].unit_count
     if current_unit_count not in {1, 2, 3}:
         raise ValueError("candidate 0 unit_count must be one of 1, 2, or 3")
-    close_target = hard_boundary or current_unit_count == 3 or suitable_target
+    close_target = (
+        hard_boundary
+        or current_unit_count == thresholds.max_units
+        or suitable_target
+    )
     return GateLabels(
         close_target=close_target,
         suitable_target=suitable_target,
@@ -374,7 +381,7 @@ def _is_reliable_hit(
         and _is_candidate_stable(candidate)
         and evidence["hit"] is True
         and evidence["stable"] is True
-        and float(evidence["margin"]) >= configured_margin
+        and float(evidence["margin"]) > configured_margin
     )
 
 

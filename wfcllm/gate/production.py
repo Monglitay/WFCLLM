@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 import hashlib
 import hmac
 import json
+import math
 from pathlib import Path
 import re
 import shutil
@@ -113,6 +114,11 @@ class LocalHFGateRuntimeOptions:
     semantic_embed_dim: int = 128
     lsh_dimension: int = 4
     lsh_gamma: float = 0.25
+    semantic_margin: float = 0.0
+    close_low_threshold: float = 0.45
+    close_high_threshold: float = 0.55
+    suitable_accept_threshold: float = 0.5
+    max_units: int = 3
     semantic_evidence_rule: str = "semantic_lsh"
     semantic_preservation_threshold: float = 0.9
     rewrite_max_new_tokens: int = 32
@@ -161,6 +167,30 @@ class LocalHFGateRuntimeOptions:
         ):
             raise ValueError("lsh_gamma must be in (0, 1)")
         if (
+            isinstance(self.semantic_margin, bool)
+            or not isinstance(self.semantic_margin, (int, float))
+            or not math.isfinite(float(self.semantic_margin))
+            or self.semantic_margin < 0.0
+        ):
+            raise ValueError("semantic_margin must be finite and non-negative")
+        for name in (
+            "close_low_threshold",
+            "close_high_threshold",
+            "suitable_accept_threshold",
+        ):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or not 0.0 <= value <= 1.0
+            ):
+                raise ValueError(f"{name} must be a probability in [0, 1]")
+        if self.close_low_threshold >= self.close_high_threshold:
+            raise ValueError(
+                "close_low_threshold must be less than close_high_threshold"
+            )
+        if (
             isinstance(self.semantic_preservation_threshold, bool)
             or not isinstance(self.semantic_preservation_threshold, (int, float))
             or not 0.0 <= self.semantic_preservation_threshold <= 1.0
@@ -177,12 +207,15 @@ class LocalHFGateRuntimeOptions:
             "gate_epochs",
             "gate_max_tokens",
             "gate_early_stopping_patience",
+            "max_units",
         ):
             value = getattr(self, name)
             if type(value) is not int or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
         if self.gate_batch_size < 3:
             raise ValueError("gate_batch_size must be at least 3")
+        if self.max_units > 3:
+            raise ValueError("max_units must be between 1 and 3")
         if self.rewrite_generation_attempts != 3:
             raise ValueError("rewrite_generation_attempts must equal 3")
         if (
@@ -399,10 +432,13 @@ class LocalHFProductionAdapter:
                 ),
                 source_text=record.code,
                 selected_start_unit_ids=tuple(starts_by_source[source_id]),
+                max_units=config.window_lengths[-1],
             )
             for built in groups:
                 candidates = built.candidates_by_length
-                if set(candidates) != {"1", "2", "3"}:
+                lengths = config.window_lengths
+                length_keys = {str(length) for length in lengths}
+                if set(candidates) != length_keys:
                     continue
                 training_group = built.training_group
                 start = start_by_id[training_group.window_start_unit_id]
@@ -423,13 +459,13 @@ class LocalHFProductionAdapter:
                         str(length): [
                             unit.text for unit in parsed.units[start_index : start_index + length]
                         ]
-                        for length in (1, 2, 3)
+                        for length in lengths
                     },
                     "current_unit_types": {
                         str(length): [
                             unit.node_type for unit in parsed.units[start_index : start_index + length]
                         ]
-                        for length in (1, 2, 3)
+                        for length in lengths
                     },
                     "source_family": record.source_family,
                 }
@@ -439,7 +475,7 @@ class LocalHFProductionAdapter:
                     split=split,
                     suitable_target=False,
                     close_target=False,
-                    window_lengths=(1, 2, 3),
+                    window_lengths=lengths,
                     statement_family=_statement_family(start.text),
                     r1_success_rate=0.0,
                     r3_success_rate=0.0,
@@ -453,11 +489,16 @@ class LocalHFProductionAdapter:
                     structural_invalid_rate=0.0,
                     numeric_instability_rate=0.0,
                     first_hit_candidate_position=None,
-                    candidate_indices_by_window_length={length: tuple(range(4)) for length in (1, 2, 3)},
+                    candidate_indices_by_window_length={
+                        length: tuple(range(4)) for length in lengths
+                    },
                     observed_training_key_ids=(),
                     observed_holdout_key_ids=(),
                     candidate_observations_by_length=candidates,
-                    probe_results_by_length={str(length): tuple({} for _ in range(4)) for length in (1, 2, 3)},
+                    probe_results_by_length={
+                        str(length): tuple({} for _ in range(4))
+                        for length in lengths
+                    },
                     row={
                         "schema_version": "wfcllm-gate-data/v1",
                         "group_id": built.group_id,
@@ -506,7 +547,7 @@ class LocalHFProductionAdapter:
             }
             observations_by_length: dict[str, tuple[CandidateObservation, ...]] = {}
             results_by_length: dict[str, tuple[Mapping[str, LshProbeResult], ...]] = {}
-            for length in (1, 2, 3):
+            for length in group.window_lengths:
                 observations: list[CandidateObservation] = []
                 candidate_results: list[Mapping[str, LshProbeResult]] = []
                 trajectory = group.candidate_observations_by_length[str(length)]
@@ -602,16 +643,21 @@ class LocalHFProductionAdapter:
                 observations_by_length[str(length)] = tuple(observations)
                 results_by_length[str(length)] = tuple(candidate_results)
 
+            max_units = group.window_lengths[-1]
             selected = build_gate_labels(
-                observations_by_length["3"],
+                observations_by_length[str(max_units)],
                 training_key_count=32,
+                thresholds=LabelThresholds(
+                    configured_margin=self.options.semantic_margin,
+                    max_units=max_units,
+                ),
             )
             r1, r3 = (selected.budgets[budget].success_rate for budget in (1, 3))
             holdout_hits = sum(
                 any(
-                    key_id in results_by_length["3"][candidate]
-                    and results_by_length["3"][candidate][key_id].is_reliable_hit(
-                        configured_margin=0.0
+                    key_id in results_by_length[str(max_units)][candidate]
+                    and results_by_length[str(max_units)][candidate][key_id].is_reliable_hit(
+                        configured_margin=self.options.semantic_margin
                     )
                     for candidate in range(4)
                 )
@@ -753,10 +799,14 @@ class LocalHFProductionAdapter:
             tokenizer = _load_gate_tokenizer(self.options)
             self._gate_tokenizer = tokenizer
         rows: list[dict[str, Any]] = []
-        for length in (1, 2, 3):
+        for length in group.window_lengths:
             labels = build_gate_labels(
                 observations_by_length[str(length)],
                 training_key_count=32,
+                thresholds=LabelThresholds(
+                    configured_margin=self.options.semantic_margin,
+                    max_units=group.window_lengths[-1],
+                ),
             )
             current_units = tuple(metadata["current_units"][str(length)])
             normalized = "\n".join(normalize_unit_text(unit) for unit in current_units)
@@ -1291,6 +1341,10 @@ class _FloatRuntimeGateBundle:
         bundle_sha256: str,
         max_tokens: int = 256,
         window_contract_version: str = WINDOW_CONTRACT_VERSION,
+        close_low_threshold: float = 0.45,
+        close_high_threshold: float = 0.55,
+        suitable_accept_threshold: float = 0.5,
+        max_units: int = 3,
     ) -> None:
         import torch
         from transformers import AutoTokenizer
@@ -1318,11 +1372,11 @@ class _FloatRuntimeGateBundle:
             window_contract_version=window_contract_version,
             gate_input_contract_version=GATE_INPUT_CONTRACT_VERSION,
             tokenizer_sha256=tokenizer_hash,
-            close_low_threshold=0.45,
-            close_high_threshold=0.55,
-            suitable_accept_threshold=0.5,
+            close_low_threshold=close_low_threshold,
+            close_high_threshold=close_high_threshold,
+            suitable_accept_threshold=suitable_accept_threshold,
             max_tokens=max_tokens,
-            max_units=3,
+            max_units=max_units,
         )
         self.stable_gate_predictor = _FloatGatePredictor(
             model=model,
@@ -1676,7 +1730,7 @@ def build_local_semantic_window_scorer(
         keying=WatermarkKeying(deployment_key.hex(), options.lsh_dimension),
         contract_version=options.window_contract_version,
         k=max(1, round(options.lsh_gamma * (2 ** options.lsh_dimension))),
-        margin=0.0,
+        margin=float(options.semantic_margin),
         semantic_preservation_threshold=(
             options.semantic_preservation_threshold
         ),
@@ -1691,6 +1745,8 @@ def local_semantic_runtime_hash(options: LocalHFGateRuntimeOptions) -> str:
         + options.semantic_embed_dim.to_bytes(4, "big")
         + options.lsh_dimension.to_bytes(4, "big")
         + repr(float(options.lsh_gamma)).encode("ascii")
+        + b"\0"
+        + repr(float(options.semantic_margin)).encode("ascii")
         + b"\0"
         + options.semantic_evidence_rule.encode("utf-8")
         + b"\0"
