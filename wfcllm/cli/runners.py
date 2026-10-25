@@ -28,17 +28,89 @@ def _supplementary_binding(
 ) -> dict[str, object]:
     from wfcllm.method.ablation import build_supplementary_artifact_binding
 
-    return build_supplementary_artifact_binding(
+    binding = build_supplementary_artifact_binding(
         config,
         diagnostic_test_backend=diagnostic_test_backend,
     )
+    if binding:
+        return binding
+
+    value = config.get("supplementary_experiment")
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError("Supplementary Experiment identity must be an object")
+    identity = dict(value)
+    if (
+        identity.get("schema_version")
+        != "wfcllm-supplementary-experiment-identity/v1"
+    ):
+        raise ValueError("Supplementary Experiment identity schema is invalid")
+    if identity.get("study_kind") != "supplementary_experiment":
+        raise ValueError("Supplementary Experiment study kind is invalid")
+    if _DIGEST.fullmatch(str(identity.get("resolved_config_hash", ""))) is None:
+        raise ValueError("Supplementary Experiment resolved config hash is invalid")
+    identity.update(
+        {
+            "formal": False,
+            "formal_eligible": False,
+            "diagnostic_test_backend": diagnostic_test_backend,
+            "diagnostic_only": diagnostic_test_backend,
+            "not_official_method": True,
+        }
+    )
+    from wfcllm.gate.production import experiment_contract_hash
+
+    return {
+        "resolved_config_sha256": experiment_contract_hash(config),
+        "supplementary_experiment": identity,
+    }
+
+
+def _supplementary_identity_field(config: Mapping[str, object]) -> str | None:
+    if "supplementary_ablation" in config:
+        return "supplementary_ablation"
+    if "supplementary_experiment" in config:
+        return "supplementary_experiment"
+    return None
+
+
+def _has_supplementary_study(config: Mapping[str, object]) -> bool:
+    return (
+        "supplementary_ablation" in config
+        or "supplementary_experiment" in config
+    )
+
+
+def _smoke_diagnostic_enabled(config: Mapping[str, object]) -> bool:
+    runtime = config.get("runtime")
+    return (
+        isinstance(runtime, Mapping)
+        and type(runtime.get("smoke_sample_count")) is int
+        and runtime["smoke_sample_count"] > 0
+    )
+
+
+def _diagnostic_identity(diagnostic: bool) -> dict[str, bool]:
+    return {
+        "diagnostic_test_backend": diagnostic,
+        "formal_eligible": not diagnostic,
+        "diagnostic_only": diagnostic,
+        "not_official_method": diagnostic,
+    }
 
 
 def _downstream_diagnostic(state: RunStateManager) -> bool:
-    identity = state.get("generate", "supplementary_ablation")
-    return isinstance(identity, Mapping) and (
-        identity.get("diagnostic_test_backend") is True
-    )
+    for phase in ("gate-data", "gate-train", "generate"):
+        if state.get(phase, "diagnostic_test_backend") is True:
+            return True
+    for key in ("supplementary_ablation", "supplementary_experiment"):
+        identity = state.get("generate", key)
+        if isinstance(identity, Mapping) and (
+            identity.get("diagnostic_test_backend") is True
+        ):
+            return True
+    return False
 
 
 def _require_supplementary_binding(
@@ -54,14 +126,15 @@ def _require_supplementary_binding(
     if not expected:
         if (
             "supplementary_ablation" in payload
+            or "supplementary_experiment" in payload
             or "resolved_config_sha256" in payload
         ):
             raise ValueError(
-                "canonical artifact must not carry Supplementary Ablation identity"
+                "canonical artifact must not carry Supplementary study identity"
             )
         return
     if any(payload.get(key) != value for key, value in expected.items()):
-        raise ValueError("Supplementary Ablation artifact binding mismatch")
+        raise ValueError("Supplementary study artifact binding mismatch")
 
 
 def get_config(args: argparse.Namespace) -> dict:
@@ -75,6 +148,7 @@ def get_config(args: argparse.Namespace) -> dict:
 
 def run_generate(args: argparse.Namespace, state: RunStateManager) -> int:
     config = _require_gated_config(args)
+    diagnostic = _smoke_diagnostic_enabled(config)
     run_dir = _gate_run_dir(args, config)
     _runtime_secret(args, "deployment")
     _path, bundle_hash = resolve_gate_bundle(args)
@@ -124,6 +198,7 @@ def run_generate(args: argparse.Namespace, state: RunStateManager) -> int:
                 manifest.get("diagnostic_test_backend") is True
             ),
         ),
+        **(_diagnostic_identity(True) if diagnostic else {}),
     )
     print("=== WFCLLM generate ===")
     return 0
@@ -172,7 +247,7 @@ def run_calibrate(args: argparse.Namespace, state: RunStateManager) -> int:
     pipeline.calibrate_jsonl(str(corpus_path), output_path=calibration_path)
     if not calibration_path.is_file():
         raise ValueError("calibrate did not produce reference_calibration.json")
-    if "supplementary_ablation" in config:
+    if _has_supplementary_study(config):
         from dataclasses import replace
 
         from wfcllm.detection.gated_pipeline import (
@@ -184,17 +259,21 @@ def run_calibrate(args: argparse.Namespace, state: RunStateManager) -> int:
             config,
             diagnostic_test_backend=_downstream_diagnostic(state),
         )
+        identity_field = _supplementary_identity_field(config)
+        if identity_field is None:
+            raise ValueError("Supplementary study identity is missing")
         artifact = load_gated_calibration_artifact(calibration_path)
+        replacement = {
+            "resolved_config_sha256": str(
+                binding["resolved_config_sha256"]
+            ),
+            identity_field: dict(binding[identity_field]),
+        }
         write_gated_calibration_artifact(
             calibration_path,
             replace(
                 artifact,
-                resolved_config_sha256=str(
-                    binding["resolved_config_sha256"]
-                ),
-                supplementary_ablation=dict(
-                    binding["supplementary_ablation"]
-                ),
+                **replacement,
             ),
         )
     if _validate_negative_corpus_manifest(
@@ -656,19 +735,22 @@ def run_detect(args: argparse.Namespace, state: RunStateManager) -> int:
             diagnostic_test_backend=_downstream_diagnostic(state),
         )
     artifact = load_gated_calibration_artifact(calibration_path)
-    if "supplementary_ablation" in config:
+    if _has_supplementary_study(config):
         expected_binding = _supplementary_binding(
             config,
             diagnostic_test_backend=_downstream_diagnostic(state),
         )
+        identity_field = _supplementary_identity_field(config)
+        if identity_field is None:
+            raise ValueError("Supplementary study identity is missing")
         if (
             artifact.resolved_config_sha256
             != expected_binding["resolved_config_sha256"]
-            or artifact.supplementary_ablation
-            != expected_binding["supplementary_ablation"]
+            or getattr(artifact, identity_field)
+            != expected_binding[identity_field]
         ):
             raise ValueError(
-                "Supplementary Ablation calibration artifact binding mismatch"
+                "Supplementary study calibration artifact binding mismatch"
             )
     current_negative_manifest_hash = _validate_negative_corpus_manifest(run_dir)
     if (
@@ -693,15 +775,24 @@ def run_detect(args: argparse.Namespace, state: RunStateManager) -> int:
     detail_rows = _read_public_json_artifacts(details_path)
     if not detail_rows:
         raise ValueError("positive detection details must not be empty")
+    negative_details_path = run_dir / "detection" / "negative_details.jsonl"
+    pipeline.detect_jsonl(
+        run_dir / "calibration" / "negative_corpus.jsonl",
+        artifact=artifact,
+        output_path=negative_details_path,
+    )
+    negative_detail_rows = _read_public_json_artifacts(negative_details_path)
+    if not negative_detail_rows:
+        raise ValueError("negative detection details must not be empty")
     test_negative_state: dict[str, object] = {}
-    if "supplementary_ablation" in config:
+    if _has_supplementary_study(config):
         test_negative_value = getattr(args, "test_negative_input", None)
         if (
             not isinstance(test_negative_value, (str, Path))
             or not str(test_negative_value)
         ):
             raise ValueError(
-                "Supplementary Ablation detect requires "
+                "Supplementary study detect requires "
                 "--test-negative-input"
             )
         test_negative_path = Path(test_negative_value)
@@ -728,7 +819,7 @@ def run_detect(args: argparse.Namespace, state: RunStateManager) -> int:
         test_detail_rows = _read_public_json_artifacts(test_details_path)
         if len(test_detail_rows) != len(positive_rows):
             raise ValueError(
-                "Supplementary Ablation test-negative detection must cover "
+                "Supplementary study test-negative detection must cover "
                 "the complete positive task population"
             )
         test_manifest_path = (
@@ -796,6 +887,9 @@ def run_detect(args: argparse.Namespace, state: RunStateManager) -> int:
         details_path=str(details_path),
         details_sha256=_safe_file_hash(details_path),
         details_row_count=len(detail_rows),
+        negative_details_path=str(negative_details_path),
+        negative_details_sha256=_safe_file_hash(negative_details_path),
+        negative_details_row_count=len(negative_detail_rows),
         **test_negative_state,
         **_supplementary_binding(
             config,
@@ -862,7 +956,7 @@ def run_report(args: argparse.Namespace, state: RunStateManager) -> int:
     details_path = run_dir / "detection" / "positive_details.jsonl"
     if state.get("detect", "details_sha256") != _safe_file_hash(details_path):
         raise ValueError("current positive detection details hash mismatch")
-    if "supplementary_ablation" in config:
+    if _has_supplementary_study(config):
         negative_details_path = (
             run_dir / "detection" / "test_negative_details.jsonl"
         )
@@ -877,13 +971,19 @@ def run_report(args: argparse.Namespace, state: RunStateManager) -> int:
             "detect", "detection_manifest_sha256"
         ) != _safe_file_hash(detection_manifest_path):
             raise ValueError(
-                "current Supplementary Ablation detection manifest hash mismatch"
+                "current Supplementary study detection manifest hash mismatch"
             )
         _require_supplementary_binding(
             _load_json_object(detection_manifest_path),
             config,
             diagnostic_test_backend=_downstream_diagnostic(state),
         )
+    else:
+        negative_details_path = run_dir / "detection" / "negative_details.jsonl"
+        if state.get(
+            "detect", "negative_details_sha256"
+        ) != _safe_file_hash(negative_details_path):
+            raise ValueError("current negative detection details hash mismatch")
     generation_model_identifier = state.get(
         "generate", "generation_model_identifier"
     )
@@ -968,17 +1068,19 @@ def run_audit(args: argparse.Namespace, state: RunStateManager) -> int:
         run_dir / "calibration" / "negative_corpus_manifest.json",
         run_dir / "calibration" / "reference_calibration.json",
         run_dir / "detection" / "positive_details.jsonl",
+        run_dir / "detection" / "negative_details.jsonl",
         run_dir / "reports" / "reference_report.json",
     ]
-    if "supplementary_ablation" in config:
+    if _has_supplementary_study(config):
         artifact_paths.extend(
             [
-                run_dir / "calibration" / "manifest.json",
                 run_dir / "detection" / "manifest.json",
                 run_dir / "detection" / "test_negative_details.jsonl",
                 run_dir / "detection" / "test_negative_manifest.json",
             ]
         )
+        if "supplementary_ablation" in config:
+            artifact_paths.append(run_dir / "calibration" / "manifest.json")
     generation = config.get("generation")
     if (
         isinstance(generation, Mapping)
@@ -1008,6 +1110,10 @@ def run_audit(args: argparse.Namespace, state: RunStateManager) -> int:
         run_dir / "detection" / "positive_details.jsonl"
     ):
         raise ValueError("current positive detection details hash mismatch")
+    if state.get("detect", "negative_details_sha256") != _safe_file_hash(
+        run_dir / "detection" / "negative_details.jsonl"
+    ):
+        raise ValueError("current negative detection details hash mismatch")
     if state.get("report", "report_sha256") != _safe_file_hash(
         run_dir / "reports" / "reference_report.json"
     ):
@@ -1039,11 +1145,14 @@ def run_audit(args: argparse.Namespace, state: RunStateManager) -> int:
         "positive_details_sha256": _safe_file_hash(
             run_dir / "detection" / "positive_details.jsonl"
         ),
+        "negative_details_sha256": _safe_file_hash(
+            run_dir / "detection" / "negative_details.jsonl"
+        ),
         "reference_report_sha256": _safe_file_hash(
             run_dir / "reports" / "reference_report.json"
         ),
     }
-    if "supplementary_ablation" in config:
+    if _has_supplementary_study(config):
         test_negative_details = (
             run_dir / "detection" / "test_negative_details.jsonl"
         )
@@ -1056,6 +1165,7 @@ def run_audit(args: argparse.Namespace, state: RunStateManager) -> int:
         artifact_summary["test_negative_details_sha256"] = (
             _safe_file_hash(test_negative_details)
         )
+    if "supplementary_ablation" in config:
         for phase, path, state_field in (
             (
                 "calibrate",
@@ -1077,6 +1187,19 @@ def run_audit(args: argparse.Namespace, state: RunStateManager) -> int:
                 config,
                 diagnostic_test_backend=_downstream_diagnostic(state),
             )
+        _require_supplementary_binding(
+            _load_json_object(
+                run_dir / "reports" / "reference_report.json"
+            ),
+            config,
+            diagnostic_test_backend=_downstream_diagnostic(state),
+        )
+    elif "supplementary_experiment" in config:
+        _require_supplementary_binding(
+            _load_json_object(run_dir / "detection" / "manifest.json"),
+            config,
+            diagnostic_test_backend=_downstream_diagnostic(state),
+        )
         _require_supplementary_binding(
             _load_json_object(
                 run_dir / "reports" / "reference_report.json"
@@ -1233,23 +1356,23 @@ def _gated_report_metrics_from_artifacts(
         "detection_curve": detection_curve,
         "calibration": calibration,
     }
-    if "supplementary_ablation" in config:
+    if _has_supplementary_study(config):
         negative_details_path = (
             run_dir / "detection" / "test_negative_details.jsonl"
         )
         if not negative_details_path.is_file():
             raise ValueError(
-                "Supplementary Ablation test-negative details are missing"
+                "Supplementary study test-negative details are missing"
             )
         negative_details = _read_public_json_artifacts(
             negative_details_path
         )
         if not negative_details:
             raise ValueError(
-                "Supplementary Ablation test-negative details are empty"
+                "Supplementary study test-negative details are empty"
             )
         if any(not isinstance(row, dict) for row in (*details, *negative_details)):
-            raise ValueError("Supplementary Ablation detection details are invalid")
+            raise ValueError("Supplementary study detection details are invalid")
         from wfcllm.detection.metrics import build_detection_report
 
         def metric_row(row: dict[str, object]) -> dict[str, object]:
@@ -1354,10 +1477,10 @@ def _gated_report_metrics_from_artifacts(
         )
         method = config.get("method")
         if not isinstance(method, Mapping):
-            raise ValueError("Supplementary Ablation method config is missing")
+            raise ValueError("Supplementary study method config is missing")
         rewrite = method.get("rewrite")
         if not isinstance(rewrite, Mapping):
-            raise ValueError("Supplementary Ablation rewrite config is missing")
+            raise ValueError("Supplementary study rewrite config is missing")
         mechanism = build_supplementary_mechanism_report(
             generation_manifest=generation_manifest,
             candidate_rows=(
@@ -1368,10 +1491,13 @@ def _gated_report_metrics_from_artifacts(
             ),
             max_rewrites=int(rewrite["max_attempts"]),
         )
-        study = config["supplementary_ablation"]
-        if not isinstance(study, Mapping):
+        study = config.get("supplementary_ablation")
+        if study is not None and not isinstance(study, Mapping):
             raise ValueError("Supplementary Ablation identity is invalid")
-        if study.get("canonical_level") == study.get("default_level"):
+        if (
+            isinstance(study, Mapping)
+            and study.get("canonical_level") == study.get("default_level")
+        ):
             latency = mechanism["latency"]
             assert isinstance(latency, dict)
             mechanism = build_supplementary_mechanism_report(
@@ -1449,6 +1575,7 @@ def run_gate_data(args: argparse.Namespace, state: RunStateManager) -> int:
     from wfcllm.gate.pipeline import GateDataPipelineConfig, run_gate_data as pipeline
 
     config = _require_gated_config(args)
+    diagnostic = _smoke_diagnostic_enabled(config)
     dependencies = _formal_gate_dependencies(args, "gate-data")
     run_dir = _gate_run_dir(args, config)
     gate_data = config["gate_data"]
@@ -1465,9 +1592,15 @@ def run_gate_data(args: argparse.Namespace, state: RunStateManager) -> int:
         (name, gate_data["feasibility_thresholds"][name])
         for name, _value in FEASIBILITY_THRESHOLD_ITEMS
     )
+    gate_data_scale = str(gate_data["scale"])
+    max_group_key = (
+        "pilot_independent_group_max"
+        if gate_data_scale == "pilot"
+        else "full_independent_group_max"
+    )
     pipeline_config = GateDataPipelineConfig(
         output_root=run_dir,
-        scale=gate_data["scale"],
+        scale=gate_data_scale,
         config_hash=resolved_hash,
         parser_contract=method["windowing"]["contract_version"],
         rewriter_config_hash=_canonical_hash(method["rewrite"]),
@@ -1484,16 +1617,22 @@ def run_gate_data(args: argparse.Namespace, state: RunStateManager) -> int:
         window_lengths=tuple(int(value) for value in gate_data["window_lengths"]),
         semantic_margin=float(config["semantic_lsh"]["semantic_margin"]),
         pilot_feasibility_path=pilot_feasibility,
-        max_groups=int(gate_data["full_independent_group_max"]),
+        max_groups=int(gate_data[max_group_key]),
         supplementary_binding=(_supplementary_binding(config) or None),
+        rewrite_count=int(gate_data["rewrite_count"]),
+        rewrite_budgets=tuple(int(value) for value in gate_data["rewrite_budgets"]),
     )
     input_hash = compute_phase_input_hash(args, "gate-data")
     result = pipeline(pipeline_config, dependencies)
     expected_output, expected_manifest = _require_expected_gate_result_paths(
         args, "gate-data", result.output_dir, result.manifest_path
     )
-    _require_formal_manifest(result.manifest, "gate-data")
-    _require_supplementary_binding(result.manifest, config)
+    _require_gate_manifest_identity(result.manifest, "gate-data", diagnostic=diagnostic)
+    _require_supplementary_binding(
+        result.manifest,
+        config,
+        diagnostic_test_backend=diagnostic,
+    )
     if result.manifest.get("config_hash") != resolved_hash:
         raise ValueError("gate-data output manifest config hash mismatch")
     _require_same_input_hash(args, "gate-data", input_hash)
@@ -1505,7 +1644,11 @@ def run_gate_data(args: argparse.Namespace, state: RunStateManager) -> int:
         manifest_path=str(expected_manifest),
         output_artifact_path=str(expected_output),
         output_artifact_hash=_stable_tree_hash(expected_output),
-        **_supplementary_binding(config),
+        **_supplementary_binding(
+            config,
+            diagnostic_test_backend=diagnostic,
+        ),
+        **(_diagnostic_identity(True) if diagnostic else {}),
     )
     print("=== WFCLLM gate-data ===")
     return 0
@@ -1515,11 +1658,12 @@ def run_gate_train(args: argparse.Namespace, state: RunStateManager) -> int:
     from wfcllm.gate.pipeline import GateTrainPipelineConfig, run_gate_train as pipeline
 
     config = _require_gated_config(args)
+    diagnostic = _smoke_diagnostic_enabled(config)
     dependencies = _formal_gate_dependencies(args, "gate-train")
     run_dir = _gate_run_dir(args, config)
     data_dir = run_dir / "gate-data"
     data_manifest = _load_json_object(data_dir / "manifest.json")
-    _require_formal_manifest(data_manifest, "gate-data")
+    _require_gate_manifest_identity(data_manifest, "gate-data", diagnostic=diagnostic)
     from wfcllm.gate.production import experiment_contract_hash
 
     resolved_hash = experiment_contract_hash(config)
@@ -1533,15 +1677,25 @@ def run_gate_train(args: argparse.Namespace, state: RunStateManager) -> int:
             data_dir=data_dir,
             config_hash=resolved_hash,
             pilot_feasibility_path=pilot,
-            supplementary_binding=(_supplementary_binding(config) or None),
+            supplementary_binding=(
+                _supplementary_binding(
+                    config,
+                    diagnostic_test_backend=diagnostic,
+                )
+                or None
+            ),
         ),
         dependencies,
     )
     expected_output, expected_manifest = _require_expected_gate_result_paths(
         args, "gate-train", result.output_dir, result.manifest_path
     )
-    _require_formal_manifest(result.manifest, "gate-train")
-    _require_supplementary_binding(result.manifest, config)
+    _require_gate_manifest_identity(result.manifest, "gate-train", diagnostic=diagnostic)
+    _require_supplementary_binding(
+        result.manifest,
+        config,
+        diagnostic_test_backend=diagnostic,
+    )
     if result.manifest.get("config_hash") != resolved_hash:
         raise ValueError("gate-train output manifest config hash mismatch")
     _require_same_input_hash(args, "gate-train", input_hash)
@@ -1553,7 +1707,11 @@ def run_gate_train(args: argparse.Namespace, state: RunStateManager) -> int:
         manifest_path=str(expected_manifest),
         output_artifact_path=str(expected_output),
         output_artifact_hash=_stable_tree_hash(expected_output),
-        **_supplementary_binding(config),
+        **_supplementary_binding(
+            config,
+            diagnostic_test_backend=diagnostic,
+        ),
+        **(_diagnostic_identity(True) if diagnostic else {}),
     )
     print("=== WFCLLM gate-train ===")
     return 0
@@ -1610,9 +1768,7 @@ def _candidate_config_hash_matches(
 
     from wfcllm.gate.production import experiment_contract_hash
 
-    if not isinstance(expected_hash, str):
-        return False
-    return expected_hash == experiment_contract_hash(config)
+    return isinstance(expected_hash, str) and expected_hash == experiment_contract_hash(config)
 
 
 def resolve_gate_bundle(args: argparse.Namespace) -> tuple[Path, str]:
@@ -1624,7 +1780,11 @@ def resolve_gate_bundle(args: argparse.Namespace) -> tuple[Path, str]:
     candidate_manifest = _load_json_object(
         run_dir / "gate-train" / "candidate_bundle_manifest.json"
     )
-    _require_formal_manifest(candidate_manifest, "gate-train")
+    _require_gate_manifest_identity(
+        candidate_manifest,
+        "gate-train",
+        diagnostic=_smoke_diagnostic_enabled(config),
+    )
     if not _candidate_config_hash_matches(
         candidate_manifest.get("config_hash"), config
     ):
@@ -1642,6 +1802,53 @@ def _require_candidate_bundle_layout(path: Path) -> None:
     _reject_symlink_path(path)
     if not (path / "gate_float.pt").is_file() or not (path / "tokenizer").is_dir():
         raise ValueError("gate bundle must contain gate_float.pt and tokenizer/")
+
+
+def _current_run_gate_suitable_accept_threshold(
+    args: argparse.Namespace,
+    fallback: float,
+) -> float:
+    """Read and optionally cap the current gate-train suitable threshold."""
+
+    if (
+        isinstance(fallback, bool)
+        or not isinstance(fallback, (int, float))
+        or not 0.0 <= float(fallback) <= 1.0
+    ):
+        raise ValueError("fallback suitable threshold must be in [0, 1]")
+    config = _require_gated_config(args)
+    run_dir = _gate_run_dir(args, config)
+    manifest = _load_json_object(
+        run_dir / "gate-train" / "candidate_bundle_manifest.json"
+    )
+    training_result = manifest.get("training_result")
+    if not isinstance(training_result, Mapping):
+        raise ValueError("gate-train training_result is missing")
+    value = training_result.get("suitable_accept_threshold")
+    if value is None:
+        raise ValueError("gate-train suitable_accept_threshold is missing")
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not 0.0 <= float(value) <= 1.0
+    ):
+        raise ValueError(
+            "gate-train suitable_accept_threshold must be a probability"
+        )
+    threshold = float(value)
+    windowing = config["method"]["windowing"]
+    if not isinstance(windowing, Mapping):
+        raise ValueError("method.windowing config is missing")
+    cap = windowing.get("suitable_accept_threshold_cap")
+    if cap is None:
+        return threshold
+    if (
+        isinstance(cap, bool)
+        or not isinstance(cap, (int, float))
+        or not 0.0 <= float(cap) <= 1.0
+    ):
+        raise ValueError("suitable_accept_threshold_cap must be a probability")
+    return min(threshold, float(cap))
 
 
 def _require_gated_config(args: argparse.Namespace) -> dict:
@@ -1782,6 +1989,7 @@ def _build_local_gated_generation_pipeline(args: argparse.Namespace):
     )
 
     config = _require_gated_config(args)
+    diagnostic = _smoke_diagnostic_enabled(config)
     options = _local_hf_runtime_options(args, config, "generate")
     bundle_path, bundle_hash = resolve_gate_bundle(args)
     deployment_key = _runtime_secret(args, "deployment")
@@ -1789,11 +1997,15 @@ def _build_local_gated_generation_pipeline(args: argparse.Namespace):
         root=bundle_path,
         base_model_path=options.gate_base_model_path,
         bundle_sha256=bundle_hash,
+        device=options.gate_device,
         max_tokens=int(config["method"]["gate"]["max_input_tokens"]),
         window_contract_version=options.window_contract_version,
         close_low_threshold=options.close_low_threshold,
         close_high_threshold=options.close_high_threshold,
-        suitable_accept_threshold=options.suitable_accept_threshold,
+        suitable_accept_threshold=_current_run_gate_suitable_accept_threshold(
+            args,
+            options.suitable_accept_threshold,
+        ),
         max_units=options.max_units,
     )
     generation = config.get("generation")
@@ -1847,7 +2059,7 @@ def _build_local_gated_generation_pipeline(args: argparse.Namespace):
             ),
             comprehension_alpha=rewrite_config.get("comprehension_alpha", True),
         )
-    elif rewrite_strategy == "model_semantic_window":
+    elif rewrite_strategy in {"model_semantic_window", "cpp_structural_equivalent", "js_structural_equivalent", "java_structural_equivalent"}:
         rewriter = load_local_causal_rewriter(options)
     else:
         raise ValueError(f"unsupported gated rewrite strategy: {rewrite_strategy!r}")
@@ -1886,8 +2098,13 @@ def _build_local_gated_generation_pipeline(args: argparse.Namespace):
             ),
             embedding_passes=int(generation.get("embedding_passes", 1)),
             supplementary_binding=(
-                _supplementary_binding(config) or None
+                _supplementary_binding(
+                    config,
+                    diagnostic_test_backend=diagnostic,
+                )
+                or None
             ),
+            diagnostic_test_backend=diagnostic,
         ),
         base_model=program,
         generator=generator,
@@ -1920,11 +2137,15 @@ def _build_local_gated_detection_pipeline(args: argparse.Namespace):
         root=bundle_path,
         base_model_path=options.gate_base_model_path,
         bundle_sha256=bundle_hash,
+        device=options.gate_device,
         max_tokens=int(config["method"]["gate"]["max_input_tokens"]),
         window_contract_version=options.window_contract_version,
         close_low_threshold=options.close_low_threshold,
         close_high_threshold=options.close_high_threshold,
-        suitable_accept_threshold=options.suitable_accept_threshold,
+        suitable_accept_threshold=_current_run_gate_suitable_accept_threshold(
+            args,
+            options.suitable_accept_threshold,
+        ),
         max_units=options.max_units,
     )
     negative_hash = getattr(args, "_gated_negative_manifest_hash", None)
@@ -2053,6 +2274,7 @@ def _formal_gate_dependencies(args: argparse.Namespace, phase: str) -> object:
     from wfcllm.gate.dependencies import build_local_gate_dependencies
     from wfcllm.gate.production import LOCAL_HF_ADAPTER_NAME
 
+    diagnostic = _smoke_diagnostic_enabled(config)
     dependencies = build_local_gate_dependencies(
         source_manifest=source_manifest,
         training_key_file=getattr(args, "training_key_bank_file", None),
@@ -2062,9 +2284,10 @@ def _formal_gate_dependencies(args: argparse.Namespace, phase: str) -> object:
         base_model_path=base_model_path,
         adapter_name=LOCAL_HF_ADAPTER_NAME,
         adapter_options=adapter_options,
+        diagnostic_test_backend=diagnostic,
     )
-    if getattr(dependencies, "diagnostic_test_backend", None) is not False:
-        raise ValueError("main orchestration rejects diagnostic test backend artifacts")
+    if getattr(dependencies, "diagnostic_test_backend", None) is not diagnostic:
+        raise ValueError("main orchestration dependency identity mismatch")
     return dependencies
 
 
@@ -2154,12 +2377,10 @@ def _resolve_semantic_encoder_checkpoint(
         or _safe_file_hash(catalog) != recorded_catalog_hash
     ):
         raise ValueError("current run semantic encoder source catalog hash mismatch")
-    from wfcllm.gate.production import experiment_contract_hash
-
     if (
         not isinstance(recorded_config_hash, str)
         or _DIGEST.fullmatch(recorded_config_hash) is None
-        or experiment_contract_hash(config) != recorded_config_hash
+        or not _candidate_config_hash_matches(recorded_config_hash, config)
     ):
         raise ValueError("current run semantic encoder config hash mismatch")
     return checkpoint
@@ -2235,6 +2456,7 @@ def _local_hf_runtime_options(
     if base_model_path is None:
         raise ValueError(f"--gate-base-model-path is required for {phase}")
     return LocalHFGateRuntimeOptions(
+        rewrite_strategy=str(rewrite.get("strategy", "model_semantic_window")),
         source_catalog=required_runtime_path("gate_source_catalog"),
         generation_model_path=required_runtime_path("generation_model_path"),
         rewrite_model_path=(
@@ -2509,16 +2731,24 @@ def _load_formal_json(path: Path, name: str) -> Mapping[str, object]:
 
 
 def _require_formal_manifest(manifest: Mapping[str, object], name: str) -> None:
-    formal_identity = {
-        "diagnostic_test_backend": False,
-        "formal_eligible": True,
-        "diagnostic_only": False,
-        "not_official_method": False,
-    }
+    _require_gate_manifest_identity(manifest, name, diagnostic=False)
+
+
+def _require_gate_manifest_identity(
+    manifest: Mapping[str, object],
+    name: str,
+    *,
+    diagnostic: bool,
+) -> None:
+    expected_identity = _diagnostic_identity(diagnostic)
     if any(
         manifest.get(field) is not value
-        for field, value in formal_identity.items()
+        for field, value in expected_identity.items()
     ):
+        if diagnostic:
+            raise ValueError(
+                f"{name} artifact does not have complete diagnostic identity"
+            )
         raise ValueError(f"{name} artifact does not have complete formal identity")
     formal_schemas = {
         "gate-data": "wfcllm-gate-data-manifest/v1",
@@ -2575,12 +2805,31 @@ def run_encoder(args: argparse.Namespace, state: RunStateManager) -> int:
             f"--language must match generation.language={language!r}"
         )
     run_dir = _gate_run_dir(args, config)
+    max_groups: dict[str, int] = {}
+    runtime = config.get("runtime")
+    smoke_count = (
+        runtime.get("smoke_sample_count") if isinstance(runtime, Mapping) else None
+    )
+    if smoke_count is not None:
+        if type(smoke_count) is not int or smoke_count <= 0:
+            raise ValueError("runtime.smoke_sample_count must be a positive integer")
+        smoke_epochs = runtime.get("smoke_encoder_epochs")
+        if type(smoke_epochs) is not int or smoke_epochs <= 0:
+            raise ValueError("runtime.smoke_encoder_epochs must be a positive integer")
+        max_groups = {
+            "max_train_groups": smoke_count,
+            "max_validation_groups": smoke_count,
+            "max_test_groups": smoke_count,
+            "epochs": smoke_epochs,
+            "diagnostic_smoke": True,
+        }
     result = projection_training.train_semantic_projection(
         projection_training.ProjectionTrainingSettings(
             source_catalog=catalog,
             model_path=model_path,
             output_dir=run_dir / "encoder",
             language=language,
+            **max_groups,
         )
     )
     best_model_path = _canonical_local_path(Path(str(result["best_model_path"])))

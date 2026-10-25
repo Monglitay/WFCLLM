@@ -33,7 +33,9 @@ from wfcllm.windowing.contracts import (
     StatementUnit,
 )
 
-_REWRITE_INDICES = tuple(range(1, 4))
+_DEFAULT_REWRITE_COUNT = 3
+_MAX_REWRITE_COUNT = 48
+_ALLOWED_REWRITE_BUDGETS = frozenset({0, 1, 3, 6, 12, 18, 24})
 _CANONICAL_TRAINING_KEY_IDS = tuple(
     f"train-key-{index:03d}" for index in range(32)
 )
@@ -163,10 +165,12 @@ class RewriteRequest:
     window_start_unit_id: str
     window_length: int
     structural_boundary: StructuralBoundary
+    completed_suffix: str = ""
 
     def __post_init__(self) -> None:
         _require_string("prompt", self.prompt)
         _require_string("completed_prefix", self.completed_prefix)
+        _require_string("completed_suffix", self.completed_suffix)
         _require_nonempty_string("original_window", self.original_window)
         _require_nonempty_string("canonical_parent", self.canonical_parent)
         _require_nonempty_string("window_start_unit_id", self.window_start_unit_id)
@@ -185,6 +189,7 @@ class RewriteRequest:
         payload: dict[str, object] = {
             "prompt": self.prompt,
             "completed_prefix": self.completed_prefix,
+            "completed_suffix": self.completed_suffix,
             "original_window": self.original_window,
             "canonical_parent": self.canonical_parent,
             "window_start_unit_id": self.window_start_unit_id,
@@ -335,8 +340,13 @@ class GateDataVariant:
             raise ValueError("group must be a GateDataGroup")
         if type(self.context_length) is not int or self.context_length not in {1, 2, 3}:
             raise ValueError("context_length must be 1, 2, or 3")
-        if type(self.rewrite_budget) is not int or self.rewrite_budget not in {1, 3}:
-            raise ValueError("rewrite_budget must be 1 or 3")
+        if (
+            type(self.rewrite_budget) is not int
+            or self.rewrite_budget not in _ALLOWED_REWRITE_BUDGETS
+        ):
+            raise ValueError(
+                "rewrite_budget must be one of the pre-registered proposal budgets"
+            )
         if (
             not isinstance(self.previous_units, tuple)
             or len(self.previous_units) > self.context_length
@@ -482,6 +492,7 @@ class GateDataBuilder:
         key_ids: tuple[str, ...] | None = None,
         key_mode: str = "training",
         test_only_allow_key_subset: bool = False,
+        rewrite_count: int = _DEFAULT_REWRITE_COUNT,
     ) -> None:
         if not callable(getattr(rewriter, "rewrite", None)):
             raise ValueError("rewriter must define rewrite")
@@ -491,6 +502,11 @@ class GateDataBuilder:
             raise ValueError("key_mode must be training or holdout")
         if not isinstance(test_only_allow_key_subset, bool):
             raise ValueError("test_only_allow_key_subset must be a bool")
+        if (
+            type(rewrite_count) is not int
+            or not 0 <= rewrite_count <= _MAX_REWRITE_COUNT
+        ):
+            raise ValueError("rewrite_count must be an integer from 0 through 48")
         if key_ids is None:
             key_ids = (
                 _CANONICAL_TRAINING_KEY_IDS
@@ -505,6 +521,7 @@ class GateDataBuilder:
         self._rewriter = rewriter
         self._lsh_probe = lsh_probe
         self._key_ids = tuple(key_ids)
+        self._rewrite_indices = tuple(range(1, rewrite_count + 1))
 
     def build(
         self,
@@ -608,17 +625,17 @@ class GateDataBuilder:
                 if callable(rewrite_many):
                     rewritten = rewrite_many(
                         request,
-                        candidate_indices=_REWRITE_INDICES,
+                        candidate_indices=self._rewrite_indices,
                     )
                 else:
                     rewritten = tuple(
                         self._rewriter.rewrite(request, candidate_index=index)
-                        for index in _REWRITE_INDICES
+                        for index in self._rewrite_indices
                     )
-                if len(rewritten) != len(_REWRITE_INDICES):
+                if len(rewritten) != len(self._rewrite_indices):
                     raise ValueError("rewriter trajectory length mismatch")
                 for candidate_index, candidate in zip(
-                    _REWRITE_INDICES,
+                    self._rewrite_indices,
                     rewritten,
                     strict=True,
                 ):
@@ -840,6 +857,7 @@ def _make_request(
         compound_singleton=first.compound_header,
         hard_boundary_after=hard_boundary_after,
     )
+    completed_suffix = ""
     if source_bytes is None:
         completed_prefix = "\n".join(unit.text for unit in units[:start_index])
         original_window = "\n".join(unit.text for unit in window)
@@ -853,9 +871,15 @@ def _make_request(
             window[-1].end_byte,
             field_name="original_window",
         )
+        if window_contract_version == "cpp-statement-window/v1":
+            completed_suffix = _decode_source_slice(
+                source_bytes, window[-1].end_byte, len(source_bytes),
+                field_name="completed_suffix",
+            )
     return RewriteRequest(
         prompt=prompt,
         completed_prefix=completed_prefix,
+        completed_suffix=completed_suffix,
         original_window=original_window,
         canonical_parent=_parent_descriptor(
             first, window_contract_version

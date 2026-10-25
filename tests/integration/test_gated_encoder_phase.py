@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import hashlib
 from pathlib import Path
 
@@ -86,6 +87,57 @@ def test_encoder_trains_per_dataset_projection_and_binds_state(
     assert runners._resolve_semantic_encoder_checkpoint(
         args, args._config_cache
     ) == tmp_path / "run" / "encoder" / "best_model.pt"
+
+
+def test_encoder_uses_diagnostic_smoke_epoch_limits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = _gated_args(tmp_path)
+    args._config_cache["runtime"] = {
+        "smoke_sample_count": 20,
+        "smoke_encoder_epochs": 1,
+    }
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        "wfcllm.encoder.projection_training.train_semantic_projection",
+        _stub_trainer(captured),
+    )
+
+    assert runners.run_encoder(args, RunStateManager(tmp_path / "state.json")) == 0
+
+    settings = captured["settings"]
+    assert settings.max_train_groups == 20
+    assert settings.max_validation_groups == 20
+    assert settings.max_test_groups == 20
+    assert settings.epochs == 1
+    assert settings.diagnostic_smoke is True
+
+
+def test_current_run_rejects_artifacts_bound_to_previous_calibration_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from wfcllm.gate.production import experiment_contract_hash
+
+    args = _gated_args(tmp_path)
+    current = deepcopy(args._config_cache)
+    args._config_cache["calibration"]["method"] = "pooled_negative_binomial_right_tail"
+    args._config_cache["calibration"]["group_by"] = "pooled_binomial_tail"
+    previous_hash = experiment_contract_hash(args._config_cache)
+    monkeypatch.setattr(
+        "wfcllm.encoder.projection_training.train_semantic_projection",
+        _stub_trainer({}),
+    )
+    runners.run_encoder(args, RunStateManager(Path(args.state_file)))
+    args._config_cache = current
+
+    assert runners._candidate_config_hash_matches(
+        experiment_contract_hash(current), current
+    )
+    assert not runners._candidate_config_hash_matches(previous_hash, current)
+    with pytest.raises(ValueError, match="config hash mismatch"):
+        runners._resolve_semantic_encoder_checkpoint(args, current)
 
 
 def test_encoder_rejects_forged_external_checkpoint_state(

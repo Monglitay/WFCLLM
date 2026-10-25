@@ -9,6 +9,8 @@ import json
 from pathlib import Path
 import unicodedata
 
+from wfcllm.datasets.smoke import smoke_sample_count_from_env
+
 
 SUPPORTED_EXPERIMENT_PAIRS = frozenset(
     {
@@ -22,7 +24,7 @@ SUPPORTED_EXPERIMENT_PAIRS = frozenset(
 SUPPORTED_EXPERIMENT_PROFILES = frozenset({"full"})
 _EXPECTED_DATASET_COUNTS = {
     ("python", "humaneval"): 164,
-    ("python", "mbpp"): 974,
+    ("python", "mbpp"): 500,
     ("cpp", "humanevalpack"): 164,
     ("java", "humanevalpack"): 164,
     ("js", "humanevalpack"): 164,
@@ -53,13 +55,17 @@ def validate_public_full_config_overlay(
     strategy = (
         "python_ast_equivalent"
         if language == "python"
-        else "model_semantic_window"
+        else "cpp_structural_equivalent"
+        if language == "cpp"
+        else "js_structural_equivalent"
+        if language == "js"
+        else "java_structural_equivalent"
     )
-    finalizer = (
-        "humaneval_target_function_v1"
-        if (language, dataset) == ("python", "humaneval")
-        else "none"
-    )
+    finalizer = "none"
+    if (language, dataset) == ("python", "humaneval"):
+        finalizer = "humaneval_target_function_v1"
+    elif (language, dataset) == ("python", "mbpp"):
+        finalizer = "mbpp_target_interface_wrapper_v1"
     contract = f"{language}-statement-window/v1"
     expected: dict[str, object] = {
         "method": {
@@ -76,10 +82,24 @@ def validate_public_full_config_overlay(
         "semantic_lsh": {
             "rule_name": "semantic_lsh",
             "lsh_d": 12,
-            "lsh_gamma": 0.45,
+            "lsh_gamma": 0.25,
         },
         "experiment": {"profile": "full"},
     }
+    if (language, dataset) == ("python", "mbpp"):
+        generation_expected = expected["generation"]
+        assert isinstance(generation_expected, dict)
+        generation_expected["prompt_mode"] = "mbpp_chat"
+    if language in {"java", "js"}:
+        generation_expected = expected["generation"]
+        assert isinstance(generation_expected, dict)
+        generation_expected["prompt_mode"] = "humanevalpack_chat"
+    if language == "cpp" and dataset == "humanevalpack":
+        method_expected = expected["method"]
+        assert isinstance(method_expected, dict)
+        rewrite_expected = method_expected["rewrite"]
+        assert isinstance(rewrite_expected, dict)
+        rewrite_expected["max_new_tokens"] = 128
     if dict(config) != expected:
         raise ValueError(
             "public Full config must equal the canonical overlay; "
@@ -119,7 +139,10 @@ def validate_experiment_config(
             "experiment configs must use semantic_lsh"
         )
     expected_strategy = (
-        "python_ast_equivalent" if language == "python" else "model_semantic_window"
+        "python_ast_equivalent" if language == "python"
+        else "cpp_structural_equivalent" if language == "cpp"
+        else "js_structural_equivalent" if language == "js"
+        else "java_structural_equivalent"
     )
     _require_equal(rewrite, "strategy", expected_strategy, "method.rewrite")
     expected_contract = f"{language}-statement-window/v1"
@@ -141,8 +164,8 @@ def validate_experiment_config(
             "max_input_tokens",
         }:
             raise ValueError("method.gate must use the current fresh-run contract")
-    if semantic_lsh.get("lsh_d") != 12 or semantic_lsh.get("lsh_gamma") != 0.45:
-        raise ValueError("semantic_lsh must use d=12 and gamma=0.45")
+    if semantic_lsh.get("lsh_d") != 12 or semantic_lsh.get("lsh_gamma") != 0.25:
+        raise ValueError("semantic_lsh must use d=12 and gamma=0.25")
 
 
 def load_and_validate_experiment_config(
@@ -177,9 +200,10 @@ def validate_runtime_capabilities(config: Mapping[str, object]) -> None:
             )
         return
     if language in {"cpp", "java", "js"}:
-        if strategy != "model_semantic_window":
+        expected = {"cpp": "cpp_structural_equivalent", "js": "js_structural_equivalent", "java": "java_structural_equivalent"}[language]
+        if strategy != expected:
             raise ValueError(
-                f"{language} experiments require model_semantic_window; "
+                f"{language} experiments require {expected}; "
                 "Python AST and carrier rewrites are forbidden"
             )
         from wfcllm.windowing import (
@@ -248,6 +272,10 @@ def validate_runtime_resources(
     dataset = generation.get("dataset")
     if not isinstance(language, str) or not isinstance(dataset, str):
         raise ValueError("generation language and dataset must be strings")
+    if language == "cpp":
+        from wfcllm.evaluation.cpp_execution import require_cpp_toolchain
+
+        require_cpp_toolchain()
     target_task_ids = _validate_dataset_runtime(dataset_path, dataset, language)
     pilot_sources, pilot_groups = _validate_gate_source_catalog(
         pilot_source_catalog, language, "pilot"
@@ -270,10 +298,10 @@ def validate_runtime_resources(
         raise ValueError(
             "negative detector input dataset must match the Full profile dataset"
         )
-    if "supplementary_ablation" in config:
+    if "supplementary_ablation" in config or "supplementary_experiment" in config:
         if test_negative_input is None:
             raise ValueError(
-                "Supplementary Ablation requires an independent "
+                "Supplementary study requires an independent "
                 "--test-negative-input"
             )
         validate_ablation_negative_corpora(
@@ -403,6 +431,9 @@ def _validate_dataset_runtime(
             f"dataset {dataset!r}/{language!r} is not loadable from {dataset_path}"
         ) from exc
     expected = _EXPECTED_DATASET_COUNTS[(language, dataset)]
+    smoke_count = smoke_sample_count_from_env()
+    if smoke_count is not None:
+        expected = smoke_count
     if len(samples) != expected:
         raise ValueError(
             f"dataset {dataset!r}/{language!r} must contain exactly "
@@ -421,8 +452,6 @@ def _validate_dataset_runtime(
             raise ValueError("dataset adapter returned duplicate task IDs")
         task_ids.add(sample.task_id)
     return task_ids
-
-
 def validate_ablation_negative_corpora(
     calibration_path: Path,
     test_path: Path,
@@ -617,7 +646,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--holdout-key-bank", type=Path)
     parser.add_argument("--deployment-key", type=Path)
     parser.add_argument("--ablation-spec", type=Path)
+    parser.add_argument("--supplementary-experiment-spec", type=Path)
     args = parser.parse_args(argv)
+    if (
+        args.ablation_spec is not None
+        and args.supplementary_experiment_spec is not None
+    ):
+        parser.error(
+            "--ablation-spec and --supplementary-experiment-spec are mutually exclusive"
+        )
     try:
         config = load_and_validate_experiment_config(
             args.config,
@@ -633,6 +670,18 @@ def main(argv: list[str] | None = None) -> int:
                 config,
                 supplementary_ablation=load_supplementary_ablation_spec(
                     args.ablation_spec
+                ),
+            )
+        if args.supplementary_experiment_spec is not None:
+            from wfcllm.cli.config_resolver import resolve_method_config
+            from wfcllm.evaluation.supplementary_experiments import (
+                load_supplementary_experiment_spec,
+            )
+
+            config = resolve_method_config(
+                config,
+                supplementary_experiment=load_supplementary_experiment_spec(
+                    args.supplementary_experiment_spec
                 ),
             )
         if args.check_runtime_capabilities:

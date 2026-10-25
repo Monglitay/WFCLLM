@@ -47,6 +47,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional output file; defaults to stdout.",
     )
+    parser.add_argument(
+        "--allow-diagnostic-smoke",
+        action="store_true",
+        help=(
+            "emit explicitly non-formal diagnostic rows for smoke runs instead "
+            "of failing on diagnostic gate artifacts"
+        ),
+    )
     return parser
 
 
@@ -58,7 +66,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("at least one run directory is required")
 
     rows = [
-        extract_metric_contract(Path(run_dir))
+        extract_metric_contract(
+            Path(run_dir),
+            allow_diagnostic_smoke=args.allow_diagnostic_smoke,
+        )
         for run_dir in run_dirs
     ]
     if any("supplementary_ablation" in row for row in rows):

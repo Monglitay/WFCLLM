@@ -83,6 +83,14 @@ def _run(tmp_path: Path, *, include_pass: bool = False) -> Path:
         run / "detection" / "positive_details.jsonl",
         {"id": "JS/0", "decision": "watermarked"},
     )
+    negative_details = run / "detection" / "negative_details.jsonl"
+    negative_details.write_text(
+        "".join(
+            json.dumps({"id": f"negative/{index}", "decision": "not_watermarked", "hit_rate": score}) + "\n"
+            for index, score in enumerate((0.1, 0.2, 0.5))
+        ),
+        encoding="utf-8",
+    )
     bindings = {
         "final_code_sha256": run / "inputs" / "final_code.jsonl",
         "calibration_sha256": (
@@ -91,6 +99,7 @@ def _run(tmp_path: Path, *, include_pass: bool = False) -> Path:
         "positive_details_sha256": (
             run / "detection" / "positive_details.jsonl"
         ),
+        "negative_details_sha256": negative_details,
         "reference_report_sha256": (
             run / "reports" / "reference_report.json"
         ),
@@ -117,6 +126,9 @@ def test_current_metric_contract_is_unconditional_and_full_sample(tmp_path) -> N
     assert row["insufficient_evidence_count"] == 1
     assert row["auroc"] == pytest.approx(0.625)
     assert row["auroc_definition"] == AUROC_DEFINITION
+    assert row["negative_sample_count"] == 3
+    assert row["negative_insufficient_evidence_count"] == 0
+    assert row["auroc_score_field"] == "hit_rate"
     assert row["thresholds_by_reliable_window_count"] == {"2": 0.5}
     assert row["calibration_rule"] == "right_tail_plus_one/v1"
     assert row["pass_rate"] is None
@@ -147,6 +159,29 @@ def test_metric_contract_rejects_nonformal_current_layout(tmp_path) -> None:
         extract_metric_contract(run)
 
 
+def test_metric_contract_can_emit_explicit_diagnostic_smoke_row(tmp_path) -> None:
+    run = _run(tmp_path)
+    manifest = run / "gate-data" / "manifest.json"
+    _write(
+        manifest,
+        {
+            "schema_version": "wfcllm-gate-data-manifest/v1",
+            "formal_eligible": False,
+            "diagnostic_test_backend": True,
+            "diagnostic_only": True,
+            "not_official_method": True,
+        },
+    )
+
+    row = extract_metric_contract(run, allow_diagnostic_smoke=True)
+
+    assert row["diagnostic_test_backend"] is True
+    assert row["formal_eligible"] is False
+    assert row["diagnostic_only"] is True
+    assert row["not_official_method"] is True
+    assert "not a formal Metric Contract result" in " ".join(row["caveats"])
+
+
 def test_metric_contract_rejects_post_audit_report_tampering(tmp_path) -> None:
     run = _run(tmp_path)
     report = run / "reports" / "reference_report.json"
@@ -155,4 +190,52 @@ def test_metric_contract_rejects_post_audit_report_tampering(tmp_path) -> None:
     _write(report, payload)
 
     with pytest.raises(ValueError, match="hash mismatch"):
+        extract_metric_contract(run)
+
+
+def test_auroc_keeps_insufficient_negatives_outside_calibration_fit_buckets(tmp_path) -> None:
+    run = _run(tmp_path)
+    path = run / "detection" / "negative_details.jsonl"
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"id": "negative/insufficient", "decision": "insufficient_evidence", "hit_rate": 0.0}) + "\n")
+    audit_path = run / "audit" / "artifact_integrity.json"
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    audit["negative_details_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    _write(audit_path, audit)
+
+    row = extract_metric_contract(run)
+
+    assert row["negative_sample_count"] == 4
+    assert row["negative_insufficient_evidence_count"] == 1
+    assert row["auroc"] == pytest.approx(0.6875)
+
+
+def test_auroc_uses_program_hit_rates_when_calibration_fits_other_statistics(tmp_path) -> None:
+    run = _run(tmp_path)
+    report_path = run / "reports" / "reference_report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["calibration"]["reliable_window_count_buckets"] = {"2": [-1e300, 0.4, 1.2]}
+    report["calibration"]["empirical_p_value_rule"] = "pooled_negative_empirical_standardized_hit_surplus/v1"
+    report["calibration"]["null_hit_probability"] = 0.25
+    _write(report_path, report)
+    calibration = run / "calibration" / "reference_calibration.json"
+    _write(calibration, report["calibration"])
+    audit_path = run / "audit" / "artifact_integrity.json"
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    audit["reference_report_sha256"] = hashlib.sha256(report_path.read_bytes()).hexdigest()
+    audit["calibration_sha256"] = hashlib.sha256(calibration.read_bytes()).hexdigest()
+    _write(audit_path, audit)
+
+    row = extract_metric_contract(run)
+
+    assert row["auroc"] == pytest.approx(0.625)
+    assert row["negative_sample_count"] == 3
+
+
+def test_metric_contract_rejects_post_audit_negative_score_tampering(tmp_path) -> None:
+    run = _run(tmp_path)
+    path = run / "detection" / "negative_details.jsonl"
+    path.write_text(path.read_text(encoding="utf-8").replace("0.5", "0.0"), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="hash mismatch: negative_details_sha256"):
         extract_metric_contract(run)

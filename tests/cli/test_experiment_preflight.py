@@ -16,9 +16,9 @@ ROOT = Path(__file__).resolve().parents[2]
 MATRIX = (
     ("python", "humaneval", "python_ast_equivalent"),
     ("python", "mbpp", "python_ast_equivalent"),
-    ("cpp", "humanevalpack", "model_semantic_window"),
-    ("java", "humanevalpack", "model_semantic_window"),
-    ("js", "humanevalpack", "model_semantic_window"),
+    ("cpp", "humanevalpack", "cpp_structural_equivalent"),
+    ("java", "humanevalpack", "java_structural_equivalent"),
+    ("js", "humanevalpack", "js_structural_equivalent"),
 )
 
 
@@ -155,6 +155,174 @@ def test_full_profile_rejects_relaxed_parameter_override() -> None:
 
     with pytest.raises(ValueError, match="canonical overlay"):
         resolve_method_config(raw)
+
+
+@pytest.mark.parametrize("max_new_tokens", [16, 64, 256])
+@pytest.mark.parametrize("language", ["cpp", "js"])
+def test_native_full_profile_rejects_noncanonical_rewrite_budget(
+    max_new_tokens: int, language: str,
+) -> None:
+    raw = load_config(ROOT / f"configs/wfcllm/experiments/{language}_humanevalpack_full.json")
+    raw["method"]["rewrite"]["max_new_tokens"] = max_new_tokens
+    with pytest.raises(ValueError, match="canonical overlay"):
+        resolve_method_config(raw)
+
+
+def test_smoke_sample_count_keeps_feasibility_contract_frozen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from wfcllm.gate.feasibility import FEASIBILITY_THRESHOLD_ITEMS
+
+    monkeypatch.setenv("WFCLLM_SMOKE_SAMPLE_COUNT", "20")
+    config = resolve_method_config(
+        load_config(
+            ROOT
+            / "configs"
+            / "wfcllm"
+            / "experiments"
+            / "python_humaneval_full.json"
+        )
+    )
+
+    assert config["runtime"]["smoke_sample_count"] == 20
+    assert config["runtime"]["smoke_encoder_epochs"] == 1
+    assert (
+        config["calibration"]["method"]
+        == "pooled_negative_empirical_hit_rate_quantile"
+    )
+    assert config["calibration"]["group_by"] == "pooled_reliable_hit_rate_quantile"
+    assert config["detector"]["minimum_reliable_windows"] == 2
+    assert config["gate_train"]["max_epochs"] == 1
+    assert config["gate_data"]["full_independent_group_max"] == 300
+    assert config["gate_data"]["feasibility_thresholds"] == dict(
+        FEASIBILITY_THRESHOLD_ITEMS
+    )
+
+
+def test_smoke_gate_train_epochs_can_be_overridden_for_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WFCLLM_SMOKE_SAMPLE_COUNT", "100")
+    monkeypatch.setenv("WFCLLM_SMOKE_GATE_TRAIN_EPOCHS", "4")
+
+    config = resolve_method_config(
+        load_config(
+            ROOT
+            / "configs"
+            / "wfcllm"
+            / "experiments"
+            / "python_humaneval_full.json"
+        )
+    )
+
+    assert config["runtime"]["smoke_sample_count"] == 100
+    assert config["gate_train"]["max_epochs"] == 4
+    assert config["gate_train"]["early_stopping_patience"] == 2
+
+
+def test_small_sample_encoder_epochs_can_preserve_full_training_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = ROOT / "configs/wfcllm/experiments/python_humaneval_full.json"
+    monkeypatch.delenv("WFCLLM_SMOKE_SAMPLE_COUNT", raising=False)
+    monkeypatch.delenv("WFCLLM_SMOKE_GATE_DATA_GROUPS", raising=False)
+    full = resolve_method_config(load_config(path))
+    monkeypatch.setenv("WFCLLM_SMOKE_SAMPLE_COUNT", "100")
+    monkeypatch.setenv("WFCLLM_SMOKE_ENCODER_TRAIN_EPOCHS", "10")
+
+    small = resolve_method_config(load_config(path))
+
+    assert small["runtime"]["smoke_sample_count"] == 100
+    assert small["runtime"]["smoke_encoder_epochs"] == 10
+    assert small["detector"] == full["detector"]
+    assert small["calibration"] == full["calibration"]
+    assert small["gate_data"] == full["gate_data"]
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "not-an-integer"])
+def test_small_sample_encoder_epoch_override_rejects_invalid_values(
+    monkeypatch: pytest.MonkeyPatch, value: str,
+) -> None:
+    monkeypatch.setenv("WFCLLM_SMOKE_SAMPLE_COUNT", "100")
+    monkeypatch.setenv("WFCLLM_SMOKE_ENCODER_TRAIN_EPOCHS", value)
+    with pytest.raises(
+        ValueError, match="WFCLLM_SMOKE_ENCODER_TRAIN_EPOCHS must be a positive integer"
+    ):
+        resolve_method_config(
+            load_config(ROOT / "configs/wfcllm/experiments/python_humaneval_full.json")
+        )
+
+
+def test_smoke_gate_data_groups_can_be_overridden_for_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WFCLLM_SMOKE_SAMPLE_COUNT", "100")
+    monkeypatch.setenv("WFCLLM_SMOKE_GATE_DATA_GROUPS", "100")
+
+    config = resolve_method_config(
+        load_config(
+            ROOT
+            / "configs"
+            / "wfcllm"
+            / "experiments"
+            / "python_humaneval_full.json"
+        )
+    )
+
+    assert config["runtime"]["smoke_gate_data_groups"] == 100
+    assert config["gate_data"]["pilot_independent_group_min"] == 100
+    assert config["gate_data"]["pilot_independent_group_max"] == 100
+    assert config["gate_data"]["full_independent_group_min"] == 100
+    assert config["gate_data"]["full_independent_group_max"] == 100
+    thresholds = config["gate_data"]["feasibility_thresholds"]
+    assert thresholds["pilot_independent_group_min"] == 100
+    assert thresholds["pilot_independent_group_max"] == 100
+    assert thresholds["full_independent_group_min"] == 100
+    assert thresholds["full_independent_group_max"] == 100
+    assert thresholds["full_suitable_positive_min"] == 10
+    assert thresholds["full_suitable_negative_min"] == 25
+    assert thresholds["window_length_group_min"] == 16
+    assert thresholds["major_statement_family_group_min"] == 12
+
+
+def test_smoke_gate_data_groups_override_must_be_positive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WFCLLM_SMOKE_SAMPLE_COUNT", "100")
+    monkeypatch.setenv("WFCLLM_SMOKE_GATE_DATA_GROUPS", "0")
+
+    with pytest.raises(
+        ValueError, match="WFCLLM_SMOKE_GATE_DATA_GROUPS must be a positive integer"
+    ):
+        resolve_method_config(
+            load_config(
+                ROOT
+                / "configs"
+                / "wfcllm"
+                / "experiments"
+                / "python_humaneval_full.json"
+            )
+        )
+
+
+def test_smoke_gate_train_epochs_override_must_be_positive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WFCLLM_SMOKE_SAMPLE_COUNT", "100")
+    monkeypatch.setenv("WFCLLM_SMOKE_GATE_TRAIN_EPOCHS", "0")
+
+    with pytest.raises(
+        ValueError, match="WFCLLM_SMOKE_GATE_TRAIN_EPOCHS must be a positive integer"
+    ):
+        resolve_method_config(
+            load_config(
+                ROOT
+                / "configs"
+                / "wfcllm"
+                / "experiments"
+                / "python_humaneval_full.json"
+            )
+        )
 
 
 def test_runtime_resources_fail_closed_without_local_inputs(tmp_path) -> None:
@@ -365,10 +533,11 @@ def test_model_rewrite_runtime_requires_a_rewrite_model(tmp_path: Path) -> None:
             / "configs"
             / "wfcllm"
             / "experiments"
-            / "js_humanevalpack_full.json"
+            / "java_humanevalpack_full.json"
         )
     )
 
+    config["method"]["rewrite"]["strategy"] = "model_semantic_window"
     with pytest.raises(ValueError, match="rewrite model"):
         validate_runtime_resources(
             config,

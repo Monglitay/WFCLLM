@@ -50,7 +50,7 @@ def test_public_config_resolves_dimension_ablation_from_canonical_full() -> None
     assert resolved["experiment"]["profile"] == "full"
     assert resolved["semantic_lsh"]["lsh_d"] == 8
     assert resolved["method"]["semantic"]["lsh"]["d"] == 8
-    assert resolved["semantic_lsh"]["lsh_gamma"] == 0.45
+    assert resolved["semantic_lsh"]["lsh_gamma"] == 0.25
     assert resolved["supplementary_ablation"] == {
         "schema_version": "wfcllm-supplementary-ablation-identity/v1",
         "study_kind": "supplementary_ablation",
@@ -82,9 +82,9 @@ def test_public_config_resolves_dimension_ablation_from_canonical_full() -> None
             "closure_high": 0.55,
             "n_min": 2,
             "max_units": 3,
-            "nominal_gamma": 0.45,
-            "realized_region_count": 115,
-            "realized_region_ratio": 115 / 256,
+            "nominal_gamma": 0.25,
+            "realized_region_count": 64,
+            "realized_region_ratio": 64 / 256,
         },
     }
     assert len(resolved["supplementary_ablation"]["resolved_config_hash"]) == 64
@@ -92,6 +92,63 @@ def test_public_config_resolves_dimension_ablation_from_canonical_full() -> None
     assert json.dumps(resolved, sort_keys=True) == json.dumps(
         resolve_method_config(canonical, supplementary_ablation=spec),
         sort_keys=True,
+    )
+
+
+def test_smoke_runtime_limits_do_not_change_ablation_baseline_hash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canonical = load_config(CANONICAL_CONFIG)
+    baseline_hash = canonical_baseline_config_hash(canonical)
+    formal_resolved = resolve_method_config(
+        canonical,
+        supplementary_ablation={
+            "schema_version": "wfcllm-supplementary-ablation-spec/v1",
+            "study_kind": "supplementary_ablation",
+            "family_id": "issue-3-fixed-seed",
+            "factor": "d",
+            "level": 8,
+            "default_level": 12,
+            "canonical_baseline_config_hash": baseline_hash,
+            "language": "python",
+            "dataset": "humaneval",
+            "profile": "full",
+        },
+    )
+
+    monkeypatch.setenv("WFCLLM_SMOKE_SAMPLE_COUNT", "20")
+    smoke_resolved = resolve_method_config(
+        canonical,
+        supplementary_ablation={
+            "schema_version": "wfcllm-supplementary-ablation-spec/v1",
+            "study_kind": "supplementary_ablation",
+            "family_id": "issue-3-fixed-seed",
+            "factor": "d",
+            "level": 8,
+            "default_level": 12,
+            "canonical_baseline_config_hash": baseline_hash,
+            "language": "python",
+            "dataset": "humaneval",
+            "profile": "full",
+        },
+    )
+
+    assert smoke_resolved["supplementary_ablation"] == formal_resolved[
+        "supplementary_ablation"
+    ]
+    assert smoke_resolved["runtime"]["smoke_sample_count"] == 20
+    assert smoke_resolved["calibration"]["target_negative_count"] == 20
+    assert (
+        smoke_resolved["calibration"]["method"]
+        == formal_resolved["calibration"]["method"]
+    )
+    assert (
+        smoke_resolved["calibration"]["group_by"]
+        == formal_resolved["calibration"]["group_by"]
+    )
+    assert (
+        smoke_resolved["detector"]["minimum_reliable_windows"]
+        == formal_resolved["detector"]["minimum_reliable_windows"]
     )
 
 
@@ -197,10 +254,10 @@ def test_each_allowlisted_factor_changes_only_its_operational_contract() -> None
     dimension = resolve("d", 14)
     assert dimension["semantic_lsh"]["lsh_d"] == 14
     assert dimension["method"]["semantic"]["lsh"]["d"] == 14
-    assert dimension["semantic_lsh"]["lsh_gamma"] == 0.45
+    assert dimension["semantic_lsh"]["lsh_gamma"] == 0.25
     assert dimension["supplementary_ablation"]["runtime"][
         "realized_region_count"
-    ] == round(0.45 * 2**14)
+    ] == round(0.25 * 2**14)
 
     margin = resolve("delta", 0.01)
     assert margin["semantic_lsh"]["semantic_margin"] == 0.01

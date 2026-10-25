@@ -1,0 +1,19 @@
+{
+  "snapshot_date": "2026-10-25",
+  "source": "E:\\MyFiles\\WFCLLM\\tmp",
+  "destination": "E:\\MyFiles\\WFCLLM-cleanup-20261025",
+  "file_count": 995,
+  "total_bytes": 730087007,
+  "top_level_directories": [
+    "continuation-20261019",
+    "continuation-20261020",
+    "continuation-20261021",
+    "pdfs",
+    "reproduction-20261017-1325"
+  ],
+  "retained_in_repo": [
+    "docs/BEST_RESULTS.md",
+    "docs/BEST_RESULTS.json"
+  ],
+  "moved_not_deleted": true
+}

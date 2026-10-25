@@ -25,8 +25,8 @@ def build_supplementary_mechanism_report(
     of candidate-zero.
     """
 
-    if type(max_rewrites) is not int or max_rewrites < 1:
-        raise ValueError("max_rewrites must be a positive integer")
+    if type(max_rewrites) is not int or max_rewrites < 0:
+        raise ValueError("max_rewrites must be a non-negative integer")
     sample_count = _nonnegative_int(generation_manifest, "sample_count")
 
     candidates = [dict(row) for row in candidate_rows]

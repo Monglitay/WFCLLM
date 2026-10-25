@@ -14,12 +14,13 @@
   "generation": {
     "language": "python",
     "dataset": "mbpp",
-    "program_finalizer": "none"
+    "program_finalizer": "mbpp_target_interface_wrapper_v1",
+    "prompt_mode": "mbpp_chat"
   },
   "semantic_lsh": {
     "rule_name": "semantic_lsh",
     "lsh_d": 12,
-    "lsh_gamma": 0.45
+    "lsh_gamma": 0.25
   },
   "experiment": {
     "profile": "full"

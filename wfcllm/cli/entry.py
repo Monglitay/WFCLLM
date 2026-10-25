@@ -61,15 +61,25 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         supplementary_ablation = None
+        supplementary_experiment = None
         if args.ablation_spec is not None:
             from wfcllm.method.ablation import load_supplementary_ablation_spec
 
             supplementary_ablation = load_supplementary_ablation_spec(
                 args.ablation_spec
             )
+        if args.supplementary_experiment_spec is not None:
+            from wfcllm.evaluation.supplementary_experiments import (
+                load_supplementary_experiment_spec,
+            )
+
+            supplementary_experiment = load_supplementary_experiment_spec(
+                args.supplementary_experiment_spec
+            )
         config = resolve_method_config(
             load_config(args.config),
             supplementary_ablation=supplementary_ablation,
+            supplementary_experiment=supplementary_experiment,
         )
         _validate_fresh_run_invocation(args, state_path)
         state = RunStateManager(path=state_path)

@@ -1,0 +1,20 @@
+{
+  "snapshot_date": "2026-10-25",
+  "main_sample_count": 100,
+  "method": "gated_semantic_window_v1",
+  "results": {
+    "python_humaneval": {"run": "R3", "pass_at_1": 80, "primary_auroc": 78.24, "tpr": 56, "independent_auroc": 77.125, "independent_fpr_count": 9, "target_triple_met": false},
+    "python_mbpp": {"run": "python-mbpp-encoder10-v6 (R6)", "pass_at_1": 37, "primary_auroc": 95.17, "tpr": 72, "independent_auroc": 95.0, "independent_fpr_count": 4, "target_triple_met": false},
+    "cpp_humanevalpack": {"run": "cpp-humanevalpack-runtime-v18-bupt-v1", "pass_at_1": 61, "primary_auroc": 91.095, "tpr": 75, "independent_auroc": 91.335, "independent_fpr_count": 10, "target_triple_met": false},
+    "java_humanevalpack": {"run": "java-humanevalpack-single-call-v14-bupt-v1", "pass_at_1": 67, "primary_auroc": 73.915, "tpr": 42, "independent_auroc": 66.875, "independent_fpr_count": 19, "target_triple_met": false},
+    "javascript_humanevalpack": {"run": "js-humanevalpack-structural-v6-bupt-v1", "pass_at_1": 73, "primary_auroc": 80.37, "tpr": 30, "independent_auroc": 74.19, "independent_fpr_count": 10, "target_triple_met": false}
+  },
+  "config_sha256": {
+    "configs/wfcllm/experiments/python_humaneval_full.json": "3AC0081E6388E8D6B27046EC0E36644F6618D19C9C02887E473819D1E8E185A0",
+    "configs/wfcllm/experiments/python_mbpp_full.json": "E09EF1ABD0F567F675055B06819A90E24C4A8F8F6E9DC784124D3666A02CD425",
+    "configs/wfcllm/experiments/cpp_humanevalpack_full.json": "B4360E7545F99838577C2334B30DE9130BF89D803D7268DF1F1A25EBA90103E6",
+    "configs/wfcllm/experiments/java_humanevalpack_full.json": "BC38D19EB13D8B7927522AAD8D4D3E56E9AB15D3A3C27D6E804175BADD23AFD2",
+    "configs/wfcllm/experiments/js_humanevalpack_full.json": "5156F14099DDB424562718470B4166178C012B598A066308E9B0FC8969FD7671"
+  },
+  "formal_target_achieved": false
+}

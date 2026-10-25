@@ -306,6 +306,7 @@ class WFCLLMMethodPreset:
                 "max_preceding_units",
                 "excluded_statement_types",
                 "compound_header_singleton",
+                "suitable_accept_threshold_cap",
             },
             "method.windowing",
         )
@@ -360,6 +361,15 @@ class WFCLLMMethodPreset:
             raise ValueError("method.windowing.max_preceding_units must equal 3")
         if windowing.get("compound_header_singleton") is not True:
             raise ValueError("method.windowing.compound_header_singleton must be true")
+        suitable_cap = windowing.get("suitable_accept_threshold_cap")
+        if (
+            isinstance(suitable_cap, bool)
+            or not isinstance(suitable_cap, (int, float))
+            or not 0.0 <= float(suitable_cap) <= 1.0
+        ):
+            raise ValueError(
+                "method.windowing.suitable_accept_threshold_cap must be a probability"
+            )
         excluded = windowing.get("excluded_statement_types")
         required_excluded = [
             "pass",
@@ -400,7 +410,6 @@ class WFCLLMMethodPreset:
             rewrite,
             {
                 "candidate_zero": "original_window",
-                "experiment_budgets": [1, 3],
                 "key_blind": True,
                 "candidate_selection": "fixed-key-blind-abc-trajectory/v1",
             },
@@ -409,10 +418,25 @@ class WFCLLMMethodPreset:
         max_attempts = rewrite.get("max_attempts")
         if (
             type(max_attempts) is not int
-            or not 3 <= max_attempts <= 48
+            or not 0 <= max_attempts <= 48
         ):
             raise ValueError(
-                "method.rewrite.max_attempts must be an integer from 3 through 48"
+                "method.rewrite.max_attempts must be an integer from 0 through 48"
+            )
+        experiment_budgets = rewrite.get("experiment_budgets")
+        if (
+            not isinstance(experiment_budgets, (list, tuple))
+            or not experiment_budgets
+            or any(
+                type(budget) is not int or not 0 <= budget <= max_attempts
+                for budget in experiment_budgets
+            )
+            or len(set(experiment_budgets)) != len(experiment_budgets)
+            or list(sorted(experiment_budgets)) != list(experiment_budgets)
+            or experiment_budgets[-1] != max_attempts
+        ):
+            raise ValueError(
+                "method.rewrite.experiment_budgets must be ordered unique budgets ending at max_attempts"
             )
         rewrite_temperature = rewrite.get("temperature")
         if (
@@ -447,12 +471,19 @@ class WFCLLMMethodPreset:
             semantic_lsh,
             {
                 "d": 12 if formal_semantic_lsh else 1,
-                "gamma": 0.45 if formal_semantic_lsh else 0.5,
                 "margin": 0.0,
                 "key_derivation_version": "wfcllm-parent-key/v1",
             },
             "method.semantic.lsh",
         )
+        semantic_lsh_gamma = semantic_lsh.get("gamma")
+        if formal_semantic_lsh:
+            if semantic_lsh_gamma not in {0.25, 0.375, 0.45, 0.5}:
+                raise ValueError(
+                    "method.semantic.lsh.gamma must be one of 0.25, 0.375, 0.45, or 0.5"
+                )
+        elif semantic_lsh_gamma != 0.5:
+            raise ValueError("method.semantic.lsh.gamma must equal 0.5")
         if formal_semantic_lsh:
             preservation = self._required_mapping(semantic, "preservation")
             self._require_exact_keys(
@@ -511,12 +542,19 @@ class WFCLLMMethodPreset:
             {
                 "rule_name": "semantic_lsh",
                 "lsh_d": 12 if formal_semantic_lsh else 1,
-                "lsh_gamma": 0.45 if formal_semantic_lsh else 0.5,
                 "semantic_margin": 0.0,
                 "use_ordinal_keying": False,
             },
             "semantic_lsh",
         )
+        lsh_gamma = self.semantic_lsh.get("lsh_gamma")
+        if formal_semantic_lsh:
+            if lsh_gamma not in {0.25, 0.375, 0.45, 0.5}:
+                raise ValueError(
+                    "semantic_lsh.lsh_gamma must be one of 0.25, 0.375, 0.45, or 0.5"
+                )
+        elif lsh_gamma != 0.5:
+            raise ValueError("semantic_lsh.lsh_gamma must equal 0.5")
         evidence_channels = self.semantic_lsh.get("evidence_channels")
         if (
             isinstance(evidence_channels, bool)
@@ -556,6 +594,14 @@ class WFCLLMMethodPreset:
             (
                 "pooled_negative_empirical_right_tail",
                 "pooled_reliable_hit_rate",
+            ),
+            (
+                "pooled_negative_empirical_hit_rate_quantile",
+                "pooled_reliable_hit_rate_quantile",
+            ),
+            (
+                "pooled_negative_reliable_count_hit_rate_quantile",
+                "reliable_window_count_quantile_buckets",
             ),
             (
                 "pooled_negative_empirical_binomial_surprisal",
@@ -679,8 +725,6 @@ class WFCLLMMethodPreset:
             "learning_curve_group_counts": ["full"],
             "window_lengths": [1, 2, 3],
             "candidate_zero": "original_window",
-            "rewrite_count": 3,
-            "rewrite_budgets": [1, 3],
             "training_key_count": 32,
             "training_key_bank_file_parameter": "training_key_bank_file",
             "holdout_key_count": 8,
@@ -691,6 +735,24 @@ class WFCLLMMethodPreset:
             "feasibility_thresholds": _FEASIBILITY_THRESHOLDS,
         }
         self._require_fixed_values(self.gate_data, fixed, "gate_data")
+        rewrite_count = self.gate_data.get("rewrite_count")
+        rewrite_budgets = self.gate_data.get("rewrite_budgets")
+        if (
+            type(rewrite_count) is not int
+            or not 0 <= rewrite_count <= 48
+            or not isinstance(rewrite_budgets, (list, tuple))
+            or not rewrite_budgets
+            or any(
+                type(budget) is not int or not 0 <= budget <= rewrite_count
+                for budget in rewrite_budgets
+            )
+            or len(set(rewrite_budgets)) != len(rewrite_budgets)
+            or list(sorted(rewrite_budgets)) != list(rewrite_budgets)
+            or rewrite_budgets[-1] != rewrite_count
+        ):
+            raise ValueError(
+                "gate_data rewrite_budgets must be ordered unique budgets ending at rewrite_count"
+            )
         if self.gate_data.get("scale") not in {"pilot", "full"}:
             raise ValueError("gate_data.scale must be pilot or full")
         self._validate_digest_or_none(

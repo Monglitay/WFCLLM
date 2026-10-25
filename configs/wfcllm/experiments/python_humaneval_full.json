@@ -19,7 +19,7 @@
   "semantic_lsh": {
     "rule_name": "semantic_lsh",
     "lsh_d": 12,
-    "lsh_gamma": 0.45
+    "lsh_gamma": 0.25
   },
   "experiment": {
     "profile": "full"

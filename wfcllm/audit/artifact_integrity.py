@@ -206,6 +206,7 @@ def reject_secret_key_leak(payload: Any) -> None:
         reject_secrets=True,
         reject_quality=False,
         feasibility_metadata=False,
+        supplementary_mechanism_metadata=False,
         checkpoint_metadata_only=False,
         enforce_checkpoint_schema=False,
     )
@@ -222,6 +223,7 @@ def audit_gate_artifact(payload: Any) -> None:
     if not isinstance(payload, (dict, list)):
         raise ValueError("gate artifact root must be a JSON object or array")
     diagnostic = _diagnostic_quality_exemption(payload)
+    supplementary_mechanism_metadata = _is_supplementary_report_artifact(payload)
     _walk_gate_artifact(
         payload,
         path=(),
@@ -231,6 +233,7 @@ def audit_gate_artifact(payload: Any) -> None:
         reject_secrets=True,
         reject_quality=not diagnostic,
         feasibility_metadata=_is_feasibility_metadata_artifact(payload),
+        supplementary_mechanism_metadata=supplementary_mechanism_metadata,
         checkpoint_metadata_only=_is_checkpoint_metadata_artifact(payload),
         enforce_checkpoint_schema=True,
     )
@@ -242,6 +245,7 @@ def reject_formal_quality_proxy_fields(payload: Any) -> None:
     if not isinstance(payload, (dict, list)):
         raise ValueError("gate artifact root must be a JSON object or array")
     diagnostic = _diagnostic_quality_exemption(payload)
+    supplementary_mechanism_metadata = _is_supplementary_report_artifact(payload)
     _walk_gate_artifact(
         payload,
         path=(),
@@ -251,6 +255,7 @@ def reject_formal_quality_proxy_fields(payload: Any) -> None:
         reject_secrets=False,
         reject_quality=not diagnostic,
         feasibility_metadata=_is_feasibility_metadata_artifact(payload),
+        supplementary_mechanism_metadata=supplementary_mechanism_metadata,
         checkpoint_metadata_only=_is_checkpoint_metadata_artifact(payload),
         enforce_checkpoint_schema=True,
     )
@@ -266,6 +271,7 @@ def _walk_gate_artifact(
     reject_secrets: bool,
     reject_quality: bool,
     feasibility_metadata: bool,
+    supplementary_mechanism_metadata: bool,
     checkpoint_metadata_only: bool,
     enforce_checkpoint_schema: bool,
 ) -> None:
@@ -294,6 +300,29 @@ def _walk_gate_artifact(
                         "secret material is forbidden in public gate artifact: "
                         f"{_render_path(child_path)}"
                     )
+                if (
+                    reject_quality
+                    and canonical_artifact_field_name(key) == "posthoc_pass_report"
+                ):
+                    if not isinstance(child, dict):
+                        raise ValueError(
+                            f"{_render_path(child_path)} must be a posthoc pass report object"
+                        )
+                    assert_posthoc_pass_report_marker(child)
+                    _walk_gate_artifact(
+                        child,
+                        path=child_path,
+                        depth=depth + 1,
+                        active_containers=active_containers,
+                        budget=budget,
+                        reject_secrets=reject_secrets,
+                        reject_quality=False,
+                        feasibility_metadata=False,
+                        supplementary_mechanism_metadata=supplementary_mechanism_metadata,
+                        checkpoint_metadata_only=False,
+                        enforce_checkpoint_schema=enforce_checkpoint_schema,
+                    )
+                    continue
                 feasibility_status = feasibility_metadata and (
                     child_path == ("passed",)
                     or (
@@ -305,6 +334,10 @@ def _walk_gate_artifact(
                 if (
                     reject_quality
                     and not feasibility_status
+                    and not _is_supplementary_mechanism_metadata_field(
+                        child_path,
+                        supplementary_mechanism_metadata=supplementary_mechanism_metadata,
+                    )
                     and is_forbidden_formal_quality_proxy_field(key)
                 ):
                     raise ValueError(
@@ -340,6 +373,7 @@ def _walk_gate_artifact(
                     reject_secrets=reject_secrets,
                     reject_quality=reject_quality,
                     feasibility_metadata=feasibility_metadata,
+                    supplementary_mechanism_metadata=supplementary_mechanism_metadata,
                     checkpoint_metadata_only=(
                         checkpoint_metadata_only or opens_checkpoint_context
                     ),
@@ -366,6 +400,7 @@ def _walk_gate_artifact(
                     reject_secrets=reject_secrets,
                     reject_quality=reject_quality,
                     feasibility_metadata=feasibility_metadata,
+                    supplementary_mechanism_metadata=supplementary_mechanism_metadata,
                     checkpoint_metadata_only=checkpoint_metadata_only,
                     enforce_checkpoint_schema=enforce_checkpoint_schema,
                 )
@@ -440,6 +475,28 @@ def _is_feasibility_metadata_artifact(payload: Any) -> bool:
     return (
         isinstance(payload, dict)
         and payload.get("contract_version") == "gate-data-feasibility/v1"
+    )
+
+
+def _is_supplementary_report_artifact(payload: Any) -> bool:
+    return (
+        isinstance(payload, dict)
+        and (
+            isinstance(payload.get("supplementary_ablation"), dict)
+            or isinstance(payload.get("supplementary_experiment"), dict)
+        )
+    )
+
+
+def _is_supplementary_mechanism_metadata_field(
+    path: _Path,
+    *,
+    supplementary_mechanism_metadata: bool,
+) -> bool:
+    return (
+        supplementary_mechanism_metadata
+        and len(path) >= 2
+        and path[0] == "mechanism_funnel"
     )
 
 

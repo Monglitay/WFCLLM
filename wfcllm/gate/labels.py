@@ -12,7 +12,8 @@ from wfcllm.gate.schema import CandidateObservation
 from wfcllm.method.contracts import reject_quality_proxy_fields
 
 _TRAINING_KEY_COUNT = 32
-_REWRITE_BUDGETS = (1, 3)
+_DEFAULT_REWRITE_BUDGETS = (1, 3)
+_MAX_REWRITE_BUDGET = 48
 _CANONICAL_KEY_IDS = tuple(
     f"train-key-{key_index:03d}"
     for key_index in range(_TRAINING_KEY_COUNT)
@@ -58,8 +59,11 @@ class BudgetOutcome:
     first_hit_by_key_id: Mapping[str, int | None]
 
     def __post_init__(self) -> None:
-        if type(self.budget) is not int or self.budget not in _REWRITE_BUDGETS:
-            raise ValueError("budget must be 1 or 3")
+        if (
+            type(self.budget) is not int
+            or not 0 <= self.budget <= _MAX_REWRITE_BUDGET
+        ):
+            raise ValueError("budget must be an integer from 0 through 48")
         expected_indices = tuple(range(self.budget + 1))
         if (
             not isinstance(self.candidate_indices, tuple)
@@ -101,16 +105,22 @@ class BudgetOutcome:
             raise ValueError(
                 "success_rate must equal reliable first hits divided by 32"
             )
-        _validate_discrete_rate(
-            "structural_valid_rate",
-            self.structural_valid_rate,
-            denominator=self.budget,
-        )
-        _validate_discrete_rate(
-            "unstable_rate",
-            self.unstable_rate,
-            denominator=self.budget,
-        )
+        if self.budget == 0:
+            if self.structural_valid_rate != 1.0 or self.unstable_rate != 0.0:
+                raise ValueError(
+                    "budget 0 must record structural_valid_rate=1.0 and unstable_rate=0.0"
+                )
+        else:
+            _validate_discrete_rate(
+                "structural_valid_rate",
+                self.structural_valid_rate,
+                denominator=self.budget,
+            )
+            _validate_discrete_rate(
+                "unstable_rate",
+                self.unstable_rate,
+                denominator=self.budget,
+            )
         if self.unstable_rate > self.structural_valid_rate + _RATE_TOLERANCE:
             raise ValueError("unstable_rate must not exceed structural_valid_rate")
         object.__setattr__(
@@ -148,15 +158,13 @@ class GateLabels:
             raise ValueError("suitable_target must be a bool")
         if not isinstance(self.budgets, Mapping):
             raise ValueError("budgets must be a mapping")
-        if (
-            any(type(budget) is not int for budget in self.budgets)
-            or set(self.budgets) != set(_REWRITE_BUDGETS)
-        ):
-            raise ValueError("budgets must contain exactly outcomes for 1 and 3")
-        budgets = {budget: self.budgets[budget] for budget in _REWRITE_BUDGETS}
+        budget_sequence = _validate_budget_sequence(tuple(sorted(self.budgets)))
+        if budget_sequence != (0,) and len(budget_sequence) < 2:
+            raise ValueError("budgets must contain at least two nonzero outcomes")
+        budgets = {budget: self.budgets[budget] for budget in budget_sequence}
         for budget, outcome in budgets.items():
             if not isinstance(outcome, BudgetOutcome) or outcome.budget != budget:
-                raise ValueError("each budget must map to its BudgetOutcome")
+                raise ValueError("each budgets entry must map to its BudgetOutcome")
         if self.suitable_target and not self.close_target:
             raise ValueError("suitable_target requires close_target")
         _validate_first_hit_prefixes(budgets)
@@ -182,8 +190,9 @@ def build_gate_labels(
     training_key_count: int,
     thresholds: LabelThresholds | None = None,
     hard_boundary: bool = False,
+    rewrite_budgets: tuple[int, ...] | None = None,
 ) -> GateLabels:
-    """Build causal labels from candidate 0 and ordered rewrites 1 through 3.
+    """Build causal labels from candidate 0 and configured ordered rewrites.
 
     All budgets are prefixes of ``candidates``. Candidate 0 participates in
     reliable semantic success, but only candidates 1..R contribute to rewrite
@@ -193,8 +202,9 @@ def build_gate_labels(
     stability plus key-level ``hit``, ``stable``, and configured margin.
 
     ``hard_boundary`` is a keyword-only fact about the currently generated
-    window. No future statement or later-than-R3 candidate influences either
-    supervision target.
+    window. No future statement influences either supervision target. Suitable
+    uses the largest configured rewrite budget; explicit R1/R3 outcomes remain
+    prefixes of the same trajectory.
     """
 
     if type(training_key_count) is not int or training_key_count != _TRAINING_KEY_COUNT:
@@ -206,6 +216,10 @@ def build_gate_labels(
     elif not isinstance(thresholds, LabelThresholds):
         raise ValueError("thresholds must be LabelThresholds")
     _validate_trajectory(candidates)
+    budget_sequence = _validate_budget_sequence(
+        _DEFAULT_REWRITE_BUDGETS if rewrite_budgets is None else rewrite_budgets,
+        max_available_budget=len(candidates) - 1,
+    )
     if any(candidate.semantic_probe_pending for candidate in candidates):
         raise ValueError("semantic probe must be complete before label construction")
 
@@ -264,7 +278,7 @@ def build_gate_labels(
     )
 
     outcomes: dict[int, BudgetOutcome] = {}
-    for budget in _REWRITE_BUDGETS:
+    for budget in budget_sequence:
         prefix = candidates[: budget + 1]
         rewrite_prefix = prefix[1:]
         first_hits: dict[str, int | None] = {}
@@ -293,16 +307,18 @@ def build_gate_labels(
             rewrite_count=len(rewrite_prefix),
             success_rate=sum(value is not None for value in first_hits.values())
             / training_key_count,
-            structural_valid_rate=structural_count / budget,
-            unstable_rate=unstable_count / budget,
+            structural_valid_rate=(
+                1.0 if budget == 0 else structural_count / budget
+            ),
+            unstable_rate=0.0 if budget == 0 else unstable_count / budget,
             first_hit_by_key_id=first_hits,
         )
 
-    r3 = outcomes[3]
+    selected = outcomes[budget_sequence[-1]]
     suitable_target = (
-        r3.success_rate >= thresholds.r3_hit_rate
-        and r3.structural_valid_rate >= thresholds.structural_valid_rate
-        and r3.unstable_rate <= thresholds.unstable_rate
+        selected.success_rate >= thresholds.r3_hit_rate
+        and selected.structural_valid_rate >= thresholds.structural_valid_rate
+        and selected.unstable_rate <= thresholds.unstable_rate
     )
     current_unit_count = candidates[0].unit_count
     if current_unit_count not in {1, 2, 3}:
@@ -324,9 +340,14 @@ def _validate_trajectory(candidates: object) -> None:
         raise ValueError("candidates must be a tuple")
     if any(not isinstance(candidate, CandidateObservation) for candidate in candidates):
         raise ValueError("candidates must contain only CandidateObservation instances")
-    if tuple(candidate.candidate_index for candidate in candidates) != tuple(range(4)):
+    if not candidates:
+        raise ValueError("candidate trajectory must not be empty")
+    if len(candidates) > _MAX_REWRITE_BUDGET + 1:
+        raise ValueError("candidate trajectory exceeds the supported rewrite budget")
+    expected = tuple(range(len(candidates)))
+    if tuple(candidate.candidate_index for candidate in candidates) != expected:
         raise ValueError(
-            "candidate trajectory must contain ordered indices 0 through 3"
+            "candidate trajectory must contain ordered contiguous indices starting at 0 through 3 or the configured budget"
         )
 
 
@@ -422,10 +443,11 @@ def _validate_discrete_rate(name: str, value: float, *, denominator: int) -> Non
 def _validate_first_hit_prefixes(
     budgets: Mapping[int, BudgetOutcome],
 ) -> None:
+    budget_sequence = tuple(sorted(budgets))
     for key_id in _CANONICAL_KEY_IDS:
-        previous_budget = 1
+        previous_budget = budget_sequence[0]
         previous_hit = budgets[previous_budget].first_hit_by_key_id[key_id]
-        for budget in _REWRITE_BUDGETS[1:]:
+        for budget in budget_sequence[1:]:
             current_hit = budgets[budget].first_hit_by_key_id[key_id]
             if previous_hit is not None:
                 if current_hit != previous_hit:
@@ -443,7 +465,8 @@ def _validate_first_hit_prefixes(
 def _validate_rewrite_metric_prefixes(
     budgets: Mapping[int, BudgetOutcome],
 ) -> None:
-    for previous_budget, budget in zip(_REWRITE_BUDGETS, _REWRITE_BUDGETS[1:]):
+    budget_sequence = tuple(sorted(budgets))
+    for previous_budget, budget in zip(budget_sequence, budget_sequence[1:]):
         previous = budgets[previous_budget]
         current = budgets[budget]
         previous_structural = round(
@@ -463,3 +486,28 @@ def _validate_rewrite_metric_prefixes(
             raise ValueError(
                 "unstable prefix count growth must be within structural growth"
             )
+
+
+def _validate_budget_sequence(
+    value: tuple[int, ...],
+    *,
+    max_available_budget: int | None = None,
+) -> tuple[int, ...]:
+    if (
+        not isinstance(value, tuple)
+        or not value
+        or any(
+            type(budget) is not int or not 0 <= budget <= _MAX_REWRITE_BUDGET
+            for budget in value
+        )
+        or len(set(value)) != len(value)
+        or tuple(sorted(value)) != value
+    ):
+        raise ValueError(
+            "rewrite_budgets must be an ordered unique tuple of integers from 0 through 48"
+        )
+    if max_available_budget is not None and value[-1] > max_available_budget:
+        raise ValueError(
+            "rewrite_budgets exceed the candidate trajectory; default trajectory must contain 0 through 3"
+        )
+    return value

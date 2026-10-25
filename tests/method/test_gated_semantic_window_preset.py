@@ -20,7 +20,7 @@ def test_gate_preset_is_the_only_method_and_uses_full_chain() -> None:
     assert "bundle_sha256" not in preset.method["gate"]
     assert preset.calibration["target_negative_count"] == 100
     assert preset.semantic_lsh["lsh_d"] == 12
-    assert preset.semantic_lsh["lsh_gamma"] == pytest.approx(0.45)
+    assert preset.semantic_lsh["lsh_gamma"] == pytest.approx(0.25)
 
     with pytest.raises(ValueError, match="unknown WFCLLM method preset"):
         load_method_preset("removed_method")

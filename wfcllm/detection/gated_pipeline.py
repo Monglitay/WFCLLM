@@ -38,6 +38,9 @@ _INSUFFICIENT_STATISTIC_FLOOR = -1e300
 # artifact's non-negative background check.
 _INSUFFICIENT_SURPRISAL_SENTINEL = 0.0
 QUANTILE_THRESHOLD_RULE = "pooled_negative_quantile_threshold/v1"
+RELIABLE_COUNT_QUANTILE_THRESHOLD_RULE = (
+    "reliable_window_count_conditioned_hit_rate_quantile/v1"
+)
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -118,6 +121,7 @@ class GatedCalibrationArtifact:
     thresholds_by_reliable_window_count: dict[str, float]
     resolved_config_sha256: str | None = None
     supplementary_ablation: dict[str, Any] | None = None
+    supplementary_experiment: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.schema_version != GATED_CALIBRATION_SCHEMA_VERSION:
@@ -140,6 +144,7 @@ class GatedCalibrationArtifact:
             EMPIRICAL_BINOMIAL_SURPRISAL_RULE,
             EMPIRICAL_STANDARDIZED_HIT_SURPLUS_RULE,
             QUANTILE_THRESHOLD_RULE,
+            RELIABLE_COUNT_QUANTILE_THRESHOLD_RULE,
         }:
             raise ValueError("empirical p-value rule mismatch")
         if not isinstance(self.target_fpr, (int, float)) or not 0 < self.target_fpr < 1:
@@ -200,24 +205,47 @@ class GatedCalibrationArtifact:
                 )
             ):
                 raise ValueError("invalid empirical threshold")
-        if (self.resolved_config_sha256 is None) != (
-            self.supplementary_ablation is None
-        ):
+        identity_count = sum(
+            identity is not None
+            for identity in (
+                self.supplementary_ablation,
+                self.supplementary_experiment,
+            )
+        )
+        if (self.resolved_config_sha256 is None) != (identity_count == 0):
             raise ValueError(
-                "Supplementary Ablation calibration binding must be complete"
+                "Supplementary study calibration binding must be complete"
+            )
+        if identity_count > 1:
+            raise ValueError(
+                "Supplementary study calibration identity must be unique"
             )
         if self.resolved_config_sha256 is not None:
             if _DIGEST.fullmatch(self.resolved_config_sha256) is None:
                 raise ValueError(
-                    "Supplementary Ablation resolved config hash is invalid"
+                    "Supplementary study resolved config hash is invalid"
                 )
             if (
-                not isinstance(self.supplementary_ablation, dict)
-                or self.supplementary_ablation.get("study_kind")
-                != "supplementary_ablation"
+                self.supplementary_ablation is not None
+                and (
+                    not isinstance(self.supplementary_ablation, dict)
+                    or self.supplementary_ablation.get("study_kind")
+                    != "supplementary_ablation"
+                )
             ):
                 raise ValueError(
                     "Supplementary Ablation calibration identity is invalid"
+                )
+            if (
+                self.supplementary_experiment is not None
+                and (
+                    not isinstance(self.supplementary_experiment, dict)
+                    or self.supplementary_experiment.get("study_kind")
+                    != "supplementary_experiment"
+                )
+            ):
+                raise ValueError(
+                    "Supplementary Experiment calibration identity is invalid"
                 )
 
     @classmethod
@@ -226,9 +254,14 @@ class GatedCalibrationArtifact:
         if not isinstance(value, Mapping):
             raise ValueError("gated calibration artifact schema mismatch")
         payload = dict(value)
-        optional = {"resolved_config_sha256", "supplementary_ablation"}
+        optional = {
+            "resolved_config_sha256",
+            "supplementary_ablation",
+            "supplementary_experiment",
+        }
         payload_fields = set(payload)
-        if payload_fields != fields and payload_fields != fields - optional:
+        required = fields - optional
+        if not required <= payload_fields or not payload_fields <= fields:
             raise ValueError("gated calibration artifact schema mismatch")
         buckets = payload.get("reliable_window_count_buckets")
         if not isinstance(buckets, Mapping):
@@ -243,6 +276,11 @@ class GatedCalibrationArtifact:
         if self.resolved_config_sha256 is None:
             payload.pop("resolved_config_sha256")
             payload.pop("supplementary_ablation")
+            payload.pop("supplementary_experiment")
+        if self.supplementary_ablation is None:
+            payload.pop("supplementary_ablation", None)
+        if self.supplementary_experiment is None:
+            payload.pop("supplementary_experiment", None)
         payload["reliable_window_count_buckets"] = {
             key: list(values)
             for key, values in self.reliable_window_count_buckets.items()
@@ -308,6 +346,7 @@ class GatedDetectionPipeline:
             "pooled_binomial_tail",
             "pooled_empirical_binomial_surprisal",
             "pooled_empirical_standardized_hit_surplus",
+            "reliable_window_count_quantile_buckets",
         }:
             raise ValueError("unsupported gated calibration grouping")
         self._extractor = extractor
@@ -402,9 +441,27 @@ class GatedDetectionPipeline:
                     else str(score.reliable_window_count)
                 )
                 buckets.setdefault(bucket, []).append(score.hit_rate)
+        if self._calibration_group_by == "reliable_window_count_quantile_buckets":
+            buckets = _reliable_count_quantile_hit_rate_buckets(
+                scores,
+                self._scorer.minimum_reliable_windows,
+            )
         if not buckets:
             raise ValueError("calibration has no samples with enough reliable windows")
         frozen_buckets = {key: tuple(values) for key, values in sorted(buckets.items(), key=lambda x: int(x[0]))}
+        binomial_alpha_by_bucket = (
+            {
+                key: _binomial_sample_level_alpha(
+                    scores,
+                    values,
+                    self._target_fpr,
+                    self._scorer.minimum_reliable_windows,
+                )
+                for key, values in frozen_buckets.items()
+            }
+            if self._calibration_group_by == "pooled_binomial_tail"
+            else None
+        )
         artifact = GatedCalibrationArtifact(
             schema_version=GATED_CALIBRATION_SCHEMA_VERSION,
             method_name=GATED_METHOD_NAME,
@@ -428,6 +485,9 @@ class GatedDetectionPipeline:
                 else QUANTILE_THRESHOLD_RULE
                 if self._calibration_group_by
                 == "pooled_reliable_hit_rate_quantile"
+                else RELIABLE_COUNT_QUANTILE_THRESHOLD_RULE
+                if self._calibration_group_by
+                == "reliable_window_count_quantile_buckets"
                 else EMPIRICAL_P_VALUE_RULE
             ),
             target_fpr=self._target_fpr,
@@ -435,7 +495,7 @@ class GatedDetectionPipeline:
             null_hit_probability=null_hit_probability,
             reliable_window_count_buckets=frozen_buckets,
             thresholds_by_reliable_window_count=(
-                {key: self._target_fpr for key in frozen_buckets}
+                binomial_alpha_by_bucket
                 if self._calibration_group_by == "pooled_binomial_tail"
                 else (
                     {
@@ -446,7 +506,10 @@ class GatedDetectionPipeline:
                         for key, values in frozen_buckets.items()
                     }
                     if self._calibration_group_by
-                    == "pooled_reliable_hit_rate_quantile"
+                    in {
+                        "pooled_reliable_hit_rate_quantile",
+                        "reliable_window_count_quantile_buckets",
+                    }
                     else {
                         key: _empirical_threshold(values, self._target_fpr)
                         for key, values in frozen_buckets.items()
@@ -506,7 +569,10 @@ class GatedDetectionPipeline:
             decision = "insufficient_evidence"
         else:
             background, threshold = _select_bucket(artifact, score.reliable_window_count)
+            p_value_alpha = artifact.target_fpr
             if artifact.empirical_p_value_rule == BINOMIAL_P_VALUE_RULE:
+                binomial_alpha = threshold
+                p_value_alpha = binomial_alpha
                 null_hit_probability = (sum(background) + 1.0) / (
                     len(background) + 2.0
                 )
@@ -518,7 +584,7 @@ class GatedDetectionPipeline:
                 threshold = _binomial_hit_rate_threshold(
                     score.reliable_window_count,
                     null_hit_probability,
-                    artifact.target_fpr,
+                    binomial_alpha,
                 )
                 observed_statistic = score.hit_rate
             elif (
@@ -550,7 +616,10 @@ class GatedDetectionPipeline:
             else:
                 observed_statistic = score.hit_rate
                 p_value = empirical_right_tail_plus_one(score.hit_rate, background)
-            if artifact.empirical_p_value_rule == QUANTILE_THRESHOLD_RULE:
+            if artifact.empirical_p_value_rule in {
+                QUANTILE_THRESHOLD_RULE,
+                RELIABLE_COUNT_QUANTILE_THRESHOLD_RULE,
+            }:
                 decision = (
                     "watermarked"
                     if score.hit_rate >= threshold
@@ -559,7 +628,7 @@ class GatedDetectionPipeline:
             else:
                 decision = (
                     "watermarked"
-                    if p_value <= artifact.target_fpr
+                    if p_value <= p_value_alpha
                     and observed_statistic >= threshold
                     else "not_watermarked"
                 )
@@ -646,6 +715,35 @@ def _binomial_hit_rate_threshold(
     return 1.0
 
 
+def _binomial_sample_level_alpha(
+    scores: Sequence[GatedSampleScore],
+    background: Sequence[float],
+    target_fpr: float,
+    minimum_reliable_windows: int,
+) -> float:
+    allowed_false_positives = math.floor(target_fpr * len(scores))
+    if allowed_false_positives < 1:
+        return target_fpr
+    null_hit_probability = (sum(background) + 1.0) / (len(background) + 2.0)
+    p_values = tuple(
+        (
+            binomial_right_tail(
+                score.hit_count,
+                score.reliable_window_count,
+                null_hit_probability,
+            )
+            if score.reliable_window_count >= minimum_reliable_windows
+            else 1.0
+        )
+        for score in scores
+    )
+    selected = 0.0
+    for candidate in sorted(set(p_values)):
+        if sum(value <= candidate for value in p_values) <= allowed_false_positives:
+            selected = candidate
+    return min(target_fpr, selected)
+
+
 def _empirical_threshold(values: Sequence[float], target_fpr: float) -> float:
     ordered = sorted(float(value) for value in values)
     index = max(0, math.ceil((1.0 - target_fpr) * len(ordered)) - 1)
@@ -659,26 +757,62 @@ def _inclusive_empirical_threshold(
     ordered = tuple(sorted(float(value) for value in values))
     allowed_false_positives = math.floor(target_fpr * len(ordered))
     if allowed_false_positives < 1:
-        raise ValueError(
-            "quantile calibration requires at least ceil(1 / target_fpr) negatives"
-        )
-    for threshold in sorted(set(ordered)):
+        return 1.0
+    distinct = sorted(set(ordered))
+    for index, threshold in enumerate(distinct):
         if sum(value >= threshold for value in ordered) <= allowed_false_positives:
+            if index > 0:
+                return (distinct[index - 1] + threshold) / 2.0
             return threshold
-    raise ValueError(
-        "negative score ties prevent an inclusive threshold at the target FPR"
-    )
+    return 1.0
 
 
 def _select_bucket(
     artifact: GatedCalibrationArtifact, reliable_count: int
 ) -> tuple[tuple[float, ...], float]:
     labels = sorted((int(key), key) for key in artifact.reliable_window_count_buckets)
+    if artifact.empirical_p_value_rule == RELIABLE_COUNT_QUANTILE_THRESHOLD_RULE:
+        _, label = next(
+            ((upper, key) for upper, key in labels if reliable_count <= upper),
+            labels[-1],
+        )
+        return (
+            artifact.reliable_window_count_buckets[label],
+            artifact.thresholds_by_reliable_window_count[label],
+        )
     _, label = min(labels, key=lambda item: (abs(item[0] - reliable_count), item[0]))
     return (
         artifact.reliable_window_count_buckets[label],
         artifact.thresholds_by_reliable_window_count[label],
     )
+
+
+def _reliable_count_quantile_hit_rate_buckets(
+    scores: Sequence[GatedSampleScore],
+    minimum_reliable_windows: int,
+) -> dict[str, list[float]]:
+    sufficient = [
+        score
+        for score in scores
+        if score.reliable_window_count >= minimum_reliable_windows
+    ]
+    if not sufficient:
+        raise ValueError("calibration has no samples with enough reliable windows")
+    counts = sorted(score.reliable_window_count for score in sufficient)
+    boundaries = sorted(
+        {
+            counts[math.floor((len(counts) - 1) * quantile)]
+            for quantile in (0.25, 0.50, 0.75)
+        }
+    )
+    boundaries.append(max(counts))
+    buckets: dict[str, list[float]] = {str(boundary): [] for boundary in boundaries}
+    for score in sufficient:
+        boundary = next(
+            item for item in boundaries if score.reliable_window_count <= item
+        )
+        buckets[str(boundary)].append(score.hit_rate)
+    return buckets
 
 
 def write_gated_calibration_artifact(
@@ -744,6 +878,7 @@ __all__ = [
     "EMPIRICAL_STANDARDIZED_HIT_SURPLUS_RULE",
     "EMPIRICAL_P_VALUE_RULE",
     "QUANTILE_THRESHOLD_RULE",
+    "RELIABLE_COUNT_QUANTILE_THRESHOLD_RULE",
     "GATED_CALIBRATION_SCHEMA_VERSION",
     "GATED_METHOD_NAME",
     "GatedCalibrationArtifact",

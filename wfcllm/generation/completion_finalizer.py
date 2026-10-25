@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import symtable
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Iterator
@@ -102,10 +103,7 @@ def finalize_mbpp_program(
             continue
         if not _has_mbpp_implementation(target):
             continue
-        finalized_tree = ast.Module(
-            body=tree.body[: target_index + 1],
-            type_ignores=[],
-        )
+        finalized_tree = _mbpp_dependency_tree(tree, target_index)
         ast.fix_missing_locations(finalized_tree)
         return ProgramFinalizationResult(
             code=ast.unparse(finalized_tree).rstrip() + "\n",
@@ -118,6 +116,84 @@ def finalize_mbpp_program(
         applied=False,
         reason="no_complete_mbpp_target_implementation",
     )
+
+
+def _mbpp_dependency_tree(tree: ast.Module, target_index: int) -> ast.Module:
+    """Keep statically referenced declarations without executing trailing examples."""
+
+    prefix = tree.body[: target_index + 1]
+    future_imports = [
+        node for node in prefix
+        if isinstance(node, ast.ImportFrom) and node.module == "__future__"
+    ]
+    bindings: dict[str, list[int]] = {}
+    for index, node in enumerate(tree.body):
+        for name in _declaration_names(node):
+            bindings.setdefault(name, []).append(index)
+
+    target = tree.body[target_index]
+    assert isinstance(target, (ast.FunctionDef, ast.AsyncFunctionDef))
+    target_name = target.name
+    required = [target_index]
+    visited: set[int] = set()
+    while required:
+        index = required.pop()
+        if index in visited:
+            continue
+        visited.add(index)
+        for name in _declaration_global_references(tree.body[index], future_imports):
+            if name == target_name:
+                continue
+            required.extend(
+                dependency for dependency in bindings.get(name, ())
+                if dependency not in visited
+            )
+
+    return ast.Module(
+        body=prefix + [
+            node for index, node in enumerate(tree.body)
+            if index > target_index and index in visited
+        ],
+        type_ignores=[],
+    )
+
+
+def _declaration_names(node: ast.stmt) -> set[str]:
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return {node.name}
+    if isinstance(node, ast.Import):
+        return {alias.asname or alias.name.split(".", 1)[0] for alias in node.names}
+    if isinstance(node, ast.ImportFrom):
+        return {alias.asname or alias.name for alias in node.names if alias.name != "*"}
+    if isinstance(node, (ast.Assign, ast.AnnAssign)):
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        return {
+            child.id for target in targets for child in ast.walk(target)
+            if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store)
+        }
+    return set()
+
+
+def _declaration_global_references(
+    node: ast.stmt, future_imports: list[ast.ImportFrom],
+) -> set[str]:
+    module = ast.Module(body=[*future_imports, node], type_ignores=[])
+    try:
+        root = symtable.symtable(ast.unparse(module), "<generated-declaration>", "exec")
+    except SyntaxError:
+        # Preserve the existing failure path for semantically invalid Python.
+        return set()
+    names: set[str] = set()
+    scopes = [root]
+    while scopes:
+        scope = scopes.pop()
+        names.update(
+            symbol.get_name() for symbol in scope.get_symbols()
+            if symbol.is_referenced()
+            and (scope.get_type() == "module" or symbol.is_global())
+        )
+        scopes.extend(scope.get_children())
+    return names
 
 
 def finalize_mbpp_program_with_interface_wrapper(

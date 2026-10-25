@@ -625,6 +625,50 @@ def test_audit_label_recompute_treats_invalid_candidate_empty_probe_as_no_holdou
     assert payload["holdout_success_rate"] == pytest.approx(5 / 8)
 
 
+@pytest.mark.parametrize("maximum_budget", [18, 48])
+def test_holdout_transfer_attestation_uses_same_r3_prefix_as_training(
+    tmp_path: Path, maximum_budget: int
+) -> None:
+    observations_template, probes_template = _evidence_templates(True)
+    observations = {}
+    results = {}
+    for length in (1, 2, 3):
+        observations[length] = list(observations_template[str(length)])
+        results[length] = list(probes_template[str(length)])
+        for index in range(4, maximum_budget + 1):
+            observations[length].append(replace(
+                observations[length][3], candidate_index=index,
+                code=f"candidate_{index} = {index}",
+            ))
+            results[length].append({
+                key: replace(value, hit=True)
+                if index == maximum_budget and key.startswith("holdout-") else value
+                for key, value in results[length][3].items()
+            })
+    budgets = (1, 3, maximum_budget)
+    payload = gate_pipeline._derived_label_payload(
+        observations, results,
+        holdout_ids=tuple(f"holdout-key-{index:03d}" for index in range(8)),
+        rewrite_budgets=budgets,
+    )
+    assert payload["r3_success_rate"] == pytest.approx(20 / 32)
+    assert payload["holdout_success_rate"] == pytest.approx(5 / 8)
+    assert payload["budget_outcomes"]["3"][str(maximum_budget)]["success_rate"] == pytest.approx(20 / 32)
+
+    group = replace(
+        _group(0),
+        candidate_indices_by_window_length={length: tuple(range(maximum_budget + 1)) for length in (1, 2, 3)},
+        candidate_observations_by_length={str(length): tuple(values) for length, values in observations.items()},
+        probe_results_by_length={str(length): tuple(values) for length, values in results.items()},
+    )
+    parsed = ParsedWindowGroup(gate_pipeline._group_identity(group), "python-statement-window/v1")
+    trajectory = CandidateTrajectoryGroup(parsed, group.candidate_indices_by_window_length)
+    probed = ProbedGroup(trajectory, group.candidate_observations_by_length, group.probe_results_by_length)
+    config = replace(_data_config(tmp_path), rewrite_count=maximum_budget, rewrite_budgets=budgets)
+    attested = gate_pipeline._recompute_and_attest_labels(probed, group, config=config)
+    assert attested.holdout_success_rate == pytest.approx(5 / 8)
+
+
 def test_formal_candidate_tree_rejects_excess_entries_depth_and_path_bytes(tmp_path: Path) -> None:
     def candidate(name: str) -> Path:
         root = tmp_path / name
@@ -711,6 +755,31 @@ def test_diagnostic_gate_data_marks_every_public_row_non_formal(
             assert row["not_official_method"] is True
 
 
+def test_diagnostic_gate_binding_marks_current_study_non_formal() -> None:
+    binding = gate_pipeline._supplementary_binding(
+        {
+            "resolved_config_sha256": "a" * 64,
+            "supplementary_experiment": {
+                "schema_version": "wfcllm-supplementary-experiment-identity/v1",
+                "study_kind": "supplementary_experiment",
+                "formal": False,
+                "formal_eligible": False,
+                "diagnostic_test_backend": False,
+                "diagnostic_only": False,
+                "not_official_method": True,
+            },
+        },
+        diagnostic=True,
+    )
+
+    study = binding["supplementary_experiment"]
+    assert study["formal"] is False
+    assert study["formal_eligible"] is False
+    assert study["diagnostic_test_backend"] is True
+    assert study["diagnostic_only"] is True
+    assert study["not_official_method"] is True
+
+
 def test_gate_data_audit_failure_removes_staging_and_publishes_nothing(tmp_path: Path) -> None:
     deps = FakeDependencies(tuple(_group(i) for i in range(100)))
     deps.audit_gate_data = lambda staging, manifest: (_ for _ in ()).throw(ValueError("audit failed"))
@@ -718,6 +787,26 @@ def test_gate_data_audit_failure_removes_staging_and_publishes_nothing(tmp_path:
         run_gate_data(_data_config(tmp_path), deps)
     assert not (tmp_path / "gate-data").exists()
     assert not list(tmp_path.glob(".gate-data-*"))
+
+
+def test_gate_data_audit_failure_preserves_raw_artifacts_when_requested(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WFCLLM_PRESERVE_FAILED_GATE_DATA", "1")
+    deps = FakeDependencies(tuple(_group(i) for i in range(100)))
+    deps.audit_gate_data = lambda staging, manifest: (_ for _ in ()).throw(ValueError("audit failed"))
+    with pytest.raises(ValueError, match="audit failed"):
+        run_gate_data(_data_config(tmp_path), deps)
+    assert not (tmp_path / "gate-data").exists()
+    preserved = list(tmp_path.glob(".gate-data-failed-*"))
+    assert len(preserved) == 1
+    attempts = preserved[0] / "candidate_attempts.jsonl"
+    assert attempts.stat().st_size > 0
+    first = json.loads(attempts.read_text(encoding="utf-8").splitlines()[0])
+    assert first["formal_eligible"] is False
+    assert first["diagnostic_only"] is True
+    assert first["not_official_method"] is True
+    assert first["diagnostic_test_backend"] is True
 
 
 def test_gate_data_rejects_prefilled_probe_facts_that_disagree_with_raw_evidence(tmp_path: Path) -> None:
@@ -836,6 +925,36 @@ def test_gate_train_requires_full_data_manifest_and_passed_pilot(tmp_path: Path)
     with pytest.raises(ValueError, match="data manifest"):
         run_gate_train(config, deps)
     assert deps.train_called is False
+
+
+def test_diagnostic_gate_train_accepts_unpassed_smoke_pilot(tmp_path: Path) -> None:
+    pilot = run_gate_data(
+        _data_config(tmp_path / "pilot"),
+        FakeDependencies(tuple(_group(i) for i in range(20)), diagnostic=True),
+    )
+    assert pilot.feasibility.passed is False
+    full = run_gate_data(
+        _data_config(tmp_path / "full", scale="full", pilot=pilot.feasibility_path),
+        FakeDependencies(
+            tuple(_group(i, scale="full") for i in range(20)),
+            diagnostic=True,
+        ),
+    )
+    train_deps = FakeDependencies((), diagnostic=True)
+
+    result = run_gate_train(
+        GateTrainPipelineConfig(
+            output_root=tmp_path / "train",
+            data_dir=full.output_dir,
+            config_hash=_sha("config"),
+            pilot_feasibility_path=pilot.feasibility_path,
+        ),
+        train_deps,
+    )
+
+    assert train_deps.train_called is True
+    assert result.manifest["diagnostic_test_backend"] is True
+    assert result.manifest["formal_eligible"] is False
 
 
 def test_gate_train_enforces_independent_group_minima_before_trainer(tmp_path: Path) -> None:

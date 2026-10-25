@@ -417,7 +417,10 @@ def _optional_numeric_field(
 ) -> float | None:
     if field not in row:
         return None
-    return _number_from_value(row[field], f"{label}[{index}].{field}")
+    value = row[field]
+    if value is None:
+        return None
+    return _number_from_value(value, f"{label}[{index}].{field}")
 
 
 def _number_from_value(value: Any, field: str) -> float:

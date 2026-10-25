@@ -11,6 +11,7 @@ from wfcllm.detection.gated_pipeline import (
     EMPIRICAL_STANDARDIZED_HIT_SURPLUS_RULE,
     EMPIRICAL_P_VALUE_RULE,
     QUANTILE_THRESHOLD_RULE,
+    RELIABLE_COUNT_QUANTILE_THRESHOLD_RULE,
     GatedCalibrationArtifact,
     GatedDetectionBindings,
     GatedDetectionPipeline,
@@ -113,7 +114,7 @@ def test_pooled_quantile_threshold_uses_negative_only_fpr_boundary() -> None:
     )
 
     assert artifact.empirical_p_value_rule == QUANTILE_THRESHOLD_RULE
-    assert artifact.thresholds_by_reliable_window_count == {"3": 1.0}
+    assert artifact.thresholds_by_reliable_window_count == {"3": 0.875}
     assert sum(result.is_watermarked for result in negative_results) == 1
     assert below.decision == "not_watermarked"
     assert boundary.decision == "watermarked"
@@ -163,6 +164,32 @@ def test_pooled_binomial_detection_separates_long_hits_from_short_chance_hits() 
     assert short.p_value == pytest.approx(0.25)
     assert long.decision == "watermarked"
     assert long.p_value == pytest.approx(1 / 1024)
+
+
+def test_pooled_binomial_calibration_caps_sample_level_negative_fpr() -> None:
+    pipeline = GatedDetectionPipeline(
+        extractor=_Extractor(),
+        scorer=GatedWindowScorer(
+            semantic_scorer=_Semantic(),
+            minimum_reliable_windows=2,
+        ),
+        bindings=_bindings(),
+        target_fpr=0.05,
+        calibration_group_by="pooled_binomial_tail",
+    )
+    negatives = [
+        *(_row(index, "miss miss miss miss miss") for index in range(91)),
+        *(
+            _row(index, "hit hit hit hit hit")
+            for index in range(91, 100)
+        ),
+    ]
+
+    artifact = pipeline.calibrate(negatives)
+    negative_results = pipeline.detect(negatives, artifact=artifact)
+
+    assert artifact.thresholds_by_reliable_window_count["2"] < 0.05
+    assert sum(result.is_watermarked for result in negative_results) <= 5
 
 
 def test_empirical_binomial_surprisal_calibrates_sample_level_count_score() -> None:
@@ -303,6 +330,36 @@ def test_pooled_calibration_counts_insufficient_sentinels() -> None:
     assert artifact.thresholds_by_reliable_window_count["2"] == pytest.approx(0.0)
 
 
+def test_reliable_count_quantile_calibration_selects_upper_bound_bucket() -> None:
+    pipeline = GatedDetectionPipeline(
+        extractor=_Extractor(),
+        scorer=GatedWindowScorer(
+            semantic_scorer=_Semantic(),
+            minimum_reliable_windows=2,
+        ),
+        bindings=_bindings(),
+        target_fpr=0.34,
+        calibration_group_by="reliable_window_count_quantile_buckets",
+    )
+    artifact = pipeline.calibrate(
+        [
+            _row(0, "hit miss"),
+            _row(1, "hit hit miss miss"),
+            _row(2, "hit miss miss miss miss miss"),
+            _row(3, "hit hit miss miss miss miss miss miss"),
+        ]
+    )
+
+    assert artifact.empirical_p_value_rule == RELIABLE_COUNT_QUANTILE_THRESHOLD_RULE
+    assert set(artifact.reliable_window_count_buckets) == {"2", "4", "6", "8"}
+    assert artifact.thresholds_by_reliable_window_count["6"] == pytest.approx(1.0)
+    result = pipeline.detect(
+        [_row(10, "hit hit hit hit hit hit")],
+        artifact=artifact,
+    )[0]
+    assert result.decision == "watermarked"
+
+
 def test_hash_mismatch_is_rejected() -> None:
     pipeline = GatedDetectionPipeline(
         extractor=_Extractor(),
@@ -323,3 +380,50 @@ def test_artifact_strict_round_trip() -> None:
     )
     artifact = pipeline.calibrate([_row(1, "miss miss")])
     assert GatedCalibrationArtifact.from_dict(artifact.to_dict()) == artifact
+
+
+def test_artifact_round_trips_supplementary_experiment_identity() -> None:
+    pipeline = GatedDetectionPipeline(
+        extractor=_Extractor(),
+        scorer=GatedWindowScorer(
+            semantic_scorer=_Semantic(), minimum_reliable_windows=2
+        ),
+        bindings=_bindings(),
+    )
+    artifact = pipeline.calibrate([_row(1, "miss miss")])
+    bound = replace(
+        artifact,
+        resolved_config_sha256="a" * 64,
+        supplementary_experiment={
+            "schema_version": "wfcllm-supplementary-experiment-identity/v1",
+            "study_kind": "supplementary_experiment",
+            "not_official_method": True,
+            "formal": False,
+            "formal_eligible": False,
+        },
+    )
+
+    assert GatedCalibrationArtifact.from_dict(bound.to_dict()) == bound
+
+
+def test_artifact_rejects_multiple_supplementary_identities() -> None:
+    pipeline = GatedDetectionPipeline(
+        extractor=_Extractor(),
+        scorer=GatedWindowScorer(
+            semantic_scorer=_Semantic(), minimum_reliable_windows=2
+        ),
+        bindings=_bindings(),
+    )
+    artifact = pipeline.calibrate([_row(1, "miss miss")])
+
+    with pytest.raises(ValueError, match="identity must be unique"):
+        replace(
+            artifact,
+            resolved_config_sha256="a" * 64,
+            supplementary_ablation={
+                "study_kind": "supplementary_ablation",
+            },
+            supplementary_experiment={
+                "study_kind": "supplementary_experiment",
+            },
+        )

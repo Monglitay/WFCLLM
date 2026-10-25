@@ -230,6 +230,50 @@ def test_build_detection_report_accepts_minimal_detail_rows() -> None:
     assert report["data_coverage"]["code_chars_missing"] == 2
 
 
+def test_build_detection_report_treats_null_optional_numeric_as_missing() -> None:
+    positives = [
+        _detail("pos-1", score=0.9, watermarked=True, decision=True),
+        _detail(
+            "pos-2",
+            score=0.2,
+            watermarked=True,
+            decision=False,
+            insufficient=True,
+        ),
+    ]
+    positives[1]["p_value"] = None
+    negatives = [
+        _detail("neg-1", score=0.1, watermarked=False, decision=False),
+        _detail(
+            "neg-2",
+            score=0.0,
+            watermarked=False,
+            decision=False,
+            insufficient=True,
+        ),
+    ]
+    negatives[1]["p_value"] = None
+
+    report = build_detection_report(positives, negatives)
+
+    assert report["primary"]["positive_insufficient_samples"] == 1
+    assert report["primary"]["negative_insufficient_samples"] == 1
+    assert report["score_distributions"]["positive_p_value_quantiles"] == {
+        "min": 0.5,
+        "p25": 0.5,
+        "p50": 0.5,
+        "p75": 0.5,
+        "max": 0.5,
+    }
+    assert report["score_distributions"]["negative_p_value_quantiles"] == {
+        "min": 0.5,
+        "p25": 0.5,
+        "p50": 0.5,
+        "p75": 0.5,
+        "max": 0.5,
+    }
+
+
 @pytest.mark.parametrize(
     "field,bad_value",
     [

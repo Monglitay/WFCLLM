@@ -182,6 +182,7 @@ class GatedGenerationPipeline:
         audits: list[dict[str, Any]] = []
         candidates: list[dict[str, Any]] = []
         finalizer_rows: list[dict[str, Any]] = []
+        raw_program_rows: list[dict[str, Any]] = []
         latency_rows: list[dict[str, Any]] = []
         samples_iter = (
             self._data_adapter() if callable(self._data_adapter) else self._data_adapter
@@ -221,6 +222,34 @@ class GatedGenerationPipeline:
             # phase instead of publishing an empty formal detector input.
             sample_started_at = self._monotonic_clock()
             original = self._generate_base_program(prompt, sample_id)
+            if self._program_finalizer is None:
+                diagnostic = self._config.diagnostic_test_backend
+                raw_program_rows.append(
+                    {
+                        "id": sample_id,
+                        "dataset": self._config.dataset,
+                        "prompt": prompt,
+                        "output_source": original,
+                        "source_sha256": hashlib.sha256(original.encode("utf-8")).hexdigest(),
+                        "carrier_count": 0,
+                        "diagnostic_test_backend": diagnostic,
+                        "formal_eligible": not diagnostic,
+                        "diagnostic_only": diagnostic,
+                        "not_official_method": diagnostic,
+                    }
+                )
+                trace = getattr(self._base_model, "last_program_generation_trace", None)
+                if trace is not None:
+                    expected = {"sample_id", "prompt_mode", "model_input", "model_response",
+                                "model_input_token_ids", "model_continuation_token_ids"}
+                    if (not isinstance(trace, dict) or set(trace) != expected
+                            or trace["sample_id"] != sample_id
+                            or trace["prompt_mode"] != "humanevalpack_chat"):
+                        raise ValueError("invalid native program generation trace")
+                    raw_program_rows[-1]["model_generation"] = trace
+                write_generation_sidecar_rows(
+                    root / "generation" / "raw_program_outputs.jsonl", raw_program_rows
+                )
             if self._program_finalizer is not None:
                 before = original
                 finalized = self._program_finalizer(prompt, before)
@@ -471,6 +500,11 @@ class GatedGenerationPipeline:
                     row.get("sample_generation_failed") is True for row in audits
                 ),
             }
+        if raw_program_rows:
+            manifest["raw_program_output_count"] = len(raw_program_rows)
+            manifest["raw_program_outputs_sha256"] = hashlib.sha256(
+                (root / "generation" / "raw_program_outputs.jsonl").read_bytes()
+            ).hexdigest()
         if self._config.supplementary_binding is not None:
             binding = json.loads(
                 json.dumps(
@@ -489,6 +523,18 @@ class GatedGenerationPipeline:
                         "diagnostic_test_backend": diagnostic,
                         "diagnostic_only": diagnostic,
                         "not_official_method": diagnostic,
+                    }
+                )
+            experiment = binding.get("supplementary_experiment")
+            if isinstance(experiment, dict):
+                diagnostic = self._config.diagnostic_test_backend
+                experiment.update(
+                    {
+                        "formal": False,
+                        "formal_eligible": False,
+                        "diagnostic_test_backend": diagnostic,
+                        "diagnostic_only": diagnostic,
+                        "not_official_method": True,
                     }
                 )
             manifest.update(binding)
@@ -657,6 +703,15 @@ def _verify_finalizer_statement_provenance(
             raise FinalizerIntegrityError(
                 "trusted MBPP interface wrapper output mismatch"
             )
+        if before == after:
+            statement_count = _statement_count_if_parseable(after)
+            return {
+                "statement_provenance_verified": True,
+                "provenance_mode": "byte_identical",
+                "input_ast_statement_count": statement_count,
+                "output_ast_statement_count": statement_count,
+                "added_ast_statement_count": 0,
+            }
         finalized_base = finalize_mbpp_program(prompt, before)
         input_count = _statement_count_if_parseable(finalized_base.code)
         output_count = _statement_count_if_parseable(after)

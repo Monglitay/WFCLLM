@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+
+import pytest
 
 from wfcllm.generation.gated_generator import GatedGenerator, RewriteTokens
 from wfcllm.generation.window_rewriter import (
@@ -126,6 +128,169 @@ def _generator(rewrites: list[str], hits: list[bool], *, max_rewrites: int = 3):
     )
 
 
+@pytest.mark.parametrize(
+    ("language", "source"),
+    [
+        ("python", "a = 1\nb = a + 2\nc = b * 3\n"),
+        ("cpp", "int a=1;\nint b=a+2;\nint c=b*3;\n"),
+        ("java", "class Demo { static void run(){int a=1; int b=a+2; int c=b*3;} }"),
+        ("js", "let a=1;\nlet b=a+2;\nlet c=b*3;\n"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("parse_status", "unit_count", "same_parent"),
+    [
+        ("parse_error", 3, True), ("scope_changed", 3, False),
+        ("unit_count_out_of_range", 2, True), ("ok", 2, True), ("ok", 3, False),
+    ],
+)
+def test_online_validation_preserves_supplied_parser_rejections(
+    language: str, source: str, parse_status: str, unit_count: int, same_parent: bool,
+) -> None:
+    extractor = get_statement_unit_extractor(language)
+    partitioner = WindowPartitioner(
+        Gate(), GateThresholds(0.2, 0.7, 0.8), lambda _text: 1,
+        window_contract_version=f"{language}-statement-window/v1",
+    )
+    window = next(window for window in partitioner.partition(extractor.extract(source)).windows
+                  if window.suitable and len(window.units) == 3)
+    raw = source.encode("utf-8")
+    prefix, text, suffix = (
+        raw[:window.start_byte].decode("utf-8"),
+        raw[window.start_byte:window.end_byte].decode("utf-8"),
+        raw[window.end_byte:].decode("utf-8"),
+    )
+    generator = GatedGenerator(
+        partitioner=partitioner, scorer=Scorer([]), rewriter=Rewriter([]),
+        extractor=extractor, max_rewrites=1,
+    )
+    valid = RewriteTokens(
+        token_ids=(), text=text, parse_status="ok", unit_count=3,
+        same_parent_scope=True,
+    )
+    kwargs = dict(completed_prefix=prefix, protected_prefix="", original_window=window,
+                  completed_suffix=suffix)
+    assert generator._validate_candidate(candidate=valid, **kwargs) is not None
+    rejected = replace(valid, parse_status=parse_status, unit_count=unit_count,
+                       same_parent_scope=same_parent)
+    assert generator._validate_candidate(candidate=rejected, **kwargs) is None
+
+
+def test_rejected_parse_does_not_abort_program_or_receive_semantic_score() -> None:
+    class RejectedRewrite:
+        def rewrite_window(self, request, *, candidate_index):
+            result = _parsed_rewrite(request, request.original_window, candidate_index)
+            return replace(result, parse_status="parse_error")
+
+    scorer = Scorer([False])
+    generator = GatedGenerator(
+        partitioner=WindowPartitioner(
+            Gate(), GateThresholds(0.2, 0.7, 0.8), lambda _text: 1,
+        ), scorer=scorer, rewriter=RejectedRewrite(), max_rewrites=1,
+    )
+    original = "a = 1\nb = a + 2\nc = b * 3\n"
+    result = generator.generate(prompt="", original=original)
+    assert result.final_code == original
+    assert len(scorer.scored_texts) == 1
+    assert result.candidates[1].parse_status == "parse_error"
+    assert result.candidates[1].evaluation_status == "structure_rejected"
+    assert result.candidates[1].semantic_reference_cosine is None
+    assert result.candidates[1].keyed_lsh_scored is False
+
+
+def test_subsequent_rewrite_request_uses_committed_prefix() -> None:
+    class CloseEach:
+        def predict(self, _text):
+            return GateScores(0.9, 0.9, True, 0.0, True)
+
+    class SequentialRewriter(Rewriter):
+        def rewrite_window(self, request, *, candidate_index):
+            self.requests.append(request)
+            text = "a = 10\n" if len(self.requests) == 1 else "b = 20\n"
+            return _parsed_rewrite(request, text, candidate_index)
+
+    rewriter = SequentialRewriter([])
+    result = GatedGenerator(
+        partitioner=WindowPartitioner(
+            CloseEach(), GateThresholds(0.2, 0.7, 0.8), lambda _text: 1
+        ),
+        scorer=Scorer([False, True, False, True]),
+        rewriter=rewriter,
+        max_rewrites=1,
+    ).generate(prompt="", original="a = 1\nb = 2\n")
+
+    assert result.final_code == "a = 10\nb = 20\n"
+    assert rewriter.requests[1].completed_prefix == "a = 10\n"
+    assert all(row.previous_statement_text_unchanged for row in result.audit)
+
+
+def test_candidate_must_close_before_unmodified_following_statement() -> None:
+    class ContextGate:
+        def predict(self, text):
+            current = text.split("[CURRENT]\n", 1)[1]
+            defer = "a = 10" in current and "[CURRENT_UNIT_COUNT] 1" in text
+            return GateScores(0.1 if defer else 0.9, 0.9, True, 0.0, True)
+
+    result = GatedGenerator(
+        partitioner=WindowPartitioner(
+            ContextGate(), GateThresholds(0.2, 0.7, 0.8), lambda _text: 1
+        ),
+        scorer=Scorer([False, True, True]),
+        rewriter=Rewriter(["a = 10\n"]),
+        max_rewrites=1,
+    ).generate(prompt="", original="a = 1\nb = 2\n")
+
+    assert result.final_code == "a = 1\nb = 2\n"
+    assert result.audit[0].selected_candidate_index == 0
+    assert result.candidates[1].evaluation_status == "structure_rejected"
+
+
+def test_candidate_gate_checks_actual_preceding_statements() -> None:
+    class ContextGate:
+        def predict(self, text):
+            previous, current = text.split("[CURRENT]\n", 1)
+            uncertain = "a = 1" in previous and "b = 20" in current
+            return GateScores(0.5 if uncertain else 0.9, 0.9, True, 0.0, True)
+
+    result = GatedGenerator(
+        partitioner=WindowPartitioner(
+            ContextGate(), GateThresholds(0.2, 0.7, 0.8), lambda _text: 1
+        ),
+        scorer=Scorer([True, False, True]),
+        rewriter=Rewriter(["b = 20\n"]),
+        max_rewrites=1,
+    ).generate(prompt="", original="a = 1\nb = 2\n")
+
+    assert result.final_code == "a = 1\nb = 2\n"
+    assert result.audit[1].selected_candidate_index == 0
+    assert result.candidates[-1].evaluation_status == "structure_rejected"
+
+
+def test_following_windows_are_repartitioned_after_committing_rewrite() -> None:
+    class ContextGate:
+        def predict(self, text):
+            previous, current = text.split("[CURRENT]\n", 1)
+            defer = (
+                "a = 10" in previous
+                and "b = 2" in current
+                and "[CURRENT_UNIT_COUNT] 1" in text
+            )
+            return GateScores(0.1 if defer else 0.9, 0.9, True, 0.0, True)
+
+    scorer = Scorer([False, True, True, True])
+    result = GatedGenerator(
+        partitioner=WindowPartitioner(
+            ContextGate(), GateThresholds(0.2, 0.7, 0.8), lambda _text: 1
+        ),
+        scorer=scorer,
+        rewriter=Rewriter(["a = 10\n"]),
+        max_rewrites=1,
+    ).generate(prompt="", original="a = 1\nb = 2\nc = 3\n")
+
+    assert [row.original_unit_count for row in result.audit] == [1, 2]
+    assert scorer.scored_texts[-1] == "b = 2\nc = 3"
+
+
 def test_rewrite_with_changed_unit_count_is_rejected() -> None:
     result = _generator(
         ["a = 10\nb = 20\n"] * 3, [False]
@@ -197,17 +362,49 @@ def test_selected_rewrite_preserves_source_separator_after_window() -> None:
     assert len(set(scorer.scored_parents)) == 1
 
 
-def test_online_selection_requires_every_configured_evidence_channel() -> None:
+@pytest.mark.parametrize("prefix", ["", "# \u96ea\n"])
+def test_candidate_scoring_preserves_exact_final_code_window_bytes(prefix: str) -> None:
+    scorer = Scorer([False, True])
+    generator = GatedGenerator(
+        partitioner=WindowPartitioner(
+            Gate(), GateThresholds(0.2, 0.7, 0.8), lambda text: len(text)
+        ),
+        scorer=scorer,
+        rewriter=Rewriter(["x = 0x1\ny = 0x2\nz = 0x3\n"] * 3),
+        max_rewrites=3,
+    )
+    result = generator.generate(
+        prompt="", original=prefix + "x = 1\ny = 2\nz = 3\n"
+    )
+    assert result.audit[0].selected_candidate_index == 1
+    windows = generator._partitioner.partition(
+        generator._extractor.extract(result.final_code)
+    ).windows
+    assert len(windows) == 1
+    recovered = result.final_code.encode("utf-8")[
+        windows[0].start_byte : windows[0].end_byte
+    ].decode("utf-8")
+    assert scorer.scored_texts[1] == recovered
+    assert recovered == "x = 0x1\ny = 0x2\nz = 0x3"
+
+
+def test_online_selection_requires_multi_channel_hit_quorum() -> None:
     scorer = ChannelScorer(
-        [(True, False), (True, False), (True, True)]
+        [(False, False), (True, False), (True, True)]
     )
     generator = GatedGenerator(
         partitioner=WindowPartitioner(
             Gate(), GateThresholds(0.2, 0.7, 0.8), lambda text: len(text)
         ),
         scorer=scorer,
-        rewriter=Rewriter(["x = 2\ny = 2\nz = 3\n", "x = 1\ny = 3\nz = 3\n"]),
-        max_rewrites=2,
+        rewriter=Rewriter(
+            [
+                "x = 2\ny = 2\nz = 3\n",
+                "x = 1\ny = 3\nz = 3\n",
+                "x = 1\ny = 2\nz = 4\n",
+            ]
+        ),
+        max_rewrites=3,
         evidence_channels=2,
     )
 
@@ -215,6 +412,8 @@ def test_online_selection_requires_every_configured_evidence_channel() -> None:
 
     assert result.audit[0].selected_candidate_index == 2
     assert result.final_code == "x = 1\ny = 3\nz = 3\n"
+    assert result.candidates[1].semantic_hit is False
+    assert result.candidates[2].semantic_hit is True
 
 
 def test_rewrites_must_be_one_to_three_units_and_same_parent() -> None:

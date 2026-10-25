@@ -57,6 +57,33 @@ def test_pilot_rejects_too_few_or_too_many_independent_starts() -> None:
     assert not evaluate_gate_data_feasibility(_groups(301), scale="pilot").passed
 
 
+@pytest.mark.parametrize("position", [4, 18, 48])
+def test_feasibility_accepts_first_hits_in_supported_long_trajectories(position: int) -> None:
+    group = replace(_groups(1)[0], first_hit_candidate_position=position)
+    assert group.first_hit_candidate_position == position
+
+
+@pytest.mark.parametrize("position", [-1, 49, True, 1.5])
+def test_feasibility_rejects_invalid_first_hit_positions(position) -> None:
+    with pytest.raises(ValueError, match="first_hit_candidate_position"):
+        replace(_groups(1)[0], first_hit_candidate_position=position)
+
+
+def test_late_first_hit_is_retained_without_changing_admission_thresholds() -> None:
+    baseline = list(_groups())
+    baseline[0] = replace(baseline[0], suitable_target=False, r1_success_rate=0.0,
+                          r3_success_rate=0.0, first_hit_candidate_position=None)
+    before = evaluate_gate_data_feasibility(tuple(baseline), scale="pilot")
+    baseline[0] = replace(baseline[0], first_hit_candidate_position=18)
+    after = evaluate_gate_data_feasibility(tuple(baseline), scale="pilot")
+    assert after.admissions == before.admissions
+    assert after.thresholds == before.thresholds
+    assert after.reliable_success == before.reliable_success
+    distribution = after.rewrite_health["first_hit_candidate_position_distribution"]
+    assert distribution["18"] == 1
+    assert sum(distribution.values()) == 100
+
+
 def test_each_feasibility_admission_has_an_explicit_result() -> None:
     base = list(_groups())
     # Destroy one family, one window length, gain, and holdout transfer.

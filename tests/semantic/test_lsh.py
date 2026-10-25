@@ -112,6 +112,23 @@ def test_codet5_verifier_measures_real_precision_and_batch_modes() -> None:
         (2, torch.float32),
         (2, torch.bfloat16),
     ]
+    assert verifier.signature_and_margin_modes("x = 1") == (
+        signature, margin, precision_stable, batch_stable
+    )
+    assert len(encoder.calls) == 4
+    verifier.embed("x = 1").zero_()
+    assert verifier.embed("x = 1").tolist() == [1.0, 1.0]
+    # An enclosing precision context is a distinct execution mode, too.
+    with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+        verifier.embed("x = 1")
+    assert len(encoder.calls) == 5
+    # Training invalidates cached evaluation embeddings.
+    encoder.train()
+    encoder.linear.weight.data.copy_(2 * torch.eye(2))
+    assert verifier.embed("x = 1").tolist() == [2.0, 2.0]
+    encoder.eval()
+    assert verifier.embed("x = 1").tolist() == [2.0, 2.0]
+    assert len(encoder.calls) == 7
 
 
 def test_codet5_verifier_detects_bfloat16_batch_interaction() -> None:

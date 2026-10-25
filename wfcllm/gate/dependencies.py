@@ -326,9 +326,12 @@ def build_local_gate_dependencies(
     base_model_path: Path | None,
     adapter_name: str | None = None,
     adapter_options: object | None = None,
+    diagnostic_test_backend: bool = False,
 ) -> LocalGateDependencies:
     """Construct from a static whitelist; arbitrary imports/objects are forbidden."""
 
+    if type(diagnostic_test_backend) is not bool:
+        raise ValueError("diagnostic_test_backend must be boolean")
     if adapter_name is None:
         raise ValueError(
             "an allowlisted production gate adapter is required"
@@ -346,7 +349,7 @@ def build_local_gate_dependencies(
         base_model_path=base_model_path,
         adapter=adapter,
         adapter_name=adapter_name,
-        diagnostic_test_backend=False,
+        diagnostic_test_backend=diagnostic_test_backend,
     )
 
 

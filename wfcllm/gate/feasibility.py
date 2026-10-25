@@ -15,6 +15,8 @@ _PILOT_MIN = 100
 _PILOT_MAX = 300
 _FULL_MIN = 300
 _FULL_MAX = 300
+# Candidate trajectories already support candidate 0 plus up to 48 rewrites.
+_MAX_FIRST_HIT_POSITION = 48
 FEASIBILITY_THRESHOLD_ITEMS: tuple[tuple[str, int | float], ...] = (
     ("pilot_independent_group_min", 100),
     ("pilot_independent_group_max", 300),
@@ -83,9 +85,9 @@ class FeasibilityGroup:
                 raise ValueError(f"{name} must be a non-empty string")
         if self.first_hit_candidate_position is not None and (
             type(self.first_hit_candidate_position) is not int
-            or not 0 <= self.first_hit_candidate_position <= 3
+            or not 0 <= self.first_hit_candidate_position <= _MAX_FIRST_HIT_POSITION
         ):
-            raise ValueError("first_hit_candidate_position must be None or 0 through 3")
+            raise ValueError("first_hit_candidate_position must be None or 0 through 48")
         if self.split not in {"train", "validation", "test"}:
             raise ValueError("split must be train, validation, or test")
 
@@ -217,7 +219,7 @@ def evaluate_gate_data_feasibility(
     ]
     first_hit_distribution = {
         str(position): sum(value == position for value in first_hits)
-        for position in range(4)
+        for position in range(max(3, max(first_hits, default=0)) + 1)
     }
     return GateDataFeasibilitySummary(
         contract_version=FEASIBILITY_CONTRACT_VERSION,

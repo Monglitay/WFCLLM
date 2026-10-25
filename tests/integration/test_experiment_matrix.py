@@ -15,9 +15,9 @@ ROOT = Path(__file__).resolve().parents[2]
 MATRIX = (
     ("python", "humaneval", "python_ast_equivalent"),
     ("python", "mbpp", "python_ast_equivalent"),
-    ("cpp", "humanevalpack", "model_semantic_window"),
-    ("java", "humanevalpack", "model_semantic_window"),
-    ("js", "humanevalpack", "model_semantic_window"),
+    ("cpp", "humanevalpack", "cpp_structural_equivalent"),
+    ("java", "humanevalpack", "java_structural_equivalent"),
+    ("js", "humanevalpack", "js_structural_equivalent"),
 )
 
 

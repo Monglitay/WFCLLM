@@ -17,7 +17,7 @@ from wfcllm.gate.input import (
 from wfcllm.method.contracts import reject_quality_proxy_fields
 
 _ALLOWED_CONTEXT_LENGTHS = frozenset({1, 2, 3})
-_ALLOWED_BUDGETS = frozenset({1, 3})
+_ALLOWED_BUDGETS = frozenset({0, 1, 3, 6, 12, 18, 24})
 _FORMAL_MAX_TOKENS = 512
 
 
@@ -53,7 +53,9 @@ class GateExample:
         ):
             raise ValueError("context_length must be an integer in {1, 2, 3}")
         if type(self.budget) is not int or self.budget not in _ALLOWED_BUDGETS:
-            raise ValueError("budget must be an integer in {1, 3}")
+            raise ValueError(
+                "budget must be one of the pre-registered proposal budgets"
+            )
         _require_nonempty_string("serialized_gate_input", self.serialized_gate_input)
         for name in ("close_target", "suitable_target", "dangerous_negative"):
             if type(getattr(self, name)) is not bool:
@@ -284,6 +286,13 @@ class GroupConsistencyBatchSampler(Sampler[list[int]]):
 
         group_window_starts: dict[str, set[str]] = {}
         cohorts: dict[tuple[str, str, int], list[int]] = {}
+        expected_contexts = frozenset(item.context_length for item in snapshot)
+        if expected_contexts not in (
+            frozenset({1}),
+            frozenset({1, 2}),
+            _ALLOWED_CONTEXT_LENGTHS,
+        ):
+            raise ValueError("dataset contexts must be the prefix 1..max_units")
         for index, item in enumerate(snapshot):
             group_window_starts.setdefault(item.group_id, set()).add(
                 item.window_start_unit_id
@@ -297,10 +306,10 @@ class GroupConsistencyBatchSampler(Sampler[list[int]]):
                 )
         for (group_id, window_start, budget), indices in cohorts.items():
             contexts = {snapshot[index].context_length for index in indices}
-            if contexts != _ALLOWED_CONTEXT_LENGTHS or len(indices) != 3:
+            if contexts != expected_contexts or len(indices) != len(expected_contexts):
                 raise ValueError(
-                    "each budget cohort must contain contexts 1, 2, and 3 "
-                    f"exactly once; got group={group_id!r}, "
+                    "each budget cohort must contain the configured context "
+                    f"prefix exactly once; got group={group_id!r}, "
                     f"window_start={window_start!r}, budget={budget}"
                 )
             if len(indices) > batch_size:

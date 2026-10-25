@@ -7,6 +7,7 @@ from typing import Iterator
 
 from wfcllm.datasets.adapter import CodeSample, DatasetAdapter
 from wfcllm.datasets.registry import register
+from wfcllm.datasets.smoke import smoke_sample_count_from_env
 
 
 @register("humanevalpack")
@@ -21,7 +22,11 @@ class HumanEvalPackAdapter(DatasetAdapter):
         languages = self.supported_languages if language is None else (language,)
         for selected_language in languages:
             self._validate_language(selected_language)
-            for row in self._load_split(selected_language):
+            rows = self._load_split(selected_language)
+            smoke_count = smoke_sample_count_from_env()
+            if smoke_count is not None:
+                rows = self._limit_rows(rows, smoke_count)
+            for row in rows:
                 yield self._normalise(row, selected_language)
 
     def get_sample(
@@ -90,6 +95,12 @@ class HumanEvalPackAdapter(DatasetAdapter):
                 f"HumanEvalPackAdapter does not support language={language!r}; "
                 f"supported={self.supported_languages}"
             )
+
+    @staticmethod
+    def _limit_rows(rows, limit: int):
+        if hasattr(rows, "select"):
+            return rows.select(range(min(limit, len(rows))))
+        return rows[:limit]
 
     @staticmethod
     def _normalise(row, language: str) -> CodeSample:

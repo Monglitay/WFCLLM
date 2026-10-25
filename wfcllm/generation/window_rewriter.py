@@ -149,10 +149,7 @@ class KeyBlindAstEquivalentWindowRewriter:
         *,
         candidate_indices: tuple[int, ...],
     ) -> tuple[ParsedRewrite, ...]:
-        if candidate_indices != (1, 2, 3):
-            raise ValueError(
-                "candidate_indices must equal the public trajectory (1, 2, 3)"
-            )
+        _validate_candidate_indices(candidate_indices)
         return tuple(
             self.rewrite_window(request, candidate_index=index)
             for index in candidate_indices
@@ -284,10 +281,7 @@ class KeyBlindCppEquivalentWindowRewriter:
         *,
         candidate_indices: tuple[int, ...],
     ) -> tuple[ParsedRewrite, ...]:
-        if candidate_indices != (1, 2, 3):
-            raise ValueError(
-                "candidate_indices must equal the public trajectory (1, 2, 3)"
-            )
+        _validate_candidate_indices(candidate_indices)
         return tuple(
             self.rewrite_window(request, candidate_index=index)
             for index in candidate_indices
@@ -382,10 +376,7 @@ class KeyBlindJavaEquivalentWindowRewriter:
         *,
         candidate_indices: tuple[int, ...],
     ) -> tuple[ParsedRewrite, ...]:
-        if candidate_indices != (1, 2, 3):
-            raise ValueError(
-                "candidate_indices must equal the public trajectory (1, 2, 3)"
-            )
+        _validate_candidate_indices(candidate_indices)
         return tuple(
             self.rewrite_window(request, candidate_index=index)
             for index in candidate_indices
@@ -552,8 +543,7 @@ class CausalWindowRewriter:
     ) -> tuple[ParsedRewrite, ...]:
         """Generate the one public A/B/C trajectory without replacement."""
 
-        if candidate_indices != (1, 2, 3):
-            raise ValueError("candidate_indices must equal the public trajectory (1, 2, 3)")
+        _validate_candidate_indices(candidate_indices)
         for candidate_index in candidate_indices:
             _validate_call(request, candidate_index)
         generate_many = getattr(self._backend, "generate_windows", None)
@@ -624,13 +614,18 @@ def _parse_generation(
     window_contract_version: str = WINDOW_CONTRACT_VERSION,
 ) -> ParsedRewrite:
     prefix_bytes = len(request.completed_prefix.encode("utf-8"))
-    complete_source = request.completed_prefix + generation.text
+    candidate_end = prefix_bytes + len(generation.text.encode("utf-8"))
+    complete_source = request.completed_prefix + generation.text + request.completed_suffix
+    context_parse_error = (
+        window_contract_version == "cpp-statement-window/v1"
+        and _cpp_context_errors_changed(request, generation.text)
+    )
     units = [
         unit
         for unit in extractor.extract(complete_source)
-        if unit.start_byte >= prefix_bytes
+        if unit.start_byte >= prefix_bytes and unit.end_byte <= candidate_end
     ]
-    if not generation.text or not units:
+    if not generation.text or not units or context_parse_error:
         parse_status = "parse_error"
     elif len(units) not in {1, 2, 3} or len(units) != request.window_length:
         parse_status = "unit_count_out_of_range"
@@ -662,6 +657,52 @@ def _parse_generation(
         generation_seed_id=generation.generation_seed_id,
         rewrite_config_id=generation.rewrite_config_id,
     )
+
+
+def _cpp_context_errors_changed(request: RewriteRequest, candidate: str) -> bool:
+    """Reject new syntax errors without rejecting unchanged broken context."""
+    from wfcllm.lang.cpp.parser import CppParser
+
+    original = (request.completed_prefix + request.original_window + request.completed_suffix).encode("utf-8")
+    changed = (request.completed_prefix + candidate + request.completed_suffix).encode("utf-8")
+    original_tree = CppParser().parse(original.decode("utf-8"))
+    if original_tree.root_node.has_error and not request.completed_suffix:
+        return True
+    changed_tree = CppParser().parse(changed.decode("utf-8"))
+    if not original_tree.root_node.has_error and not changed_tree.root_node.has_error:
+        return False
+
+    start = 0
+    while start < min(len(original), len(changed)) and original[start] == changed[start]:
+        start += 1
+    trailing = 0
+    while (
+        trailing < min(len(original), len(changed)) - start
+        and original[len(original) - trailing - 1] == changed[len(changed) - trailing - 1]
+    ):
+        trailing += 1
+    old_end, new_end = len(original) - trailing, len(changed) - trailing
+
+    def diagnostics(root, source: bytes, edit_end: int):
+        result = []
+        pending = [root]
+        while pending:
+            node = pending.pop()
+            if node.is_error or node.is_missing:
+                if node.end_byte <= start:
+                    anchor, first, last = "before", node.start_byte, node.end_byte
+                elif node.start_byte >= edit_end:
+                    anchor, first, last = "after", node.start_byte - edit_end, node.end_byte - edit_end
+                else:
+                    return None
+                result.append((node.type, bool(node.is_missing), anchor, first, last,
+                               source[node.start_byte:node.end_byte]))
+            pending.extend(node.children)
+        return sorted(result)
+
+    old_errors = diagnostics(original_tree.root_node, original, old_end)
+    new_errors = diagnostics(changed_tree.root_node, changed, new_end)
+    return old_errors is None or new_errors is None or old_errors != new_errors
 
 
 _COMPOUND_HEADER_AST_TYPES = (
@@ -770,8 +811,13 @@ def _java_equivalent_variant(text: str, *, candidate_index: int) -> str:
     transform = variants[(candidate_index - 1) % len(variants)]
     if "\n" not in body:
         transformed = transform(body)
-        return transformed + trailing
-    return _java_transform_first_matching_line(text, transform)
+        if transformed != body:
+            return transformed + trailing
+        return _java_trailing_block_comment(text, candidate_index=candidate_index)
+    transformed = _java_transform_first_matching_line(text, transform)
+    if transformed != text:
+        return transformed
+    return _java_trailing_block_comment(text, candidate_index=candidate_index)
 
 
 def _java_transform_first_matching_line(
@@ -786,6 +832,23 @@ def _java_transform_first_matching_line(
         if transformed != line:
             return "".join((*lines[:index], transformed, *lines[index + 1:]))
     return text
+
+
+def _java_trailing_block_comment(text: str, *, candidate_index: int) -> str:
+    """Add deterministic Java trivia when no expression transform applies.
+
+    A statement window can be a declaration, a partial block, or a multiline
+    fragment that does not match the expression-level transforms above.  Keep
+    those candidates distinct using a trailing block comment; comments are
+    ignored by the Java parser and therefore preserve the public equivalence
+    contract while still giving the keyed detector a real lexical variant.
+    """
+    body = text.rstrip()
+    if not body:
+        return text
+    trailing = text[len(body):]
+    marker = f" /* wfcllm-java-equivalent-{candidate_index} */"
+    return body + marker + trailing
 
 
 def _java_parenthesize_return(text: str) -> str:
@@ -946,10 +1009,42 @@ def _java_boolean_expression(expression: str) -> bool:
         return False
     if value in {"true", "false"}:
         return True
-    return bool(
+    has_boolean_spelling = bool(
         re.search(r"(?:==|!=|<=|>=|&&|\|\||[<>])", value)
         or re.match(r"!\s*[A-Za-z_(]", value)
     )
+    if not has_boolean_spelling:
+        return False
+    from wfcllm.lang.java.parser import JavaParser
+
+    # Operator characters inside a string, generic type or numeric ternary do
+    # not establish a boolean result. Inspect the complete expression's root.
+    tree = JavaParser().parse("class Probe { Object probe() { return " + value + "; } }")
+    if tree.root_node.has_error:
+        return False
+    pending = [tree.root_node]
+    while pending:
+        node = pending.pop()
+        if node.type == "return_statement":
+            children = [child for child in node.named_children if child.type != "comment"]
+            if len(children) != 1:
+                return False
+            root = children[0]
+            while root.type == "parenthesized_expression":
+                children = [child for child in root.named_children if child.type != "comment"]
+                if len(children) != 1:
+                    return False
+                root = children[0]
+            operator = root.child_by_field_name("operator")
+            if operator is None:
+                return False
+            spelling = operator.text.decode("utf-8")
+            return (
+                root.type == "binary_expression" and spelling in {"==", "!=", "<=", ">=", "<", ">", "&&", "||"}
+                or root.type == "unary_expression" and spelling == "!"
+            )
+        pending.extend(node.named_children)
+    return False
 
 
 def _cpp_equivalent_variant(text: str, *, candidate_index: int) -> str:
@@ -1866,6 +1961,20 @@ def _validate_call(request: object, candidate_index: object) -> None:
         raise ValueError("request must be a RewriteRequest")
     if type(candidate_index) is not int or candidate_index < 1:
         raise ValueError("candidate_index must be a positive integer")
+
+
+def _validate_candidate_indices(candidate_indices: object) -> tuple[int, ...]:
+    if (
+        not isinstance(candidate_indices, tuple)
+        or not candidate_indices
+        or any(type(index) is not int for index in candidate_indices)
+        or candidate_indices != tuple(range(1, len(candidate_indices) + 1))
+        or len(candidate_indices) > 24
+    ):
+        raise ValueError(
+            "candidate_indices must be contiguous positive rewrite indices from 1 through B"
+        )
+    return candidate_indices
 
 
 def _internal_whitespace_variant(text: str, *, candidate_index: int) -> str:

@@ -77,15 +77,26 @@ def _supplementary_binding(
     if value is None:
         return {}
     output = json.loads(_canonical_bytes(dict(value)))
-    study = output.get("supplementary_ablation")
-    if diagnostic is not None and isinstance(study, dict):
-        study.update(
+    ablation = output.get("supplementary_ablation")
+    if diagnostic is not None and isinstance(ablation, dict):
+        ablation.update(
             {
                 "formal": not diagnostic,
                 "formal_eligible": not diagnostic,
                 "diagnostic_test_backend": diagnostic,
                 "diagnostic_only": diagnostic,
                 "not_official_method": diagnostic,
+            }
+        )
+    experiment = output.get("supplementary_experiment")
+    if diagnostic is not None and isinstance(experiment, dict):
+        experiment.update(
+            {
+                "formal": False,
+                "formal_eligible": False,
+                "diagnostic_test_backend": diagnostic,
+                "diagnostic_only": diagnostic,
+                "not_official_method": True,
             }
         )
     return output
@@ -107,6 +118,8 @@ class GateDataPipelineConfig:
     pilot_feasibility_path: Path | None = None
     max_groups: int | None = None
     supplementary_binding: Mapping[str, object] | None = None
+    rewrite_count: int = 3
+    rewrite_budgets: tuple[int, ...] = (1, 3)
 
     def __post_init__(self) -> None:
         _path("output_root", self.output_root)
@@ -139,6 +152,26 @@ class GateDataPipelineConfig:
             if not isinstance(self.supplementary_binding, Mapping):
                 raise ValueError("supplementary_binding must be an object or None")
             _canonical_bytes(dict(self.supplementary_binding))
+        if (
+            type(self.rewrite_count) is not int
+            or not 0 <= self.rewrite_count <= 48
+        ):
+            raise ValueError("rewrite_count must be an integer from 0 through 48")
+        if (
+            not isinstance(self.rewrite_budgets, tuple)
+            or not self.rewrite_budgets
+            or any(
+                type(budget) is not int
+                or not 0 <= budget <= self.rewrite_count
+                for budget in self.rewrite_budgets
+            )
+            or len(set(self.rewrite_budgets)) != len(self.rewrite_budgets)
+            or tuple(sorted(self.rewrite_budgets)) != self.rewrite_budgets
+            or self.rewrite_budgets[-1] != self.rewrite_count
+        ):
+            raise ValueError(
+                "rewrite_budgets must be ordered unique budgets ending at rewrite_count"
+            )
 
 
 @dataclass(frozen=True)
@@ -332,13 +365,27 @@ class CandidateTrajectoryGroup:
             raise ValueError("candidate trajectory requires ParsedWindowGroup")
         values = dict(self.candidate_indices_by_window_length)
         lengths = self.parsed.identity.window_lengths
-        if set(values) != set(lengths) or any(
-            values[length] != tuple(range(4)) for length in lengths
-        ):
+        if set(values) != set(lengths):
             raise ValueError(
-                "candidate trajectory must contain candidate 0 through 3 "
-                "for every configured window length"
+                "candidate trajectory must contain every configured window length"
             )
+        expected: tuple[int, ...] | None = None
+        for length in lengths:
+            indices = values[length]
+            if (
+                not indices
+                or len(indices) > 49
+                or indices != tuple(range(len(indices)))
+            ):
+                raise ValueError(
+                    "candidate trajectory must contain ordered contiguous indices starting at 0"
+                )
+            if expected is None:
+                expected = indices
+            elif indices != expected:
+                raise ValueError(
+                    "candidate trajectory must use the same candidate indices for every length"
+                )
         object.__setattr__(self, "candidate_indices_by_window_length", MappingProxyType(values))
 
     @property
@@ -527,7 +574,11 @@ def _run_gate_data_impl(config: GateDataPipelineConfig, dependencies: GatePipeli
     parsed = dependencies.parse_statement_units(source_snapshot, config)
     pilot_payload = None
     if config.pilot_feasibility_path is not None:
-        pilot_payload = _load_passed_pilot(config.pilot_feasibility_path, config.config_hash)
+        pilot_payload = _load_passed_pilot(
+            config.pilot_feasibility_path,
+            config.config_hash,
+            allow_diagnostic=diagnostic,
+        )
     output = config.output_root / "gate-data"
     staging = _new_staging(config.output_root, "gate-data")
     try:
@@ -757,8 +808,8 @@ def _run_gate_data_impl(config: GateDataPipelineConfig, dependencies: GatePipeli
             "holdout_key_bank_id": holdout_bank.bank_id,
             "training_key_count": 32,
             "holdout_key_count": 8,
-            "rewrite_count": 3,
-            "rewrite_budgets": [1, 3],
+            "rewrite_count": config.rewrite_count,
+            "rewrite_budgets": list(config.rewrite_budgets),
             "window_lengths": list(config.window_lengths),
             "semantic_margin": config.semantic_margin,
             "group_count": len(compact_groups),
@@ -865,7 +916,11 @@ def run_gate_train(config: GateTrainPipelineConfig, dependencies: object) -> Gat
     ) and not diagnostic:
         raise ValueError("diagnostic data manifest cannot train a formal candidate")
     if config.pilot_feasibility_path is not None:
-        _load_passed_pilot(config.pilot_feasibility_path, config.config_hash)
+        _load_passed_pilot(
+            config.pilot_feasibility_path,
+            config.config_hash,
+            allow_diagnostic=diagnostic,
+        )
         if manifest.get("pilot_feasibility_sha256") != _sha_file(config.pilot_feasibility_path):
             raise ValueError("data manifest pilot feasibility hash mismatch")
     elif manifest.get("pilot_feasibility_sha256") is not None:
@@ -1013,11 +1068,27 @@ def _validate_trajectory_contract(groups: tuple[GatePipelineGroup, ...]) -> None
             )
         if set(group.candidate_indices_by_window_length) != set(
             group.window_lengths
-        ) or any(
-            group.candidate_indices_by_window_length[length] != tuple(range(4))
-            for length in group.window_lengths
         ):
-            raise ValueError("generated trajectories must contain candidate 0 through 3 for every window")
+            raise ValueError(
+                "generated trajectories must contain every configured window"
+            )
+        expected: tuple[int, ...] | None = None
+        for length in group.window_lengths:
+            indices = group.candidate_indices_by_window_length[length]
+            if (
+                not indices
+                or len(indices) > 49
+                or indices != tuple(range(len(indices)))
+            ):
+                raise ValueError(
+                    "generated trajectories must contain ordered contiguous candidates"
+                )
+            if expected is None:
+                expected = indices
+            elif indices != expected:
+                raise ValueError(
+                    "generated trajectories must use the same candidate indices for every window"
+                )
 
 
 def _group_identity(group: GatePipelineGroup) -> GateGroupIdentity:
@@ -1071,23 +1142,26 @@ def _derived_feasibility(
     selected = labeled.labels_by_window_length[group.window_lengths[-1]]
     first_hits = [
         value
-        for value in selected.budgets[3].first_hit_by_key_id.values()
+        for value in selected.budgets[max(selected.budgets)].first_hit_by_key_id.values()
         if value is not None
     ]
+    r1_budget = 1 if 1 in selected.budgets else max(selected.budgets)
+    r3_budget = 3 if 3 in selected.budgets else max(selected.budgets)
+    selected_budget = max(selected.budgets)
     return FeasibilityGroup(
         group_id=group.group_id,
         suitable_target=selected.suitable_target,
         window_lengths=group.window_lengths,
         statement_family=group.statement_family,
-        r1_success_rate=selected.budgets[1].success_rate,
-        r3_success_rate=selected.budgets[3].success_rate,
+        r1_success_rate=selected.budgets[r1_budget].success_rate,
+        r3_success_rate=selected.budgets[r3_budget].success_rate,
         holdout_success_rate=labeled.holdout_success_rate,
         split=group.split,
         repository_id=group.repository_id,
         task_id=group.task_id,
         generation_model_id=group.generation_model_id,
-        structural_invalid_rate=1.0 - selected.budgets[3].structural_valid_rate,
-        numeric_instability_rate=selected.budgets[3].unstable_rate,
+        structural_invalid_rate=1.0 - selected.budgets[selected_budget].structural_valid_rate,
+        numeric_instability_rate=selected.budgets[selected_budget].unstable_rate,
         first_hit_candidate_position=min(first_hits) if first_hits else None,
     )
 
@@ -1110,10 +1184,19 @@ def _validate_probe_contract(
         for length in group.window_lengths:
             observations = group.candidate_observations_by_length[str(length)]
             probes = group.probe_results_by_length[str(length)]
-            if len(observations) != 4 or len(probes) != 4:
-                raise ValueError("probe evidence must cover candidate 0 through 3")
+            expected_indices = group.candidate_indices_by_window_length[length]
+            if (
+                len(observations) != len(expected_indices)
+                or len(probes) != len(expected_indices)
+            ):
+                raise ValueError(
+                    "probe evidence must cover every configured candidate"
+                )
             for candidate_index, (observation, results) in enumerate(zip(observations, probes, strict=True)):
-                if not isinstance(observation, CandidateObservation) or observation.candidate_index != candidate_index:
+                if (
+                    not isinstance(observation, CandidateObservation)
+                    or observation.candidate_index != expected_indices[candidate_index]
+                ):
                     raise ValueError("candidate observation identity/order mismatch")
                 exact_structural_candidate = (
                     observation.parse_status == "ok"
@@ -1191,6 +1274,7 @@ def _labels_for_group(
     *,
     semantic_margin: float,
     max_units: int,
+    rewrite_budgets: tuple[int, ...],
 ) -> GateLabels:
     candidates = group.candidate_observations_by_length[str(length)]
     cache_key = hashlib.sha256(
@@ -1199,6 +1283,7 @@ def _labels_for_group(
                 "candidates": [candidate.to_dict() for candidate in candidates],
                 "semantic_margin": semantic_margin,
                 "max_units": max_units,
+                "rewrite_budgets": list(rewrite_budgets),
             }
         )
     ).hexdigest()
@@ -1213,6 +1298,7 @@ def _labels_for_group(
             configured_margin=semantic_margin,
             max_units=max_units,
         ),
+        rewrite_budgets=rewrite_budgets,
     )
     _LABEL_CACHE[cache_key] = labels
     if len(_LABEL_CACHE) > _EVIDENCE_LRU_SIZE:
@@ -1234,12 +1320,23 @@ def _recompute_and_attest_labels(
             length,
             semantic_margin=config.semantic_margin,
             max_units=config.window_lengths[-1],
+            rewrite_budgets=config.rewrite_budgets,
         )
         for length in config.window_lengths
     }
     selected = labels[config.window_lengths[-1]]
-    r1, r3 = (selected.budgets[budget].success_rate for budget in (1, 3))
-    first_hits = [value for value in selected.budgets[3].first_hit_by_key_id.values() if value is not None]
+    r1_budget = 1 if 1 in selected.budgets else max(selected.budgets)
+    r3_budget = 3 if 3 in selected.budgets else max(selected.budgets)
+    selected_budget = max(selected.budgets)
+    r1, r3 = (
+        selected.budgets[r1_budget].success_rate,
+        selected.budgets[r3_budget].success_rate,
+    )
+    first_hits = [
+        value
+        for value in selected.budgets[selected_budget].first_hit_by_key_id.values()
+        if value is not None
+    ]
     holdout_ids = group.observed_holdout_key_ids
     holdout_results = group.probe_results_by_length[
         str(config.window_lengths[-1])
@@ -1250,13 +1347,13 @@ def _recompute_and_attest_labels(
             and holdout_results[candidate_index][key_id].is_reliable_hit(
                 configured_margin=config.semantic_margin
             )
-            for candidate_index in range(4)
+            for candidate_index in range(r3_budget + 1)
         )
         for key_id in holdout_ids
     )
     holdout_rate = holdout_hit_count / len(holdout_ids)
-    structural_invalid_rate = 1.0 - selected.budgets[3].structural_valid_rate
-    numeric_instability_rate = selected.budgets[3].unstable_rate
+    structural_invalid_rate = 1.0 - selected.budgets[selected_budget].structural_valid_rate
+    numeric_instability_rate = selected.budgets[selected_budget].unstable_rate
     if (
         group.close_target != selected.close_target
         or group.suitable_target != selected.suitable_target
@@ -1348,13 +1445,15 @@ def _label_row(
 ) -> dict[str, Any]:
     lengths = tuple(stage.labels_by_window_length)
     selected = stage.labels_by_window_length[lengths[-1]]
+    r1_budget = 1 if 1 in selected.budgets else max(selected.budgets)
+    r3_budget = 3 if 3 in selected.budgets else max(selected.budgets)
     return {
         "schema_version": "wfcllm-gate-label/v1",
         "group_id": group_id,
         "close_target": selected.close_target,
         "suitable_target": selected.suitable_target,
-        "r1_success_rate": selected.budgets[1].success_rate,
-        "r3_success_rate": selected.budgets[3].success_rate,
+        "r1_success_rate": selected.budgets[r1_budget].success_rate,
+        "r3_success_rate": selected.budgets[r3_budget].success_rate,
         "holdout_success_rate": stage.holdout_success_rate,
         "budget_outcomes": {
             str(length): {
@@ -1388,12 +1487,27 @@ def _validate_bank(bank: object, *, role: str, expected: int) -> None:
         raise ValueError(f"{role} key bank must contain exactly {expected} keys")
 
 
-def _load_passed_pilot(path: Path | None, config_hash: str) -> dict[str, Any]:
+def _load_passed_pilot(
+    path: Path | None,
+    config_hash: str,
+    *,
+    allow_diagnostic: bool = False,
+) -> dict[str, Any]:
     if path is None or not path.is_file():
         raise ValueError("passed pilot feasibility summary is missing")
     payload = _read_json(path, "pilot feasibility")
-    if payload.get("contract_version") != FEASIBILITY_CONTRACT_VERSION or payload.get("scale") != "pilot" or payload.get("passed") is not True:
+    if payload.get("contract_version") != FEASIBILITY_CONTRACT_VERSION or payload.get("scale") != "pilot":
         raise ValueError("pilot feasibility contract has not passed")
+    if payload.get("passed") is not True:
+        if not allow_diagnostic:
+            raise ValueError("pilot feasibility contract has not passed")
+        _validate_artifact_identity(payload, diagnostic=True, required=True)
+    else:
+        _validate_artifact_identity(
+            payload,
+            diagnostic=allow_diagnostic,
+            required=allow_diagnostic,
+        )
     if payload.get("thresholds") != dict(FEASIBILITY_THRESHOLD_ITEMS):
         raise ValueError("pilot feasibility thresholds do not match the v1 contract")
     if payload.get("config_hash") != config_hash:
@@ -1531,6 +1645,26 @@ def _audit_gate_data_artifacts(data_dir: Path, manifest: Mapping[str, Any], seed
             "gate data manifest window_lengths must be the prefix 1..max_units"
         )
     window_lengths = tuple(raw_window_lengths)
+    rewrite_count = manifest.get("rewrite_count")
+    rewrite_budgets = manifest.get("rewrite_budgets")
+    if (
+        type(rewrite_count) is not int
+        or not 0 <= rewrite_count <= 48
+        or not isinstance(rewrite_budgets, list)
+        or not rewrite_budgets
+        or any(
+            type(budget) is not int or not 0 <= budget <= rewrite_count
+            for budget in rewrite_budgets
+        )
+        or len(set(rewrite_budgets)) != len(rewrite_budgets)
+        or sorted(rewrite_budgets) != rewrite_budgets
+        or rewrite_budgets[-1] != rewrite_count
+    ):
+        raise ValueError(
+            "gate data manifest rewrite_count/rewrite_budgets are invalid"
+        )
+    candidate_indices = tuple(range(rewrite_count + 1))
+    rewrite_budget_tuple = tuple(rewrite_budgets)
     semantic_margin = manifest.get("semantic_margin")
     if (
         isinstance(semantic_margin, bool)
@@ -1564,6 +1698,8 @@ def _audit_gate_data_artifacts(data_dir: Path, manifest: Mapping[str, Any], seed
         diagnostic=diagnostic_expected,
         window_lengths=window_lengths,
         semantic_margin=float(semantic_margin),
+        candidate_indices=candidate_indices,
+        rewrite_budgets=rewrite_budget_tuple,
     )
     _audit_labels(
         data_dir / "labels.jsonl",
@@ -1613,14 +1749,22 @@ def _audit_candidate_attempts(
     diagnostic: bool,
     window_lengths: tuple[int, ...] = (1, 2, 3),
     semantic_margin: float = 0.0,
+    candidate_indices: tuple[int, ...] = (0, 1, 2, 3),
+    rewrite_budgets: tuple[int, ...] = (1, 3),
 ) -> dict[str, str]:
     """Stream the potentially very large attempt artifact without materializing it."""
 
+    if (
+        not candidate_indices
+        or candidate_indices != tuple(range(len(candidate_indices)))
+    ):
+        raise ValueError("candidate_indices must be ordered contiguous indices")
+    final_candidate_index = candidate_indices[-1]
     expected = (
         (row["group_id"], row["identity_sha256"], length, candidate_index)
         for row in index_rows
         for length in window_lengths
-        for candidate_index in range(4)
+        for candidate_index in candidate_indices
     )
     expected_keys = set(training_ids) | set(holdout_ids)
     evidence_cache: OrderedDict[str, tuple[CandidateObservation, dict[str, LshProbeResult]]] = OrderedDict()
@@ -1711,7 +1855,10 @@ def _audit_candidate_attempts(
             current_results[length].append(results)
             pending_evidence = None
             candidate_count += 1
-            if length == window_lengths[-1] and row["candidate_index"] == 3:
+            if (
+                length == window_lengths[-1]
+                and row["candidate_index"] == final_candidate_index
+            ):
                 group_id = row["group_id"]
                 cache_key = tuple(current_evidence_hashes)
                 label_payload = label_cache.get(cache_key)
@@ -1722,6 +1869,7 @@ def _audit_candidate_attempts(
                         holdout_ids=tuple(holdout_ids),
                         window_lengths=window_lengths,
                         semantic_margin=semantic_margin,
+                        rewrite_budgets=rewrite_budgets,
                     )
                     label_cache[cache_key] = label_payload
                     if len(label_cache) > 512:
@@ -1759,7 +1907,8 @@ def _audit_candidate_attempts(
         raise ValueError(f"candidate attempts JSONL is invalid: {exc}") from exc
     if (
         pending_evidence is not None
-        or candidate_count != len(index_rows) * len(window_lengths) * 4
+        or candidate_count
+        != len(index_rows) * len(window_lengths) * len(candidate_indices)
     ):
         raise ValueError("candidate trajectory/probe evidence coverage mismatch")
     return expected_label_digests
@@ -1772,6 +1921,7 @@ def _derived_label_payload(
     holdout_ids: tuple[str, ...],
     window_lengths: tuple[int, ...] = (1, 2, 3),
     semantic_margin: float = 0.0,
+    rewrite_budgets: tuple[int, ...] = (1, 3),
 ) -> dict[str, Any]:
     labels = {
         length: build_gate_labels(
@@ -1781,24 +1931,27 @@ def _derived_label_payload(
                 configured_margin=semantic_margin,
                 max_units=window_lengths[-1],
             ),
+            rewrite_budgets=rewrite_budgets,
         )
         for length in window_lengths
     }
     max_units = window_lengths[-1]
     selected = labels[max_units]
+    r1_budget = 1 if 1 in selected.budgets else max(selected.budgets)
+    r3_budget = 3 if 3 in selected.budgets else max(selected.budgets)
     holdout_success_rate = sum(
         any(
             (probe := results[max_units][candidate_index].get(key_id)) is not None
             and probe.is_reliable_hit(configured_margin=semantic_margin)
-            for candidate_index in range(4)
+            for candidate_index in range(r3_budget + 1)
         )
         for key_id in holdout_ids
     ) / len(holdout_ids)
     return {
         "close_target": selected.close_target,
         "suitable_target": selected.suitable_target,
-        "r1_success_rate": selected.budgets[1].success_rate,
-        "r3_success_rate": selected.budgets[3].success_rate,
+        "r1_success_rate": selected.budgets[r1_budget].success_rate,
+        "r3_success_rate": selected.budgets[r3_budget].success_rate,
         "holdout_success_rate": holdout_success_rate,
         "budget_outcomes": {
             str(length): {

@@ -20,16 +20,34 @@ class GateDataConfig:
     rewrite_budgets: tuple[int, ...] = (1, 3)
 
     def __post_init__(self) -> None:
-        expected = {
+        fixed = {
             "training_key_count": 32,
             "holdout_key_count": 8,
-            "rewrite_count": 3,
-            "rewrite_budgets": (1, 3),
         }
-        for name, required in expected.items():
+        for name, required in fixed.items():
             actual = getattr(self, name)
             if type(actual) is not type(required) or actual != required:
                 raise ValueError(f"{name} must remain fixed at {required!r}")
+        if (
+            type(self.rewrite_count) is not int
+            or not 0 <= self.rewrite_count <= 48
+        ):
+            raise ValueError("rewrite_count must be an integer from 0 through 48")
+        if (
+            not isinstance(self.rewrite_budgets, tuple)
+            or not self.rewrite_budgets
+            or any(
+                type(budget) is not int
+                or not 0 <= budget <= self.rewrite_count
+                for budget in self.rewrite_budgets
+            )
+            or len(set(self.rewrite_budgets)) != len(self.rewrite_budgets)
+            or tuple(sorted(self.rewrite_budgets)) != self.rewrite_budgets
+            or self.rewrite_budgets[-1] != self.rewrite_count
+        ):
+            raise ValueError(
+                "rewrite_budgets must be ordered unique budgets ending at rewrite_count"
+            )
 
 
 @dataclass(frozen=True)

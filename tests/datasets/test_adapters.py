@@ -53,6 +53,46 @@ def test_mbpp_adapter_name():
     assert datasets.get("mbpp").name == "mbpp"
 
 
+def test_mbpp_generation_uses_only_official_test_split(monkeypatch, tmp_path):
+    from wfcllm.datasets.loaders.local import load_mbpp_generation_samples
+
+    def row(task_id):
+        return {
+            "task_id": task_id,
+            "text": f"Double a number, task {task_id}.",
+            "test_list": ["assert twice(2) == 4"],
+            "code": "canonical solution must never enter the generation prompt",
+        }
+
+    monkeypatch.setattr(
+        "wfcllm.datasets.loaders.local.load_dataset",
+        lambda *_args, **_kwargs: {
+            "train": [row(601)],
+            "test": [row(11), row(12)],
+            "validation": [row(511)],
+            "prompt": [row(1)],
+        },
+    )
+
+    samples = load_mbpp_generation_samples(str(tmp_path))
+
+    assert [item["id"] for item in samples] == ["mbpp/11", "mbpp/12"]
+    assert all("canonical solution" not in item["prompt"] for item in samples)
+    assert all("twice" in item["prompt"] for item in samples)
+
+
+def test_mbpp_generation_rejects_missing_test_split(monkeypatch, tmp_path):
+    from wfcllm.datasets.loaders.local import load_mbpp_generation_samples
+
+    monkeypatch.setattr(
+        "wfcllm.datasets.loaders.local.load_dataset",
+        lambda *_args, **_kwargs: {"train": []},
+    )
+
+    with pytest.raises(ValueError, match="official test split"):
+        load_mbpp_generation_samples(str(tmp_path))
+
+
 def test_mbpp_adapter_uses_interface_aware_generation_prompt(monkeypatch, tmp_path):
     from wfcllm.datasets.mbpp import MBPPAdapter
 
@@ -130,6 +170,61 @@ def test_humanevalpack_loads_cpp_samples_from_local_cache(monkeypatch, tmp_path)
     assert samples[0].task_id == "HumanEvalPack/0"
     assert samples[0].prompt == "int add(int a, int b) {"
     assert samples[0].metadata == {}
+
+
+def test_humanevalpack_smoke_limit_preserves_hf_dataset_rows(
+    monkeypatch, tmp_path
+):
+    from wfcllm.datasets.humanevalpack import HumanEvalPackAdapter
+
+    class FakeDatasetSplit:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def __iter__(self):
+            return iter(self._rows)
+
+        def __len__(self):
+            return len(self._rows)
+
+        def __getitem__(self, index):
+            if isinstance(index, slice):
+                selected = self._rows[index]
+                return {
+                    key: [row[key] for row in selected]
+                    for key in selected[0]
+                }
+            return self._rows[index]
+
+        def select(self, indices):
+            return FakeDatasetSplit([self._rows[index] for index in indices])
+
+    def fake_load_dataset(*_args, **_kwargs):
+        return {
+            "test": FakeDatasetSplit(
+                [
+                    {
+                        "task_id": f"HumanEvalPack/{index}",
+                        "prompt": f"int task_{index}();",
+                    }
+                    for index in range(3)
+                ]
+            )
+        }
+
+    monkeypatch.setattr("datasets.load_dataset", fake_load_dataset)
+    monkeypatch.setenv("WFCLLM_SMOKE_SAMPLE_COUNT", "2")
+
+    samples = list(HumanEvalPackAdapter(dataset_path=str(tmp_path)).iter_samples("cpp"))
+
+    assert [sample.task_id for sample in samples] == [
+        "HumanEvalPack/0",
+        "HumanEvalPack/1",
+    ]
+    assert [sample.prompt for sample in samples] == [
+        "int task_0();",
+        "int task_1();",
+    ]
 
 
 def test_humanevalpack_prefers_local_jsonl_fixture(monkeypatch, tmp_path):

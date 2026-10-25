@@ -16,6 +16,7 @@ _GATED_SEMANTIC_WINDOW_V1 = WFCLLMMethodPreset(
             "contract_version": "python-statement-window/v1",
             "max_units": 3,
             "max_preceding_units": 3,
+            "suitable_accept_threshold_cap": 0.0,
             "excluded_statement_types": [
                 "pass",
                 "break",
@@ -41,8 +42,8 @@ _GATED_SEMANTIC_WINDOW_V1 = WFCLLMMethodPreset(
         },
         "rewrite": {
             "candidate_zero": "original_window",
-            "max_attempts": 3,
-            "experiment_budgets": [1, 3],
+            "max_attempts": 18,
+            "experiment_budgets": [1, 3, 6, 12, 18],
             "key_blind": True,
             "temperature": 0.2,
             "top_p": 0.95,
@@ -55,7 +56,7 @@ _GATED_SEMANTIC_WINDOW_V1 = WFCLLMMethodPreset(
             "encoder_id": "semantic-encoder-local-v1",
             "lsh": {
                 "d": 12,
-                "gamma": 0.45,
+                "gamma": 0.25,
                 "margin": 0.0,
                 "key_derivation_version": "wfcllm-parent-key/v1",
             },
@@ -82,10 +83,10 @@ _GATED_SEMANTIC_WINDOW_V1 = WFCLLMMethodPreset(
     semantic_lsh={
         "rule_name": "semantic_lsh",
         "lsh_d": 12,
-        "lsh_gamma": 0.45,
+        "lsh_gamma": 0.25,
         "semantic_margin": 0.0,
         "use_ordinal_keying": False,
-        "evidence_channels": 1,
+        "evidence_channels": 4,
     },
     detector={
         "mode": "wfcllm-gated-semantic-window/v1",
@@ -95,8 +96,8 @@ _GATED_SEMANTIC_WINDOW_V1 = WFCLLMMethodPreset(
         "abstain_policy": "exclude_from_denominator",
     },
     calibration={
-        "method": "pooled_negative_binomial_right_tail",
-        "group_by": "pooled_binomial_tail",
+        "method": "pooled_negative_empirical_hit_rate_quantile",
+        "group_by": "pooled_reliable_hit_rate_quantile",
         "target_fpr": 0.05,
         "target_negative_count": 100,
     },
@@ -120,8 +121,8 @@ _GATED_SEMANTIC_WINDOW_V1 = WFCLLMMethodPreset(
         "learning_curve_group_counts": ["full"],
         "window_lengths": [1, 2, 3],
         "candidate_zero": "original_window",
-        "rewrite_count": 3,
-        "rewrite_budgets": [1, 3],
+        "rewrite_count": 18,
+        "rewrite_budgets": [1, 3, 6, 12, 18],
         "training_key_count": 32,
         "training_key_bank_file_parameter": "training_key_bank_file",
         "training_key_bank_manifest_sha256": None,

@@ -67,6 +67,7 @@ def test_keyblind_cpp_rewriter_emits_parseable_equivalent_variants() -> None:
     request = RewriteRequest(
         prompt="rewrite",
         completed_prefix="int f() { ",
+        completed_suffix=" }\n",
         original_window=unit.text,
         canonical_parent=canonical_parent,
         window_start_unit_id=unit.unit_id,

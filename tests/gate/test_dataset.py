@@ -418,8 +418,8 @@ def test_group_sampler_seed_controls_group_order() -> None:
 
 def test_group_sampler_rejects_missing_context_duplicate_and_small_batch() -> None:
     complete = _complete_groups()[:3]
-    with pytest.raises(ValueError, match="contexts 1, 2, and 3"):
-        GroupConsistencyBatchSampler(complete[:2], batch_size=3)
+    with pytest.raises(ValueError, match="configured context prefix"):
+        GroupConsistencyBatchSampler([*complete, *_complete_groups()[3:5]], batch_size=3)
     with pytest.raises(ValueError, match="duplicate variant_id"):
         GroupConsistencyBatchSampler([*complete, complete[0]], batch_size=4)
     with pytest.raises(ValueError, match="cannot fit group"):
@@ -472,6 +472,34 @@ def test_group_sampler_rejects_incomplete_budget_cohort() -> None:
     ]
     with pytest.raises(ValueError, match="each budget cohort"):
         GroupConsistencyBatchSampler(items, batch_size=6)
+
+
+def test_group_sampler_accepts_smaller_configured_context_prefixes() -> None:
+    one_context = [
+        example(group_id="one", context_length=1, variant_id="one-1"),
+        example(group_id="two", context_length=1, variant_id="two-1"),
+    ]
+    assert list(GroupConsistencyBatchSampler(one_context, batch_size=2, seed=4))
+
+    two_contexts = [
+        example(
+            group_id=group,
+            context_length=context,
+            variant_id=f"{group}-{context}",
+        )
+        for group in ("one", "two")
+        for context in (1, 2)
+    ]
+    batches = list(GroupConsistencyBatchSampler(two_contexts, batch_size=4, seed=4))
+
+    assert batches
+    for batch in batches:
+        for group in {two_contexts[index].group_id for index in batch}:
+            assert {
+                two_contexts[index].context_length
+                for index in batch
+                if two_contexts[index].group_id == group
+            } == {1, 2}
 
 
 def test_group_sampler_rejects_multiple_window_starts_within_group() -> None:

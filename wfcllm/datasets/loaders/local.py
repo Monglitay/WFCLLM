@@ -87,7 +87,7 @@ def _slice_prompt_rows(
 
 
 def load_mbpp_generation_samples(dataset_path: str) -> list[dict]:
-    """Load MBPP rows with leakage-safe callable interface prompts."""
+    """Load the official MBPP test split with callable interface prompts."""
     path = str(Path(dataset_path) / "mbpp")
     ds = load_dataset(
         "google-research-datasets/mbpp",
@@ -96,35 +96,36 @@ def load_mbpp_generation_samples(dataset_path: str) -> list[dict]:
         download_mode="reuse_cache_if_exists",
         download_config=_offline_download_config(),
     )
+    if "test" not in ds:
+        raise ValueError("MBPP generation requires the official test split")
     rows = []
-    for split in ds:
-        for item in ds[split]:
-            prompt, interface = build_mbpp_generation_prompt(
-                item["text"],
-                item["test_list"],
-            )
-            rows.append(
-                {
-                    "id": f"mbpp/{item['task_id']}",
-                    "prompt": prompt,
-                    "interface_extraction_status": (
-                        "interface_aware" if interface is not None else "fallback"
-                    ),
-                    "interface_function_name": (
-                        interface.function_name if interface is not None else None
-                    ),
-                    "interface_positional_arities": (
-                        list(interface.positional_arities)
-                        if interface is not None
-                        else []
-                    ),
-                    "interface_helper_classes": (
-                        list(interface.helper_classes)
-                        if interface is not None
-                        else []
-                    ),
-                }
-            )
+    for item in ds["test"]:
+        prompt, interface = build_mbpp_generation_prompt(
+            item["text"],
+            item["test_list"],
+        )
+        rows.append(
+            {
+                "id": f"mbpp/{item['task_id']}",
+                "prompt": prompt,
+                "interface_extraction_status": (
+                    "interface_aware" if interface is not None else "fallback"
+                ),
+                "interface_function_name": (
+                    interface.function_name if interface is not None else None
+                ),
+                "interface_positional_arities": (
+                    list(interface.positional_arities)
+                    if interface is not None
+                    else []
+                ),
+                "interface_helper_classes": (
+                    list(interface.helper_classes)
+                    if interface is not None
+                    else []
+                ),
+            }
+        )
     return rows
 
 

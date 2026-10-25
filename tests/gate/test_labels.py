@@ -93,6 +93,19 @@ def _trajectory(
     )
 
 
+def test_late_hit_remains_in_full_budget_without_inflating_r3(
+    observation_factory: Callable[..., CandidateObservation],
+) -> None:
+    candidates = tuple(observation_factory(index=index, hit_keys=range(32) if index == 18 else ())
+                       for index in range(19))
+    labels = build_gate_labels(candidates, training_key_count=32,
+                               rewrite_budgets=(1, 3, 6, 12, 18))
+    assert labels.budgets[3].success_rate == 0.0
+    assert set(labels.budgets[3].first_hit_by_key_id.values()) == {None}
+    assert labels.budgets[18].success_rate == 1.0
+    assert set(labels.budgets[18].first_hit_by_key_id.values()) == {18}
+
+
 def test_r1_and_r3_are_prefixes_of_one_candidate_trajectory(
     observation_factory: Callable[..., CandidateObservation],
 ) -> None:

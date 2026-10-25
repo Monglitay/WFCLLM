@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
+import pytest
+
 from wfcllm.gate.data import RewriteRequest, StructuralBoundary
 from wfcllm.generation.window_rewriter import (
     CausalWindowRewriter,
@@ -59,6 +63,121 @@ def test_causal_rewriter_returns_complete_parser_checked_window() -> None:
     assert set(backend.calls[0]) == {
         "prompt", "completed_prefix", "original_window", "candidate_index", "max_units"
     }
+
+
+@pytest.mark.parametrize("header", ["for (int i = 0; i < limit; ++i) {", "if (limit > 0) {"])
+def test_cpp_header_identity_uses_source_suffix_only_for_parser_context(header: str) -> None:
+    from wfcllm.gate.data import _make_request
+    from wfcllm.windowing import get_statement_unit_extractor
+
+    prefix = "int dev_sum(int limit) {\n    int total = 0;\n    "
+    suffix = "\n        total += 1;\n    }\n    return total;\n}\n"
+    source = prefix + header + suffix
+    extractor = get_statement_unit_extractor("cpp")
+    units = tuple(extractor.extract(source))
+    selected = next(unit for unit in units if unit.text == header)
+    request = _make_request(
+        units, start_index=units.index(selected), window=(selected,), prompt="development",
+        source_bytes=source.encode("utf-8"), window_contract_version="cpp-statement-window/v1",
+    )
+
+    class IdentityBackend:
+        def __init__(self):
+            self.calls = []
+
+        def generate_window(self, **kwargs):
+            self.calls.append(kwargs)
+            return RewriteGeneration((), kwargs["original_window"], "identity", "identity")
+
+    backend = IdentityBackend()
+    result = CausalWindowRewriter(
+        backend, extractor=extractor, window_contract_version="cpp-statement-window/v1"
+    ).rewrite_window(request, candidate_index=1)
+    assert request.completed_suffix == suffix
+    assert result.parse_status == "ok"
+    assert result.unit_count == 1
+    assert result.same_parent_scope is True
+    assert "completed_suffix" not in backend.calls[0]
+    assert result.text == header
+    incomplete = CausalWindowRewriter(
+        IdentityBackend(), extractor=extractor, window_contract_version="cpp-statement-window/v1"
+    ).rewrite_window(replace(request, completed_suffix=""), candidate_index=1)
+    assert incomplete.parse_status == "parse_error"
+
+    class ExpandedBackend:
+        def generate_window(self, **kwargs):
+            return RewriteGeneration((), kwargs["original_window"]+" int extra = 1; }", "expanded", "expanded")
+
+    expanded = CausalWindowRewriter(
+        ExpandedBackend(), extractor=extractor, window_contract_version="cpp-statement-window/v1"
+    ).rewrite_window(request, candidate_index=1)
+    assert expanded.parse_status != "ok"
+
+
+@pytest.mark.parametrize("header", ["for (int i = 0; i < limit; ++i) {", "if (limit > 0) {"])
+def test_cpp_header_rejects_recovered_statement_when_complete_program_is_malformed(header: str) -> None:
+    from wfcllm.gate.data import _make_request
+    from wfcllm.lang.cpp.parser import CppParser
+    from wfcllm.windowing import get_statement_unit_extractor
+
+    prefix = "int dev_sum(int limit) {\n    int total = 0;\n    "
+    suffix = "\n        total += 1;\n    }\n    return total;\n}\n"
+    source = prefix + header + suffix
+    extractor = get_statement_unit_extractor("cpp")
+    units = tuple(extractor.extract(source))
+    selected = next(unit for unit in units if unit.text == header)
+    request = _make_request(
+        units, start_index=units.index(selected), window=(selected,), prompt="development",
+        source_bytes=source.encode("utf-8"), window_contract_version="cpp-statement-window/v1",
+    )
+    candidate = header + "\n    // unchanged block\n}\n"
+    assert CppParser().parse(prefix + candidate + suffix).root_node.has_error
+
+    class Backend:
+        def generate_window(self, **kwargs):
+            return RewriteGeneration((1, 2), candidate, "closed-block", "development")
+
+    result = CausalWindowRewriter(
+        Backend(), extractor=extractor, window_contract_version="cpp-statement-window/v1"
+    ).rewrite_window(request, candidate_index=1)
+    assert result.parse_status == "parse_error"
+    assert result.token_ids == (1, 2)
+    assert result.text == candidate
+
+
+@pytest.mark.parametrize("broken_prefix", [False, True])
+def test_cpp_rewrite_preserves_existing_errors_outside_the_edit(broken_prefix: bool) -> None:
+    from wfcllm.gate.data import _make_request
+    from wfcllm.lang.cpp.parser import CppParser
+    from wfcllm.windowing import get_statement_unit_extractor
+
+    prefix = ("int broken = ;\n" if broken_prefix else "") + "int stable(int value) { "
+    original = "return value;"
+    suffix = " }\n" + ("" if broken_prefix else "int main(){ int unfinished = ;\n")
+    source = prefix + original + suffix
+    assert CppParser().parse(source).root_node.has_error
+    extractor = get_statement_unit_extractor("cpp")
+    units = tuple(extractor.extract(source))
+    selected = next(unit for unit in units if unit.text == original)
+    request = _make_request(
+        units, start_index=units.index(selected), window=(selected,), prompt="authored development",
+        source_bytes=source.encode("utf-8"), window_contract_version="cpp-statement-window/v1",
+    )
+
+    class Backend:
+        def __init__(self, candidate):
+            self.candidate = candidate
+
+        def generate_window(self, **kwargs):
+            return RewriteGeneration((1,), self.candidate, "context-errors", "development")
+
+    for candidate, expected in [("return (value);", "ok"), ("return value; }", "parse_error")]:
+        result = CausalWindowRewriter(
+            Backend(candidate), extractor=extractor, window_contract_version="cpp-statement-window/v1"
+        ).rewrite_window(request, candidate_index=1)
+        assert result.parse_status == expected
+        assert CppParser().parse(prefix + candidate + suffix).root_node.has_error
+        assert result.text == candidate
 
 
 def test_causal_rewriter_rejects_hidden_candidate_pool_size() -> None:

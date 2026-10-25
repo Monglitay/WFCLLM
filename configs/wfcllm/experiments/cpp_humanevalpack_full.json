@@ -5,7 +5,8 @@
       "contract_version": "cpp-statement-window/v1"
     },
     "rewrite": {
-      "strategy": "model_semantic_window"
+      "strategy": "cpp_structural_equivalent",
+      "max_new_tokens": 128
     },
     "semantic": {
       "parent_descriptor_version": "cpp-statement-window/v1"
@@ -19,7 +20,7 @@
   "semantic_lsh": {
     "rule_name": "semantic_lsh",
     "lsh_d": 12,
-    "lsh_gamma": 0.45
+    "lsh_gamma": 0.25
   },
   "experiment": {
     "profile": "full"

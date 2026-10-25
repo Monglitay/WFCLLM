@@ -49,6 +49,8 @@ def semantic_region_diversity_loss(
     positive_cosine_min: float = 0.80,
     negative_cosine_max: float = 0.30,
     plane_margin: float = 0.02,
+    semantic_weight: float = 1.0,
+    prototype_weight: float = 8.0,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     """Keep variants semantically close while making public LSH codes orthogonal.
 
@@ -96,10 +98,10 @@ def semantic_region_diversity_loss(
     signed_prototype_responses = responses[:, :, :4] * prototypes.unsqueeze(0)
     prototype_loss = F.relu(0.05 - signed_prototype_responses).mean()
     total = (
-        semantic_loss
+        semantic_weight * semantic_loss
         + negative_loss
         + 2.0 * orthogonality_loss
-        + 8.0 * prototype_loss
+        + prototype_weight * prototype_loss
         + margin_loss
         + 0.1 * balance_loss
     )

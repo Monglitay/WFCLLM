@@ -217,6 +217,7 @@ def test_rewrite_request_is_key_blind_and_contains_only_public_context() -> None
     assert set(payload) == {
         "prompt",
         "completed_prefix",
+        "completed_suffix",
         "original_window",
         "canonical_parent",
         "window_start_unit_id",

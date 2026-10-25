@@ -69,3 +69,9 @@ models、datasets、keys、Gate cache、source catalogs、checkpoints、run tree
 离线 pytest、compileall、preflight 和 shell syntax 只证明实现与合同可执行。
 只有五个 Full Reproduction Profile 在真实模型、真实数据、私有 key 和 GPU 上
 完整跑完，才构成科学复现。报告中必须明确区分这两者。
+
+当前迁移诊断口径固定为每个 run 100 条样本，且所有失败和 insufficient-evidence
+记录保留在完整分母中。17 个 authored development programs 产生的 306 个候选
+试验不属于 benchmark 样本。最佳完整 run 与 canonical 配置身份见
+`docs/BEST_RESULTS.md`；本地/服务器 cleanup 备份中的旧 run 不属于当前输入，
+不得恢复旧 state、Gate Bundle 或 candidate schema。

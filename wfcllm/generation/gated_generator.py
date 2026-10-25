@@ -389,15 +389,24 @@ class GatedGenerator:
         units = self._extractor.extract(original)
         if not units:
             return GatedGenerationResult(original + suffix, ())
-        partition = self._partitioner.partition(units)
         source = original.encode("utf-8")
         output = bytearray()
         cursor = 0
         audit: list[GatedWindowAudit] = []
         candidate_audit: list[GatedCandidateAudit] = []
-        unit_index_by_id = {unit.unit_id: index for index, unit in enumerate(units)}
-
-        for window_index, window in enumerate(partition.windows):
+        window_index = 0
+        while True:
+            units = self._extractor.extract(source.decode("utf-8"))
+            partition = self._partitioner.partition(units)
+            window = next(
+                (item for item in partition.windows if item.start_byte >= cursor),
+                None,
+            )
+            if window is None:
+                break
+            unit_index_by_id = {
+                unit.unit_id: index for index, unit in enumerate(units)
+            }
             output.extend(source[cursor : window.start_byte])
             prefix = protected_prefix if window_index == 0 and protected_prefix else ""
             prefix_bytes = prefix.encode("utf-8")
@@ -464,6 +473,11 @@ class GatedGenerator:
                     prompt=prompt,
                     completed_prefix=source[:rollback_anchor].decode("utf-8"),
                     original_window=rewrite_window,
+                    completed_suffix=(
+                        source[window.end_byte :].decode("utf-8") + suffix
+                        if self._window_contract_version == "cpp-statement-window/v1"
+                        else ""
+                    ),
                     window=window,
                     hard_boundary_after=compute_hard_boundary_after(
                         units,
@@ -488,6 +502,9 @@ class GatedGenerator:
                         candidate=candidate,
                         protected_prefix=prefix,
                         original_window=window,
+                        completed_suffix=(
+                            source[window.end_byte :].decode("utf-8") + suffix
+                        ),
                     )
                     evidence = None
                     semantic_preservation_cosine = None
@@ -495,9 +512,12 @@ class GatedGenerator:
                     semantic_validation_rule = None
                     if checked is not None:
                         candidate_units, candidate_window = checked
-                        candidate_semantic_text = "".join(
-                            unit.text for unit in candidate_units
-                        )
+                        candidate_source = (
+                            request.completed_prefix + candidate.text
+                        ).encode("utf-8")
+                        candidate_semantic_text = candidate_source[
+                            candidate_window.start_byte : candidate_window.end_byte
+                        ].decode("utf-8")
                         semantic_comparison = self._compare_semantics(
                             reference_text=original_semantic_text,
                             candidate_text=candidate_semantic_text,
@@ -651,7 +671,9 @@ class GatedGenerator:
                     semantic_validation_rule=selected_semantic_validation_rule,
                 )
             )
-            cursor = replacement_end
+            source = bytes(output) + source[replacement_end:]
+            cursor = len(output)
+            window_index += 1
 
         output.extend(source[cursor:])
         output.extend(suffix.encode("utf-8"))
@@ -667,11 +689,12 @@ class GatedGenerator:
         self, request: RewriteRequest
     ) -> tuple[RewriteTokens, ...] | None:
         rewrite_many = getattr(self._rewriter, "rewrite_windows", None)
-        if not callable(rewrite_many):
+        if not callable(rewrite_many) or self._max_rewrites == 0:
             return None
-        values = rewrite_many(request, candidate_indices=(1, 2, 3))
-        if not isinstance(values, tuple) or len(values) != 3:
-            raise ValueError("rewriter must return the exact A/B/C trajectory")
+        candidate_indices = tuple(range(1, self._max_rewrites + 1))
+        values = rewrite_many(request, candidate_indices=candidate_indices)
+        if not isinstance(values, tuple) or len(values) != len(candidate_indices):
+            raise ValueError("rewriter must return the configured rewrite trajectory")
         output: list[RewriteTokens] = []
         for value in values:
             if isinstance(value, RewriteTokens):
@@ -740,17 +763,26 @@ class GatedGenerator:
         candidate: RewriteTokens,
         protected_prefix: str,
         original_window: SemanticWindow,
+        completed_suffix: str = "",
     ) -> tuple[tuple[Any, ...], SemanticWindow] | None:
+        if candidate.parse_status is not None and candidate.parse_status != "ok":
+            return None
+        if candidate.unit_count is not None and candidate.unit_count != len(original_window.units):
+            return None
+        if candidate.same_parent_scope is False:
+            return None
         if not candidate.text.startswith(protected_prefix):
             return None
-        source = completed_prefix + candidate.text
+        source = completed_prefix + candidate.text + completed_suffix
         start_byte = len(completed_prefix.encode("utf-8")) + len(
             protected_prefix.encode("utf-8")
         )
+        candidate_end = len((completed_prefix + candidate.text).encode("utf-8"))
+        all_units = tuple(self._extractor.extract(source))
         units = tuple(
             unit
-            for unit in self._extractor.extract(source)
-            if unit.start_byte >= start_byte
+            for unit in all_units
+            if unit.start_byte >= start_byte and unit.end_byte <= candidate_end
         )
         if (
             len(units) != len(original_window.units)
@@ -773,11 +805,17 @@ class GatedGenerator:
             return None
         if original_first.compound_header and units[0].node_type != original_first.node_type:
             return None
-        partition = self._partitioner.partition(list(units))
-        if len(partition.windows) != 1:
+        partition = self._partitioner.partition(list(all_units))
+        matching = [
+            window for window in partition.windows if tuple(window.units) == units
+        ]
+        if len(matching) != 1:
             return None
-        closed = partition.windows[0]
-        if tuple(closed.units) != units or not closed.suitable:
+        closed = matching[0]
+        if (
+            not closed.suitable
+            or closed.parent_descriptor != original_window.parent_descriptor
+        ):
             return None
         return units, closed
 
@@ -808,10 +846,12 @@ class GatedGenerator:
                     "semantic channel evidence count does not match config"
                 )
             stable = all(bool(item.stable) for item in channels)
+            hit_count = sum(1 for item in channels if bool(item.hit))
             evidence = _CombinedSemanticEvidence(
-                hit=stable and all(bool(item.hit) for item in channels),
+                hit=stable
+                and hit_count >= _multi_channel_hit_quorum(self._evidence_channels),
                 stable=stable,
-                margin=min(float(item.margin) for item in channels),
+                margin=max(float(item.margin) for item in channels),
                 signature=tuple(channels[0].signature),
             )
         if not all(hasattr(evidence, name) for name in ("hit", "stable", "margin")):
@@ -851,6 +891,14 @@ def _attempt(
         semantic_stable=bool(evidence is not None and evidence.stable),
         semantic_margin=float(evidence.margin if evidence is not None else 0.0),
     )
+
+
+def _multi_channel_hit_quorum(channel_count: int) -> int:
+    """Minimum channel hits generation needs before accepting a rewrite."""
+
+    if channel_count <= 1:
+        return 1
+    return max(2, math.ceil(channel_count / 2))
 
 
 def _candidate_audit(
@@ -902,11 +950,13 @@ def _rewrite_request(
     original_window: str,
     window: SemanticWindow,
     hard_boundary_after: bool,
+    completed_suffix: str = "",
 ) -> RewriteRequest:
     first = window.units[0]
     return RewriteRequest(
         prompt=prompt,
         completed_prefix=completed_prefix,
+        completed_suffix=completed_suffix,
         original_window=original_window,
         canonical_parent=window.parent_descriptor.canonical,
         window_start_unit_id=first.unit_id,

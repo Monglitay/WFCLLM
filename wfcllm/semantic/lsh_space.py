@@ -57,7 +57,8 @@ def sign_with_planes(
     if planes.shape[1] != embedding.shape[0]:
         raise ValueError("embedding and planes dimensions must match")
     normalized = F.normalize(embedding.float(), dim=0)
-    return tuple(int(value >= 0) for value in planes.float() @ normalized)
+    aligned_planes = planes.to(device=normalized.device).float()
+    return tuple(int(value >= 0) for value in aligned_planes @ normalized)
 
 
 def min_margin_with_planes(
@@ -68,4 +69,5 @@ def min_margin_with_planes(
     if planes.shape[1] != embedding.shape[0]:
         raise ValueError("embedding and planes dimensions must match")
     normalized = F.normalize(embedding.float(), dim=0)
-    return float(torch.min(torch.abs(planes.float() @ normalized)).item())
+    aligned_planes = planes.to(device=normalized.device).float()
+    return float(torch.min(torch.abs(aligned_planes @ normalized)).item())

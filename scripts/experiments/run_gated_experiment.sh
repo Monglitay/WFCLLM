@@ -19,7 +19,12 @@ if [[ -z "${CONDA_EXE}" ]]; then
   echo "conda is required to run the WFCLLM environment" >&2
   exit 2
 fi
-RUN_PY=("${CONDA_EXE}" run -n WFCLLM python)
+WFCLLM_CONDA_PREFIX="${WFCLLM_CONDA_PREFIX:-}"
+if [[ -n "${WFCLLM_CONDA_PREFIX}" ]]; then
+  RUN_PY=("${CONDA_EXE}" run -p "${WFCLLM_CONDA_PREFIX}" python)
+else
+  RUN_PY=("${CONDA_EXE}" run -n WFCLLM python)
+fi
 
 : "${GENERATION_MODEL_PATH:?set GENERATION_MODEL_PATH to a local HF code model}"
 REWRITE_MODEL_PATH="${REWRITE_MODEL_PATH:-}"
@@ -35,14 +40,27 @@ TEST_NEGATIVE_INPUT="${TEST_NEGATIVE_INPUT:-}"
 ABLATION_TRAINING_KEY_BANK="${ABLATION_TRAINING_KEY_BANK:-}"
 ABLATION_HOLDOUT_KEY_BANK="${ABLATION_HOLDOUT_KEY_BANK:-}"
 ABLATION_DEPLOYMENT_KEY="${ABLATION_DEPLOYMENT_KEY:-}"
-if [[ -n "${ABLATION_SPEC}" && -z "${TEST_NEGATIVE_INPUT}" ]]; then
-  echo "set TEST_NEGATIVE_INPUT for Supplementary Ablation actual FPR" >&2
+SUPPLEMENTARY_EXPERIMENT_SPEC="${SUPPLEMENTARY_EXPERIMENT_SPEC:-}"
+SUPPLEMENTARY_TRAINING_KEY_BANK="${SUPPLEMENTARY_TRAINING_KEY_BANK:-${ABLATION_TRAINING_KEY_BANK}}"
+SUPPLEMENTARY_HOLDOUT_KEY_BANK="${SUPPLEMENTARY_HOLDOUT_KEY_BANK:-${ABLATION_HOLDOUT_KEY_BANK}}"
+SUPPLEMENTARY_DEPLOYMENT_KEY="${SUPPLEMENTARY_DEPLOYMENT_KEY:-${ABLATION_DEPLOYMENT_KEY}}"
+if [[ -n "${ABLATION_SPEC}" && -n "${SUPPLEMENTARY_EXPERIMENT_SPEC}" ]]; then
+  echo "ABLATION_SPEC and SUPPLEMENTARY_EXPERIMENT_SPEC are mutually exclusive" >&2
+  exit 2
+fi
+if [[ -n "${ABLATION_SPEC}${SUPPLEMENTARY_EXPERIMENT_SPEC}" && -z "${TEST_NEGATIVE_INPUT}" ]]; then
+  echo "set TEST_NEGATIVE_INPUT for Supplementary study actual FPR" >&2
   exit 2
 fi
 if [[ -n "${ABLATION_SPEC}" ]]; then
   : "${ABLATION_TRAINING_KEY_BANK:?set ABLATION_TRAINING_KEY_BANK to the family-shared private bank}"
   : "${ABLATION_HOLDOUT_KEY_BANK:?set ABLATION_HOLDOUT_KEY_BANK to the family-shared private bank}"
   : "${ABLATION_DEPLOYMENT_KEY:?set ABLATION_DEPLOYMENT_KEY to the family-shared private key}"
+fi
+if [[ -n "${SUPPLEMENTARY_EXPERIMENT_SPEC}" ]]; then
+  : "${SUPPLEMENTARY_TRAINING_KEY_BANK:?set SUPPLEMENTARY_TRAINING_KEY_BANK to the family-shared private bank}"
+  : "${SUPPLEMENTARY_HOLDOUT_KEY_BANK:?set SUPPLEMENTARY_HOLDOUT_KEY_BANK to the family-shared private bank}"
+  : "${SUPPLEMENTARY_DEPLOYMENT_KEY:?set SUPPLEMENTARY_DEPLOYMENT_KEY to the study private key}"
 fi
 : "${PILOT_SOURCE_CATALOG:?set PILOT_SOURCE_CATALOG for a full run}"
 : "${FULL_SOURCE_CATALOG:?set FULL_SOURCE_CATALOG for a full run}"
@@ -53,6 +71,7 @@ fi
 
 # Run public-contract validation before creating any private experiment state.
 DATASET_PATH="${DATASET_PATH:-data/datasets}"
+POSTHOC_STDLIB_PATH="${POSTHOC_STDLIB_PATH:-}"
 PREFLIGHT_RESOURCES=(
   --check-runtime-resources
   --generation-model-path "${GENERATION_MODEL_PATH}"
@@ -75,6 +94,15 @@ if [[ -n "${ABLATION_SPEC}" ]]; then
     --deployment-key "${ABLATION_DEPLOYMENT_KEY}"
   )
 fi
+if [[ -n "${SUPPLEMENTARY_EXPERIMENT_SPEC}" ]]; then
+  PREFLIGHT_RESOURCES+=(
+    --supplementary-experiment-spec "${SUPPLEMENTARY_EXPERIMENT_SPEC}"
+    --test-negative-input "${TEST_NEGATIVE_INPUT}"
+    --training-key-bank "${SUPPLEMENTARY_TRAINING_KEY_BANK}"
+    --holdout-key-bank "${SUPPLEMENTARY_HOLDOUT_KEY_BANK}"
+    --deployment-key "${SUPPLEMENTARY_DEPLOYMENT_KEY}"
+  )
+fi
 env PYTHONPATH=. HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
   "${RUN_PY[@]}" -m wfcllm.cli.experiment_preflight \
   --config "${WFCLLM_CONFIG}" \
@@ -84,6 +112,9 @@ env PYTHONPATH=. HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
   --check-runtime-capabilities \
   "${PREFLIGHT_RESOURCES[@]}"
 
+if [[ "${WFCLLM_LANGUAGE}" == "python" ]]; then
+  : "${POSTHOC_STDLIB_PATH:?set POSTHOC_STDLIB_PATH to a read-only standard-library snapshot}"
+fi
 ROOT="${EXPERIMENT_ROOT:-data/experiments/${WFCLLM_LANGUAGE}-${WFCLLM_DATASET}-${WFCLLM_PROFILE}}"
 if [[ -e "${ROOT}" ]]; then
   echo "Fresh Reproduction Run requires a new EXPERIMENT_ROOT: ${ROOT}" >&2
@@ -112,6 +143,15 @@ if [[ -n "${ABLATION_SPEC}" ]]; then
   PILOT_TRAINING_KEYS="${ABLATION_TRAINING_KEY_BANK}"
   PILOT_HOLDOUT_KEYS="${ABLATION_HOLDOUT_KEY_BANK}"
   PILOT_DEPLOYMENT_KEY="${ABLATION_DEPLOYMENT_KEY}"
+  PREPARE_PRIVATE_MODE=(--reuse-private-resources)
+fi
+if [[ -n "${SUPPLEMENTARY_EXPERIMENT_SPEC}" ]]; then
+  TRAINING_KEYS="${SUPPLEMENTARY_TRAINING_KEY_BANK}"
+  HOLDOUT_KEYS="${SUPPLEMENTARY_HOLDOUT_KEY_BANK}"
+  DEPLOYMENT_KEY="${SUPPLEMENTARY_DEPLOYMENT_KEY}"
+  PILOT_TRAINING_KEYS="${SUPPLEMENTARY_TRAINING_KEY_BANK}"
+  PILOT_HOLDOUT_KEYS="${SUPPLEMENTARY_HOLDOUT_KEY_BANK}"
+  PILOT_DEPLOYMENT_KEY="${SUPPLEMENTARY_DEPLOYMENT_KEY}"
   PREPARE_PRIVATE_MODE=(--reuse-private-resources)
 fi
 
@@ -157,6 +197,12 @@ if [[ -n "${ABLATION_SPEC}" ]]; then
     --test-negative-input "${TEST_NEGATIVE_INPUT}"
   )
 fi
+if [[ -n "${SUPPLEMENTARY_EXPERIMENT_SPEC}" ]]; then
+  COMMON+=(
+    --supplementary-experiment-spec "${SUPPLEMENTARY_EXPERIMENT_SPEC}"
+    --test-negative-input "${TEST_NEGATIVE_INPUT}"
+  )
+fi
 
 OFFLINE=(PYTHONPATH=. HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1)
 run_phase() {
@@ -191,6 +237,12 @@ if [[ -n "${ABLATION_SPEC}" ]]; then
     --test-negative-input "${TEST_NEGATIVE_INPUT}"
   )
 fi
+if [[ -n "${SUPPLEMENTARY_EXPERIMENT_SPEC}" ]]; then
+  PILOT_COMMON+=(
+    --supplementary-experiment-spec "${SUPPLEMENTARY_EXPERIMENT_SPEC}"
+    --test-negative-input "${TEST_NEGATIVE_INPUT}"
+  )
+fi
 env "${OFFLINE[@]}" "${RUN_PY[@]}" run.py --phase encoder "${PILOT_COMMON[@]}"
 env "${OFFLINE[@]}" "${RUN_PY[@]}" run.py --phase gate-data \
   "${PILOT_COMMON[@]}" --gate-data-scale pilot \
@@ -210,11 +262,32 @@ run_phase gate-train "${GATE_TRAIN_ARGS[@]}"
 run_phase generate --model-device cuda --gate-device cpu
 run_phase calibrate --negative-input "${NEGATIVE_INPUT}" --model-device cuda --gate-device cpu
 run_phase detect --model-device cuda --gate-device cpu
+if [[ "${WFCLLM_LANGUAGE}" == "python" ]]; then
+  POSTHOC_CORRECTNESS="${ROOT}/posthoc/correctness.jsonl"
+  env "${OFFLINE[@]}" "${RUN_PY[@]}" scripts/evaluate.py \
+    --generated-input "${RUN_DIR}/inputs/final_code.jsonl" \
+    --dataset "${WFCLLM_DATASET}" \
+    --dataset-path "${DATASET_PATH}" \
+    --correctness-output "${POSTHOC_CORRECTNESS}" \
+    --sandbox-stdlib-path "${POSTHOC_STDLIB_PATH}" \
+    --output "${RUN_DIR}/reports/pass_report_posthoc.json"
+elif [[ "${WFCLLM_LANGUAGE}" == "cpp" || "${WFCLLM_LANGUAGE}" == "java" || "${WFCLLM_LANGUAGE}" == "js" ]]; then
+  env "${OFFLINE[@]}" "${RUN_PY[@]}" scripts/evaluate.py \
+    --generated-input "${RUN_DIR}/inputs/final_code.jsonl" \
+    --language "${WFCLLM_LANGUAGE}" --dataset humanevalpack --dataset-path "${DATASET_PATH}" \
+    --correctness-output "${ROOT}/posthoc/correctness.jsonl" \
+    --output "${RUN_DIR}/reports/pass_report_posthoc.json"
+fi
 run_phase report
 run_phase audit
 
+METRIC_CONTRACT_ARGS=()
+if [[ -n "${WFCLLM_SMOKE_SAMPLE_COUNT:-}" ]]; then
+  METRIC_CONTRACT_ARGS+=(--allow-diagnostic-smoke)
+fi
 env "${OFFLINE[@]}" "${RUN_PY[@]}" scripts/wfcllm_metric_contract.py \
   --run-dir "${RUN_DIR}" \
-  --output "${RUN_DIR}/reports/metric_contract.jsonl"
+  --output "${RUN_DIR}/reports/metric_contract.jsonl" \
+  "${METRIC_CONTRACT_ARGS[@]}"
 
 echo "completed: ${RUN_DIR}"

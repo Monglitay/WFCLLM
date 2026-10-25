@@ -28,6 +28,7 @@ def resolve_method_config(
     config: Mapping[str, object],
     *,
     supplementary_ablation: Mapping[str, object] | None = None,
+    supplementary_experiment: Mapping[str, object] | None = None,
 ) -> dict:
     """Expand a named public method config against its canonical preset."""
 
@@ -46,11 +47,29 @@ def resolve_method_config(
     experiment = config.get("experiment")
     if isinstance(experiment, Mapping):
         resolved = _resolve_experiment_matrix_config(config, merged)
-        if supplementary_ablation is None:
-            return resolved
-        from wfcllm.method.ablation import resolve_supplementary_ablation
+        if supplementary_ablation is not None and supplementary_experiment is not None:
+            raise ValueError(
+                "Supplementary Ablation and Supplementary Experiment specs are mutually exclusive"
+            )
+        if supplementary_ablation is not None:
+            from wfcllm.method.ablation import resolve_supplementary_ablation
 
-        return resolve_supplementary_ablation(resolved, supplementary_ablation)
+            resolved = resolve_supplementary_ablation(resolved, supplementary_ablation)
+            _apply_smoke_runtime_limits(resolved)
+            return resolved
+        if supplementary_experiment is not None:
+            from wfcllm.evaluation.supplementary_experiments import (
+                resolve_supplementary_experiment,
+            )
+
+            resolved = resolve_supplementary_experiment(
+                resolved,
+                supplementary_experiment,
+            )
+            _apply_smoke_runtime_limits(resolved)
+            return resolved
+        _apply_smoke_runtime_limits(resolved)
+        return resolved
     raise ValueError("gated config must declare one full experiment profile")
 
 
@@ -112,6 +131,80 @@ def _resolve_experiment_matrix_config(
     ]
     validate_experiment_config(merged, language, dataset, profile)
     return merged
+
+
+def _apply_smoke_runtime_limits(config: dict) -> None:
+    """Scale local smoke runs without changing the default full profile."""
+
+    from wfcllm.datasets.smoke import (
+        smoke_encoder_train_epochs_from_env,
+        smoke_gate_data_groups_from_env,
+        smoke_gate_train_epochs_from_env,
+        smoke_sample_count_from_env,
+    )
+
+    smoke_count = smoke_sample_count_from_env()
+    if smoke_count is None:
+        return
+    smoke_gate_data_groups = smoke_gate_data_groups_from_env()
+    smoke_gate_train_epochs = smoke_gate_train_epochs_from_env()
+    runtime = config.setdefault("runtime", {})
+    if not isinstance(runtime, dict):
+        raise ValueError("runtime config must be a dict")
+    runtime["smoke_sample_count"] = smoke_count
+    runtime["smoke_encoder_epochs"] = smoke_encoder_train_epochs_from_env() or 1
+
+    calibration = config.get("calibration")
+    if isinstance(calibration, dict):
+        calibration["target_negative_count"] = smoke_count
+    gate_data = config.get("gate_data")
+    if smoke_gate_data_groups is not None:
+        runtime["smoke_gate_data_groups"] = smoke_gate_data_groups
+        if not isinstance(gate_data, dict):
+            raise ValueError("gate_data config must be a dict")
+        for name in (
+            "pilot_independent_group_min",
+            "pilot_independent_group_max",
+            "full_independent_group_min",
+            "full_independent_group_max",
+        ):
+            gate_data[name] = smoke_gate_data_groups
+        thresholds = gate_data.get("feasibility_thresholds")
+        if not isinstance(thresholds, dict):
+            raise ValueError("gate_data.feasibility_thresholds must be a dict")
+        thresholds["pilot_independent_group_min"] = smoke_gate_data_groups
+        thresholds["pilot_independent_group_max"] = smoke_gate_data_groups
+        thresholds["full_independent_group_min"] = smoke_gate_data_groups
+        thresholds["full_independent_group_max"] = smoke_gate_data_groups
+        thresholds["pilot_suitable_positive_min"] = min(
+            thresholds["pilot_suitable_positive_min"],
+            max(1, smoke_gate_data_groups // 10),
+        )
+        thresholds["pilot_suitable_negative_min"] = min(
+            thresholds["pilot_suitable_negative_min"],
+            max(1, smoke_gate_data_groups // 4),
+        )
+        thresholds["full_suitable_positive_min"] = min(
+            thresholds["full_suitable_positive_min"],
+            max(1, smoke_gate_data_groups // 10),
+        )
+        thresholds["full_suitable_negative_min"] = min(
+            thresholds["full_suitable_negative_min"],
+            max(1, smoke_gate_data_groups // 4),
+        )
+        thresholds["window_length_group_min"] = min(
+            thresholds["window_length_group_min"],
+            max(1, smoke_gate_data_groups // 6),
+        )
+        thresholds["major_statement_family_group_min"] = min(
+            thresholds["major_statement_family_group_min"],
+            max(1, smoke_gate_data_groups // 8),
+        )
+    gate_train = config.get("gate_train")
+    if isinstance(gate_train, dict):
+        gate_epochs = smoke_gate_train_epochs or 1
+        gate_train["max_epochs"] = gate_epochs
+        gate_train["early_stopping_patience"] = max(1, min(gate_epochs, 2))
 
 
 def _deep_merge(base: dict, override: dict) -> dict:

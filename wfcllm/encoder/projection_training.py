@@ -1,8 +1,8 @@
 """Per-dataset training of the public semantic projection for the Gate runtime.
 
-Block preparation is language aware: Python uses positive AST rules, while
-C++, Java, and JavaScript use the public equivalent-variant surface shared
-with the window rewriter.
+Block preparation is language aware: Python uses positive AST rules; Java
+and JavaScript use public equivalent variants; C++ uses the exact scored
+windows of its structural rewriter.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from wfcllm.semantic.lsh_space import LSHSpace
 
 PUBLIC_PLANE_ID = "wfcllm-public-window-plane/v1"
 OBJECTIVE_VERSION = "wfcllm-public-region-prototype/v2"
+NATIVE_OBJECTIVE_VERSION = "wfcllm-public-region-cosine-balanced-all-planes/v4"
 _SUPPORTED_LANGUAGES = ("python", "cpp", "java", "js")
 
 
@@ -45,6 +46,7 @@ class ProjectionTrainingSettings:
     output_dir: Path
     language: str = "python"
     epochs: int = 10
+    diagnostic_smoke: bool = False
     batch_size: int = 8
     max_length: int = 128
     max_variants: int = 8
@@ -88,6 +90,15 @@ def _require_supported_language(language: str) -> None:
             "encoder positive samples cannot be built "
             f"(supported: {', '.join(_SUPPORTED_LANGUAGES)})"
         )
+
+
+def _projection_public_planes(language: str, embed_dim: int) -> torch.Tensor:
+    _require_supported_language(language)
+    return LSHSpace(
+        secret_key=PUBLIC_PLANE_ID,
+        embed_dim=embed_dim,
+        d=12 if language == "cpp" else 4,
+    ).planes
 
 
 def _sha256_file(path: Path) -> str:
@@ -196,6 +207,10 @@ def prepare_region_blocks(
             max_variants=max_variants,
             max_perm_len=max_perm_len,
         )
+    if language == "cpp":
+        from wfcllm.encoder.cpp_projection_views import prepare_cpp_runtime_region_blocks
+
+        return prepare_cpp_runtime_region_blocks(records, max_variants=max_variants)
     return _public_variant_region_blocks(
         records,
         language=language,
@@ -317,6 +332,7 @@ def _run_epoch(
     optimizer: AdamW | None,
     scheduler: CosineAnnealingLR | None,
     use_bf16: bool,
+    loss_parameters: Mapping[str, float] | None = None,
 ) -> dict[str, float]:
     training = optimizer is not None
     model.train(training)
@@ -340,6 +356,7 @@ def _run_epoch(
                     embeddings[:, :4, :],
                     embeddings[:, 4, :],
                     planes,
+                    **dict(loss_parameters or {}),
                 )
         if training:
             optimizer.zero_grad(set_to_none=True)
@@ -372,7 +389,7 @@ def train_semantic_projection(settings: ProjectionTrainingSettings) -> dict[str,
         raise ValueError("source catalog must be a local non-symlink file")
     if not model_path.is_dir() or model_path.is_symlink():
         raise ValueError("model path must be a local non-symlink directory")
-    if settings.epochs < 10:
+    if settings.epochs < 10 and not settings.diagnostic_smoke:
         raise ValueError("formal semantic projection training requires at least 10 epochs")
     if output_dir.exists() or output_dir.is_symlink():
         raise ValueError("semantic projection output must be a fresh directory")
@@ -396,10 +413,27 @@ def train_semantic_projection(settings: ProjectionTrainingSettings) -> dict[str,
     split_groups = build.split_groups
 
     catalog_sha256 = _sha256_file(catalog_path)
+    loss_parameters = (
+        {"positive_cosine_min": 0.90, "plane_margin": 0.005,
+         "semantic_weight": 8.0, "prototype_weight": 2.0}
+        if settings.language in {"cpp", "java"} else {}
+    )
+    objective_version = (
+        "wfcllm-public-region-cosine-balanced/v3"
+        if settings.language == "java" else NATIVE_OBJECTIVE_VERSION
+    ) if loss_parameters else OBJECTIVE_VERSION
+    positive_view_policy = (
+        "cpp-runtime-scored-structural/v1" if settings.language == "cpp"
+        else "python-positive-ast/v1" if settings.language == "python"
+        else "public-equivalent-variants/v1"
+    )
     provenance = {
         "schema_version": "wfcllm-semantic-projection-training/v1",
-        "objective_version": OBJECTIVE_VERSION,
+        "objective_version": objective_version,
+        "positive_view_policy": positive_view_policy,
+        "loss_parameters": loss_parameters,
         "public_plane_id": PUBLIC_PLANE_ID,
+        "training_public_plane_count": 12 if settings.language == "cpp" else 4,
         "language": settings.language,
         "catalog_path": str(catalog_path),
         "catalog_sha256": catalog_sha256,
@@ -484,11 +518,7 @@ def train_semantic_projection(settings: ProjectionTrainingSettings) -> dict[str,
         optimizer,
         T_max=max(1, len(loaders["train"]) * settings.epochs),
     )
-    planes = LSHSpace(
-        secret_key=PUBLIC_PLANE_ID,
-        embed_dim=settings.embed_dim,
-        d=4,
-    ).planes.to(device)
+    planes = _projection_public_planes(settings.language, settings.embed_dim).to(device)
     metrics_path = output_dir / "metrics.jsonl"
     best_loss = float("inf")
     best_epoch = 0
@@ -501,6 +531,7 @@ def train_semantic_projection(settings: ProjectionTrainingSettings) -> dict[str,
             optimizer=optimizer,
             scheduler=scheduler,
             use_bf16=config.use_bf16,
+            loss_parameters=loss_parameters,
         )
         validation_metrics = _run_epoch(
             model=model,
@@ -510,6 +541,7 @@ def train_semantic_projection(settings: ProjectionTrainingSettings) -> dict[str,
             optimizer=None,
             scheduler=None,
             use_bf16=config.use_bf16,
+            loss_parameters=loss_parameters,
         )
         row = {
             "epoch": epoch,
@@ -544,6 +576,7 @@ def train_semantic_projection(settings: ProjectionTrainingSettings) -> dict[str,
         optimizer=None,
         scheduler=None,
         use_bf16=config.use_bf16,
+        loss_parameters=loss_parameters,
     )
     report = {
         "schema_version": "wfcllm-semantic-projection-report/v1",
@@ -565,8 +598,10 @@ def train_semantic_projection(settings: ProjectionTrainingSettings) -> dict[str,
 
     manifest = {
         "schema_version": "wfcllm-semantic-encoder-manifest/v1",
-        "objective_version": OBJECTIVE_VERSION,
+        "objective_version": objective_version,
+        "positive_view_policy": positive_view_policy,
         "public_plane_id": PUBLIC_PLANE_ID,
+        "training_public_plane_count": int(planes.shape[0]),
         "language": settings.language,
         "catalog_sha256": catalog_sha256,
         "built_group_counts": build.built_group_counts,

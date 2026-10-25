@@ -1,0 +1,24 @@
+{
+  "snapshot_date": "2026-10-25",
+  "remote_project": "/home/kzl/XDF/WFCLLM-20261019",
+  "kept_fresh_runs": [
+    "cpp-humanevalpack-runtime-v18-bupt-v1",
+    "java-humanevalpack-single-call-v14-bupt-v1",
+    "js-humanevalpack-structural-v6-bupt-v1"
+  ],
+  "kept_resource_dirs": [
+    "resources-java-chat-v2",
+    "resources-java-parallel-v1",
+    "resources-java-v1",
+    "resources-js-catalog-parallel-v3",
+    "resources-js-chat-v2",
+    "resources-js-parallel-v1",
+    "resources-js-v1"
+  ],
+  "moved_top_level_count": 147,
+  "moved_backup": "/home/kzl/XDF/WFCLLM-cleanup-20261025/fresh-runs-moved",
+  "fresh_runs_after_cleanup": "2.8G",
+  "report_writer_stopped": true,
+  "active_gpu_jobs": 0,
+  "backup_is_moved_not_deleted": true
+}

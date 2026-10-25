@@ -156,6 +156,44 @@ def test_generation_audit_is_sidecar_only(tmp_path: Path) -> None:
     assert candidates[0]["keyed_lsh_scored"] is True
 
 
+def test_unfinalized_base_output_is_retained_without_entering_detector_input(tmp_path: Path) -> None:
+    base = _BaseModel("x = 1\n")
+    GatedGenerationPipeline(
+        config=_config(tmp_path), bundle_loader=lambda _p: _bundle(),
+        bundle_hasher=lambda _p: _digest("bundle"), base_model=base,
+        generator=_Generator(), data_adapter=lambda: [{"id": "1", "prompt": "p"}],
+        deployment_key=b"must-not-enter-raw-output",
+    ).run()
+    raw = _read_jsonl(tmp_path / "generation" / "raw_program_outputs.jsonl")[0]
+    final = _read_jsonl(tmp_path / "inputs" / "final_code.jsonl")[0]
+    assert raw["output_source"] == "x = 1\n"
+    assert final["final_code"] == "x = 2\n"
+    assert set(final) == {"id", "dataset", "prompt", "final_code"}
+    assert raw["audit_only"] is raw["not_detector_input"] is True
+    assert raw["formal_eligible"] is False
+    assert raw["diagnostic_test_backend"] is raw["diagnostic_only"] is raw["not_official_method"] is True
+    assert raw["source_sha256"] == _digest("x = 1\n")
+    assert base.calls == 1
+
+
+def test_native_response_trace_stays_in_raw_sidecar(tmp_path: Path) -> None:
+    base = _BaseModel("x = 1\n")
+    base.last_program_generation_trace = dict(sample_id='1', prompt_mode='humanevalpack_chat',
+                                             model_input='public chat prompt', model_response='```java\nraw\n```',
+                                             model_input_token_ids=[1], model_continuation_token_ids=[2])
+    GatedGenerationPipeline(
+        config=_config(tmp_path), bundle_loader=lambda _p: _bundle(),
+        bundle_hasher=lambda _p: _digest('bundle'), base_model=base,
+        generator=_Generator(), data_adapter=lambda: [{'id': '1', 'prompt': 'p'}],
+        deployment_key=b'must-stay-private',
+    ).run()
+    raw = _read_jsonl(tmp_path / 'generation/raw_program_outputs.jsonl')[0]
+    final = _read_jsonl(tmp_path / 'inputs/final_code.jsonl')[0]
+    assert raw['model_generation'] == base.last_program_generation_trace
+    assert raw['not_detector_input'] is True and raw['formal_eligible'] is False
+    assert set(final) == {'id', 'dataset', 'prompt', 'final_code'}
+
+
 def test_generation_latency_uses_an_injected_monotonic_clock_and_stays_sidecar_only(
     tmp_path: Path,
 ) -> None:
@@ -216,6 +254,45 @@ def test_diagnostic_generation_downgrades_nested_ablation_identity(
         (tmp_path / "generation" / "manifest.json").read_text(encoding="utf-8")
     )
     study = manifest["supplementary_ablation"]
+    assert study["formal"] is False
+    assert study["formal_eligible"] is False
+    assert study["diagnostic_test_backend"] is True
+    assert study["diagnostic_only"] is True
+    assert study["not_official_method"] is True
+
+
+def test_diagnostic_generation_marks_current_study_non_formal(
+    tmp_path: Path,
+) -> None:
+    binding = {
+        "resolved_config_sha256": "a" * 64,
+        "supplementary_experiment": {
+            "schema_version": "wfcllm-supplementary-experiment-identity/v1",
+            "study_kind": "supplementary_experiment",
+            "formal": False,
+            "formal_eligible": False,
+            "diagnostic_test_backend": False,
+            "diagnostic_only": False,
+            "not_official_method": True,
+        },
+    }
+    GatedGenerationPipeline(
+        config=replace(
+            _config(tmp_path),
+            supplementary_binding=binding,
+        ),
+        bundle_loader=lambda _p: _bundle(),
+        bundle_hasher=lambda _p: _digest("bundle"),
+        base_model=_BaseModel(),
+        generator=_Generator(),
+        data_adapter=lambda: [{"id": "1", "prompt": "p"}],
+        deployment_key=b"key",
+    ).run()
+
+    manifest = json.loads(
+        (tmp_path / "generation" / "manifest.json").read_text(encoding="utf-8")
+    )
+    study = manifest["supplementary_experiment"]
     assert study["formal"] is False
     assert study["formal_eligible"] is False
     assert study["diagnostic_test_backend"] is True
@@ -566,6 +643,59 @@ def test_mbpp_interface_wrapper_name_rejects_untrusted_callable(
             program_finalizer_name="mbpp_target_interface_wrapper_v1",
         )
 
+
+def test_mbpp_byte_identical_syntax_failures_stay_in_full_output(
+    tmp_path: Path,
+) -> None:
+    prompt = 'def add(a, b):\n    """Return the sum."""\n'
+    malformed = "def add(a, b):\n    return ("
+
+    class IdentityGenerator:
+        def generate(self, *, original: str, **_kwargs):
+            return GatedGenerationResult(original, ())
+
+    GatedGenerationPipeline(
+        config=replace(_config(tmp_path), dataset="mbpp"),
+        bundle_loader=lambda _p: _bundle(),
+        bundle_hasher=lambda _p: _digest("bundle"),
+        base_model=_BaseModel(malformed),
+        generator=IdentityGenerator(),
+        data_adapter=[
+            {"id": f"mbpp/{index}", "prompt": prompt} for index in (1, 2)
+        ],
+        deployment_key=b"test-only-key",
+        program_finalizer=finalize_mbpp_program_with_interface_wrapper,
+        program_finalizer_name="mbpp_target_interface_wrapper_v1",
+    ).run()
+
+    outputs = _read_jsonl(tmp_path / "inputs/final_code.jsonl")
+    assert len(outputs) == 2
+    assert all(row["final_code"] == malformed for row in outputs)
+    for row in outputs:
+        assert set(row) == {"id", "dataset", "prompt", "final_code"}
+        with pytest.raises(SyntaxError):
+            compile(row["final_code"], "<retained-failure>", "exec")
+    audits = _read_jsonl(tmp_path / "generation/finalizer.jsonl")
+    assert all(row["provenance_mode"] == "byte_identical" for row in audits)
+    assert all(row["input_ast_statement_count"] is None for row in audits)
+    assert all(row["added_ast_statement_count"] == 0 for row in audits)
+
+
+def test_mbpp_byte_identity_does_not_bypass_required_wrapper() -> None:
+    from wfcllm.generation.gated_pipeline import (
+        FinalizerIntegrityError,
+        _verify_finalizer_statement_provenance,
+    )
+
+    prompt = 'def add(a, b):\n    """Return the sum."""\n'
+    source = "def add(a, b):\n    return a + b\n"
+    with pytest.raises(FinalizerIntegrityError, match="wrapper output mismatch"):
+        _verify_finalizer_statement_provenance(
+            before=source,
+            after=source,
+            prompt=prompt,
+            program_finalizer_name="mbpp_target_interface_wrapper_v1",
+        )
 
 def test_finalizer_fallback_keeps_sample_and_strict_schema(tmp_path: Path) -> None:
     original = "def f():\n    return ("

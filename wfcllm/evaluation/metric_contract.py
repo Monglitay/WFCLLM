@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 from typing import Any, Mapping
 
-SCHEMA_VERSION = "wfcllm-metric-contract/v2"
+SCHEMA_VERSION = "wfcllm-metric-contract/v3"
 AUROC_DEFINITION = "pooled-negative-statistic-rank/v1"
 _METHOD = "gated_semantic_window_v1"
 _DETECTOR = "wfcllm-gated-semantic-window/v1"
@@ -49,19 +49,39 @@ def _auroc(positives: list[float], negatives: list[float]) -> float | None:
     return wins / (len(positives) * len(negatives))
 
 
-def _negative_statistics(calibration: Mapping[str, Any]) -> list[float]:
-    buckets = calibration.get("reliable_window_count_buckets")
-    if not isinstance(buckets, Mapping):
-        return []
-    values: list[float] = []
-    for bucket in buckets.values():
-        if not isinstance(bucket, list):
-            raise ValueError("current calibration buckets must be arrays")
-        values.extend(
-            _finite_number(value, "calibration background statistic")
-            for value in bucket
-        )
-    return values
+def _negative_program_scores(run_dir: Path) -> tuple[list[float], int]:
+    """Keep every audited negative program, independently of threshold fitting."""
+
+    path = run_dir / "detection" / "negative_details.jsonl"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise ValueError("current negative detection details are unreadable") from exc
+    if not lines:
+        raise ValueError("current negative detection details must not be empty")
+    scores: list[float] = []
+    seen: set[str] = set()
+    insufficient_count = 0
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError("current negative detection details contain invalid JSON") from exc
+        if not isinstance(row, dict):
+            raise ValueError("current negative detection detail must be an object")
+        identifier = row.get("id")
+        if not isinstance(identifier, str) or not identifier or identifier in seen:
+            raise ValueError("negative detection IDs must be nonempty and unique")
+        seen.add(identifier)
+        decision = row.get("decision")
+        if decision not in {"watermarked", "not_watermarked", "insufficient_evidence"}:
+            raise ValueError("negative detection detail contains an unknown decision")
+        score = _finite_number(row.get("hit_rate"), "negative program hit_rate")
+        if not 0.0 <= score <= 1.0:
+            raise ValueError("negative program hit_rate must be in [0, 1]")
+        scores.append(score)
+        insufficient_count += int(decision == "insufficient_evidence")
+    return scores, insufficient_count
 
 
 def _posthoc_pass(
@@ -113,7 +133,11 @@ def _posthoc_pass(
     )
 
 
-def extract_metric_contract(run_dir: Path) -> dict[str, Any]:
+def extract_metric_contract(
+    run_dir: Path,
+    *,
+    allow_diagnostic_smoke: bool = False,
+) -> dict[str, Any]:
     """Extract one unconditional row from the current run layout only."""
 
     root = Path(run_dir)
@@ -135,13 +159,21 @@ def extract_metric_contract(run_dir: Path) -> dict[str, Any]:
     gate_manifest = _load_object(
         root / "gate-data" / "manifest.json", "gate-data manifest"
     )
-    if (
-        gate_manifest.get("schema_version") != _GATE_DATA_SCHEMA
-        or gate_manifest.get("diagnostic_test_backend") is not False
-        or gate_manifest.get("formal_eligible") is not True
-        or gate_manifest.get("diagnostic_only") is not False
-        or gate_manifest.get("not_official_method") is not False
-    ):
+    if gate_manifest.get("schema_version") != _GATE_DATA_SCHEMA:
+        raise ValueError("Metric Contract requires current gate-data artifacts")
+    formal_gate = (
+        gate_manifest.get("diagnostic_test_backend") is False
+        and gate_manifest.get("formal_eligible") is True
+        and gate_manifest.get("diagnostic_only") is False
+        and gate_manifest.get("not_official_method") is False
+    )
+    diagnostic_gate = (
+        gate_manifest.get("diagnostic_test_backend") is True
+        and gate_manifest.get("formal_eligible") is False
+        and gate_manifest.get("diagnostic_only") is True
+        and gate_manifest.get("not_official_method") is True
+    )
+    if not formal_gate and not (allow_diagnostic_smoke and diagnostic_gate):
         raise ValueError("Metric Contract requires formal current gate-data artifacts")
 
     calibration = report.get("calibration")
@@ -179,9 +211,14 @@ def extract_metric_contract(run_dir: Path) -> dict[str, Any]:
     pass_rate, pass_metric, passed_count, total_count, caveats = _posthoc_pass(
         root, report
     )
-    auroc = _auroc(positive_scores, _negative_statistics(calibration))
+    negative_scores, negative_insufficient_count = _negative_program_scores(root)
+    auroc = _auroc(positive_scores, negative_scores)
+    if not formal_gate:
+        caveats.append(
+            "diagnostic smoke row is not a formal Metric Contract result"
+        )
     if auroc is None:
-        caveats.append("AUROC background statistics are not present")
+        caveats.append("AUROC requires positive and negative program scores")
 
     output = {
         "schema_version": SCHEMA_VERSION,
@@ -192,6 +229,8 @@ def extract_metric_contract(run_dir: Path) -> dict[str, Any]:
         "language": report.get("language"),
         "generation_model": generation_model,
         "sample_count": sample_count,
+        "negative_sample_count": len(negative_scores),
+        "negative_insufficient_evidence_count": negative_insufficient_count,
         "detected_count": detected_count,
         "insufficient_evidence_count": insufficient_count,
         "tpr": tpr,
@@ -202,12 +241,17 @@ def extract_metric_contract(run_dir: Path) -> dict[str, Any]:
         "thresholds_by_reliable_window_count": dict(thresholds),
         "auroc": auroc,
         "auroc_definition": AUROC_DEFINITION,
+        "auroc_score_field": "hit_rate",
         "key_identifier_sha256": calibration.get("key_identifier_sha256"),
         "semantic_encoder_sha256": calibration.get("semantic_encoder_sha256"),
         "gate_bundle_sha256": calibration.get("gate_bundle_sha256"),
         "pass_rate": pass_rate,
         "pass_metric": pass_metric,
         "caveats": caveats,
+        "diagnostic_test_backend": not formal_gate,
+        "formal_eligible": formal_gate,
+        "diagnostic_only": not formal_gate,
+        "not_official_method": not formal_gate,
     }
     study = report.get("supplementary_ablation")
     if study is not None:
@@ -225,15 +269,16 @@ def extract_metric_contract(run_dir: Path) -> dict[str, Any]:
             raise ValueError(
                 "Supplementary Ablation audited identity binding mismatch"
             )
+        expected_study_identity = {
+            "formal": formal_gate,
+            "formal_eligible": formal_gate,
+            "diagnostic_test_backend": not formal_gate,
+            "diagnostic_only": not formal_gate,
+            "not_official_method": not formal_gate,
+        }
         if any(
             study.get(name) is not value
-            for name, value in {
-                "formal": True,
-                "formal_eligible": True,
-                "diagnostic_test_backend": False,
-                "diagnostic_only": False,
-                "not_official_method": False,
-            }.items()
+            for name, value in expected_study_identity.items()
         ):
             raise ValueError(
                 "Metric Contract requires Formal Eligible ablation artifacts"
@@ -429,6 +474,9 @@ def _verify_audited_artifact_hashes(run_dir: Path) -> dict[str, Any]:
         ),
         "positive_details_sha256": (
             run_dir / "detection" / "positive_details.jsonl"
+        ),
+        "negative_details_sha256": (
+            run_dir / "detection" / "negative_details.jsonl"
         ),
         "reference_report_sha256": (
             run_dir / "reports" / "reference_report.json"

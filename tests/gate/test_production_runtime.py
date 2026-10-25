@@ -35,6 +35,80 @@ from wfcllm.windowing import ParentDescriptor, WINDOW_CONTRACT_VERSION
 from wfcllm.windowing.contracts import StatementUnit
 
 
+def test_float_gate_cache_preserves_execution_context_and_invalidates_training() -> None:
+    import torch
+
+    class Encoder(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+            self.linear = torch.nn.Linear(1, 2, bias=False)
+            self.linear.weight.data.fill_(0.25)
+
+        def forward(self, *, input_ids, attention_mask):
+            self.calls += 1
+            logits = self.linear(input_ids.float())
+            return SimpleNamespace(
+                close_logits=logits[:, 0], suitable_logits=logits[:, 1]
+            )
+
+    class Tokenizer:
+        def __call__(self, text, **kwargs):
+            return {
+                "input_ids": torch.tensor([[min(len(text), kwargs["max_length"])]]),
+                "attention_mask": torch.ones((1, 1), dtype=torch.long),
+            }
+
+    model = Encoder().eval()
+    predictor = gate_production._FloatGatePredictor(
+        model=model, tokenizer=Tokenizer(), max_tokens=256
+    )
+    expected = predictor.predict("window")
+    assert predictor.predict("window") == expected
+    assert model.calls == 1
+    assert predictor.predict("another window") != expected
+    assert model.calls == 2
+    with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+        predictor.predict("window")
+    assert model.calls == 3
+    model.train()
+    model.linear.weight.data.fill_(0.5)
+    changed = predictor.predict("window")
+    assert changed != expected
+    model.eval()
+    assert predictor.predict("window") == changed
+    assert model.calls == 5
+
+
+def test_float_gate_moves_both_inputs_to_requested_device() -> None:
+    import torch
+
+    requested_devices: list[str] = []
+
+    class InputTensor:
+        def to(self, device: str):
+            requested_devices.append(device)
+            return torch.ones((1, 1))
+
+    class Tokenizer:
+        def __call__(self, *_args, **_kwargs):
+            return {"input_ids": InputTensor(), "attention_mask": InputTensor()}
+
+    class Model:
+        training = False
+
+        def __call__(self, **_kwargs):
+            return SimpleNamespace(
+                close_logits=torch.tensor([0.0]), suitable_logits=torch.tensor([1.0])
+            )
+
+    predictor = gate_production._FloatGatePredictor(
+        model=Model(), tokenizer=Tokenizer(), max_tokens=256, device="cuda:0"
+    )
+    assert predictor.predict("window").close_probability == 0.5
+    assert requested_devices == ["cuda:0", "cuda:0"]
+
+
 def _runtime_options(tmp_path: Path) -> LocalHFGateRuntimeOptions:
     catalog = tmp_path / "catalog.jsonl"
     catalog.write_text(
@@ -80,6 +154,36 @@ def _runtime_options(tmp_path: Path) -> LocalHFGateRuntimeOptions:
 def test_runtime_options_reject_invalid_lsh_gamma(tmp_path: Path, gamma) -> None:
     with pytest.raises(ValueError, match="lsh_gamma"):
         replace(_runtime_options(tmp_path), lsh_gamma=gamma)
+
+
+def test_cpp_structural_factory_requires_explicit_strategy(tmp_path: Path) -> None:
+    from wfcllm.generation.cpp_structural_rewriter import KeyBlindCppStructuralWindowRewriter
+
+    base = _runtime_options(tmp_path)
+    native = replace(
+        base, window_contract_version="cpp-statement-window/v1",
+        rewrite_strategy="cpp_structural_equivalent", rewrite_model_path=None,
+    )
+    assert isinstance(
+        gate_production.load_local_causal_rewriter(native), KeyBlindCppStructuralWindowRewriter
+    )
+    with pytest.raises(ValueError, match="rewrite_model_path is required"):
+        replace(native, rewrite_strategy="model_semantic_window")
+    with pytest.raises(ValueError, match=r"C\+\+ structural"):
+        replace(base, rewrite_strategy="cpp_structural_equivalent")
+
+
+def test_js_structural_factory_requires_explicit_strategy(tmp_path: Path) -> None:
+    from wfcllm.generation.js_structural_rewriter import KeyBlindJavaScriptStructuralWindowRewriter
+
+    base = _runtime_options(tmp_path)
+    native = replace(base, window_contract_version="js-statement-window/v1",
+                     rewrite_strategy="js_structural_equivalent", rewrite_model_path=None)
+    assert isinstance(gate_production.load_local_causal_rewriter(native), KeyBlindJavaScriptStructuralWindowRewriter)
+    with pytest.raises(ValueError, match="rewrite_model_path is required"):
+        replace(native, rewrite_strategy="model_semantic_window")
+    with pytest.raises(ValueError, match="JavaScript structural"):
+        replace(base, rewrite_strategy="js_structural_equivalent")
 
 
 @pytest.mark.parametrize(
@@ -362,6 +466,47 @@ def test_statement_family_uses_public_syntax_only(text: str, expected: str) -> N
     assert _statement_family(text) == expected
 
 
+@pytest.mark.parametrize(
+    ("text", "node_type", "expected"),
+    [
+        ("int value = 1;", "declaration", "assignment_literal"),
+        ("auto item = values[index];", "declaration", "assignment_reference"),
+        ("auto value = build(source);", "declaration", "assignment_call"),
+        ("int value = left + right;", "declaration", "assignment_expression"),
+        ("value = source.member;", "expression_statement", "assignment_reference"),
+        ("value += 2;", "expression_statement", "assignment_literal"),
+        ("++index;", "expression_statement", "assignment_expression"),
+        ("emit(value);", "expression_statement", "call"),
+        ("if (value > 0) {", "if_statement", "branch"),
+        ("for (int i = 0; i < limit; ++i) {", "for_statement", "loop"),
+        ("while (value > 0) {", "while_statement", "loop"),
+        ("return value;", "return_statement", "return"),
+        ("throw error;", "throw_statement", "raise"),
+        ("int value;", "declaration", "declaration"),
+        ("int left = 1, right = value;", "declaration", "assignment_expression"),
+    ],
+)
+def test_cpp_statement_family_uses_cpp_syntax(text: str, node_type: str, expected: str) -> None:
+    assert _statement_family(text, cpp_node_type=node_type) == expected
+
+
+def test_cpp_statement_family_summary_keeps_selected_windows_identical() -> None:
+    base = _parsed_source("cpp-dev", "cpp-repo")
+    code = "int dev(int source) { int first = 1; int second = source; int third = first + second; return third; }"
+    parsed = _ParsedCatalogSource(
+        replace(base.record, source_family="oss_cpp", code=code),
+        tuple(gate_production.get_statement_unit_extractor("cpp").extract(code)),
+    )
+    selected = _select_source_stratified_starts((parsed,), max_groups=2)
+    old = _source_stratified_selection_summary((parsed,), selected, max_groups=2)
+    new = _source_stratified_selection_summary((parsed,), selected, max_groups=2, language="cpp")
+    assert old["statement_family_counts"] == {"other": 2}
+    assert new["statement_family_counts"] == {"assignment_literal": 1, "assignment_reference": 1}
+    assert {key:value for key,value in old.items() if key != "statement_family_counts"} == {
+        key:value for key,value in new.items() if key != "statement_family_counts"
+    }
+
+
 def test_balanced_split_assignments_are_deterministic_and_nonempty() -> None:
     group_ids = tuple(f"repository:repo-{index:02d}" for index in range(13))
 
@@ -465,6 +610,48 @@ def test_rewrite_code_extracts_all_fenced_blocks_after_explanatory_text() -> Non
     ) == "left = item.left\n    right = item.right\n"
 
 
+@pytest.mark.parametrize("encoder_decoder", [False, True])
+@pytest.mark.parametrize("batch_size", [3, 18])
+def test_batched_rewrites_use_attended_final_tokens_for_causal_models(encoder_decoder: bool, batch_size: int) -> None:
+    import torch
+    from tokenizers import Tokenizer
+    from tokenizers.models import WordLevel
+    from tokenizers.pre_tokenizers import Whitespace
+    from transformers import PreTrainedTokenizerFast
+
+    vocabulary = {"<unk>": 0, "<pad>": 1, "value": 2}
+    internal = Tokenizer(WordLevel(vocabulary, unk_token="<unk>"))
+    internal.pre_tokenizer = Whitespace()
+    tokenizer = PreTrainedTokenizerFast(
+        tokenizer_object=internal, unk_token="<unk>", pad_token="<pad>",
+        padding_side="right",
+        chat_template="{{ messages[0]['content'] }}",
+    )
+
+    class Model:
+        config = SimpleNamespace(is_encoder_decoder=encoder_decoder)
+
+        def generate(self, **kwargs):
+            mask = kwargs["attention_mask"]
+            assert mask.sum(dim=1).unique().numel() > 1
+            if encoder_decoder:
+                assert torch.all(mask[:, 0] == 1)
+                assert torch.any(mask[:, -1] == 0)
+                return torch.tensor([[2]] * batch_size)
+            assert torch.all(mask[:, -1] == 1)
+            return torch.cat([kwargs["input_ids"], torch.tensor([[2]] * batch_size)], dim=1)
+
+    backend = HFCausalRewriteBackend(
+        model=Model(), tokenizer=tokenizer, device="cpu", max_new_tokens=1,
+    )
+    results = backend.generate_windows(
+        prompt="example", completed_prefix="", original_window="value",
+        candidate_indices=tuple(range(1, batch_size+1)), max_units=1,
+    )
+    assert [row.text for row in results] == ["value\n"] * batch_size
+    assert tokenizer.padding_side == ("right" if encoder_decoder else "left")
+
+
 def test_rewrite_code_restores_prefix_indent_after_first_generated_line() -> None:
     assert gate_production._extract_rewrite_code(
         "left = item.left\nright = item.right\nresult = left + right\n",
@@ -479,6 +666,86 @@ def test_rewrite_code_restores_prefix_indent_after_first_generated_line() -> Non
         "    right = item.right\n"
         "    result = left + right\n"
     )
+
+
+@pytest.mark.parametrize(
+    ("language", "label", "fence"),
+    [("cpp", "C++", "c++"), ("java", "Java", "java"), ("js", "JavaScript", "js")],
+)
+def test_rewrite_backend_uses_target_language_in_prompt_and_output(
+    language: str, label: str, fence: str
+) -> None:
+    import torch
+
+    class Tokenizer:
+        def __call__(self, text, **_kwargs):
+            self.instructions = text
+            count = len(text) if isinstance(text, list) else 1
+            return {"input_ids": torch.tensor([[10, 11]] * count)}
+
+        def decode(self, _ids, **_kwargs):
+            return f"Equivalent code:\n```{fence}\nint x = 1;\nx += 2;\n```\n"
+
+    class Model:
+        config = SimpleNamespace(is_encoder_decoder=False)
+
+        def generate(self, **kwargs):
+            return torch.tensor([[10, 11, 7]] * kwargs["input_ids"].shape[0])
+
+    tokenizer = Tokenizer()
+    backend = HFCausalRewriteBackend(
+        model=Model(), tokenizer=tokenizer, device="cpu", max_new_tokens=16,
+        language=language,
+    )
+    request = dict(prompt="example", completed_prefix="void f() {\n    ",
+                   original_window="int x = 1;\n    x += 2;\n", max_units=2)
+    single = backend.generate_window(**request, candidate_index=2)
+    prompt = tokenizer.instructions
+    assert f"2 complete {label} statements" in prompt
+    assert f"independently phrased {label} idiom" in prompt
+    assert "Python" not in prompt
+    batch = backend.generate_windows(**request, candidate_indices=(1, 2, 3))
+    assert [single.text, *(row.text for row in batch)] == [
+        "int x = 1;\n    x += 2;\n"
+    ] * 4
+
+
+def test_causal_rewriter_factory_passes_cpp_language(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import transformers
+
+    class Model:
+        def to(self, _device):
+            return self
+
+        def eval(self):
+            return self
+
+        def generate(self, **_kwargs):
+            raise AssertionError("factory must not generate")
+
+    class Tokenizer:
+        def __call__(self, *_args, **_kwargs):
+            raise AssertionError("factory must not tokenize")
+
+        def decode(self, *_args, **_kwargs):
+            raise AssertionError("factory must not decode")
+
+    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained",
+                        lambda *_args, **_kwargs: SimpleNamespace(is_encoder_decoder=False))
+    monkeypatch.setattr(transformers.AutoModelForCausalLM, "from_pretrained",
+                        lambda *_args, **_kwargs: Model())
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained",
+                        lambda *_args, **_kwargs: Tokenizer())
+    options = replace(_runtime_options(tmp_path), window_contract_version="cpp-statement-window/v1")
+    rewriter = gate_production._load_causal_rewriter(options)
+    assert rewriter._backend.language == "cpp"
+    instruction = rewriter._backend._render_instruction(
+        prompt="", completed_prefix="", original_window="x += 1;", max_units=1,
+        candidate_index=2,
+    )
+    assert "complete C++ statements" in instruction
 
 
 def test_hf_rewrite_normalization_preserves_nested_w3_parent_scope() -> None:
@@ -641,7 +908,17 @@ def test_mbpp_program_prompt_uses_humaneval_style_interface_prefix() -> None:
     assert "placeholder" not in prompt.lower()
 
 
-def test_mbpp_generation_combines_interface_prefix_with_completion() -> None:
+@pytest.mark.parametrize(
+    "completion",
+    [
+        "    return arg1 + arg2\n",
+        "    return arg1 + arg2\n```\n```python\n"
+        "def target(arg1, arg2):\n    return arg1 + arg2\n```\n",
+    ],
+)
+def test_mbpp_generation_combines_interface_prefix_with_completion(
+    completion: str,
+) -> None:
     import torch
 
     code_prefix = (
@@ -659,7 +936,7 @@ def test_mbpp_generation_combines_interface_prefix_with_completion() -> None:
 
         def decode(self, ids, **_kwargs):
             assert ids.tolist() == [7]
-            return "    return arg1 + arg2\n"
+            return completion
 
     class Model:
         def generate(self, **_kwargs):
@@ -675,10 +952,18 @@ def test_mbpp_generation_combines_interface_prefix_with_completion() -> None:
     runtime.seed = 7
     runtime.is_encoder_decoder = False
 
-    assert runtime.generate_program(
+    source = runtime.generate_program(
         prompt=code_prefix,
         sample_id="mbpp/1",
-    ) == (code_prefix + "    return arg1 + arg2\n")
+    )
+    assert source == code_prefix + completion
+
+    from wfcllm.generation.completion_finalizer import finalize_mbpp_program
+
+    finalized = finalize_mbpp_program(code_prefix, source)
+    assert finalized.applied is True
+    assert "return arg1 + arg2" in finalized.code
+    assert "```" not in finalized.code
 
 
 def test_mbpp_chat_generation_requests_complete_interface_program() -> None:
@@ -742,6 +1027,74 @@ def test_mbpp_chat_generation_requests_complete_interface_program() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("code", "arguments", "expected"),
+    [
+        ("def target(items, count):\n    return items[:count]\n", ([1, 2], 1), [1]),
+        ("def target(arg1, arg0):\n    return arg1 - arg0\n", (7, 2), 5),
+        (
+            "def target(value, step):\n    return (lambda value: value + step)(value)\n",
+            (7, 2),
+            9,
+        ),
+    ],
+)
+def test_mbpp_chat_interface_preserves_generated_parameter_bindings(
+    code: str, arguments: tuple, expected: object,
+) -> None:
+    from wfcllm.gate.production import _normalize_mbpp_chat_interface
+
+    prompt = 'def target(arg0, arg1):\n    """Implement the requested operation."""\n'
+    normalized = _normalize_mbpp_chat_interface(prompt, code)
+    namespace: dict = {}
+    exec(normalized, namespace)
+
+    assert namespace["target"](*arguments) == expected
+
+
+def test_mbpp_chat_interface_keeps_unsupported_variadic_source_unchanged() -> None:
+    from wfcllm.gate.production import _normalize_mbpp_chat_interface
+
+    prompt = 'def target(arg0):\n    """Return the argument."""\n'
+    code = "def target(*items):\n    return items[0]\n"
+
+    assert _normalize_mbpp_chat_interface(prompt, code) == code
+
+
+def test_mbpp_chat_interface_binds_generated_positional_prefix() -> None:
+    from wfcllm.gate.production import _normalize_mbpp_chat_interface
+
+    prompt = 'def target(arg0, arg1):\n    """Return the list length."""\n'
+    code = "def target(items):\n    return len(items)\n"
+    namespace: dict = {}
+    exec(_normalize_mbpp_chat_interface(prompt, code), namespace)
+
+    assert namespace["target"]([3, 4, 5], 3) == 3
+
+
+def test_mbpp_chat_interface_does_not_guess_missing_generated_arguments() -> None:
+    from wfcllm.gate.production import _normalize_mbpp_chat_interface
+
+    prompt = 'def target(arg0):\n    """Implement the operation."""\n'
+    code = "def target(items, required):\n    return items[:required]\n"
+
+    assert _normalize_mbpp_chat_interface(prompt, code) == code
+
+
+def test_mbpp_chat_interface_keeps_recursive_arity_mismatch_unchanged() -> None:
+    from wfcllm.gate.production import _normalize_mbpp_chat_interface
+
+    prompt = 'def target(arg0, arg1):\n    """Count the items."""\n'
+    code = (
+        "def target(items):\n"
+        "    if items:\n"
+        "        return 1 + target(items[1:])\n"
+        "    return 0\n"
+    )
+
+    assert _normalize_mbpp_chat_interface(prompt, code) == code
+
+
 def test_source_catalog_rejects_humaneval_without_echoing_code(tmp_path: Path) -> None:
     path = tmp_path / "catalog.jsonl"
     secret_code = "def hidden_secret(): return 'do-not-echo'"
@@ -785,8 +1138,14 @@ def test_static_local_hf_adapter_is_allowlisted_and_lazy(tmp_path: Path) -> None
     )
     training = tmp_path / "training.json"
     holdout = tmp_path / "holdout.json"
-    training.write_text(json.dumps([f"train-{index}" for index in range(32)]))
-    holdout.write_text(json.dumps([f"holdout-{index}" for index in range(8)]))
+    training.write_text(
+        json.dumps([f"train-{index}" for index in range(32)]),
+        encoding="utf-8",
+    )
+    holdout.write_text(
+        json.dumps([f"holdout-{index}" for index in range(8)]),
+        encoding="utf-8",
+    )
 
     dependencies = build_local_gate_dependencies(
         source_manifest=source_manifest,
@@ -800,6 +1159,40 @@ def test_static_local_hf_adapter_is_allowlisted_and_lazy(tmp_path: Path) -> None
     )
 
     assert dependencies.diagnostic_test_backend is False
+    assert dependencies.adapter_name == LOCAL_HF_ADAPTER_NAME
+
+
+def test_static_local_hf_adapter_can_mark_smoke_diagnostic(tmp_path: Path) -> None:
+    options = _runtime_options(tmp_path)
+    source_manifest = tmp_path / "source-manifest.json"
+    source_manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": "wfcllm-gate-source-manifest/v1",
+                "catalog_sha256": "0" * 64,
+                "source_count": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    training = tmp_path / "training.json"
+    holdout = tmp_path / "holdout.json"
+    training.write_text(json.dumps([f"train-{index}" for index in range(32)]))
+    holdout.write_text(json.dumps([f"holdout-{index}" for index in range(8)]))
+
+    dependencies = build_local_gate_dependencies(
+        source_manifest=source_manifest,
+        training_key_file=training,
+        training_key_env=None,
+        holdout_key_file=holdout,
+        holdout_key_env=None,
+        base_model_path=options.gate_base_model_path,
+        adapter_name=LOCAL_HF_ADAPTER_NAME,
+        adapter_options=options,
+        diagnostic_test_backend=True,
+    )
+
+    assert dependencies.diagnostic_test_backend is True
     assert dependencies.adapter_name == LOCAL_HF_ADAPTER_NAME
 
 
@@ -846,6 +1239,76 @@ def test_training_cache_is_bound_to_formal_group_index(tmp_path: Path) -> None:
     rows[-1]["suitable_target"] = True
     with pytest.raises(ValueError, match="label contradicts"):
         _validate_cache_against_data(rows, data)
+
+
+def test_training_cache_variant_count_follows_gate_data_window_lengths(
+    tmp_path: Path,
+) -> None:
+    data = tmp_path / "gate-data"
+    data.mkdir()
+    index = {
+        "group_id": "g-1",
+        "split": "train",
+        "close_target": True,
+        "suitable_target": False,
+    }
+    (data / "manifest.json").write_text(
+        json.dumps({"window_lengths": [1]}) + "\n",
+        encoding="utf-8",
+    )
+    (data / "group_index.jsonl").write_text(json.dumps(index) + "\n", encoding="utf-8")
+    rows = [
+        {
+            "group_id": "g-1",
+            "split": "train",
+            "context_length": 1,
+            "budget": 1,
+            "close_target": True,
+            "suitable_target": False,
+        }
+    ]
+
+    _validate_cache_against_data(rows, data)
+
+    rows[0]["suitable_target"] = True
+    with pytest.raises(ValueError, match="label contradicts"):
+        _validate_cache_against_data(rows, data)
+
+
+def test_training_cache_variant_count_follows_gate_data_rewrite_budgets(
+    tmp_path: Path,
+) -> None:
+    data = tmp_path / "gate-data"
+    data.mkdir()
+    index = {
+        "group_id": "g-1",
+        "split": "train",
+        "close_target": True,
+        "suitable_target": False,
+    }
+    (data / "manifest.json").write_text(
+        json.dumps({"window_lengths": [1, 2, 3], "rewrite_budgets": [1, 3, 6, 12, 18]})
+        + "\n",
+        encoding="utf-8",
+    )
+    (data / "group_index.jsonl").write_text(json.dumps(index) + "\n", encoding="utf-8")
+    rows = [
+        {
+            "group_id": "g-1",
+            "split": "train",
+            "context_length": context,
+            "budget": budget,
+            "close_target": True,
+            "suitable_target": False if budget == 18 else True,
+        }
+        for context in (1, 2, 3)
+        for budget in (1, 3, 6, 12, 18)
+    ]
+
+    _validate_cache_against_data(rows, data)
+
+    with pytest.raises(ValueError, match="variant count"):
+        _validate_cache_against_data(rows[:-1], data)
 
 
 class _Rewriter:
@@ -991,9 +1454,10 @@ def test_local_hf_adapter_builds_and_probes_real_pipeline_groups(tmp_path: Path)
     )
     cache = options.cache_dir / f"gate-examples-{config.config_hash}.jsonl"
     cache_rows = [json.loads(line) for line in cache.read_text(encoding="utf-8").splitlines()]
-    assert len(cache_rows) == len(probed) * 3
+    assert len(cache_rows) == len(probed) * 3 * len(config.rewrite_budgets)
     assert {row["context_length"] for row in cache_rows} == {1, 2, 3}
-    assert {row["budget"] for row in cache_rows} == {3}
+    assert {row["budget"] for row in cache_rows} == set(config.rewrite_budgets)
+
     split = tuple(adapter.split_groups(probed, config))
     assert split == probed
     adapter.audit_gate_data(
@@ -1001,9 +1465,135 @@ def test_local_hf_adapter_builds_and_probes_real_pipeline_groups(tmp_path: Path)
         {
             "formal_eligible": True,
             "diagnostic_test_backend": False,
+            "diagnostic_only": False,
+            "not_official_method": False,
             "config_hash": config.config_hash,
         },
     )
+    adapter.audit_gate_data(
+        tmp_path,
+        {
+            "formal_eligible": False,
+            "diagnostic_test_backend": True,
+            "diagnostic_only": True,
+            "not_official_method": True,
+            "config_hash": config.config_hash,
+        },
+    )
+    with pytest.raises(ValueError, match="complete gate-data artifact identity"):
+        adapter.audit_gate_data(
+            tmp_path,
+            {
+                "formal_eligible": False,
+                "diagnostic_test_backend": True,
+                "config_hash": config.config_hash,
+            },
+        )
+
+
+def test_production_holdout_transfer_excludes_hits_after_r3(tmp_path: Path, monkeypatch) -> None:
+    import wfcllm.gate.production as production
+
+    class LateRewriter(_Rewriter):
+        def rewrite(self, request, *, candidate_index):
+            result = super().rewrite(request, candidate_index=candidate_index)
+            if candidate_index == 18:
+                return replace(result, code=result.code.replace(" = ", "  = "))
+            return result
+
+    class Runtime(_SemanticRuntime):
+        def semantic_reference_cosine(self, reference_text, candidate_text):
+            return 1.0
+
+        def signature_and_margin(self, window_text):
+            return (int("  = " in window_text), 0, 0, 0), 1.0, True, True
+
+    class Keying:
+        def __init__(self, material, dimension):
+            self.holdout = "holdout" in material
+
+        def derive_descriptor(self, **kwargs):
+            return {(int(self.holdout), 0, 0, 0)}
+
+    monkeypatch.setattr(production, "WatermarkKeying", Keying)
+    options = _runtime_options(tmp_path)
+    adapter = production.LocalHFProductionAdapter(options)
+    adapter._rewriter = LateRewriter()
+    adapter._semantic_runtime = Runtime()
+    adapter._gate_tokenizer = _GateTokenizer()
+    config = replace(_pipeline_config(tmp_path), rewrite_count=18, rewrite_budgets=(1, 3, 6, 12, 18))
+    manifest = {
+        "schema_version": "wfcllm-gate-source-manifest/v1",
+        "catalog_sha256": __import__("hashlib").sha256(options.source_catalog.read_bytes()).hexdigest(),
+        "source_count": 1,
+    }
+    generated = adapter.generate_candidate_trajectories(adapter.parse_statement_units(manifest, config), config)
+    groups = tuple(adapter.run_multi_key_lsh_probe(
+        generated, training_keys=_KeyView("train", 32), holdout_keys=_KeyView("holdout", 8), config=config,
+    ))
+    assert groups
+    for group in groups:
+        assert group.r3_success_rate == 1.0
+        assert group.holdout_success_rate == 0.0
+        assert all(value.hit for key, value in group.probe_results_by_length["3"][18].items() if key.startswith("holdout-"))
+
+
+def test_gate_probe_excludes_trailing_comments_but_retains_candidate_bytes(tmp_path: Path) -> None:
+    class CommentRewriter(_Rewriter):
+        def rewrite(self, request, *, candidate_index):
+            return replace(super().rewrite(request, candidate_index=candidate_index),
+                           code=request.original_window + "\n# outside scored span")
+
+    options = _runtime_options(tmp_path)
+    adapter = gate_production.LocalHFProductionAdapter(options)
+    adapter._rewriter = CommentRewriter()
+    runtime = _CountingSemanticRuntime()
+    adapter._semantic_runtime = runtime
+    adapter._gate_tokenizer = _GateTokenizer()
+    config = _pipeline_config(tmp_path)
+    manifest = {"catalog_sha256": hashlib.sha256(options.source_catalog.read_bytes()).hexdigest(), "source_count": 1}
+    generated = adapter.generate_candidate_trajectories(adapter.parse_statement_units(manifest, config), config)
+    groups = tuple(adapter.run_multi_key_lsh_probe(generated, training_keys=_KeyView("train", 32),
+                   holdout_keys=_KeyView("holdout", 8), config=config))
+    assert groups and runtime.calls
+    assert all("outside scored span" not in text for text in runtime.calls)
+    for group in groups:
+        for observations in group.candidate_observations_by_length.values():
+            assert all(row.semantic_reference_cosine == 1.0 for row in observations)
+            assert all(row.lsh_signature == observations[0].lsh_signature for row in observations)
+            assert all("# outside scored span" in row.code for row in observations[1:])
+    evidence = adapter.gate_data_selection_summary()["semantic_input_span_audit"]
+    path = options.cache_dir / evidence["filename"]
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == evidence["sha256"]
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == evidence["candidate_count"]
+    assert all(row["audit_only"] and row["not_detector_input"] for row in rows)
+
+
+def test_pilot_and_full_keep_distinct_span_evidence_in_shared_cache(tmp_path: Path) -> None:
+    options = _runtime_options(tmp_path)
+    config = _pipeline_config(tmp_path)
+    manifest = {"catalog_sha256": hashlib.sha256(options.source_catalog.read_bytes()).hexdigest(), "source_count": 1}
+    paths = []
+    for scale in ("pilot", "full"):
+        adapter = gate_production.LocalHFProductionAdapter(options)
+        adapter._rewriter = _Rewriter()
+        current = replace(config, scale=scale)
+        groups = tuple(adapter.generate_candidate_trajectories(
+            adapter.parse_statement_units(manifest, current), current))
+        assert groups
+        evidence = adapter.gate_data_selection_summary()["semantic_input_span_audit"]
+        path = options.cache_dir / evidence["filename"]
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == evidence["sha256"]
+        paths.append((path, path.read_bytes()))
+    assert paths[0][0] != paths[1][0]
+    assert paths[0][0].read_bytes() == paths[0][1]
+    repeated = gate_production.LocalHFProductionAdapter(options)
+    repeated._rewriter = _Rewriter()
+    with pytest.raises(ValueError, match="evidence already exists"):
+        tuple(repeated.generate_candidate_trajectories(
+            repeated.parse_statement_units(manifest, config), config))
+    assert all(path.read_bytes() == before for path, before in paths)
 
 
 def test_local_hf_probe_keeps_parser_invalid_rewrites_evidence_free(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
+from collections.abc import Container, Sized
 from typing import Any, Protocol
 
 from wfcllm.windowing.normalization import normalize_unit_text
@@ -35,7 +36,7 @@ class WindowVerifier(Protocol):
     def verify(
         self,
         code_text: str,
-        valid_set: frozenset[tuple[int, ...]],
+        valid_set: Container[tuple[int, ...]],
         margin: float,
     ) -> WindowVerifyResult:
         ...
@@ -52,7 +53,7 @@ class DescriptorKeying(Protocol):
         contract_version: str,
         parent_descriptor: str,
         k: int,
-    ) -> frozenset[tuple[int, ...]]:
+    ) -> Sized | Container[tuple[int, ...]]:
         ...
 
     def descriptor_region_id(
@@ -61,7 +62,7 @@ class DescriptorKeying(Protocol):
         contract_version: str,
         parent_descriptor: str,
         k: int,
-        allowed: frozenset[tuple[int, ...]],
+        allowed: Sized | Container[tuple[int, ...]],
     ) -> str:
         ...
 
@@ -319,10 +320,17 @@ def _validate_allowed_set(
     *,
     expected_size: int,
 ) -> int:
-    if not isinstance(allowed, frozenset):
-        raise ValueError("derive_descriptor must return a frozenset")
+    if not isinstance(allowed, Sized) or not isinstance(allowed, Container):
+        raise ValueError("derive_descriptor must return a sized signature container")
     if len(allowed) != expected_size:
         raise ValueError("derived allowed set size does not match k")
+    lazy_dimension = getattr(allowed, "dimension", None)
+    if lazy_dimension is not None:
+        if type(lazy_dimension) is not int or lazy_dimension < 1:
+            raise ValueError("lazy allowed signature dimension is invalid")
+        return lazy_dimension
+    if not isinstance(allowed, frozenset):
+        raise ValueError("eager allowed signatures must be a frozenset")
     dimensions: set[int] = set()
     for signature in allowed:
         _validate_signature(signature, field_name="allowed signature")

@@ -87,6 +87,9 @@ def _make_current_run(
         "positive_details_sha256": (
             run_dir / "detection" / "positive_details.jsonl"
         ),
+        "negative_details_sha256": (
+            run_dir / "detection" / "negative_details.jsonl"
+        ),
         "reference_report_sha256": report_path,
     }
     _write_json(
@@ -102,6 +105,13 @@ def _make_current_run(
     _write_json(
         current_artifacts["positive_details_sha256"],
         {"id": "HumanEval/0", "decision": "watermarked"},
+    )
+    current_artifacts["negative_details_sha256"].write_text(
+        "".join(
+            json.dumps({"id": f"negative/{index}", "decision": "not_watermarked", "hit_rate": score}) + "\n"
+            for index, score in enumerate((0.1, 0.3))
+        ),
+        encoding="utf-8",
     )
     _write_json(
         run_dir / "audit" / "artifact_integrity.json",
@@ -149,6 +159,36 @@ def test_cli_writes_current_row_to_stdout(
     assert row["run_id"] == "stdout-run"
     assert row["dataset"] == "humaneval"
     assert row["language"] == "python"
+
+
+def test_cli_requires_explicit_flag_for_diagnostic_smoke(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_dir = _make_current_run(tmp_path, "diagnostic-smoke")
+    _write_json(
+        run_dir / "gate-data" / "manifest.json",
+        {
+            "schema_version": "wfcllm-gate-data-manifest/v1",
+            "formal_eligible": False,
+            "diagnostic_test_backend": True,
+            "diagnostic_only": True,
+            "not_official_method": True,
+        },
+    )
+
+    with pytest.raises(ValueError, match="formal current"):
+        metric_contract_cli.main(["--run-dir", str(run_dir)])
+
+    assert (
+        metric_contract_cli.main(
+            ["--run-dir", str(run_dir), "--allow-diagnostic-smoke"]
+        )
+        == 0
+    )
+    row = json.loads(capsys.readouterr().out)
+    assert row["diagnostic_test_backend"] is True
+    assert row["formal_eligible"] is False
 
 
 def test_cli_rejects_incomplete_current_layout(tmp_path: Path) -> None:

@@ -27,6 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--negative-input")
     parser.add_argument("--test-negative-input")
     parser.add_argument("--ablation-spec", type=Path)
+    parser.add_argument("--supplementary-experiment-spec", type=Path)
 
     parser.add_argument("--secret-key-file")
     parser.add_argument("--secret-key-env")

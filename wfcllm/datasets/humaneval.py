@@ -5,6 +5,7 @@ from typing import Iterator
 
 from wfcllm.datasets.adapter import CodeSample, DatasetAdapter
 from wfcllm.datasets.registry import register
+from wfcllm.datasets.smoke import smoke_sample_count_from_env
 
 
 @register("humaneval")
@@ -23,7 +24,11 @@ class HumanEvalAdapter(DatasetAdapter):
                 f"HumanEvalAdapter does not support language={language!r}; "
                 f"supported={self.supported_languages}"
             )
-        rows = load_prompts("humaneval", self._dataset_path)
+        rows = load_prompts(
+            "humaneval",
+            self._dataset_path,
+            sample_limit=smoke_sample_count_from_env(),
+        )
         for row in rows:
             yield CodeSample(
                 task_id=row["id"],

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import replace
+from collections import OrderedDict
 from collections.abc import Mapping
 from pathlib import Path
 from contextlib import nullcontext
@@ -52,6 +53,7 @@ class CodeT5LshVerifier:
         self._device = device
         self._max_length = max_length
         self._encoder.eval()
+        self._embedding_cache: OrderedDict[tuple[object, ...], torch.Tensor] = OrderedDict()
 
     @torch.no_grad()
     def embed(self, code_text: str) -> torch.Tensor:
@@ -71,6 +73,20 @@ class CodeT5LshVerifier:
             or any(not isinstance(text, str) or not text.strip() for text in code_texts)
         ):
             raise ValueError("code_texts must contain non-empty strings")
+        device_type = str(self._device).split(":", 1)[0]
+        # A verifier owns one frozen encoder. Preserve the exact precision and
+        # batch context; never substitute one stability probe for another.
+        cache_key = (
+            code_texts, use_bfloat16, self._max_length,
+            torch.is_autocast_enabled(device_type),
+            torch.get_autocast_dtype(device_type),
+        )
+        cache_enabled = not getattr(self._encoder, "training", False)
+        if not cache_enabled:
+            self._embedding_cache.clear()
+        elif cache_key in self._embedding_cache:
+            self._embedding_cache.move_to_end(cache_key)
+            return self._embedding_cache[cache_key].clone()
         encoded = self._tokenizer(
             list(code_texts),
             return_tensors="pt",
@@ -82,7 +98,6 @@ class CodeT5LshVerifier:
             name: tensor.to(self._device)
             for name, tensor in encoded.items()
         }
-        device_type = str(self._device).split(":", 1)[0]
         precision_context = (
             torch.autocast(device_type=device_type, dtype=torch.bfloat16)
             if use_bfloat16
@@ -96,6 +111,10 @@ class CodeT5LshVerifier:
         embeddings = embeddings.float()
         if embeddings.ndim != 2 or not torch.isfinite(embeddings).all():
             raise ValueError("semantic encoder returned an invalid embedding")
+        if cache_enabled:
+            self._embedding_cache[cache_key] = embeddings.detach().clone()
+            if len(self._embedding_cache) > 4096:
+                self._embedding_cache.popitem(last=False)
         return embeddings
 
     @torch.no_grad()

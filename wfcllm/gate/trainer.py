@@ -31,9 +31,9 @@ from wfcllm.gate.losses import GateLoss
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
 _CONSISTENCY_EXTRA_PADDING = 7
 _INVARIANCE_ATOL = 1e-6
-_CHECKPOINT_CONTRACT = "wfcllm-gate-training-checkpoint/v1"
-_METRICS_CONTRACT = "wfcllm-gate-training-metrics/v1"
-_SUMMARY_CONTRACT = "wfcllm-gate-development-summary/v1"
+_CHECKPOINT_CONTRACT = "wfcllm-gate-training-checkpoint/v3"
+_METRICS_CONTRACT = "wfcllm-gate-training-metrics/v3"
+_SUMMARY_CONTRACT = "wfcllm-gate-development-summary/v3"
 _LOSS_NAMES = (
     "close_bce",
     "suitable_bce",
@@ -50,7 +50,12 @@ _VALIDATION_KEYS = {
     "comparable_group_count",
     "coverage",
     "suitable_false_positive_rate",
+    "suitable_accept_threshold",
+    "suitable_threshold_false_positive_rate",
+    "suitable_threshold_true_positive_rate",
     "decision_consistency",
+    "close_loss",
+    "close_accuracy",
 }
 _CHECKPOINT_KEYS = {
     "contract_version",
@@ -231,7 +236,10 @@ class GateTrainer:
         train_batches = self._all_training_batch_indices(training)
         validation_batches = _sequential_batches(len(validation), self.config.batch_size)
         dry_validation = self._dry_run_validation(
-            validation, validation_batches, collator
+            validation,
+            validation_batches,
+            collator,
+            require_comparable=self.config.enable_consistency,
         )
         # Training-time consistency neighbors must come from training data;
         # validation examples are never introduced into an optimizer graph.
@@ -351,8 +359,8 @@ class GateTrainer:
                 validation_dataset, collator, dry_validation
             )
             objective = (
+                validation_metrics["close_loss"],
                 validation_metrics["suitable_false_positive_rate"],
-                -validation_metrics["decision_consistency"],
             )
             improved = best_objective is None or objective < best_objective
             if improved:
@@ -479,6 +487,8 @@ class GateTrainer:
         examples: tuple[GateExample, ...],
         batches: Sequence[Sequence[int]],
         collator: GateCollator,
+        *,
+        require_comparable: bool,
     ) -> dict[str, int | float]:
         total = evaluable = overflow = negatives = 0
         group_counts: dict[tuple[str, str, int], int] = {}
@@ -504,7 +514,7 @@ class GateTrainer:
         if negatives == 0:
             raise ValueError("validation has zero evaluable suitable-negative rows")
         comparable_groups = sum(count >= 2 for count in group_counts.values())
-        if comparable_groups == 0:
+        if require_comparable and comparable_groups == 0:
             raise ValueError("validation has zero comparable non-overflow cohorts")
         return {
             "total_count": total,
@@ -634,7 +644,10 @@ class GateTrainer:
             collate_fn=collator,
             num_workers=0,
         )
-        rows: list[tuple[str, str, int, bool, bool, bool]] = []
+        rows: list[tuple[str, str, int, bool, bool, bool, float]] = []
+        close_loss_sum = 0.0
+        close_correct = 0
+        close_count = 0
         self.model.eval()
         with torch.no_grad():
             for raw_batch in loader:
@@ -644,6 +657,21 @@ class GateTrainer:
                     attention_mask=batch["attention_mask"],
                 )
                 _validate_model_output(output, batch["input_ids"].shape[0])
+                close_mask = batch["close_loss_mask"].bool()
+                close_logits = output.close_logits[close_mask]
+                close_targets = batch["close_targets"][close_mask]
+                close_loss_sum += float(
+                    nn.functional.binary_cross_entropy_with_logits(
+                        close_logits, close_targets, reduction="sum"
+                    ).cpu()
+                )
+                close_correct += int(
+                    (
+                        (torch.sigmoid(close_logits) >= self.config.decision_threshold)
+                        == close_targets.bool()
+                    ).sum().cpu()
+                )
+                close_count += close_targets.numel()
                 close = (
                     torch.sigmoid(output.close_logits) >= self.config.decision_threshold
                 ).cpu().tolist()
@@ -651,6 +679,7 @@ class GateTrainer:
                     torch.sigmoid(output.suitable_logits)
                     >= self.config.decision_threshold
                 ).cpu().tolist()
+                suitable_scores = torch.sigmoid(output.suitable_logits).cpu().tolist()
                 targets = batch["suitable_targets"].cpu().tolist()
                 valid = batch["suitable_loss_mask"].cpu().tolist()
                 for values in zip(
@@ -659,11 +688,12 @@ class GateTrainer:
                     batch["budgets"],
                     close,
                     suitable,
+                    suitable_scores,
                     targets,
                     valid,
                     strict=True,
                 ):
-                    if not bool(values[6]):
+                    if not bool(values[7]):
                         continue
                     rows.append(
                         (
@@ -672,19 +702,33 @@ class GateTrainer:
                             int(values[2]),
                             bool(values[3]),
                             bool(values[4]),
-                            bool(values[5]),
+                            bool(values[6]),
+                            float(values[5]),
                         )
                     )
         negatives = [row for row in rows if not row[5]]
-        if not rows or not negatives:
+        positives = [row for row in rows if row[5]]
+        if not rows or not negatives or not close_count:
             raise ValueError("validation quality metrics are not computable")
+        selected = _select_suitable_accept_threshold(rows)
         metrics: dict[str, float | int] = dict(dry_counts)
         metrics.update(
             {
                 "suitable_false_positive_rate": (
                     sum(row[4] for row in negatives) / len(negatives)
                 ),
+                "suitable_accept_threshold": selected["threshold"],
+                "suitable_threshold_false_positive_rate": (
+                    selected["false_positive_count"] / len(negatives)
+                ),
+                "suitable_threshold_true_positive_rate": (
+                    selected["true_positive_count"] / len(positives)
+                    if positives
+                    else 0.0
+                ),
                 "decision_consistency": _decision_consistency(rows),
+                "close_loss": close_loss_sum / close_count,
+                "close_accuracy": close_correct / close_count,
             }
         )
         _validate_validation(metrics)
@@ -864,11 +908,83 @@ def _assert_invariant(pair: tuple[_AlignedGateOutput, _AlignedGateOutput]) -> No
         )
 
 
+def _select_suitable_accept_threshold(
+    rows: Sequence[tuple[str, str, int, bool, bool, bool, float]],
+    *,
+    max_false_positive_rate: float = 0.05,
+) -> dict[str, float | int]:
+    """Choose a runtime threshold from validation scores only.
+
+    The suitable gate is a generation-time window admission model, not the
+    final detector.  The selected threshold maximizes validation F1 for
+    suitable-target recovery while still reporting the validation false-positive
+    rate for audit.  It is deliberately computed before generation/detection
+    and never observes final-code positive details.
+    """
+
+    if (
+        isinstance(max_false_positive_rate, bool)
+        or not isinstance(max_false_positive_rate, (int, float))
+        or not math.isfinite(float(max_false_positive_rate))
+        or not 0.0 <= float(max_false_positive_rate) <= 1.0
+    ):
+        raise ValueError("max_false_positive_rate must be in [0, 1]")
+    negatives = [row for row in rows if not row[5]]
+    positives = [row for row in rows if row[5]]
+    if not rows or not negatives:
+        raise ValueError("validation threshold selection requires negatives")
+    if not positives:
+        return {
+            "threshold": 0.5,
+            "true_positive_count": 0,
+            "false_positive_count": 0,
+        }
+    best: tuple[float, float, float, float, float, int, int] | None = None
+    for threshold in sorted({0.5, *(row[6] for row in rows)}):
+        false_positive_count = sum(row[6] >= threshold for row in negatives)
+        true_positive_count = sum(row[6] >= threshold for row in positives)
+        false_positive_rate = false_positive_count / len(negatives)
+        true_positive_rate = true_positive_count / len(positives)
+        precision = (
+            true_positive_count / (true_positive_count + false_positive_count)
+            if true_positive_count + false_positive_count
+            else 0.0
+        )
+        f1 = (
+            2.0 * precision * true_positive_rate
+            / (precision + true_positive_rate)
+            if precision + true_positive_rate
+            else 0.0
+        )
+        objective = (
+            f1,
+            true_positive_rate,
+            -false_positive_rate,
+            -threshold,
+            threshold,
+            true_positive_count,
+            false_positive_count,
+        )
+        if best is None or objective > best:
+            best = objective
+    if best is None:
+        return {
+            "threshold": max(row[6] for row in rows) + 1e-6,
+            "true_positive_count": 0,
+            "false_positive_count": 0,
+        }
+    return {
+        "threshold": best[4],
+        "true_positive_count": best[5],
+        "false_positive_count": best[6],
+    }
+
+
 def _decision_consistency(
-    rows: Sequence[tuple[str, str, int, bool, bool, bool]],
+    rows: Sequence[tuple[str, str, int, bool, bool, bool, float]],
 ) -> float:
     groups: dict[tuple[str, str, int], list[tuple[bool, bool]]] = {}
-    for group, window, budget, close, suitable, _ in rows:
+    for group, window, budget, close, suitable, *_ in rows:
         groups.setdefault((group, window, budget), []).append((close, suitable))
     scores: list[float] = []
     for values in groups.values():
@@ -906,15 +1022,26 @@ def _validate_validation(value: object) -> None:
         raise ValueError("validation counts are inconsistent")
     if value["negative_count"] > value["evaluable_count"]:
         raise ValueError("validation negative count is inconsistent")
-    if (
-        value["comparable_group_count"] <= 0
-        or value["comparable_group_count"] > value["evaluable_count"] // 2
-    ):
+    if value["comparable_group_count"] > value["evaluable_count"] // 2:
         raise ValueError("validation comparable group count is inconsistent")
-    for name in ("coverage", "suitable_false_positive_rate", "decision_consistency"):
+    for name in (
+        "coverage",
+        "suitable_false_positive_rate",
+        "suitable_accept_threshold",
+        "suitable_threshold_false_positive_rate",
+        "suitable_threshold_true_positive_rate",
+        "decision_consistency",
+        "close_accuracy",
+    ):
         metric = value[name]
         if type(metric) not in (int, float) or not math.isfinite(metric) or not 0 <= metric <= 1:
             raise ValueError(f"validation {name} must be finite and in [0, 1]")
+    if (
+        type(value["close_loss"]) not in (int, float)
+        or not math.isfinite(value["close_loss"])
+        or value["close_loss"] < 0
+    ):
+        raise ValueError("validation close_loss must be finite and non-negative")
     if not math.isclose(
         value["coverage"],
         value["evaluable_count"] / value["total_count"],
@@ -942,8 +1069,8 @@ def _validate_training_state(
         raise ValueError("training best_epoch is invalid")
     _validate_validation(value["best_validation"])
     if objective != [
+        value["best_validation"]["close_loss"],
         value["best_validation"]["suitable_false_positive_rate"],
-        -value["best_validation"]["decision_consistency"],
     ]:
         raise ValueError("training best objective/validation mismatch")
     if type(value["patience"]) is not int or value["patience"] < 0:

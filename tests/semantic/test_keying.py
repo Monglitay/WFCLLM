@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from wfcllm.semantic.keying import WatermarkKeying
+from wfcllm.semantic.keying import AffinePrefixSignatureSet, WatermarkKeying
 
 
 def test_descriptor_derivation_is_versioned_and_deterministic() -> None:
@@ -211,3 +211,33 @@ def test_descriptor_region_id_is_keyed_stable_and_input_specific() -> None:
     assert secret not in first
     assert descriptor not in first
     assert str(sorted(allowed)) not in first
+
+
+def test_large_descriptor_derivation_uses_lazy_exact_size_container() -> None:
+    keying = WatermarkKeying("deployment-secret", d=24)
+    first = keying.derive_descriptor(
+        contract_version="python-statement-window/v1",
+        parent_descriptor="descriptor",
+        k=7_549_747,
+    )
+    second = keying.derive_descriptor(
+        contract_version="python-statement-window/v1",
+        parent_descriptor="descriptor",
+        k=7_549_747,
+    )
+
+    assert isinstance(first, AffinePrefixSignatureSet)
+    assert len(first) == 7_549_747
+    assert first == second
+    assert first.dimension == 24
+    assert ((0,) * 24 in first) == ((0,) * 24 in second)
+
+    region_id = keying.descriptor_region_id(
+        contract_version="python-statement-window/v1",
+        parent_descriptor="descriptor",
+        k=7_549_747,
+        allowed=first,
+    )
+
+    assert region_id.startswith("semantic-window-region/v1:hmac-sha256:")
+    assert "allowed_signatures" not in region_id

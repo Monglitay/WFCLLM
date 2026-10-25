@@ -194,3 +194,84 @@ def test_mbpp_interface_wrapper_preserves_defaults_and_keyword_calls() -> None:
     exec(result.code, namespace)
     assert namespace["add"](3) == 5
     assert namespace["add"](3, increment=4) == 7
+
+
+def test_mbpp_finalizer_preserves_referenced_trailing_helper_only() -> None:
+    prompt = 'def apply(value):\n    """Transform a value."""\n'
+    source = (
+        "def apply(value):\n    return adjust(value)\n\n"
+        "def adjust(value):\n    return value + 1\n\n"
+        "def test_example():\n    assert apply(1) == 999\n\n"
+        "print(apply(2))\n"
+    )
+    result = finalize_mbpp_program_with_interface_wrapper(prompt, source)
+    namespace: dict[str, object] = {}
+    exec(result.code, namespace)
+    assert namespace["apply"](3) == 4
+    assert "adjust" in namespace
+    assert "test_example" not in namespace
+    assert "print(" not in result.code
+
+
+def test_mbpp_finalizer_resolves_transitive_dependencies_through_prior_helper() -> None:
+    prompt = 'def apply(value):\n    """Transform a value."""\n'
+    source = (
+        "def bridge(value):\n    return later(value)\n\n"
+        "def apply(value):\n    return bridge(value)\n\n"
+        "def later(value):\n    return scale(value) + OFFSET\n\n"
+        "from math import floor as scale\n"
+        "OFFSET = 2\n"
+        "UNUSED = apply(999)\n"
+        "assert apply(1) == 999\n"
+    )
+    result = finalize_mbpp_program_with_interface_wrapper(prompt, source)
+    namespace: dict[str, object] = {}
+    exec(result.code, namespace)
+    assert namespace["apply"](1.9) == 3
+    assert "UNUSED" not in namespace
+    assert "assert " not in result.code
+
+
+def test_mbpp_finalizer_does_not_confuse_local_helper_with_trailing_declaration() -> None:
+    prompt = 'def apply(value):\n    """Transform a value."""\n'
+    source = (
+        "def apply(value):\n"
+        "    def helper(item):\n        return item + 2\n"
+        "    return helper(value)\n\n"
+        "def helper(item):\n    raise RuntimeError('unused declaration')\n"
+    )
+    result = finalize_mbpp_program_with_interface_wrapper(prompt, source)
+    namespace: dict[str, object] = {}
+    exec(result.code, namespace)
+    assert namespace["apply"](3) == 5
+    assert "helper" not in namespace
+
+
+def test_mbpp_finalizer_respects_deferred_annotations_when_selecting_dependencies() -> None:
+    prompt = 'def apply(value: MissingType) -> MissingType:\n    """Return the value."""\n'
+    source = (
+        "from __future__ import annotations\n"
+        "def apply(value: MissingType) -> MissingType:\n    return value\n"
+        "import nonexistent_as_type as MissingType\n"
+    )
+    result = finalize_mbpp_program_with_interface_wrapper(prompt, source)
+    namespace: dict[str, object] = {}
+    exec(result.code, namespace)
+    assert namespace["apply"](7) == 7
+    assert "nonexistent_as_type" not in result.code
+
+
+def test_mbpp_finalizer_preserves_required_function_rebinding_chain() -> None:
+    prompt = 'def apply(value):\n    """Transform a value."""\n'
+    source = (
+        "def apply(value):\n    return helper(value)\n\n"
+        "def helper(value):\n    return value + 1\n\n"
+        "from functools import lru_cache\n"
+        "helper = lru_cache(maxsize=None)(helper)\n"
+        "assert apply(1) == 999\n"
+    )
+    result = finalize_mbpp_program_with_interface_wrapper(prompt, source)
+    namespace: dict[str, object] = {}
+    exec(result.code, namespace)
+    assert namespace["apply"](3) == 4
+    assert "assert " not in result.code

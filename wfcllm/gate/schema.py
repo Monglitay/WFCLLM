@@ -15,7 +15,7 @@ GATE_DATA_SCHEMA_VERSION = "wfcllm-gate-data/v1"
 PARSE_STATUSES = frozenset(
     {"ok", "parse_error", "scope_changed", "unit_count_out_of_range"}
 )
-_CANDIDATES_PER_TRAJECTORY = 4
+_MAX_CANDIDATES_PER_TRAJECTORY = 49
 _MAX_CANDIDATE_CODE_BYTES = 256 * 1024
 _OPAQUE_KEY_ID_RE = re.compile(r"(?:train|holdout)-key-[0-9]{3}\Z", re.ASCII)
 
@@ -424,7 +424,6 @@ def _validate_trajectories(
         raise ValueError(
             "candidates_by_length keys must exactly match candidate_window_lengths"
         )
-    expected_indices = tuple(range(_CANDIDATES_PER_TRAJECTORY))
     for key in (str(length) for length in lengths):
         candidates = candidates_by_length[key]
         if not isinstance(candidates, tuple) or any(
@@ -435,9 +434,17 @@ def _validate_trajectories(
                 "each candidates_by_length value must be a tuple of observations"
             )
         indices = tuple(candidate.candidate_index for candidate in candidates)
+        expected_indices = tuple(range(len(candidates)))
+        if (
+            not candidates
+            or len(candidates) > _MAX_CANDIDATES_PER_TRAJECTORY
+        ):
+            raise ValueError(
+                "each candidate trajectory must contain 1 through 49 observations"
+            )
         if indices != expected_indices:
             raise ValueError(
-                "each candidate trajectory must contain ordered indices 0 through 3"
+                "each candidate trajectory must contain ordered contiguous indices 0 through 3 or the configured budget"
             )
 
 

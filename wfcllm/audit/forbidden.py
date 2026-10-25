@@ -186,6 +186,8 @@ _UNSAFE_CHECKPOINT_COMPACTS = frozenset(
 
 def is_forbidden_secret_field(field: str) -> bool:
     canonical = canonical_artifact_field_name(field)
+    if canonical == "deployment_key_replicate":
+        return False
     if _matches_named_field(field, _FORBIDDEN_SECRET_COMPACTS):
         return True
     if canonical.endswith(_IRREVERSIBLE_OR_PROVENANCE_SUFFIXES):

@@ -16,7 +16,12 @@ from torch import nn
 from wfcllm.gate.dataset import GateExample
 from wfcllm.gate.input import GateInput
 from wfcllm.gate.model import GateModel
-from wfcllm.gate.trainer import GateTrainer, GateTrainerConfig, seed_gate_training
+from wfcllm.gate.trainer import (
+    GateTrainer,
+    GateTrainerConfig,
+    _select_suitable_accept_threshold,
+    seed_gate_training,
+)
 from wfcllm.windowing.normalization import WINDOW_NORMALIZATION_VERSION
 
 
@@ -258,6 +263,82 @@ def test_validation_reports_overflow_coverage_and_excludes_it_from_fpr(
     assert metrics["negative_count"] == 1
     assert metrics["comparable_group_count"] == 1
     assert metrics["coverage"] == pytest.approx(2 / 3)
+    assert 0.0 <= metrics["suitable_accept_threshold"] <= 1.0
+    assert 0.0 <= metrics["suitable_threshold_false_positive_rate"] <= 1.0
+    assert 0.0 <= metrics["suitable_threshold_true_positive_rate"] <= 1.0
+    assert metrics["close_loss"] >= 0.0
+    assert 0.0 <= metrics["close_accuracy"] <= 1.0
+
+
+@pytest.mark.parametrize(
+    ("false_positive_rates", "close_losses", "expected_epoch"),
+    [
+        ([0.0, 0.0, 0.0], [0.8, 0.5, 0.6], 1),
+        ([0.0, 0.1, 0.1], [0.8, 0.5, 0.6], 1),
+        ([0.1, 0.0, 0.2], [0.5, 0.5, 0.6], 1),
+    ],
+)
+def test_checkpoint_selection_prioritizes_close_loss_then_suitable_fp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    false_positive_rates: list[float],
+    close_losses: list[float],
+    expected_epoch: int,
+) -> None:
+    train, validation = _examples()
+    trainer = GateTrainer(
+        model=GateModel(encoder=TinyEncoder(), hidden_size=6),
+        tokenizer=TinyTokenizer(),
+        output_dir=tmp_path / "selection",
+        config_hash=_sha("config"),
+        dataset_manifest_hash=_sha("dataset"),
+        config=GateTrainerConfig(epochs=3, batch_size=6),
+    )
+    validate = trainer._validate
+    losses = iter(close_losses)
+    false_positives = iter(false_positive_rates)
+
+    def measured_validation(*args: Any, **kwargs: Any) -> dict[str, float | int]:
+        metrics = validate(*args, **kwargs)
+        metrics.update(
+            close_loss=next(losses),
+            suitable_false_positive_rate=next(false_positives),
+            decision_consistency=1.0,
+        )
+        return metrics
+
+    monkeypatch.setattr(trainer, "_validate", measured_validation)
+    summary = trainer.fit(train, validation)
+    checkpoint = torch.load(
+        tmp_path / "selection/checkpoints/best.pt",
+        map_location="cpu",
+        weights_only=True,
+    )
+    assert summary["best_epoch"] == expected_epoch
+    assert checkpoint["epoch"] == expected_epoch
+    assert checkpoint["training_state"]["best_objective"] == [
+        close_losses[expected_epoch],
+        false_positive_rates[expected_epoch],
+    ]
+
+
+def test_suitable_threshold_selection_maximizes_validation_f1() -> None:
+    rows = [
+        ("g", "w", 1, True, False, False, 0.10),
+        ("g", "w", 1, True, False, False, 0.20),
+        ("g", "w", 1, True, False, False, 0.35),
+        ("g", "w", 1, True, False, True, 0.30),
+        ("g", "w", 1, True, False, True, 0.40),
+        ("g", "w", 1, True, False, True, 0.45),
+    ]
+
+    selected = _select_suitable_accept_threshold(rows)
+
+    assert selected == {
+        "threshold": pytest.approx(0.30),
+        "true_positive_count": 3,
+        "false_positive_count": 1,
+    }
 
 
 @pytest.mark.parametrize("kind", ["all-overflow", "no-negative"])
@@ -312,6 +393,34 @@ def test_validation_rejects_zero_comparable_cohorts(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="zero comparable"):
         trainer.fit(train, validation)
     assert not output.exists()
+
+
+def test_validation_allows_zero_comparable_cohorts_when_consistency_is_disabled(
+    tmp_path: Path,
+) -> None:
+    train, _ = _examples()
+    validation = [
+        _example("singleton-negative", 1, suitable=False),
+        _example("singleton-positive", 1, suitable=True),
+    ]
+    output = tmp_path / "singletons-disabled"
+    trainer = GateTrainer(
+        model=GateModel(encoder=TinyEncoder(), hidden_size=6),
+        tokenizer=TinyTokenizer(),
+        output_dir=output,
+        config_hash=_sha("config"),
+        dataset_manifest_hash=_sha("dataset"),
+        config=GateTrainerConfig(
+            epochs=1,
+            batch_size=6,
+            enable_consistency=False,
+        ),
+    )
+
+    summary = trainer.fit(train, validation)
+
+    assert summary["best_validation"]["comparable_group_count"] == 0
+    assert output.exists()
 
 
 class SecretExtraStateModel(GateModel):

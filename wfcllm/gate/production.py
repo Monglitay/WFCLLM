@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ast
-from collections import Counter, defaultdict
+from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -22,12 +22,16 @@ from wfcllm.gate.data import (
     GateBuildContext,
     GateDataBuilder,
     LshProbeResult,
+    RewriteRequest,
+    _make_request,
     complete_w1_w2_w3_start_unit_ids,
 )
 from wfcllm.generation.window_rewriter import (
     CausalWindowRewriter,
     KeyBlindAstEquivalentWindowRewriter,
     RewriteGeneration,
+    StatementUnitExtractor,
+    _parse_generation,
 )
 from wfcllm.gate.labels import LabelThresholds, build_gate_labels
 from wfcllm.gate.pipeline import GatePipelineGroup
@@ -131,6 +135,7 @@ class LocalHFGateRuntimeOptions:
     gate_learning_rate: float = 2e-5
     gate_early_stopping_patience: int = 1
     window_contract_version: str = WINDOW_CONTRACT_VERSION
+    rewrite_strategy: str = "model_semantic_window"
 
     def __post_init__(self) -> None:
         for name in (
@@ -147,8 +152,22 @@ class LocalHFGateRuntimeOptions:
             self.rewrite_model_path, Path
         ):
             raise ValueError("rewrite_model_path must be a pathlib.Path or None")
+        if self.rewrite_strategy not in {
+            "model_semantic_window", "python_ast_equivalent", "cpp_structural_equivalent", "js_structural_equivalent", "java_structural_equivalent",
+        }:
+            raise ValueError("unsupported local rewrite strategy")
+        language = language_for_window_contract(self.window_contract_version)
+        if self.rewrite_strategy == "cpp_structural_equivalent" and language != "cpp":
+            raise ValueError("C++ structural strategy requires the C++ window contract")
+        if self.rewrite_strategy == "js_structural_equivalent" and language != "js":
+            raise ValueError("JavaScript structural strategy requires the JS window contract")
+        if self.rewrite_strategy == "java_structural_equivalent" and language != "java":
+            raise ValueError("Java structural strategy requires the Java window contract")
+        if self.rewrite_strategy == "python_ast_equivalent" and language != "python":
+            raise ValueError("Python AST strategy requires the Python window contract")
         if (
             language_for_window_contract(self.window_contract_version) != "python"
+            and self.rewrite_strategy == "model_semantic_window"
             and self.rewrite_model_path is None
         ):
             raise ValueError("rewrite_model_path is required for model rewriting")
@@ -310,6 +329,25 @@ def _identity(value: str) -> str:
     return "".join(character for character in normalized if character.isalnum())
 
 
+def _gate_data_semantic_input_span(
+    request: RewriteRequest, code: str, *, extractor: StatementUnitExtractor, window_contract_version: str,
+) -> tuple[str, tuple[int, int]]:
+    """Recover the same exact candidate-unit slice used by online scoring."""
+    parsed = _parse_generation(
+        request, RewriteGeneration((), code, "gate-data-span/v1", "gate-data-span/v1"),
+        extractor=extractor, window_contract_version=window_contract_version,
+    )
+    if parsed.parse_status != "ok" or not parsed.same_parent_scope or not parsed.parser_spans:
+        raise ValueError("gate-data candidate parser facts disagree with semantic input span")
+    prefix_bytes = len(request.completed_prefix.encode("utf-8"))
+    first = parsed.parser_spans[0][0] - prefix_bytes
+    last = parsed.parser_spans[-1][1] - prefix_bytes
+    raw = code.encode("utf-8")
+    if not 0 <= first < last <= len(raw):
+        raise ValueError("gate-data semantic input span escaped candidate bytes")
+    return raw[first:last].decode("utf-8"), (first, last)
+
+
 class LocalHFProductionAdapter:
     """Lazy production adapter; heavy local models load only in phase methods."""
 
@@ -341,6 +379,7 @@ class LocalHFProductionAdapter:
         )
         self._semantic_runtime: object | None = None
         self._parent_by_group: dict[str, str] = {}
+        self._semantic_text_by_candidate: dict[tuple[str, int, int], str] = {}
         self._training_group_by_group: dict[str, GateTrainingGroup] = {}
         self._unit_metadata_by_group: dict[str, dict[str, Any]] = {}
         self._gate_tokenizer: object | None = None
@@ -381,10 +420,23 @@ class LocalHFProductionAdapter:
         rewrite_identity = (
             "python-ast-equivalent/v1"
             if language == "python"
+            else "cpp-structural-equivalent/v1"
+            if self.options.rewrite_strategy == "cpp_structural_equivalent"
+            else "js-structural-expressions/v1"
+            if self.options.rewrite_strategy == "js_structural_equivalent"
+            else "java-structural-expressions/v1"
+            if self.options.rewrite_strategy == "java_structural_equivalent"
             else self.options.effective_rewrite_model_path.name
         )
-        builder = GateDataBuilder(rewriter=rewriter, lsh_probe=_StructuralOnlyProbe())
+        builder = GateDataBuilder(
+            rewriter=rewriter,
+            lsh_probe=_StructuralOnlyProbe(),
+            rewrite_count=config.rewrite_count,
+        )
         self.options.cache_dir.mkdir(parents=True, exist_ok=True)
+        semantic_span_path = self.options.cache_dir / f"semantic-input-spans-{config.scale}-{config.config_hash}.jsonl"
+        if semantic_span_path.exists() or semantic_span_path.is_symlink():
+            raise ValueError("fresh gate-data semantic input span evidence already exists")
         cache_path = self._training_cache_path(config.config_hash)
         cache_path.unlink(missing_ok=True)
         self._cache_config_hash = config.config_hash
@@ -403,7 +455,10 @@ class LocalHFProductionAdapter:
             parsed_units,
             selected_starts,
             max_groups=max_groups,
+            language=language_for_window_contract(config.parser_contract),
         )
+        semantic_span_rows: list[dict[str, Any]] = []
+        candidate_extractor = get_statement_unit_extractor(language)
         starts_by_source: dict[str, list[str]] = defaultdict(list)
         parsed_by_source: dict[str, _ParsedCatalogSource] = {}
         for selected in selected_starts:
@@ -449,6 +504,38 @@ class LocalHFProductionAdapter:
                 )
                 split = split_assignments[built.split_group_id]
                 self._parent_by_group[built.group_id] = training_group.parent_descriptor
+                for length in lengths:
+                    request = _make_request(
+                        parsed.units, start_index=start_index,
+                        window=tuple(parsed.units[start_index : start_index + length]),
+                        prompt=record.prompt, source_bytes=record.code.encode("utf-8"),
+                        window_contract_version=config.parser_contract,
+                    )
+                    for observation in candidates[str(length)]:
+                        if not (observation.parse_status == "ok" and observation.same_parent_scope
+                                and observation.unit_count == length):
+                            continue
+                        if observation.candidate_index == 0:
+                            if observation.code != request.original_window:
+                                raise ValueError("candidate zero differs from its original source window")
+                            semantic_text = request.original_window
+                            semantic_span = (0, len(semantic_text.encode("utf-8")))
+                        else:
+                            semantic_text, semantic_span = _gate_data_semantic_input_span(
+                                request, observation.code, extractor=candidate_extractor,
+                                window_contract_version=config.parser_contract,
+                            )
+                        self._semantic_text_by_candidate[(built.group_id, length, observation.candidate_index)] = semantic_text
+                        semantic_span_rows.append({
+                            "contract_version": "wfcllm-gate-semantic-input-span/v1",
+                            "group_id": built.group_id, "window_length": length,
+                            "candidate_index": observation.candidate_index,
+                            "semantic_span_in_candidate": list(semantic_span),
+                            "raw_candidate_sha256": hashlib.sha256(observation.code.encode("utf-8")).hexdigest(),
+                            "semantic_span_sha256": hashlib.sha256(semantic_text.encode("utf-8")).hexdigest(),
+                            "semantic_input_sha256": hashlib.sha256(canonical_semantic_window_text(semantic_text).encode("utf-8")).hexdigest(),
+                            "audit_only": True, "not_detector_input": True,
+                        })
                 self._training_group_by_group[built.group_id] = training_group
                 self._unit_metadata_by_group[built.group_id] = {
                     "depth": start.depth,
@@ -476,7 +563,10 @@ class LocalHFProductionAdapter:
                     suitable_target=False,
                     close_target=False,
                     window_lengths=lengths,
-                    statement_family=_statement_family(start.text),
+                    statement_family=_statement_family(
+                        start.text,
+                        cpp_node_type=(start.node_type if config.parser_contract == "cpp-statement-window/v1" else None),
+                    ),
                     r1_success_rate=0.0,
                     r3_success_rate=0.0,
                     holdout_success_rate=0.0,
@@ -490,13 +580,16 @@ class LocalHFProductionAdapter:
                     numeric_instability_rate=0.0,
                     first_hit_candidate_position=None,
                     candidate_indices_by_window_length={
-                        length: tuple(range(4)) for length in lengths
+                        length: tuple(range(config.rewrite_count + 1))
+                        for length in lengths
                     },
                     observed_training_key_ids=(),
                     observed_holdout_key_ids=(),
                     candidate_observations_by_length=candidates,
                     probe_results_by_length={
-                        str(length): tuple({} for _ in range(4))
+                        str(length): tuple(
+                            {} for _index in range(config.rewrite_count + 1)
+                        )
                         for length in lengths
                     },
                     row={
@@ -505,6 +598,16 @@ class LocalHFProductionAdapter:
                         "split": split,
                     },
                 )
+
+        with semantic_span_path.open("x", encoding="utf-8") as handle:
+            for row in semantic_span_rows:
+                handle.write(json.dumps(row, sort_keys=True, allow_nan=False) + "\n")
+        self._selection_summary["semantic_input_span_audit"] = {
+            "contract_version": "wfcllm-gate-semantic-input-span/v1",
+            "filename": semantic_span_path.name,
+            "sha256": _sha256_file(semantic_span_path),
+            "candidate_count": len(semantic_span_rows),
+        }
 
     def gate_data_selection_summary(self) -> dict[str, Any]:
         if self._selection_summary is None:
@@ -551,7 +654,9 @@ class LocalHFProductionAdapter:
                 observations: list[CandidateObservation] = []
                 candidate_results: list[Mapping[str, LshProbeResult]] = []
                 trajectory = group.candidate_observations_by_length[str(length)]
-                reference_text = trajectory[0].code
+                reference_text = self._semantic_text_by_candidate.get((group.group_id, length, 0))
+                if reference_text is None:
+                    raise ValueError("gate-data original semantic input span is missing")
                 for observation in trajectory:
                     exact_structural_candidate = (
                         observation.parse_status == "ok"
@@ -577,9 +682,12 @@ class LocalHFProductionAdapter:
                         )
                         candidate_results.append({})
                         continue
-                    semantic_cosine = runtime.semantic_reference_cosine(
-                        reference_text, observation.code
+                    semantic_text = self._semantic_text_by_candidate.get(
+                        (group.group_id, length, observation.candidate_index)
                     )
+                    if semantic_text is None:
+                        raise ValueError("gate-data candidate semantic input span is missing")
+                    semantic_cosine = runtime.semantic_reference_cosine(reference_text, semantic_text)
                     semantic_preserved = bool(
                         semantic_cosine
                         >= self.options.semantic_preservation_threshold
@@ -602,7 +710,7 @@ class LocalHFProductionAdapter:
                         candidate_results.append({})
                         continue
                     signature, margin, precision_stable, batch_stable = runtime.signature_and_margin(
-                        observation.code
+                        semantic_text
                     )
                     if len(signature) != self.options.lsh_dimension:
                         raise ValueError(
@@ -651,20 +759,30 @@ class LocalHFProductionAdapter:
                     configured_margin=self.options.semantic_margin,
                     max_units=max_units,
                 ),
+                rewrite_budgets=config.rewrite_budgets,
             )
-            r1, r3 = (selected.budgets[budget].success_rate for budget in (1, 3))
+            r1_budget = 1 if 1 in selected.budgets else max(selected.budgets)
+            r3_budget = 3 if 3 in selected.budgets else max(selected.budgets)
+            selected_budget = max(selected.budgets)
+            r1, r3 = (
+                selected.budgets[r1_budget].success_rate,
+                selected.budgets[r3_budget].success_rate,
+            )
             holdout_hits = sum(
                 any(
                     key_id in results_by_length[str(max_units)][candidate]
                     and results_by_length[str(max_units)][candidate][key_id].is_reliable_hit(
                         configured_margin=self.options.semantic_margin
                     )
-                    for candidate in range(4)
+                    # Transfer degradation compares both banks at the R3 prefix.
+                    for candidate in range(r3_budget + 1)
                 )
                 for key_id in holdout_keys.key_ids
             )
             first_hits = [
-                value for value in selected.budgets[3].first_hit_by_key_id.values() if value is not None
+                value
+                for value in selected.budgets[selected_budget].first_hit_by_key_id.values()
+                if value is not None
             ]
             result = replace(
                 group,
@@ -673,8 +791,10 @@ class LocalHFProductionAdapter:
                 r1_success_rate=r1,
                 r3_success_rate=r3,
                 holdout_success_rate=holdout_hits / len(holdout_keys.key_ids),
-                structural_invalid_rate=1.0 - selected.budgets[3].structural_valid_rate,
-                numeric_instability_rate=selected.budgets[3].unstable_rate,
+                structural_invalid_rate=(
+                    1.0 - selected.budgets[selected_budget].structural_valid_rate
+                ),
+                numeric_instability_rate=selected.budgets[selected_budget].unstable_rate,
                 first_hit_candidate_position=min(first_hits) if first_hits else None,
                 observed_training_key_ids=tuple(training_keys.key_ids),
                 observed_holdout_key_ids=tuple(holdout_keys.key_ids),
@@ -684,6 +804,7 @@ class LocalHFProductionAdapter:
             self._append_training_examples(
                 result,
                 observations_by_length,
+                rewrite_budgets=config.rewrite_budgets,
             )
             yield result
 
@@ -691,12 +812,25 @@ class LocalHFProductionAdapter:
         yield from groups
 
     def audit_gate_data(self, staging_dir, manifest):
-        if (
-            not isinstance(manifest, Mapping)
-            or manifest.get("formal_eligible") is not True
-            or manifest.get("diagnostic_test_backend") is not False
+        formal_identity = {
+            "diagnostic_test_backend": False,
+            "formal_eligible": True,
+            "diagnostic_only": False,
+            "not_official_method": False,
+        }
+        diagnostic_identity = {
+            "diagnostic_test_backend": True,
+            "formal_eligible": False,
+            "diagnostic_only": True,
+            "not_official_method": True,
+        }
+        if not isinstance(manifest, Mapping) or not any(
+            all(manifest.get(field) is value for field, value in identity.items())
+            for identity in (formal_identity, diagnostic_identity)
         ):
-            raise ValueError("local-hf-v1 requires a formal gate-data manifest")
+            raise ValueError(
+                "local-hf-v1 requires a complete gate-data artifact identity"
+            )
         config_hash = manifest.get("config_hash")
         if not isinstance(config_hash, str) or not self._training_cache_path(config_hash).is_file():
             raise ValueError("local-hf-v1 training example cache is missing")
@@ -770,6 +904,15 @@ class LocalHFProductionAdapter:
         output_dir.mkdir(parents=True, exist_ok=False)
         torch.save(state, output_dir / "gate_float.pt")
         tokenizer.save_pretrained(output_dir / "tokenizer")
+        # Keep the safe learning curves outside the published model bundle.
+        for name, saved_name in (
+            ("training_metrics.jsonl", "training_metrics.jsonl"),
+            ("development_summary.json", "training_development_summary.json"),
+        ):
+            destination = output_dir.parent / saved_name
+            if destination.exists() or destination.is_symlink():
+                raise ValueError(f"gate training evidence already exists: {name}")
+            shutil.copyfile(work / name, destination)
         shutil.rmtree(work)
         return {
             "backend": LOCAL_HF_ADAPTER_NAME,
@@ -778,6 +921,15 @@ class LocalHFProductionAdapter:
             "training_example_count": len(training),
             "validation_example_count": len(validation),
             "validation_split_role": validation_role,
+            "suitable_accept_threshold": summary["best_validation"][
+                "suitable_accept_threshold"
+            ],
+            "suitable_threshold_false_positive_rate": summary["best_validation"][
+                "suitable_threshold_false_positive_rate"
+            ],
+            "suitable_threshold_true_positive_rate": summary["best_validation"][
+                "suitable_threshold_true_positive_rate"
+            ],
             "candidate_sha256": _sha256_file(output_dir / "gate_float.pt"),
         }
 
@@ -789,6 +941,8 @@ class LocalHFProductionAdapter:
         self,
         group: GatePipelineGroup,
         observations_by_length: Mapping[str, tuple[CandidateObservation, ...]],
+        *,
+        rewrite_budgets: tuple[int, ...],
     ) -> None:
         from wfcllm.gate.input import GateInput, serialize_gate_input
 
@@ -807,6 +961,7 @@ class LocalHFProductionAdapter:
                     configured_margin=self.options.semantic_margin,
                     max_units=group.window_lengths[-1],
                 ),
+                rewrite_budgets=rewrite_budgets,
             )
             current_units = tuple(metadata["current_units"][str(length)])
             normalized = "\n".join(normalize_unit_text(unit) for unit in current_units)
@@ -822,7 +977,7 @@ class LocalHFProductionAdapter:
                 current_unit_count=length,
                 current_token_count=token_count,
             )
-            for budget in (3,):
+            for budget in rewrite_budgets:
                 rows.append(
                     {
                         "contract_version": "wfcllm-local-gate-cache/v1",
@@ -888,6 +1043,7 @@ class HFCausalRewriteBackend:
         max_new_tokens: int,
         temperature: float = 0.8,
         top_p: float = 0.95,
+        language: str = "python",
     ) -> None:
         if not callable(getattr(model, "generate", None)):
             raise ValueError("rewrite model must expose generate")
@@ -911,10 +1067,18 @@ class HFCausalRewriteBackend:
             raise ValueError("rewrite top_p must be in (0, 1]")
         self.model = model
         self.tokenizer = tokenizer
+        if (
+            not bool(getattr(getattr(model, "config", None), "is_encoder_decoder", False))
+            and getattr(tokenizer, "padding_side", None) == "right"
+        ):
+            # Causal generation reads the final position of every batch row.
+            self.tokenizer.padding_side = "left"
         self.device = device
         self.max_new_tokens = max_new_tokens
         self.temperature = float(temperature)
         self.top_p = float(top_p)
+        _rewrite_language_label(language)
+        self.language = language
 
     def generate_window(
         self,
@@ -970,6 +1134,7 @@ class HFCausalRewriteBackend:
                 text,
                 original_window=original_window,
                 completed_prefix=completed_prefix,
+                language=self.language,
             ),
             generation_seed_id=f"local-hf-v1:{seed:016x}",
             rewrite_config_id=(
@@ -1057,6 +1222,7 @@ class HFCausalRewriteBackend:
                         text,
                         original_window=original_window,
                         completed_prefix=completed_prefix,
+                        language=self.language,
                     ),
                     generation_seed_id=f"local-hf-v1-batch:{seed:016x}:{candidate_index}",
                     rewrite_config_id=(
@@ -1080,19 +1246,20 @@ class HFCausalRewriteBackend:
     ) -> str:
         bounded_task = prompt[-2048:]
         bounded_prefix = completed_prefix[-4096:]
-        strategy = _rewrite_strategy_instruction(candidate_index)
+        language_label = _rewrite_language_label(self.language)
+        strategy = _rewrite_strategy_instruction(candidate_index, language=self.language)
         content = (
             "Task description (context only):\n"
             f"{bounded_task}\n\n"
             "Completed prefix (context only; do not output it):\n"
             f"{bounded_prefix}\n\n"
-            f"Rewrite the target window into exactly {max_units} complete Python statements. "
+            f"Rewrite the target window into exactly {max_units} complete {language_label} statements. "
             "Preserve every referenced name, assigned name, called function, attribute name, "
             "literal value, side effect, and control-flow outcome. Do not add imports, "
             "definitions, returns, raises, or calls. Do not rename anything. Use a natural "
             "behavior-preserving alternative only if one exists; otherwise copy the target. "
             f"{strategy} "
-            f"Return code only, with exactly {max_units} complete Python statements.\n\n"
+            f"Return code only, with exactly {max_units} complete {language_label} statements.\n\n"
             f"Target window:\n{original_window}"
         )
         apply_template = getattr(self.tokenizer, "apply_chat_template", None)
@@ -1111,15 +1278,23 @@ def _rewrite_strategy_id(candidate_index: int) -> str:
     return ("a", "b", "c")[(candidate_index - 1) % 3]
 
 
-def _rewrite_strategy_instruction(candidate_index: int) -> str:
+def _rewrite_language_label(language: str) -> str:
+    labels = {"python": "Python", "cpp": "C++", "java": "Java", "js": "JavaScript"}
+    if not isinstance(language, str) or language not in labels:
+        raise ValueError("unsupported rewrite language")
+    return labels[language]
+
+
+def _rewrite_strategy_instruction(candidate_index: int, *, language: str = "python") -> str:
     strategy = _rewrite_strategy_id(candidate_index)
+    language_label = _rewrite_language_label(language)
     instructions = {
         "a": (
             "Conservative plan A: make the smallest natural equivalent "
             "expression-level rewrite while retaining evaluation order."
         ),
         "b": (
-            "Conservative plan B: use an independently phrased Python idiom "
+            f"Conservative plan B: use an independently phrased {language_label} idiom "
             "only when its runtime behavior is identical."
         ),
         "c": (
@@ -1135,6 +1310,7 @@ def _extract_rewrite_code(
     *,
     original_window: str,
     completed_prefix: str,
+    language: str = "python",
 ) -> str:
     """Extract code blocks and restore indentation supplied by the prefix.
 
@@ -1145,8 +1321,16 @@ def _extract_rewrite_code(
     fences; all fenced blocks are retained in their original order.
     """
 
+    _rewrite_language_label(language)
+    fence_labels = {
+        "python": ("python", "py"),
+        "cpp": ("cpp", "c++", "cxx", "cc", "c"),
+        "java": ("java",),
+        "js": ("javascript", "js"),
+    }
+    fence_pattern = "|".join(re.escape(label) for label in fence_labels[language])
     fenced_blocks = re.findall(
-        r"```(?:python|py)?[ \t]*\r?\n(.*?)```",
+        rf"```(?:{fence_pattern})?[ \t]*\r?\n(.*?)```",
         text,
         flags=re.IGNORECASE | re.DOTALL,
     )
@@ -1298,16 +1482,31 @@ class _CandidateGateManifest:
 
 
 class _FloatGatePredictor:
-    def __init__(self, *, model: object, tokenizer: object, max_tokens: int) -> None:
+    def __init__(
+        self, *, model: object, tokenizer: object, max_tokens: int, device: str = "cpu"
+    ) -> None:
         self.model = model
         self.tokenizer = tokenizer
         self.max_tokens = max_tokens
+        self.device = device
+        self._prediction_cache: OrderedDict[tuple[object, ...], GateScores] = OrderedDict()
 
     def predict(self, serialized_input: str) -> GateScores:
         import torch
 
         if not isinstance(serialized_input, str) or not serialized_input:
             raise ValueError("serialized_input must be a non-empty string")
+        device_type = str(self.device).split(":", 1)[0]
+        cache_key = (
+            serialized_input, self.max_tokens, str(self.device),
+            torch.is_autocast_enabled(device_type), torch.get_autocast_dtype(device_type),
+        )
+        cache_enabled = not getattr(self.model, "training", False)
+        if not cache_enabled:
+            self._prediction_cache.clear()
+        elif cache_key in self._prediction_cache:
+            self._prediction_cache.move_to_end(cache_key)
+            return self._prediction_cache[cache_key]
         encoded = self.tokenizer(
             serialized_input,
             truncation=True,
@@ -1316,18 +1515,23 @@ class _FloatGatePredictor:
         )
         with torch.inference_mode():
             output = self.model(
-                input_ids=encoded["input_ids"].cpu(),
-                attention_mask=encoded["attention_mask"].cpu(),
+                input_ids=encoded["input_ids"].to(self.device),
+                attention_mask=encoded["attention_mask"].to(self.device),
             )
         close = float(torch.sigmoid(output.close_logits)[0].cpu())
         suitable = float(torch.sigmoid(output.suitable_logits)[0].cpu())
-        return GateScores(
+        scores = GateScores(
             close_probability=close,
             suitable_probability=suitable,
             stable=True,
             precision_delta=0.0,
             decision_agreement=True,
         )
+        if cache_enabled:
+            self._prediction_cache[cache_key] = scores
+            if len(self._prediction_cache) > 4096:
+                self._prediction_cache.popitem(last=False)
+        return scores
 
 
 class _FloatRuntimeGateBundle:
@@ -1339,6 +1543,7 @@ class _FloatRuntimeGateBundle:
         root: Path,
         base_model_path: Path,
         bundle_sha256: str,
+        device: str = "cpu",
         max_tokens: int = 256,
         window_contract_version: str = WINDOW_CONTRACT_VERSION,
         close_low_threshold: float = 0.45,
@@ -1359,8 +1564,9 @@ class _FloatRuntimeGateBundle:
         state = torch.load(float_path, map_location="cpu", weights_only=True)
         model = GateModel.from_local_pretrained(
             GateTrainConfig(max_tokens=max_tokens, base_model_path=base_model_path)
-        ).cpu().eval()
+        )
         model.load_state_dict(state, strict=True)
+        model.to(device).eval()
         tokenizer = AutoTokenizer.from_pretrained(
             str(tokenizer_path), local_files_only=True
         )
@@ -1382,6 +1588,7 @@ class _FloatRuntimeGateBundle:
             model=model,
             tokenizer=tokenizer,
             max_tokens=max_tokens,
+            device=device,
         )
         self._tokenizer = tokenizer
 
@@ -1460,9 +1667,9 @@ class LocalHFProgramGenerator:
         self.temperature = temperature
         self.top_p = top_p
         self.seed = seed
-        if program_prompt_mode not in {"completion", "mbpp_chat"}:
+        if program_prompt_mode not in {"completion", "mbpp_chat", "humanevalpack_chat"}:
             raise ValueError(
-                "program_prompt_mode must be completion or mbpp_chat"
+                "program_prompt_mode must be completion, mbpp_chat or humanevalpack_chat"
             )
         self.program_prompt_mode = program_prompt_mode
         self.is_encoder_decoder = bool(getattr(model_config, "is_encoder_decoder", False))
@@ -1481,6 +1688,13 @@ class LocalHFProgramGenerator:
     def generate_program(self, *, prompt: str, sample_id: str) -> str:
         import torch
 
+        self.last_program_generation_trace = None
+        native_chat = getattr(self, "program_prompt_mode", "completion") == "humanevalpack_chat"
+        native_language = None
+        if native_chat:
+            native_language = {"java": "Java", "javascript": "JavaScript"}.get(sample_id.split("/", 1)[0].casefold())
+            if native_language is None:
+                raise ValueError("humanevalpack_chat requires a Java/ or JavaScript/ sample ID")
         mbpp_chat = (
             _is_mbpp_sample(sample_id)
             and _is_mbpp_interface_prefix(prompt)
@@ -1488,7 +1702,9 @@ class LocalHFProgramGenerator:
             == "mbpp_chat"
         )
         lm_prompt = (
-            _mbpp_chat_program_prompt(self.tokenizer, prompt)
+            _native_chat_program_prompt(self.tokenizer, prompt, native_language)
+            if native_language is not None
+            else _mbpp_chat_program_prompt(self.tokenizer, prompt)
             if mbpp_chat
             else _program_generation_prompt(prompt, sample_id=sample_id)
         )
@@ -1512,13 +1728,20 @@ class LocalHFProgramGenerator:
         completion = self.tokenizer.decode(token_ids, skip_special_tokens=True)
         if not isinstance(completion, str):
             raise ValueError("generation tokenizer decode must return text")
+        if native_language is not None:
+            self.last_program_generation_trace = {
+                "sample_id": sample_id,
+                "prompt_mode": "humanevalpack_chat",
+                "model_input": lm_prompt,
+                "model_response": completion,
+                "model_input_token_ids": inputs["input_ids"][0].detach().cpu().tolist(),
+                "model_continuation_token_ids": token_ids.detach().cpu().tolist(),
+            }
+            return _extract_native_chat_code(completion, native_language)
         if _is_mbpp_sample(sample_id):
-            combined = (
-                prompt + completion
-                if _is_mbpp_interface_prefix(prompt) and not mbpp_chat
-                else completion
-            )
-            code = _extract_python_code_completion(combined)
+            if _is_mbpp_interface_prefix(prompt) and not mbpp_chat:
+                return prompt + completion
+            code = _extract_python_code_completion(completion)
             return (
                 _normalize_mbpp_chat_interface(prompt, code)
                 if mbpp_chat
@@ -1529,6 +1752,42 @@ class LocalHFProgramGenerator:
 
 def _is_mbpp_sample(sample_id: str) -> bool:
     return sample_id.lower().startswith("mbpp/")
+
+
+def _native_chat_program_prompt(tokenizer: Any, prompt: str, language: str) -> str:
+    if language not in {"Java", "JavaScript"}:
+        raise ValueError("native chat requires Java or JavaScript")
+    apply_template = getattr(tokenizer, "apply_chat_template", None)
+    if not callable(apply_template):
+        raise ValueError("humanevalpack_chat requires a tokenizer chat template")
+    instruction = (
+        f"Return one complete {language} implementation of the public code prefix below. "
+        "Preserve its exact function, class and parameter names and interface. "
+        "Include required imports and helper definitions. Return code only. "
+        "Do not include Markdown, explanations, examples, tests, printing, input calls, "
+        "or a main function. Do not add unrelated declarations.\n\n" + prompt
+    )
+    if language == "Java":
+        instruction = "Preserve the class modifiers from the prefix; do not add public to its class. " + instruction
+    rendered = apply_template([{"role": "user", "content": instruction}],
+                              tokenize=False, add_generation_prompt=True)
+    if not isinstance(rendered, str) or not rendered:
+        raise ValueError("tokenizer chat template returned an invalid prompt")
+    return rendered
+
+
+def _extract_native_chat_code(text: str, language: str) -> str:
+    """Unwrap the first native code fence, without executing or repairing code."""
+    if language not in {"Java", "JavaScript"}:
+        raise ValueError("native chat requires Java or JavaScript")
+    labels = {"", "java"} if language == "Java" else {"", "javascript", "js"}
+    fence = re.search(r"(?m)^[ \t]*```([A-Za-z0-9_-]*)[ \t]*\r?\n", text)
+    if fence is not None and fence.group(1).casefold() in labels:
+        content = text[fence.end():]
+        closing = re.search(r"(?m)^[ \t]*```[ \t]*$", content)
+        text = content[:closing.start()] if closing is not None else content
+    stripped = text.strip()
+    return stripped + ("\n" if stripped else "")
 
 
 def _program_generation_prompt(prompt: str, *, sample_id: str) -> str:
@@ -1606,6 +1865,33 @@ def _normalize_mbpp_chat_interface(prompt: str, code: str) -> str:
             return code
         actual = same_arity[0]
 
+    actual_parameters = actual.args.posonlyargs + actual.args.args
+    expected_parameters = expected.args.posonlyargs + expected.args.args
+    if (
+        len(actual_parameters) > len(expected_parameters)
+        or actual.args.vararg is not None
+        or actual.args.kwarg is not None
+        or actual.args.kwonlyargs
+        or expected.args.vararg is not None
+        or expected.args.kwarg is not None
+        or expected.args.kwonlyargs
+    ):
+        return code
+    if len(actual_parameters) < len(expected_parameters) and any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in {actual.name, expected.name}
+        for node in ast.walk(actual)
+    ):
+        # Additional required public parameters would break recursive calls.
+        return code
+    parameter_bindings = [
+        (old.arg, new.arg)
+        for old, new in zip(
+            actual_parameters, expected_parameters[:len(actual_parameters)], strict=True
+        )
+        if old.arg != new.arg
+    ]
     old_name = actual.name
     actual.name = expected.name
     actual.args = deepcopy(expected.args)
@@ -1640,6 +1926,20 @@ def _normalize_mbpp_chat_interface(prompt: str, code: str) -> str:
             actual.body[0] = deepcopy(expected_docstring)
         else:
             actual.body.insert(0, deepcopy(expected_docstring))
+    if parameter_bindings:
+        # Restore generated local names simultaneously, including swaps.  Keep
+        # nested scopes untouched instead of renaming their bound identifiers.
+        aliases = ast.Assign(
+            targets=[ast.Tuple(
+                elts=[ast.Name(id=old, ctx=ast.Store()) for old, _ in parameter_bindings],
+                ctx=ast.Store(),
+            )],
+            value=ast.Tuple(
+                elts=[ast.Name(id=new, ctx=ast.Load()) for _, new in parameter_bindings],
+                ctx=ast.Load(),
+            ),
+        )
+        actual.body.insert(int(expected_docstring is not None or actual_has_docstring), aliases)
     ast.fix_missing_locations(code_tree)
     try:
         return ast.unparse(code_tree).rstrip() + "\n"
@@ -1775,6 +2075,9 @@ def load_local_causal_rewriter(options: LocalHFGateRuntimeOptions):
 def _validate_cache_against_data(
     cache_rows: list[dict[str, Any]], data_dir: Path
 ) -> None:
+    window_lengths = _gate_data_window_lengths(data_dir)
+    label_context_length = window_lengths[-1]
+    configured_budgets = _gate_data_rewrite_budgets(data_dir)
     index_path = data_dir / "group_index.jsonl"
     if index_path.is_symlink() or not index_path.is_file():
         raise ValueError("gate data group index is missing")
@@ -1793,24 +2096,106 @@ def _validate_cache_against_data(
     if cache_ids != set(indexed):
         raise ValueError("local gate cache group set does not match formal gate data")
     variants: set[tuple[str, int, int]] = set()
-    counts = {group_id: 0 for group_id in indexed}
+    group_variants: dict[str, set[tuple[int, int]]] = {
+        group_id: set() for group_id in indexed
+    }
     for row in cache_rows:
         group_id = row["group_id"]
-        variant = (group_id, row.get("context_length"), row.get("budget"))
+        context_length = row.get("context_length")
+        budget = row.get("budget")
+        if context_length not in window_lengths:
+            raise ValueError("local gate cache context_length contradicts gate data")
+        if (
+            not isinstance(budget, int)
+            or isinstance(budget, bool)
+            or budget < 0
+            or budget > 48
+        ):
+            raise ValueError("local gate cache budget is invalid")
+        variant = (group_id, context_length, budget)
         if variant in variants:
             raise ValueError("local gate cache contains a duplicate variant")
         variants.add(variant)
-        counts[group_id] += 1
+        group_variants[group_id].add((context_length, budget))
         index = indexed[group_id]
         if row.get("split") != index.get("split"):
             raise ValueError("local gate cache split contradicts formal gate data")
-        if row.get("context_length") == 3 and (
-            row.get("close_target") != index.get("close_target")
-            or row.get("suitable_target") != index.get("suitable_target")
+    observed_budget_sets = {
+        tuple(sorted({budget for _length, budget in variants_for_group}))
+        for variants_for_group in group_variants.values()
+    }
+    if len(observed_budget_sets) != 1:
+        raise ValueError("local gate cache budget set contradicts gate data")
+    observed_budgets = observed_budget_sets.pop()
+    rewrite_budgets = configured_budgets or observed_budgets
+    expected_variants = {
+        (length, budget) for length in window_lengths for budget in rewrite_budgets
+    }
+    if any(
+        variants_for_group != expected_variants
+        for variants_for_group in group_variants.values()
+    ):
+        raise ValueError(
+            "local gate cache variant count does not match gate data window_lengths"
+        )
+    label_budget = rewrite_budgets[-1]
+    for row in cache_rows:
+        index = indexed[row["group_id"]]
+        if (
+            row.get("context_length") == label_context_length
+            and row.get("budget") == label_budget
+            and (
+                row.get("close_target") != index.get("close_target")
+                or row.get("suitable_target") != index.get("suitable_target")
+            )
         ):
             raise ValueError("local gate cache label contradicts formal gate data")
-    if any(count != 3 for count in counts.values()):
-        raise ValueError("local gate cache must contain three variants per group")
+
+
+def _gate_data_window_lengths(data_dir: Path) -> tuple[int, ...]:
+    manifest_path = data_dir / "manifest.json"
+    if not manifest_path.is_file() or manifest_path.is_symlink():
+        return (1, 2, 3)
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError("gate data manifest is invalid") from exc
+    if not isinstance(manifest, Mapping):
+        raise ValueError("gate data manifest must be a JSON object")
+    raw_lengths = manifest.get("window_lengths")
+    if raw_lengths not in ([1], [1, 2], [1, 2, 3]):
+        raise ValueError("gate data manifest window_lengths is invalid")
+    return tuple(raw_lengths)
+
+
+def _gate_data_rewrite_budgets(data_dir: Path) -> tuple[int, ...] | None:
+    manifest_path = data_dir / "manifest.json"
+    if not manifest_path.is_file() or manifest_path.is_symlink():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError("gate data manifest is invalid") from exc
+    if not isinstance(manifest, Mapping):
+        raise ValueError("gate data manifest must be a JSON object")
+    raw_budgets = manifest.get("rewrite_budgets")
+    if raw_budgets is None:
+        return None
+    if (
+        not isinstance(raw_budgets, list)
+        or not raw_budgets
+        or any(
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or value < 0
+            or value > 48
+            for value in raw_budgets
+        )
+        or raw_budgets != sorted(raw_budgets)
+        or len(set(raw_budgets)) != len(raw_budgets)
+    ):
+        raise ValueError("gate data manifest rewrite_budgets is invalid")
+    return tuple(raw_budgets)
 
 
 def _partition_training_examples(
@@ -1934,6 +2319,7 @@ def _source_stratified_selection_summary(
     selected: Sequence[_CatalogWindowStart],
     *,
     max_groups: int | None,
+    language: str = "python",
 ) -> dict[str, Any]:
     candidate_sources: set[str] = set()
     candidate_repositories: set[str] = set()
@@ -1976,7 +2362,10 @@ def _source_stratified_selection_summary(
     for item in selected:
         unit_by_id = {unit.unit_id: unit for unit in item.parsed.units}
         statement_families[
-            _statement_family(unit_by_id[item.start_unit_id].text)
+            _statement_family(
+                unit_by_id[item.start_unit_id].text,
+                cpp_node_type=(unit_by_id[item.start_unit_id].node_type if language == "cpp" else None),
+            )
         ] += 1
         record = item.parsed.record
         selection_records.append(
@@ -2032,11 +2421,13 @@ class _StructuralOnlyProbe:
         }
 
 
-def _statement_family(text: str) -> str:
-    """Classify a public Python statement without consulting labels or keys."""
+def _statement_family(text: str, *, cpp_node_type: str | None = None) -> str:
+    """Classify public statement syntax without consulting labels or keys."""
 
     if not isinstance(text, str) or not text.strip():
         raise ValueError("statement text must be a non-empty string")
+    if cpp_node_type is not None:
+        return _cpp_statement_family(text, cpp_node_type)
     try:
         statement = ast.parse(textwrap.dedent(text).strip()).body[0]
     except (IndentationError, SyntaxError, IndexError):
@@ -2077,6 +2468,54 @@ def _statement_family(text: str) -> str:
     if isinstance(statement, ast.Raise):
         return "raise"
     return "control"
+
+
+def _cpp_statement_family(text: str, node_type: str) -> str:
+    from wfcllm.lang.cpp.parser import CppParser
+
+    if node_type in {"if_statement", "switch_statement"}:
+        return "branch"
+    if node_type in {"for_statement", "for_range_loop", "while_statement", "do_statement"}:
+        return "loop"
+    if node_type in {"return_statement", "co_return_statement"}:
+        return "return"
+    if node_type == "throw_statement":
+        return "raise"
+    if node_type in {"break_statement", "continue_statement", "goto_statement", "try_statement"}:
+        return "control"
+    root = CppParser().parse(text).root_node
+    statements = [node for node in root.named_children if node.type != "comment"]
+    if root.has_error or len(statements) != 1:
+        return "other"
+    statement = statements[0]
+    values = []
+    if statement.type == "declaration":
+        values = [value for child in statement.named_children if child.type == "init_declarator"
+                  if (value := child.child_by_field_name("value")) is not None]
+        if not values:
+            return "declaration"
+    elif statement.type == "expression_statement" and statement.named_children:
+        expression = statement.named_children[0]
+        if expression.type == "assignment_expression":
+            value = expression.child_by_field_name("right")
+            if value is not None:
+                values = [value]
+        elif expression.type == "update_expression":
+            return "assignment_expression"
+        elif expression.type == "call_expression":
+            return "call"
+        else:
+            return "expression"
+    if not values:
+        return "other"
+    types = {value.type for value in values}
+    if "call_expression" in types:
+        return "assignment_call"
+    if types <= {"identifier", "qualified_identifier", "field_expression", "subscript_expression"}:
+        return "assignment_reference"
+    if types <= {"number_literal", "char_literal", "string_literal", "concatenated_string", "true", "false", "nullptr"}:
+        return "assignment_literal"
+    return "assignment_expression"
 
 
 def _record_split_group_id(record: GateSourceCatalogRecord) -> str:
@@ -2159,6 +2598,28 @@ def _sha256_directory(root: Path) -> str:
 
 
 def _load_causal_rewriter(options: LocalHFGateRuntimeOptions):
+    language = language_for_window_contract(options.window_contract_version)
+    if options.rewrite_strategy == "java_structural_equivalent":
+        from wfcllm.generation.java_structural_rewriter import KeyBlindJavaStructuralWindowRewriter
+
+        return KeyBlindJavaStructuralWindowRewriter(
+            extractor=get_statement_unit_extractor(language),
+            window_contract_version=options.window_contract_version,
+        )
+    if options.rewrite_strategy == "js_structural_equivalent":
+        from wfcllm.generation.js_structural_rewriter import KeyBlindJavaScriptStructuralWindowRewriter
+
+        return KeyBlindJavaScriptStructuralWindowRewriter(
+            extractor=get_statement_unit_extractor(language),
+            window_contract_version=options.window_contract_version,
+        )
+    if options.rewrite_strategy == "cpp_structural_equivalent":
+        from wfcllm.generation.cpp_structural_rewriter import KeyBlindCppStructuralWindowRewriter
+
+        return KeyBlindCppStructuralWindowRewriter(
+            extractor=get_statement_unit_extractor(language),
+            window_contract_version=options.window_contract_version,
+        )
     import torch
     from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoTokenizer
 
@@ -2173,7 +2634,6 @@ def _load_causal_rewriter(options: LocalHFGateRuntimeOptions):
     tokenizer = AutoTokenizer.from_pretrained(str(path), local_files_only=True, trust_remote_code=True)
     model.to(options.model_device)
     model.eval()
-    language = language_for_window_contract(options.window_contract_version)
     return CausalWindowRewriter(
         HFCausalRewriteBackend(
             model=model,
@@ -2182,6 +2642,7 @@ def _load_causal_rewriter(options: LocalHFGateRuntimeOptions):
             max_new_tokens=options.rewrite_max_new_tokens,
             temperature=options.rewrite_temperature,
             top_p=options.rewrite_top_p,
+            language=language,
         ),
         extractor=get_statement_unit_extractor(language),
         generation_attempts=options.rewrite_generation_attempts,

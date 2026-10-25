@@ -7,6 +7,7 @@ from typing import Iterator
 from wfcllm.datasets.adapter import CodeSample, DatasetAdapter
 from wfcllm.datasets.loaders.local import load_mbpp_generation_samples
 from wfcllm.datasets.registry import register
+from wfcllm.datasets.smoke import smoke_sample_count_from_env
 
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,9 @@ class MBPPAdapter(DatasetAdapter):
                 f"supported={self.supported_languages}"
             )
         rows = load_mbpp_generation_samples(self._dataset_path)
+        smoke_count = smoke_sample_count_from_env()
+        if smoke_count is not None:
+            rows = rows[:smoke_count]
         interface_aware = sum(
             row["interface_extraction_status"] == "interface_aware" for row in rows
         )
